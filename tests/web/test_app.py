@@ -9,12 +9,12 @@ specifically about settings.
 import pytest
 from fastapi.testclient import TestClient
 
-from py_launch_blueprint import __version__
-from py_launch_blueprint.core.errors import APIError
-from py_launch_blueprint.core.models import Project
-from py_launch_blueprint.web.app import create_app
-from py_launch_blueprint.web.deps import get_projects_service
-from py_launch_blueprint.web.settings import WebSettings
+from template_press import __version__
+from template_press.core.errors import APIError
+from template_press.core.models import Project
+from template_press.web.app import create_app
+from template_press.web.deps import get_projects_service
+from template_press.web.settings import WebSettings
 
 PROBLEM_TYPE = "application/problem+json"
 
@@ -40,7 +40,7 @@ def make_client(settings=None, override=True):
 
 @pytest.fixture()
 def client(monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     with make_client() as test_client:
         yield test_client
 
@@ -48,7 +48,7 @@ def client(monkeypatch):
 @pytest.fixture()
 def tokenless_client(monkeypatch):
     """An app with NO service override and no token: exercises real deps."""
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     with make_client(override=False) as test_client:
         yield test_client
 
@@ -81,7 +81,7 @@ def test_metrics_exposed_by_default(client):
 
 
 def test_metrics_can_be_disabled(monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     settings = WebSettings.model_construct(metrics_enabled=False)
     with make_client(settings) as test_client:
         assert test_client.get("/metrics").status_code == 404
@@ -113,7 +113,7 @@ def test_cors_off_by_default(client):
 
 
 def test_cors_enabled_via_settings(monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     settings = WebSettings.model_construct(cors_origins=["https://app.example"])
     with make_client(settings) as test_client:
         response = test_client.get(
@@ -197,7 +197,7 @@ def test_rate_limit_disabled_by_default(client):
 
 
 def test_rate_limit_429_problem(monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     settings = WebSettings.model_construct(rate_limit="2/minute")
     with make_client(settings) as test_client:
         assert test_client.get("/healthz").status_code == 200
@@ -216,7 +216,7 @@ def test_rate_limit_429_problem(monkeypatch):
 
 
 def test_cors_preflight_gets_request_id_and_security_headers(monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     settings = WebSettings.model_construct(cors_origins=["https://app.example"])
     with make_client(settings) as test_client:
         response = test_client.options(
@@ -232,8 +232,8 @@ def test_cors_preflight_gets_request_id_and_security_headers(monkeypatch):
 
 
 def test_readyz_failure_is_a_problem_with_diagnostics(client, monkeypatch):
-    from py_launch_blueprint.core.models import DoctorCheck, DoctorReport
-    from py_launch_blueprint.web import app as app_module
+    from template_press.core.models import DoctorCheck, DoctorReport
+    from template_press.web import app as app_module
 
     failing = DoctorReport(
         checks=[DoctorCheck(name="python", status="error", detail="boom")]

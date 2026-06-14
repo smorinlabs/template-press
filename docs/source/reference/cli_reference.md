@@ -19,7 +19,7 @@ just run [cmd] [args]
 ```
 
 #### Arguments
-- `cmd`: The command to run (default: `plbp`).
+- `cmd`: The command to run (default: `press`).
 - `args`: Arguments to pass to the command.
 
 ---

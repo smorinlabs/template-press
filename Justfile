@@ -1,10 +1,10 @@
 # Set project-wide variables
-py_package_name := "py_launch_blueprint"
+py_package_name := "template_press"
 # Filesystem path to the package (src/ layout). Module name stays
 # `py_package_name`; tooling that takes a *path* uses this.
 py_package_path := "src/" + py_package_name
-repo_name := "py-launch-blueprint"
-app_name := "plbp"
+repo_name := "template-press"
+app_name := "press"
 contributors_owner := "smorinlabs"
 contributors_package := "contributors-please@1"
 args := " "
@@ -246,7 +246,7 @@ alias t := test
 # Run tests with coverage and generate term-missing + HTML + XML reports
 [group('test'), group('dev')]
 @coverage:
-    uv run pytest --cov=py_launch_blueprint --cov-report=term-missing --cov-report=html --cov-report=xml
+    uv run pytest --cov=template_press --cov-report=term-missing --cov-report=html --cov-report=xml
     echo "Coverage report at htmlcov/index.html"
 
 # Open the local HTML coverage report (macOS: open / Linux: xdg-open)
@@ -296,7 +296,7 @@ serve host="127.0.0.1" port="8000":
 
 # Build the production web-service image (WEB-32)
 [group('build')]
-@docker-web tag="plbp-web:dev": _guard
+@docker-web tag="press-web:dev": _guard
     docker build -t {{tag}} .
 
 # Audit locked dependencies (all extras + groups) against known CVEs (WL-014).

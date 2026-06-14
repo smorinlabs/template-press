@@ -39,8 +39,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --all-extras --dev
-      - run: uv run ty check src/py_launch_blueprint/
-      - run: uvx ruff check py_launch_blueprint/
+      - run: uv run ty check src/template_press/
+      - run: uvx ruff check template_press/
       - run: uvx pytest
 ```
 
@@ -55,7 +55,7 @@ jobs:
 - **Add security scanning**:
   ```yaml
   - name: Run security scan
-    run: uvx bandit -r py_launch_blueprint/
+    run: uvx bandit -r template_press/
   ```
 - **Cache dependencies**:
   ```yaml

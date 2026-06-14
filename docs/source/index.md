@@ -1,5 +1,5 @@
-```{figure} _static/py_launch_blueprint_logo_100x100.png
-:alt: py-launch-blueprint
+```{figure} _static/template_press_logo_100x100.png
+:alt: template-press
 :width: 100px
 :align: left
 ```
@@ -10,10 +10,10 @@
 **A Production-Ready Python Project Template with Integrated Best Practices**
 
 ![GitHub repo](https://img.shields.io/badge/github-repo-green)
-![Changelog](https://img.shields.io/github/v/release/smorinlabs/py-launch-blueprint?include_prereleases&label=changelog)
+![Changelog](https://img.shields.io/github/v/release/smorinlabs/template-press?include_prereleases&label=changelog)
 ![Tests](https://github.com/simonw/llm/workflows/Test/badge.svg)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
-![GitHub stars](https://img.shields.io/github/stars/smorinlabs/py-launch-blueprint?style=social)
+![GitHub stars](https://img.shields.io/github/stars/smorinlabs/template-press?style=social)
 ![Discord](https://img.shields.io/discord/1364098187375153192?style=flat&logo=discord)
 
 ---
@@ -24,7 +24,7 @@ Py Launch Blueprint is a comprehensive Python project template that eliminates s
 Py Launch Blueprint eliminates the setup friction in Python projects by providing a production-ready template with carefully curated tools and best practices. Here's what makes it special:
 
 ## Full documentation on ReadTheDocs
-- [py-launch-blueprint Docs](https://py-launch-blueprint.readthedocs.io/en/latest/)
+- [template-press Docs](https://template-press.readthedocs.io/en/latest/)
 - [Discord Community](https://discord.gg/3zh8JyV6fU)
 
 
@@ -48,8 +48,8 @@ Teams and professionals needing maintainable, type-safe Python projects followin
 
 ### Step 1 - Copy repository
 ```bash
-git clone https://github.com/smorinlabs/py-launch-blueprint
-cd py-launch-blueprint
+git clone https://github.com/smorinlabs/template-press
+cd template-press
 ```
 
 ### Step 2 - Install dependencies
@@ -142,7 +142,7 @@ just check
 
 - **Automated dependency security scanning with `codeql`**: Detect vulnerable dependencies automatically, protecting your users from known security issues.
 
-- **CLA (Contributor License Agreement) check `[TODO:LOOKUP ISSUE](https://github.com/smorinlabs/py-launch-blueprint/issues/162)`**: Ensure all contributors have signed appropriate licensing agreements, protecting the project legally.
+- **CLA (Contributor License Agreement) check `[TODO:LOOKUP ISSUE](https://github.com/smorinlabs/template-press/issues/162)`**: Ensure all contributors have signed appropriate licensing agreements, protecting the project legally.
 
 ### IDE Integration
 
@@ -169,63 +169,63 @@ Start your next Python project with confidence, knowing you're building on a fou
 #### From PyPI
 
 ```bash
-pip install py-launch-blueprint
+pip install template-press
 ```
 
 #### From Source
 
 ```bash
-git clone https://github.com/smorinlabs/py-launch-blueprint.git
-cd py-launch-blueprint
+git clone https://github.com/smorinlabs/template-press.git
+cd template-press
 pip install -e ".[dev]"  # Install with development dependencies
 ```
 
 #### Direct Usage
 
-After installing, the CLI is available as `plbp`:
+After installing, the CLI is available as `press`:
 
 ```bash
-plbp --help
+press --help
 ```
 
 ### Configuration
 
-`plbp` reads settings from a layered TOML config (system → user → project),
-with per-setting precedence `flag → env (PLBP_*) → project → user → system →
+`press` reads settings from a layered TOML config (system → user → project),
+with per-setting precedence `flag → env (PRESS_*) → project → user → system →
 default`. Secrets are never stored in config — the API token resolves from
-`--token` or `$PLBP_TOKEN` only.
+`--token` or `$PRESS_TOKEN` only.
 
 ```bash
 # show the resolved config file path
-plbp config path
+press config path
 
 # read / write non-secret keys by dotted path (no network needed)
-plbp config get output.color
-plbp config set output.format json
+press config get output.color
+press config set output.format json
 ```
 
 ### Usage
 
 ```bash
 # Projects (noun) → list / get (verbs)
-plbp projects list
-plbp projects list --workspace "My Workspace"
-plbp projects list --limit 50
-plbp projects get 12345
+press projects list
+press projects list --workspace "My Workspace"
+press projects list --limit 50
+press projects get 12345
 
 # JSON output (pipe-safe; logs stay on stderr)
-plbp projects list --json
+press projects list --json
 
 # Diagnose setup (Python / platform, config file, token)
-plbp doctor
+press doctor
 
 # Help and version
-plbp --help
-plbp --version
+press --help
+press --version
 ```
 
 For the full flag reference, output contract, and logging model, see
-[EXAMPLECLI.md](https://github.com/smorinlabs/py-launch-blueprint/blob/main/EXAMPLECLI.md).
+[EXAMPLECLI.md](https://github.com/smorinlabs/template-press/blob/main/EXAMPLECLI.md).
 
 ### Error Codes
 

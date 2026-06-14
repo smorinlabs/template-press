@@ -21,15 +21,15 @@
 
 # Part 0 — Asset Report: What Exists Today
 
-A thorough exploration of the `py-launch-blueprint` repository produced the
+A thorough exploration of the `template-press` repository produced the
 following complete picture of both systems.
 
 ## Overall Shape of the Template
 
 The template provides a comprehensive Python project scaffold with:
 
-- **Package**: `src/py_launch_blueprint/` (PEP 420 layout with uv)
-- **CLI**: `plbp` (Click-based, example in `src/py_launch_blueprint/cli/`)
+- **Package**: `src/template_press/` (PEP 420 layout with uv)
+- **CLI**: `press` (Click-based, example in `src/template_press/cli/`)
 - **Tooling**: ruff (lint/format), mypy, pytest, lefthook (git hooks), commitlint
 - **CI/CD**: 16+ GitHub Actions workflows (test, lint, CodeQL, release-please, publish, etc.)
 - **Publishing**: OIDC trusted publishing to PyPI + TestPyPI, release-please version automation
@@ -106,18 +106,18 @@ _blueprint_notice := shell('bash init/guard.sh warn')
 ```toml
 [[replace]]
 field = "package_name"
-current = ["py_launch_blueprint"]
-files = ["pyproject.toml", "src/py_launch_blueprint/__init__.py", ...]
+current = ["template_press"]
+files = ["pyproject.toml", "src/template_press/__init__.py", ...]
 mode = "structured"  # or "text"
 
 [[replace]]
 field = "app_name"
-current = ["plbp"]
+current = ["press"]
 files = ["Justfile", "pyproject.toml", "docs/", "src/", ...]
 mode = "text"
 
 [[rename]]
-from = "src/py_launch_blueprint/"
+from = "src/template_press/"
 to   = "src/{package_name}/"
 
 [[remove]]
@@ -177,7 +177,7 @@ emits a draft manifest for review.
 4. **Apply** (remove → replace → rename):
    - **Remove**: Delete files listed in `[[remove]]` (e.g., blueprint-only CI)
    - **Replace**: Rewrite identity strings in `[[replace]]` files (text or structured mode)
-   - **Rename**: Move files/dirs (e.g., `src/py_launch_blueprint/` → `src/{new_name}/`)
+   - **Rename**: Move files/dirs (e.g., `src/template_press/` → `src/{new_name}/`)
    - **Reset**: Overwrite with fresh stubs (e.g., CHANGELOG.md)
 
 5. **Finalize**:
@@ -300,7 +300,7 @@ The five modes represent different ways a developer can instantiate the template
 | 1 | **GitHub "Use this template" button** | `<owner>/<new-repo>` (not blueprint) | Clean, single commit | Normal path — guard does NOT skip | L1 + L2 |
 | 2 | **`gh repo create --template`** | Same as #1 | Same as #1 | Same as #1 | L1 + L2 |
 | 3 | **Clone + `rm -rf .git` + `git init`** | Unset until user adds remote | Fresh single commit | Guard passes (no origin), init proceeds | L1 + L2 |
-| 4 | **Fork** | `<user>/py-launch-blueprint` (name collides, owner differs) | Full blueprint history | Guard's skip-on-origin checks owner + name (must NOT skip forks; contributor sentinel is escape hatch) | L1 + L2 + contrib sentinel test |
+| 4 | **Fork** | `<user>/template-press` (name collides, owner differs) | Full blueprint history | Guard's skip-on-origin checks owner + name (must NOT skip forks; contributor sentinel is escape hatch) | L1 + L2 + contrib sentinel test |
 | 5 | **ZIP download** | None | **No `.git` directory** | Init refuses with "run `git init` first"; `--allow-dirty` does NOT override | L1 only (no L2) |
 
 **Test Assertion Layers**:
@@ -320,10 +320,10 @@ From `init/common.py`:
 
 ```python
 BLUEPRINT_IDENTITY = {
-    "package_name": "py_launch_blueprint",
-    "repo_name": "py-launch-blueprint",
-    "app_name": "plbp",
-    "app_name_upper": "PLBP",  # derived, not prompted
+    "package_name": "template_press",
+    "repo_name": "template-press",
+    "app_name": "press",
+    "app_name_upper": "PRESS",  # derived, not prompted
     "author": "Steve Morin",
     "email": "steve.morin@gmail.com",
     "owner": "smorinlabs",
@@ -675,7 +675,7 @@ subset** (publishing, Codecov, RTD).
 ### Architecture Decision Records (ADRs)
 
 **Location**: `docs/adr/` (not in superpowers/specs yet). Likely includes
-decisions about app_name (plbp), config handling, etc.
+decisions about app_name (press), config handling, etc.
 
 ### Superpowers/Specs
 
@@ -891,7 +891,7 @@ internalize:
 
 ```
               ┌──────────────────────────────────────────────┐
-              │       py-launch-blueprint (a working repo)   │
+              │       template-press (a working repo)   │
               └──────────────────────────────────────────────┘
                      │                            │
         no choices,  │                            │  all choices,
@@ -948,7 +948,7 @@ part, and it's the loop below:
 
 ```
    template evolves                    manifest
-   (new doc mentions "plbp")           (doesn't know yet)
+   (new doc mentions "press")           (doesn't know yet)
         │                                   │
         ▼                                   ▼
    ┌─────────────────────────────────────────────────────┐
@@ -971,7 +971,7 @@ this check is what makes it *maintainable*.
 A) WORKING REPO + MANIFEST (current)   B) PLACEHOLDER TEMPLATE (cookiecutter/copier)
    ───────────────────────────            ──────────────────────────────
    repo contains real strings:            repo contains jinja:
-     "py_launch_blueprint"                  "{{ package_name }}"
+     "template_press"                  "{{ package_name }}"
    manifest records where they live       placeholders ARE the manifest
    ✓ template runs/tests itself           ✗ template can't run itself —
    ✓ contributors work on real code         every CI check needs a

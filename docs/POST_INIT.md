@@ -186,9 +186,9 @@ just check                      # format + lint + typecheck + test
 
 For the bundled CLI example (not repo infrastructure):
 
-- **API token** — provide via `--token` or the `PLBP_TOKEN` env var (it is
+- **API token** — provide via `--token` or the `PRESS_TOKEN` env var (it is
   never stored in the config file; non-secret settings use
-  `plbp config set <section>.<key> <value>`).
+  `press config set <section>.<key> <value>`).
 - **Manual publish fallback** — `cp .pypirc.template ~/.pypirc`, fill in PyPI
   tokens, `chmod 600 ~/.pypirc` (only needed if OIDC publishing is unavailable).
 

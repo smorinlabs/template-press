@@ -22,7 +22,7 @@
 ``pyproject.toml`` ``[project] version`` is the single source of truth (ADR-06).
 release-please bumps it together with ``.release-please-manifest.json``, and the
 CLI/docs derive their version from the installed package metadata
-(``py_launch_blueprint.__version__``). These tests fail if any of those copies
+(``template_press.__version__``). These tests fail if any of those copies
 drift apart.
 """
 
@@ -30,7 +30,7 @@ import json
 import tomllib
 from pathlib import Path
 
-from py_launch_blueprint import __version__
+from template_press import __version__
 
 ROOT = Path(__file__).resolve().parents[2]
 

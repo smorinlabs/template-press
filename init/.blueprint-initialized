@@ -1,0 +1,15 @@
+# init/.blueprint-initialized — written by init.py on successful run.
+# Tracked by git; read by init/guard.sh and init_doctor.py.
+
+[meta]
+version = "0.1.0"
+date    = "2026-06-13"
+
+[answers]
+package_name = "template_press"
+repo_name = "template-press"
+app_name = "press"
+app_name_upper = "PRESS"
+author = "Steve Morin"
+email = "steve.morin@gmail.com"
+owner = "smorinlabs"

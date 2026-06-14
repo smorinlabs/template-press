@@ -1,8 +1,8 @@
 {
-  "name": "py-launch-blueprint-tooling",
+  "name": "template-press-tooling",
   "version": "0.0.0",
   "private": true,
-  "description": "Bun-managed dev tooling for py-launch-blueprint (commitlint only). ITM-041.",
+  "description": "Bun-managed dev tooling for template-press (commitlint only). ITM-041.",
   "devDependencies": {
     "@commitlint/cli": "^21.0.1",
     "@commitlint/config-conventional": "^21.0.1"

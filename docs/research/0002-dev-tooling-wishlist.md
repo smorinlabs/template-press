@@ -55,7 +55,7 @@ value-to-effort ratio in the repo.
 | WL-001 | Pin tool versions in hooks + CI | Hooks and the CI lint job run floating `uvx ruff`, `uvx codespell`, `uvx bandit` (latest-at-runtime) while ruff/ty are *also* pinned in `uv.lock`. Best practice: one pinned version everywhere — `uv run ruff` from the locked dev group, or `uvx ruff@==X`. | CI never breaks overnight because a linter released new rules; local hook results always match CI; tool upgrades become reviewable Dependabot PRs instead of surprises. | Universal |
 | WL-002 | Locked installs in CI (`uv sync --locked`) | CI jobs run plain `uv sync`, which silently re-resolves if `uv.lock` drifted from `pyproject.toml`. `--locked` fails instead. | Guarantees CI tests exactly what's committed; catches "edited pyproject, forgot to re-lock" at PR time instead of at a confusing future failure. | Universal |
 | WL-003 | SHA-pin GitHub Actions | Actions are tag-pinned (`actions/checkout@v6`). OpenSSF best practice is full commit-SHA pins with a version comment; Dependabot keeps them fresh. | Immunity to tag-rewrite supply-chain attacks (the tj-actions incident class); exact reproducibility of CI behavior. | Universal |
-| WL-004 | Build + install smoke test in CI | The package is first built at tag time. Best practice: every PR runs `uv build` + `twine check` / `check-wheel-contents` + install the wheel and run `plbp --version`. | Packaging breakage (missing files, broken entry point, bad metadata) caught in PR review, not during a release that then needs a hotfix tag. | Universal |
+| WL-004 | Build + install smoke test in CI | The package is first built at tag time. Best practice: every PR runs `uv build` + `twine check` / `check-wheel-contents` + install the wheel and run `press --version`. | Packaging breakage (missing files, broken entry point, bad metadata) caught in PR review, not during a release that then needs a hotfix tag. | Universal |
 | WL-005 | Coverage gates | Codecov uploads exist but `.codecov.yml` sets no status targets and pytest has no `--cov-fail-under`. Best practice: project coverage can't drop > X% and patch coverage ≥ Y%. | Coverage stops silently eroding; reviewers get a red check instead of needing to remember to look at the Codecov comment. | Universal |
 | WL-006 | CI summary "gate" job | A single `ci-ok` job with `needs:` on all required jobs (and `if: always()` failure logic). Branch protection requires only that one check. | Required-checks config never drifts when jobs are renamed/added across 16 workflows; also the enabler for path-filtering (WL-019) without breaking required checks. | Universal |
 | WL-007 | Re-enable the TestPyPI stage | The publish workflow has a complete TestPyPI smoke-test job that's commented out. | A real install-from-index rehearsal before every PyPI publish; bad releases die in staging. | Universal (already 90% built) |
@@ -90,13 +90,13 @@ value-to-effort ratio in the repo.
 | WL-021 | Docs build + linkcheck in CI | PR job running `sphinx-build -W` (warnings-as-errors) and `-b linkcheck`. Today docs failures only surface on ReadTheDocs after merge. | Broken cross-references and dead links blocked at PR time; docs get the same gate code has. | Universal |
 | WL-022 | Public-API docstring enforcement | Enable ruff `D` rules scoped to `src/` public modules (or `interrogate` with a % floor). | Docstring coverage stops regressing; Sphinx autodoc output stays complete. | Common; start scoped to avoid noise |
 
-### Category E — CLI-specific (plbp)
+### Category E — CLI-specific (press)
 
 | ID | Item | Best practice / what it is | What the developer gets | Applicability |
 |---|---|---|---|---|
 | WL-023 | Golden/snapshot tests for CLI output | Snapshot `--help` for every command and key command outputs (syrupy or pytest-regressions), reviewed as diffs. | UX regressions (renamed flag, garbled help text) become visible red diffs in PR review; doubles as living CLI documentation. | CLI-specific, broadly loved |
 | WL-024 | Shell completions | Generate bash/zsh/fish completions from click, document install, smoke-test generation in CI. | Table-stakes polish users expect from a modern CLI (`gh`, `uv` both ship it); near-free with click. | CLI-specific |
-| WL-025 | Documented zero-install run path | First-class `uv tool install` / `uvx plbp` and pipx docs in README, verified by the WL-004 smoke test. (Standalone PyInstaller binaries: defer — maintenance-heavy.) | Users try the CLI in one command; lowers adoption friction for the template's forks too. | CLI-specific, low effort |
+| WL-025 | Documented zero-install run path | First-class `uv tool install` / `uvx press` and pipx docs in README, verified by the WL-004 smoke test. (Standalone PyInstaller binaries: defer — maintenance-heavy.) | Users try the CLI in one command; lowers adoption friction for the template's forks too. | CLI-specific, low effort |
 
 ### Category F — FastAPI-specific (web extra)
 
@@ -131,12 +131,12 @@ The shortlist above was implemented on
 |---|---|
 | WL-001 | All hook/CI tools (ruff, bandit, codespell, yamllint, editorconfig-checker) run from the locked dev group via `uv run` — lefthook, Justfile, and every workflow now use identical `uv.lock` versions; dependabot groups extended; `--force-exclude` added so ruff hooks honor the config excludes |
 | WL-002 | Every CI sync is `uv sync --locked` — lockfile drift fails at PR time |
-| WL-004 | `build-smoke` job, uv end-to-end: `uv build` → `twine` metadata check → install wheel *and* sdist into fresh envs → `plbp --version` |
+| WL-004 | `build-smoke` job, uv end-to-end: `uv build` → `twine` metadata check → install wheel *and* sdist into fresh envs → `press --version` |
 | WL-005 | Codecov gates: project can't drop > 1% vs base, patch target 80% (baseline measured at 89%) |
 | WL-006 / WL-019 | `ci-ok` aggregate gate job (the one check to require in branch protection) + shell-based `changes` filter that skips typecheck/test-matrix/build-smoke on docs-only PRs |
 | WL-014 | Weekly `dep-audit` workflow (pip-audit over the hashed locked export, all extras + groups) + `just audit` running the identical pipeline |
 | WL-021 | `sphinx-build -W` docs job per PR (fixed the 21-warning baseline: toctree typo, broken xrefs, heading levels, missing anchors); flaky external `linkcheck` runs weekly instead |
-| WL-023 | Syrupy golden snapshots of all `plbp` commands' `--help`, width pinned to 80 for determinism |
+| WL-023 | Syrupy golden snapshots of all `press` commands' `--help`, width pinned to 80 for determinism |
 | WL-026 | `docs/api/openapi.json` committed API contract + drift test (see post-merge note below) |
 
 ### Post-merge status notes

@@ -17,7 +17,7 @@ def _reset_root_logger():
     yield
     root = logging.getLogger()
     for handler in root.handlers[:]:
-        if getattr(handler, "_plbp_owned", False):
+        if getattr(handler, "_press_owned", False):
             root.removeHandler(handler)
             handler.close()
     root.setLevel(logging.WARNING)

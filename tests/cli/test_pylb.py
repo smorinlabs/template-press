@@ -1,4 +1,4 @@
-"""Tests for the new noun-verb `plbp` CLI (via Click's CliRunner)."""
+"""Tests for the new noun-verb `press` CLI (via Click's CliRunner)."""
 
 import json
 import tomllib
@@ -8,12 +8,12 @@ from unittest.mock import Mock, patch
 import pytest
 from click.testing import CliRunner
 
-from py_launch_blueprint import __version__
-from py_launch_blueprint.cli.context import AppContext, maybe_show_first_run_hint
-from py_launch_blueprint.cli.main import cli
-from py_launch_blueprint.cli.output import OutputMode, Renderer
-from py_launch_blueprint.core.config import Config
-from py_launch_blueprint.core.models import Project
+from template_press import __version__
+from template_press.cli.context import AppContext, maybe_show_first_run_hint
+from template_press.cli.main import cli
+from template_press.cli.output import OutputMode, Renderer
+from template_press.core.config import Config
+from template_press.core.models import Project
 
 
 @pytest.fixture
@@ -42,7 +42,7 @@ def test_help_lists_nouns(runner):
 def test_completion_bash(runner):
     result = runner.invoke(cli, ["completion", "bash"])
     assert result.exit_code == 0
-    assert "_PLBP_COMPLETE" in result.output
+    assert "_PRESS_COMPLETE" in result.output
 
 
 # -- projects noun --------------------------------------------------------
@@ -50,7 +50,7 @@ def test_completion_bash(runner):
 
 @pytest.fixture
 def mock_service():
-    with patch("py_launch_blueprint.cli.commands.projects.ProjectsService") as mock_cls:
+    with patch("template_press.cli.commands.projects.ProjectsService") as mock_cls:
         svc = Mock()
         svc.list_projects.return_value = [
             Project(id="1", name="Test Project", workspace="Test WS")
@@ -99,14 +99,14 @@ def test_projects_get(runner, mock_service):
 
 
 def test_projects_no_token_auth_error(runner, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     result = runner.invoke(cli, ["projects", "list", "--config", "/nope/.env"])
     assert result.exit_code == 2  # ExitCode.AUTH
     assert "No Py token" in result.output
 
 
 def test_projects_no_token_auth_error_json(runner, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     result = runner.invoke(
         cli, ["projects", "list", "--config", "/nope/.env", "--json"]
     )
@@ -120,7 +120,7 @@ def test_projects_no_token_auth_error_json(runner, monkeypatch):
 
 
 def test_config_path(runner, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     result = runner.invoke(cli, ["config", "path", "--config", "/nope/.env", "--json"])
     assert result.exit_code == 0
     payload = json.loads(result.output)
@@ -143,17 +143,17 @@ def test_config_get_token_masked(runner):
 
 
 def test_doctor_human(runner, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    result = runner.invoke(cli, ["doctor", "--config", "/nope/plbp_config.toml"])
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    result = runner.invoke(cli, ["doctor", "--config", "/nope/press_config.toml"])
     assert result.exit_code == 0  # missing token is a warn, not an error
     assert "python" in result.output
     assert "config-file" in result.output
 
 
 def test_doctor_json(runner, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     result = runner.invoke(
-        cli, ["doctor", "--config", "/nope/plbp_config.toml", "--json"]
+        cli, ["doctor", "--config", "/nope/press_config.toml", "--json"]
     )
     assert result.exit_code == 0
     payload = json.loads(result.output)
@@ -162,8 +162,8 @@ def test_doctor_json(runner, monkeypatch):
 
 
 def test_config_get_setting(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     cfg.write_text('[output]\ncolor = "always"\n')
     result = runner.invoke(
         cli, ["config", "get", "output.color", "--config", str(cfg), "--json"]
@@ -177,8 +177,8 @@ def test_config_get_setting(runner, tmp_path, monkeypatch):
 
 
 def test_config_set_writes_nested_table(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     result = runner.invoke(
         cli, ["config", "set", "logging.level", "info", "--config", str(cfg)]
     )
@@ -190,8 +190,8 @@ def test_config_set_writes_nested_table(runner, tmp_path, monkeypatch):
 
 
 def test_config_set_rejects_token_key(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     result = runner.invoke(
         cli, ["config", "set", "token", "secret", "--config", str(cfg)]
     )
@@ -200,8 +200,8 @@ def test_config_set_rejects_token_key(runner, tmp_path, monkeypatch):
 
 
 def test_config_set_rejects_invalid_value(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     result = runner.invoke(
         cli, ["config", "set", "output.color", "rainbow", "--config", str(cfg)]
     )
@@ -210,8 +210,8 @@ def test_config_set_rejects_invalid_value(runner, tmp_path, monkeypatch):
 
 
 def test_config_set_dry_run_writes_nothing(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     result = runner.invoke(
         cli,
         ["config", "set", "output.color", "never", "--config", str(cfg), "--dry-run"],
@@ -221,8 +221,8 @@ def test_config_set_dry_run_writes_nothing(runner, tmp_path, monkeypatch):
 
 
 def test_config_set_overwrite_refused_with_no_input(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     cfg.write_text('[logging]\nlevel = "warning"\n')
     result = runner.invoke(
         cli,
@@ -233,8 +233,8 @@ def test_config_set_overwrite_refused_with_no_input(runner, tmp_path, monkeypatc
 
 
 def test_config_set_overwrite_with_yes(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     cfg.write_text('[logging]\nlevel = "warning"\n')
     result = runner.invoke(
         cli,
@@ -245,16 +245,16 @@ def test_config_set_overwrite_with_yes(runner, tmp_path, monkeypatch):
 
 
 def test_config_set_env_var_resolution(runner, tmp_path, monkeypatch):
-    # PLBP_OUTPUT resolves the --output format (R12); --json still overrides.
-    monkeypatch.setenv("PLBP_OUTPUT", "json")
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    # PRESS_OUTPUT resolves the --output format (R12); --json still overrides.
+    monkeypatch.setenv("PRESS_OUTPUT", "json")
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     cfg.write_text('[logging]\nlevel = "info"\n')
     result = runner.invoke(
         cli, ["config", "get", "logging.level", "--config", str(cfg)]
     )
     assert result.exit_code == 0
-    # PLBP_OUTPUT=json → output is parseable JSON without passing --json.
+    # PRESS_OUTPUT=json → output is parseable JSON without passing --json.
     payload = json.loads(result.output)
     assert payload["value"] == "info"
 
@@ -263,8 +263,8 @@ def test_config_set_env_var_resolution(runner, tmp_path, monkeypatch):
 
 
 def test_invalid_config_value_does_not_crash_commands(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     cfg.write_text('[output]\ncolor = "yes"\n')  # invalid value
     result = runner.invoke(cli, ["config", "path", "--config", str(cfg)])
     assert result.exit_code == 0  # command works on defaults
@@ -277,8 +277,8 @@ def test_invalid_config_value_does_not_crash_commands(runner, tmp_path, monkeypa
 
 
 def test_config_set_refuses_corrupt_file(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     cfg.write_text('[output\ncolor = "always"\n')  # TOML syntax error
     before = cfg.read_text()
     result = runner.invoke(
@@ -292,8 +292,8 @@ def test_config_set_refuses_corrupt_file(runner, tmp_path, monkeypatch):
 
 
 def test_output_file_redirects_results(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     out = tmp_path / "result.json"
     result = runner.invoke(
         cli,
@@ -307,9 +307,9 @@ def test_output_file_redirects_results(runner, tmp_path, monkeypatch):
 
 def test_output_format_resolves_from_config(runner, tmp_path, monkeypatch):
     # R7: config supplies the format when no flag/env does.
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    monkeypatch.delenv("PLBP_OUTPUT", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_OUTPUT", raising=False)
+    cfg = tmp_path / "press_config.toml"
     cfg.write_text('[output]\nformat = "json"\n')
     result = runner.invoke(cli, ["config", "path", "--config", str(cfg)])
     assert result.exit_code == 0
@@ -318,8 +318,8 @@ def test_output_format_resolves_from_config(runner, tmp_path, monkeypatch):
 
 
 def test_output_flag_beats_config_format(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     cfg.write_text('[output]\nformat = "json"\n')
     result = runner.invoke(
         cli, ["config", "path", "--config", str(cfg), "-o", "markdown"]
@@ -329,7 +329,7 @@ def test_output_flag_beats_config_format(runner, tmp_path, monkeypatch):
 
 
 def test_color_precedence_resolution(monkeypatch):
-    from py_launch_blueprint.cli.context import _resolve_color
+    from template_press.cli.context import _resolve_color
 
     monkeypatch.delenv("NO_COLOR", raising=False)
     assert _resolve_color(False, "auto") == "auto"
@@ -348,8 +348,8 @@ def test_color_precedence_resolution(monkeypatch):
 def test_corrupt_explicit_config_renders_clean_error(runner, tmp_path, monkeypatch):
     # Errors raised while building the context (eager config load) must be
     # rendered, not tracebacked.
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     cfg.write_text("[output\n")  # TOML syntax error in an EXPLICIT --config
     result = runner.invoke(cli, ["config", "path", "--config", str(cfg)])
     assert result.exit_code == 1  # ExitCode.CONFIG
@@ -358,8 +358,8 @@ def test_corrupt_explicit_config_renders_clean_error(runner, tmp_path, monkeypat
 
 
 def test_corrupt_explicit_config_json_error_envelope(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     cfg.write_text("[output\n")
     result = runner.invoke(cli, ["config", "path", "--config", str(cfg), "--json"])
     assert result.exit_code == 1
@@ -368,8 +368,8 @@ def test_corrupt_explicit_config_json_error_envelope(runner, tmp_path, monkeypat
 
 
 def test_invalid_config_value_warns_on_stderr(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"
     cfg.write_text('[output]\ncolor = "yes"\n')
     result = runner.invoke(cli, ["config", "path", "--config", str(cfg)])
     assert result.exit_code == 0
@@ -381,7 +381,7 @@ def test_invalid_config_value_warns_on_stderr(runner, tmp_path, monkeypatch):
 
 
 def test_log_file_flag_with_path(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     log = tmp_path / "run.log"
     result = runner.invoke(
         cli,
@@ -399,22 +399,22 @@ def test_log_file_flag_with_path(runner, tmp_path, monkeypatch):
 
 
 def test_log_file_flag_defaults_to_xdg_state(runner, tmp_path, monkeypatch):
-    # R11.2: bare --log-file uses $XDG_STATE_HOME/plbp/plbp.log.
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    # R11.2: bare --log-file uses $XDG_STATE_HOME/press/press.log.
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     result = runner.invoke(
         cli,
         ["config", "path", "--config", str(tmp_path / "c.toml"), "--log-file"],
     )
     assert result.exit_code == 0
-    assert (tmp_path / "plbp" / "plbp.log").exists()
+    assert (tmp_path / "press" / "press.log").exists()
 
 
 def test_log_file_from_config(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    monkeypatch.delenv("PLBP_LOG_FILE", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_LOG_FILE", raising=False)
     log = tmp_path / "cfg.log"
-    cfg = tmp_path / "plbp_config.toml"
+    cfg = tmp_path / "press_config.toml"
     # as_posix(): backslashes would be TOML escape sequences on windows
     cfg.write_text(f'[logging]\nfile = "{log.as_posix()}"\n')
     result = runner.invoke(cli, ["config", "path", "--config", str(cfg)])
@@ -425,7 +425,7 @@ def test_log_file_from_config(runner, tmp_path, monkeypatch):
 def test_console_level_precedence():
     import logging as stdlib_logging
 
-    from py_launch_blueprint.cli.context import _resolve_console_level
+    from template_press.cli.context import _resolve_console_level
 
     # --log-level beats everything, including -q (R10.4 explicit override).
     assert _resolve_console_level("debug", 0, True, "warning") == stdlib_logging.DEBUG
@@ -442,31 +442,31 @@ def test_console_level_precedence():
 
 
 def test_log_file_env_empty_enables_default(runner, tmp_path, monkeypatch):
-    # R12: PRESENCE of PLBP_LOG_FILE enables the sink; empty value means
+    # R12: PRESENCE of PRESS_LOG_FILE enables the sink; empty value means
     # the default XDG state location.
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    monkeypatch.setenv("PLBP_LOG_FILE", "")
+    monkeypatch.setenv("PRESS_LOG_FILE", "")
     result = runner.invoke(
         cli, ["config", "path", "--config", str(tmp_path / "c.toml")]
     )
     assert result.exit_code == 0
-    assert (tmp_path / "plbp" / "plbp.log").exists()
+    assert (tmp_path / "press" / "press.log").exists()
 
 
 def test_log_format_env_invalid_value_rejected(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    monkeypatch.setenv("PLBP_LOG_FORMAT", "yaml")
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    monkeypatch.setenv("PRESS_LOG_FORMAT", "yaml")
     result = runner.invoke(
         cli, ["config", "path", "--config", str(tmp_path / "c.toml")]
     )
     assert result.exit_code == 1  # ConfigError via the create() boundary
-    assert "PLBP_LOG_FORMAT" in result.output
+    assert "PRESS_LOG_FORMAT" in result.output
 
 
 def test_log_format_env_case_insensitive(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    monkeypatch.setenv("PLBP_LOG_FORMAT", "JSON")
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    monkeypatch.setenv("PRESS_LOG_FORMAT", "JSON")
     log = tmp_path / "x.log"
     result = runner.invoke(
         cli,
@@ -486,8 +486,8 @@ def test_log_format_env_case_insensitive(runner, tmp_path, monkeypatch):
 
 def test_config_get_reports_default_source(runner, tmp_path, monkeypatch):
     # A built-in default must not claim a config file provided it.
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
-    cfg = tmp_path / "plbp_config.toml"  # does not exist
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
+    cfg = tmp_path / "press_config.toml"  # does not exist
     result = runner.invoke(
         cli, ["config", "get", "logging.level", "--config", str(cfg), "--json"]
     )
@@ -529,21 +529,21 @@ def test_unknown_command_without_match_keeps_plain_error(runner):
 
 
 def test_auth_error_carries_error_code_and_hint(runner, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     result = runner.invoke(
         cli, ["projects", "list", "--config", "/nope/.env", "--json"]
     )
     assert result.exit_code == 2
     payload = json.loads(result.output)
-    assert payload["error"]["error_code"] == "PLBP002"
-    assert "PLBP_TOKEN" in payload["error"]["hint"]
+    assert payload["error"]["error_code"] == "PRESS002"
+    assert "PRESS_TOKEN" in payload["error"]["hint"]
 
 
 def test_auth_error_text_shows_hint(runner, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     result = runner.invoke(cli, ["projects", "list", "--config", "/nope/.env"])
     assert result.exit_code == 2
-    assert "PLBP002" in result.output
+    assert "PRESS002" in result.output
     assert "hint:" in result.output
 
 
@@ -554,7 +554,7 @@ def test_unexpected_error_writes_crash_log(runner, mock_service, tmp_path, monke
     assert result.exit_code == 4
     assert "kaboom" in result.output
     assert "full traceback:" in result.output
-    crash = tmp_path / "plbp" / "plbp_crash.log"
+    crash = tmp_path / "press" / "press_crash.log"
     assert crash.exists()
     assert "RuntimeError: kaboom" in crash.read_text()
 
@@ -567,15 +567,15 @@ def test_unexpected_error_json_includes_traceback_path(
     result = runner.invoke(cli, ["projects", "list", "--token", "t", "--json"])
     assert result.exit_code == 4
     payload = json.loads(result.output)
-    assert payload["error"]["error_code"] == "PLBP000"
-    assert payload["error"]["traceback_path"].endswith("plbp_crash.log")
+    assert payload["error"]["error_code"] == "PRESS000"
+    assert payload["error"]["traceback_path"].endswith("press_crash.log")
 
 
 # -- config init (REC-05) ---------------------------------------------------
 
 
 def test_config_init_yes_writes_current_defaults(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     target = tmp_path / "cfg.toml"
     result = runner.invoke(cli, ["config", "init", "--yes", "--config", str(target)])
     assert result.exit_code == 0
@@ -586,7 +586,7 @@ def test_config_init_yes_writes_current_defaults(runner, tmp_path, monkeypatch):
 
 
 def test_config_init_prompts_and_writes_answers(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     target = tmp_path / "cfg.toml"
     result = runner.invoke(
         cli,
@@ -601,7 +601,7 @@ def test_config_init_prompts_and_writes_answers(runner, tmp_path, monkeypatch):
 
 
 def test_config_init_no_input_refuses_with_hint(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     target = tmp_path / "cfg.toml"
     result = runner.invoke(
         cli, ["config", "init", "--no-input", "--config", str(target)]
@@ -612,7 +612,7 @@ def test_config_init_no_input_refuses_with_hint(runner, tmp_path, monkeypatch):
 
 
 def test_config_init_dry_run_writes_nothing(runner, tmp_path, monkeypatch):
-    monkeypatch.delenv("PLBP_TOKEN", raising=False)
+    monkeypatch.delenv("PRESS_TOKEN", raising=False)
     target = tmp_path / "cfg.toml"
     result = runner.invoke(
         cli, ["config", "init", "--yes", "--dry-run", "--config", str(target)]
@@ -647,7 +647,7 @@ def test_first_run_hint_shown_once(monkeypatch, tmp_path, capsys):
     assert "config init" in capsys.readouterr().err
     maybe_show_first_run_hint(app)  # marker written -> silent now
     assert capsys.readouterr().err == ""
-    assert (tmp_path / "plbp" / "plbp_first_run.marker").exists()
+    assert (tmp_path / "press" / "press_first_run.marker").exists()
 
 
 def test_first_run_hint_suppressed_for_scripts(monkeypatch, tmp_path, capsys):
@@ -673,7 +673,7 @@ def test_first_run_hint_json_mode_burns_nothing(monkeypatch, tmp_path, capsys):
     assert capsys.readouterr().err == ""
     # marker must NOT be written: the hint was never shown, so a later
     # interactive text-mode run still gets it
-    assert not (tmp_path / "plbp" / "plbp_first_run.marker").exists()
+    assert not (tmp_path / "press" / "press_first_run.marker").exists()
 
 
 def test_first_run_hint_suppressed_when_not_a_terminal(monkeypatch, tmp_path, capsys):
@@ -683,27 +683,27 @@ def test_first_run_hint_suppressed_when_not_a_terminal(monkeypatch, tmp_path, ca
     maybe_show_first_run_hint(app)
     assert capsys.readouterr().err == ""
     # and no marker burned: the hint can still fire on a real terminal later
-    assert not (tmp_path / "plbp" / "plbp_first_run.marker").exists()
+    assert not (tmp_path / "press" / "press_first_run.marker").exists()
 
 
 # -- doctor --bundle (REC-21) -------------------------------------------------
 
 
 def test_doctor_bundle_json_redacts_secrets(runner, monkeypatch):
-    monkeypatch.setenv("PLBP_TOKEN", "supersecret123")
+    monkeypatch.setenv("PRESS_TOKEN", "supersecret123")
     result = runner.invoke(cli, ["doctor", "--bundle", "--json"])
     assert result.exit_code == 0
     assert "supersecret123" not in result.output
     payload = json.loads(result.output)
     assert payload["version"] == __version__
-    assert payload["env"]["PLBP_TOKEN"] == "<redacted>"
+    assert payload["env"]["PRESS_TOKEN"] == "<redacted>"
     assert payload["token_present"] is True
     assert payload["token_source"] == "env"
     assert any(check["name"] == "python" for check in payload["checks"])
 
 
 def test_doctor_bundle_text_summary(runner, monkeypatch):
-    monkeypatch.setenv("PLBP_TOKEN", "t")
+    monkeypatch.setenv("PRESS_TOKEN", "t")
     result = runner.invoke(cli, ["doctor", "--bundle"])
     assert result.exit_code == 0
     assert "Diagnostics bundle" in result.output
@@ -721,6 +721,6 @@ def test_unexpected_context_failure_follows_crash_contract(
     result = runner.invoke(cli, ["config", "path", "--json"])
     assert result.exit_code == 4
     payload = json.loads(result.output)
-    assert payload["error"]["error_code"] == "PLBP000"
-    assert payload["error"]["traceback_path"].endswith("plbp_crash.log")
-    assert (tmp_path / "plbp" / "plbp_crash.log").exists()
+    assert payload["error"]["error_code"] == "PRESS000"
+    assert payload["error"]["traceback_path"].endswith("press_crash.log")
+    assert (tmp_path / "press" / "press_crash.log").exists()

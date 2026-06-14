@@ -107,7 +107,7 @@ jobs:
       - name: Sync dev env (ty needs project deps on the python path)
         run: uv sync --locked --group dev --extra web
       - name: ty check
-        run: uv run --no-sync ty check src/py_launch_blueprint/
+        run: uv run --no-sync ty check src/template_press/
 
   # ITM-030 - test matrix: ubuntu + macOS x py3.12/3.13 (decided round 3);
   # windows added alongside the platform-native default paths (REC-24).
@@ -134,7 +134,7 @@ jobs:
         run: uv sync --locked --group dev --extra web  # PEP 735; web extra covers web/
       - name: Run tests with coverage
         # Default skips slow/live markers (ITM-046 addopts); CI runs everything.
-        run: uv run --no-sync pytest -m "" --cov=py_launch_blueprint --cov-report=xml
+        run: uv run --no-sync pytest -m "" --cov=template_press --cov-report=xml
       - name: Upload coverage to Codecov
         # Single matrix combo uploads (avoids 4x duplicate reports).
         # use_oidc: tokenless upload (public repo). Requires `id-token: write`.
@@ -168,9 +168,9 @@ jobs:
       - name: Check dist metadata (twine)
         run: uv run --no-sync twine check dist/*
       - name: Smoke test wheel install
-        run: uvx --from "$(ls dist/*.whl)" plbp --version
+        run: uvx --from "$(ls dist/*.whl)" press --version
       - name: Smoke test sdist install
-        run: uvx --from "$(ls dist/*.tar.gz)" plbp --version
+        run: uvx --from "$(ls dist/*.tar.gz)" press --version
 
   # WL-021 - docs build with warnings-as-errors. Broken cross-references and
   # autodoc failures block the PR instead of surfacing on ReadTheDocs after

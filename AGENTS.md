@@ -40,9 +40,9 @@ clones, containers, and remote agent sessions start without it — run
 | Run tests | `pytest` (default excludes `slow`/`live` markers per ITM-046; full: `pytest -m ""`) |
 | Run one test | `pytest tests/test_file.py::test_name` |
 | Lint | `uv run ruff check .` |
-| Format | `just format` or `uv run ruff format src/py_launch_blueprint/` |
+| Format | `just format` or `uv run ruff format src/template_press/` |
 | Format check | `uv run ruff format --check .` |
-| Typecheck | `uv run --extra web ty check src/py_launch_blueprint/` (ITM-026 / ADR-03; `--extra web` so web/ imports resolve) |
+| Typecheck | `uv run --extra web ty check src/template_press/` (ITM-026 / ADR-03; `--extra web` so web/ imports resolve) |
 | Dependency CVE audit | `just audit` (WL-014; same pipeline as the weekly CI workflow) |
 | Web tests / dev server | `just test-web` / `just serve` (FastAPI, `web` extra) |
 | Secret scan | `scripts/check-gitleaks.sh --staged` or `--range` |
@@ -63,8 +63,8 @@ workflow enforce it).
 2. `just check` (full pipeline must pass).
 3. Init-system integrity (CI `blueprint-guard` + `init-integration` enforce
    these). Rule behind the drift check: any added/renamed file containing an
-   identity value (`py_launch_blueprint`, `py-launch-blueprint`, `plbp`,
-   `PLBP`, author/owner names) must be listed in that value's `[[replace]]`
+   identity value (`template_press`, `template-press`, `press`,
+   `PRESS`, author/owner names) must be listed in that value's `[[replace]]`
    block in `init/manifest.toml`, or a fork's `just init` ships
    half-renamed. Then run:
    - `uv run --script init/ci/check_manifest_drift.py`
@@ -96,7 +96,7 @@ Allowed types: `feat`, `fix`, `perf`, `refactor`, `revert`, `deps`, `chore`,
 - Line length: 88 characters (Black standard)
 - Types: strict typing required for all functions
 - Imports: sorted (ruff isort); absolute intra-package imports
-  (`from py_launch_blueprint…` — the codebase convention)
+  (`from template_press…` — the codebase convention)
 - Naming: PEP 8 conventions enforced via Ruff
 - Errors: prefer explicit error handling over assertions
 - Tests: type annotations optional for test files
@@ -128,7 +128,7 @@ Trusted Publishing. See [ITM-053..060] for the full chain.
 ## Creating a new project from this template
 
 When the user wants to bootstrap a new Python project from this template
-(phrases like *"create a new project from py-launch-blueprint"*, *"start a
+(phrases like *"create a new project from template-press"*, *"start a
 new Python project from this template"*, *"scaffold a project from the
 blueprint"*), follow the runbook at
 [`.claude/skills/new-python-project/SKILL.md`](.claude/skills/new-python-project/SKILL.md).

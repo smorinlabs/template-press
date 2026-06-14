@@ -68,7 +68,7 @@ pre-push:
     # pre-push, not pre-commit, since full-tree scan is too slow per commit).
     # WL-001: locked via the dev group (`uv run`, not floating `uvx`).
     bandit:
-      run: uv run bandit -r src/py_launch_blueprint/ -c pyproject.toml
+      run: uv run bandit -r src/template_press/ -c pyproject.toml
     # Init-system integrity — these are the checks the blueprint-guard
     # CI workflow runs. Caught locally at pre-push, they prevent the
     # "push → CI fails → push again" cycle that PR #319 went through.

@@ -13,7 +13,7 @@ Instead of installing each tool natively, you can provision the project's full
 10-tool set (python, uv, ruff, taplo, gitleaks, just, bun, gh, lefthook, make)
 with a single command — both manifests live at the repo root and are kept in
 sync with the native installers (see
-[ADR 0005](https://github.com/smorinlabs/py-launch-blueprint/blob/main/docs/adr/0005-mise-flox-first-class-toolchains.md)):
+[ADR 0005](https://github.com/smorinlabs/template-press/blob/main/docs/adr/0005-mise-flox-first-class-toolchains.md)):
 
 ```bash
 # Option A: mise (https://mise.jdx.dev/) — reads mise.toml
@@ -31,7 +31,7 @@ deliberately not in these manifests — they are fetched on demand via
 
 # Setup Development Environment
 
-Project requires Python 3.12+ (which is also specified inside [.python-version](https://github.com/smorinlabs/py-launch-blueprint/blob/main/.python-version) file)
+Project requires Python 3.12+ (which is also specified inside [.python-version](https://github.com/smorinlabs/template-press/blob/main/.python-version) file)
 There are two options for setting up the development environment:
 
 - Using [uv](https://docs.astral.sh/uv/getting-started/installation/):
@@ -46,22 +46,22 @@ It depends on the tool you choose, but both offer a convenient way to install th
 uv pip install --editable ".[dev]"
 
 # Format the code
-uvx ruff format py_launch_blueprint/
+uvx ruff format template_press/
 
 # Run linter
-uvx ruff check py_launch_blueprint/
+uvx ruff check template_press/
 
 # Run type checker
-uv run ty check src/py_launch_blueprint/
+uv run ty check src/template_press/
 
 # Run tests
 uvx --with-editable . pytest
 
 # Run tests with coverage
-uvx --with pytest-cov --with-editable . pytest --cov=py_launch_blueprint --cov-report=term-missing
+uvx --with pytest-cov --with-editable . pytest --cov=template_press --cov-report=term-missing
 
 # Run command
-uvx --from . plbp
+uvx --from . press
 ```
 
 ### (Optional) Pre-Commit Hooks with uv
@@ -87,13 +87,13 @@ source .venv/bin/activate  # On Unix/macOS
 pip install --editable ".[dev]"
 
 # Run development tools directly (no need for 'uv pip run')
-ruff format py_launch_blueprint/
-ruff check py_launch_blueprint/
-ty check src/py_launch_blueprint/
-pytest --cov=py_launch_blueprint --cov-report=term-missing
+ruff format template_press/
+ruff check template_press/
+ty check src/template_press/
+pytest --cov=template_press --cov-report=term-missing
 
 # Check the installed package cli tool version
-plbp --version
+press --version
 ```
 
 ### (Optional) Pre-Commit Hooks with pip
@@ -111,7 +111,7 @@ pre-commit run --all-files
 When using this workflow as a template for a new project, update the following:
 
 1. **Project Name**:
-   Replace `py_launch_blueprint` with your package name in the version verification step:
+   Replace `template_press` with your package name in the version verification step:
 
    ```yaml
    PY_VERSION=$(uv run python -c "import your_package_name; print(your_package_name.__version__)")

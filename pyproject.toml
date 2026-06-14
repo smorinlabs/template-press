@@ -18,7 +18,7 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 [project]
-name = "py_launch_blueprint"
+name = "template_press"
 # ITM-070 — static version (ADR-06 cutover). release-please bumps this.
 version = "2.1.1"
 description = "CLI tools for interacting with Py, including project search functionality"
@@ -50,7 +50,7 @@ dependencies = [
 
 # Single-distribution + extras strategy. The library (core/) and CLI always
 # install; the web service ships behind the `web` extra:
-#   uv sync --extra web   /   pip install py-launch-blueprint[web]
+#   uv sync --extra web   /   pip install template-press[web]
 # Tracing is a further opt-in (`otel` extra) — heavy deps, soft-imported.
 [project.optional-dependencies]
 web = [
@@ -107,16 +107,19 @@ docs = [
 
 
 [project.scripts]
-# Noun-verb CLI (gh-style): plbp <noun> <verb>
-plbp = "py_launch_blueprint.cli.main:cli"
+# Noun-verb CLI (gh-style): press <noun> <verb>
+press = "template_press.cli.main:cli"
+# Alias escape hatch (design 0004 §2): a legacy `press` exists on PyPI, so
+# ship `tpress` as a collision-proof alias console script.
+tpress = "template_press.cli.main:cli"
 
 # ITM-072 — package metadata URLs (round 19).
 [project.urls]
-Homepage = "https://github.com/smorinlabs/py-launch-blueprint"
-Repository = "https://github.com/smorinlabs/py-launch-blueprint"
-Documentation = "https://py-launch-blueprint.readthedocs.io/en/latest/"
-Changelog = "https://github.com/smorinlabs/py-launch-blueprint/blob/main/CHANGELOG.md"
-Issues = "https://github.com/smorinlabs/py-launch-blueprint/issues"
+Homepage = "https://github.com/smorinlabs/template-press"
+Repository = "https://github.com/smorinlabs/template-press"
+Documentation = "https://template-press.readthedocs.io/en/latest/"
+Changelog = "https://github.com/smorinlabs/template-press/blob/main/CHANGELOG.md"
+Issues = "https://github.com/smorinlabs/template-press/issues"
 
 # ITM-073 — uv_build (ADR-06 cutover; replaces Hatchling + hatch-vcs).
 [build-system]
@@ -125,10 +128,10 @@ build-backend = "uv_build"
 
 # ITM-074 — uv_build module configuration.
 # Template uses a flat layout (package at repo root, not src/) — must set
-# module-root = "" so uv_build doesn't expect src/py_launch_blueprint/.
+# module-root = "" so uv_build doesn't expect src/template_press/.
 [tool.uv.build-backend]
-module-name = "py_launch_blueprint"
-# src/ layout (Decision 1) — package now lives at src/py_launch_blueprint/.
+module-name = "template_press"
+# src/ layout (Decision 1) — package now lives at src/template_press/.
 module-root = "src"
 
 [tool.ruff]
@@ -172,7 +175,7 @@ exclude = [
   "build",
   "dist",
   "docs/source/conf.py",
-  "src/py_launch_blueprint/_version.py",
+  "src/template_press/_version.py",
   "prototypes",  # P0004 template-press engine prototypes (own lint config in template-press)
 ]
 # Per-file-ignores
@@ -201,7 +204,7 @@ line-ending = "auto"
 # CI typechecking runs ty (ADR-03); this section drives the VS Code Pyright
 # extension and ad-hoc `pyright` runs.
 [tool.pyright]
-include = ["src/py_launch_blueprint", "tests"]
+include = ["src/template_press", "tests"]
 exclude = ["**/node_modules", "**/__pycache__"]
 defineConstant = { DEBUG = true }
 typeCheckingMode = "strict"
@@ -251,6 +254,6 @@ ignore-words-list = "ans,porjects"
 # ans: variable name used in prompt-handling code; codespell wants to "fix"
 # it to "and". Whitelist to keep the short variable name.
 # porjects: intentional typo — the did-you-mean example in cli/groups.py and
-# its test ("plbp porjects" must suggest "projects").
+# its test ("press porjects" must suggest "projects").
 check-filenames = true
 check-hidden = false
