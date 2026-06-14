@@ -1,0 +1,115 @@
+# ITM-003 — lefthook scaffolding. Hook manager per ADR-01.
+# Stage blocks are intentionally absent — per-tool ITMs add them:
+#   commit-msg:  ITM-040 (commitlint)
+#   pre-commit:  ITM-001 (gitleaks), ITM-010 (editorconfig-checker),
+#                ITM-013 (yamllint), ITM-016 (codespell), ITM-066 (ruff/ty/uv-export)
+#   pre-push:    ITM-002 (gitleaks range scan), ITM-032 (bandit)
+# See lefthook docs: https://lefthook.dev/configuration/
+
+min_version: 1.13.0  # ITM-021 installer floor
+
+# ITM-040 — commitlint commit-msg step. Decided round 7.
+# Use the full package name `@commitlint/cli`, not bare `commitlint`. On a cold
+# bun cache, `bunx --bun commitlint` is ambiguous (the bin and an unrelated
+# mise shim share the name), and bun falls through to PATH where the mise
+# shim wins and fails with "No version is set for shim: commitlint". Naming
+# the scoped package up-front forces bun to resolve via npm before PATH.
+commit-msg:
+  commands:
+    commitlint:
+      run: bunx --bun @commitlint/cli --edit {1}
+
+# Pre-commit stage — per-tool steps land via downstream ITMs.
+pre-commit:
+  parallel: true
+  commands:
+    # ITM-001 — gitleaks staged-diff scan (decided round 2).
+    gitleaks:
+      run: scripts/check-gitleaks.sh --staged
+    # ITM-010 — editorconfig-checker staged-only (decided round 9).
+    # The PyPI wheel bundles the Go binary (the npm wrapper downloads it at
+    # runtime and flakes with TAR_BAD_ARCHIVE).
+    # Note: the Go binary uses single-dash flags (-config, not --config).
+    # WL-001: `uv run` (locked dev group), not floating `uvx` — hooks and CI
+    # run the exact version in uv.lock.
+    editorconfig-checker:
+      run: >-
+        uv run ec
+        -config .editorconfig-checker.json
+        {staged_files}
+    # ITM-013 — yamllint staged YAML only (decided round 2).
+    yamllint:
+      glob: "*.{yml,yaml}"
+      run: uv run yamllint -c .yamllint {staged_files}
+    # ITM-016 — codespell staged files (decided round 9).
+    codespell:
+      run: uv run codespell --toml pyproject.toml {staged_files}
+    # ITM-066 — ruff lint + format check on staged Python files.
+    # Added after PR #319 hit lint failures in CI that should have been
+    # caught locally. `{staged_files}` keeps the check scoped — fast.
+    # `--force-exclude` so explicit staged paths still honor the
+    # [tool.ruff] exclude list (e.g. docs/source/conf.py), matching CI's
+    # `ruff check .` behavior.
+    ruff-check:
+      glob: "*.py"
+      run: uv run ruff check --force-exclude --output-format=concise {staged_files}
+    ruff-format:
+      glob: "*.py"
+      run: uv run ruff format --check --force-exclude {staged_files}
+
+# Pre-push stage — per-tool steps land via downstream ITMs.
+pre-push:
+  parallel: true
+  commands:
+    # ITM-002 — gitleaks range scan (catches bypassed/imported commits).
+    gitleaks-range:
+      run: scripts/check-gitleaks.sh --range
+    # ITM-032 — bandit (security linting) at pre-push (round-3 decision:
+    # pre-push, not pre-commit, since full-tree scan is too slow per commit).
+    # WL-001: locked via the dev group (`uv run`, not floating `uvx`).
+    bandit:
+      run: uv run bandit -r src/py_launch_blueprint/ -c pyproject.toml
+    # Init-system integrity — these are the checks the blueprint-guard
+    # CI workflow runs. Caught locally at pre-push, they prevent the
+    # "push → CI fails → push again" cycle that PR #319 went through.
+    # `uv run --script` (not `uv run python ...`) so PEP 723 inline metadata
+    # is honored — check_path_filter.py needs pyyaml from its dep block.
+    # Marker-gate (P0004 dogfood D-v2-3 / PROBLEM-11): these are
+    # blueprint-maintenance checks. In a generated repo the init marker
+    # exists, so `test -f … || <cmd>` short-circuits to a no-op (the `test`
+    # succeeds, so the `||` right side never runs — exit 0) — forks must not
+    # run the blueprint's own drift/wiring/test machinery (same marker-gating
+    # principle as init/guard.sh). The blueprint has no marker, so the `test`
+    # fails and all four checks run unchanged here.
+    init-guard-wiring:
+      run: >-
+        test -f init/.blueprint-initialized ||
+        uv run --script init/ci/check_guard_wiring.py
+    init-manifest-drift:
+      run: >-
+        test -f init/.blueprint-initialized ||
+        uv run --script init/ci/check_manifest_drift.py
+    init-path-filter:
+      run: >-
+        test -f init/.blueprint-initialized ||
+        uv run --script init/ci/check_path_filter.py
+    # Init unit tests (~3s; safe at pre-push, too slow for pre-commit).
+    # `--override-ini=addopts=` because the project default excludes
+    # slow/live markers — init tests aren't marked so they need explicit
+    # override to run consistently regardless of marker config drift.
+    #
+    # `env -u GIT_*` scrubs pre-push environment variables that git sets
+    # before running the hook. The init/tests fixtures spawn `git commit`
+    # in pytest tmp dirs; inherited `GIT_DIR` makes those subprocesses
+    # operate on the OUTER worktree instead of the tmp dir — which both
+    # makes tests fail (no commit happens in tmp -> guard.sh sees no repo)
+    # AND can author a "Test Fixture <test@example.com>" commit against the
+    # real blueprint repo (the 152-file-deletion class — see commit feb0938).
+    # Scrubbing the env before pytest starts covers `_git()`, `guard.sh`,
+    # and `init.py` subprocesses uniformly.
+    init-tests:
+      run: >-
+        test -f init/.blueprint-initialized ||
+        env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE
+        -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR -u GIT_PREFIX
+        uv run pytest init/tests/ --override-ini="addopts=" -q
