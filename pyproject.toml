@@ -63,7 +63,7 @@ web = [
 ]
 otel = [
   # WEB-10 — distributed tracing (soft-imported by web/telemetry.py).
-  "opentelemetry-sdk>=1.27.0",
+  "opentelemetry-sdk>=1.42.1",
   "opentelemetry-exporter-otlp>=1.27.0",
   "opentelemetry-instrumentation-fastapi>=0.48b0",
 ]
