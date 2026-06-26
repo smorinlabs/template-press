@@ -21,7 +21,7 @@ jobs:
     # Skip fork PRs: secrets (CLAUDE_CODE_OAUTH_TOKEN) are unavailable there.
     if: github.event.pull_request.head.repo.full_name == github.repository
 
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
       pull-requests: read
