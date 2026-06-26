@@ -130,6 +130,10 @@ jobs:
           ]
         python-version: ["3.12", "3.13"]
         upload-coverage: [false]
+        exclude:
+          - os: blacksmith-4vcpu-ubuntu-2404
+            python-version: "3.12"
+            upload-coverage: false
         include:
           - os: blacksmith-4vcpu-ubuntu-2404
             python-version: "3.12"
