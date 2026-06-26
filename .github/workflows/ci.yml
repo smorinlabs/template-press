@@ -122,8 +122,18 @@ jobs:
     strategy:
       fail-fast: false  # see all failures, not just the first (round-3)
       matrix:
-        os: [ubuntu-latest, macos-latest, blacksmith-4vcpu-windows-2025]
+        os:
+          [
+            blacksmith-4vcpu-ubuntu-2404,
+            blacksmith-6vcpu-macos-latest,
+            blacksmith-4vcpu-windows-2025,
+          ]
         python-version: ["3.12", "3.13"]
+        upload-coverage: [false]
+        include:
+          - os: blacksmith-4vcpu-ubuntu-2404
+            python-version: "3.12"
+            upload-coverage: true
     steps:
       - uses: actions/checkout@v6
       - name: Install uv
@@ -138,7 +148,7 @@ jobs:
       - name: Upload coverage to Codecov
         # Single matrix combo uploads (avoids 4x duplicate reports).
         # use_oidc: tokenless upload (public repo). Requires `id-token: write`.
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        if: matrix.upload-coverage
         uses: codecov/codecov-action@v7.0.0
         with:
           use_oidc: true
