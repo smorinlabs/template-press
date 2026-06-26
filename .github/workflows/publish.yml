@@ -73,7 +73,7 @@ jobs:
   # publish-testpypi:
   #   name: publish-testpypi
   #   needs: build
-  #   runs-on: ubuntu-latest
+  #   runs-on: blacksmith-4vcpu-ubuntu-2404
   #   environment: testpypi
   #   permissions:
   #     id-token: write  # Trusted Publishing only needs this

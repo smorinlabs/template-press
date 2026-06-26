@@ -109,8 +109,8 @@ jobs:
       - name: ty check
         run: uv run --no-sync ty check src/template_press/
 
-  # ITM-030 - test matrix: ubuntu + macOS x py3.12/3.13 (decided round 3);
-  # windows added alongside the platform-native default paths (REC-24).
+  # ITM-030 - test matrix: Blacksmith ubuntu + macOS + windows x py3.12/3.13
+  # (decided round 3); windows added alongside platform-native default paths (REC-24).
   test:
     name: test (${{ matrix.os }} / py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
