@@ -5,7 +5,7 @@
 ## What is integrated
 
 - **`pytest-cov`** runs alongside the test suite in the `test` job of `.github/workflows/ci.yml`.
-- **`codecov/codecov-action@v5`** uploads `coverage.xml` from a single matrix combo (`ubuntu-latest` / Python 3.12) to avoid duplicate reports.
+- **`codecov/codecov-action@v7`** uploads `coverage.xml` from a single matrix combo (`upload-coverage: true` / Python 3.12 on the Blacksmith Ubuntu leg) to avoid duplicate reports.
 - **`.codecov.yml`** at the repo root configures precision, badge color range (70–100), and PR comment behavior.
 - **`just coverage`** runs the same coverage locally and writes `htmlcov/` for browser inspection.
 
@@ -24,10 +24,10 @@ The coverage upload step is gated to one matrix combo:
 
 ```yaml
 - name: Upload coverage to Codecov
-  if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-  uses: codecov/codecov-action@v5
+  if: matrix.upload-coverage
+  uses: codecov/codecov-action@v7.0.0
   with:
-    token: ${{ secrets.CODECOV_TOKEN }}
+    use_oidc: true
     files: coverage.xml
     flags: unittests
     fail_ci_if_error: false

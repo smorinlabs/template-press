@@ -1,0 +1,14 @@
+# actionlint config (ITM-029 actionlint job, .github/workflows/lint.yml).
+#
+# Registers the Blacksmith runner labels as known self-hosted runners.
+# Without this, actionlint's `runner-label` check rejects every non
+# GitHub-hosted label (e.g. blacksmith-4vcpu-ubuntu-2404) as unknown and
+# exits non-zero, failing the `actionlint` job on any PR that touches a
+# workflow file. See https://github.com/rhysd/actionlint/blob/main/docs/config.md
+#
+# When a workflow starts using a new Blacksmith tier/label, add it here.
+self-hosted-runner:
+  labels:
+    - blacksmith-4vcpu-ubuntu-2404
+    - blacksmith-4vcpu-windows-2025
+    - blacksmith-6vcpu-macos-latest
