@@ -40,12 +40,12 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-  "click>=8.1.0",
-  "pydantic>=2.0.0",   # structured result models (the JSON representation)
-  "structlog>=24.1.0", # structured logging (human-friendly TTY / JSON otherwise)
-  "tomli-w>=1.0.0",    # writing the TOML config file (`config set`)
-  "requests>=2.31.0",
-  "rich>=13.0.0",
+  "click>=8.4.2",
+  "pydantic>=2.13.4",   # structured result models (the JSON representation)
+  "structlog>=26.1.0", # structured logging (human-friendly TTY / JSON otherwise)
+  "tomli-w>=1.2.0",    # writing the TOML config file (`config set`)
+  "requests>=2.34.2",
+  "rich>=15.0.0",
 ]
 
 # Single-distribution + extras strategy. The library (core/) and CLI always
