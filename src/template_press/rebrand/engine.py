@@ -191,4 +191,30 @@ def _apply_renames(
     rules: Rules,
     report: ApplyReport,
 ) -> None:
-    raise NotImplementedError  # implemented in the rename-pass task
+    """Rename tracked paths whose components carry identity tokens.
+
+    Collapses each differing path to its shallowest renamed ancestor so a
+    package dir moves once (src/demo_widget → src/potato_launcher) instead
+    of file-by-file, then renames deepest-first to keep parents valid.
+    """
+    rename_map: dict[str, str] = {}
+    for path in iter_target_files(target, rules):
+        rel = path.relative_to(target)
+        new_rel = _renamed_rel(rel, pairs)
+        if new_rel == rel:
+            continue
+        for i, (old_part, new_part) in enumerate(
+            zip(rel.parts, new_rel.parts, strict=True)
+        ):
+            if old_part != new_part:
+                old_prefix = Path(*rel.parts[: i + 1]).as_posix()
+                new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
+                rename_map.setdefault(old_prefix, new_prefix)
+    for old in sorted(rename_map, key=lambda p: -len(Path(p).parts)):
+        src, dst = target / old, target / rename_map[old]
+        if not src.exists():
+            report.skipped.append(f"rename {old} (missing)")
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        src.rename(dst)
+        report.renamed.append((old, rename_map[old]))
