@@ -21,6 +21,10 @@ class Rules:
     exclude_dirs: frozenset[str]
     exclude_files: frozenset[str]  # POSIX paths relative to the target root
     regenerate: tuple[str, ...]  # lockfiles regenerated (not rewritten)
+    # The deliberate, committed ignore set: directories whose surviving
+    # source-identity content is VALID (vendored trees, historical docs).
+    # Exempts them from the doctor's leak scan only — never from rewriting.
+    verify_ignore: frozenset[str] = frozenset()
 
 
 DEFAULT_RULES = Rules(
@@ -67,4 +71,5 @@ def load_rules(target: Path) -> Rules:
         regenerate=tuple(
             _str_list(table, "regenerate", list(DEFAULT_RULES.regenerate))
         ),
+        verify_ignore=frozenset(_str_list(table, "verify_ignore", [])),
     )

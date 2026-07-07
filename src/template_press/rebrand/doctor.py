@@ -40,9 +40,24 @@ def _read_for_scan(path: Path) -> str | None:
         return None  # binary: the rewrite pass cannot alter it either
 
 
-def find_leaks(target: Path, source: Identity, rules: Rules) -> list[Leak]:
+def find_leaks(
+    target: Path,
+    source: Identity,
+    rules: Rules,
+    dest: Identity | None = None,
+) -> list[Leak]:
+    """Scan for surviving source-identity tokens.
+
+    When ``dest`` is given, only fields that actually CHANGED are scanned:
+    an unchanged field (same author across a rename) is not a leak — its
+    token legitimately remains everywhere. Without ``dest`` all fields are
+    scanned (full-rebrand semantics).
+    """
     leaks: list[Leak] = []
     fields = source.as_dict()
+    if dest is not None:
+        dest_fields = dest.as_dict()
+        fields = {k: v for k, v in fields.items() if v != dest_fields[k]}
     for path in iter_target_files(target, rules):
         rel = path.relative_to(target)
         rel_posix = rel.as_posix()
@@ -57,10 +72,9 @@ def find_leaks(target: Path, source: Identity, rules: Rules) -> list[Leak]:
                     leaks.append(Leak(rel_posix, field_name, value, "content"))
         for component in rel.parts:
             for field_name in PATH_FIELDS:
-                if token_occurs(component, field_name, fields[field_name]):
-                    leaks.append(
-                        Leak(rel_posix, field_name, fields[field_name], "path")
-                    )
+                value = fields.get(field_name)
+                if value is not None and token_occurs(component, field_name, value):
+                    leaks.append(Leak(rel_posix, field_name, value, "path"))
     return leaks
 
 
@@ -75,7 +89,8 @@ def render_leak_report(leaks: list[Leak], limit: int = 20) -> str:
         lines.append(f"  … and {len(leaks) - limit} more")
     lines.append(
         "hint: restore the target (git -C <target> checkout . && git clean "
-        "-fd), fix the root cause (or exclude the directory via "
-        ".press/rules.toml), then press again."
+        "-fd), fix the root cause (or, for content that is VALID to keep, "
+        "add its directory to verify_ignore in .press/rules.toml), then "
+        "press again."
     )
     return "\n".join(lines)
