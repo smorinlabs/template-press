@@ -99,3 +99,39 @@ def test_dry_run_prints_plan_and_writes_nothing(
     assert code == 0
     assert "README.md" in capsys.readouterr().out
     assert "demo-widget" in (src_target / "README.md").read_text(encoding="utf-8")
+
+
+def test_happy_path_presses_verifies_and_writes_receipt(
+    src_target: Path, tmp_path: Path
+):
+    write_source_config(src_target)
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 0
+    assert (src_target / RECEIPT_REL).is_file()
+    assert (src_target / "src" / "potato_launcher" / "cli.py").is_file()
+    readme = (src_target / "README.md").read_text(encoding="utf-8")
+    assert "demo" not in readme and "Compress" in readme
+
+
+def test_leak_after_apply_exits_1_and_writes_no_receipt(
+    src_target: Path, tmp_path: Path
+):
+    """EMP-01 regression: a partial rebrand must fail loudly, no receipt."""
+    write_source_config(src_target)
+    # Excluded from rewriting but NOT from the doctor scan → guaranteed leak.
+    (src_target / ".press").mkdir(exist_ok=True)
+    (src_target / ".press" / "rules.toml").write_text(
+        '[rules]\nextra_exclude_files = ["notes.md"]\n', encoding="utf-8"
+    )
+    (src_target / "notes.md").write_text(
+        "demo_widget must survive rewriting\n", encoding="utf-8"
+    )
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 1
+    assert not (src_target / RECEIPT_REL).exists()

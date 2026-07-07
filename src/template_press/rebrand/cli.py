@@ -20,10 +20,11 @@ from template_press.rebrand.config import (
     render_source_config,
 )
 from template_press.rebrand.discovery import discover, mismatches
-from template_press.rebrand.engine import build_plan
+from template_press.rebrand.doctor import find_leaks, render_leak_report
+from template_press.rebrand.engine import ApplyReport, apply, build_plan
 from template_press.rebrand.identity import Identity, ValidationError
-from template_press.rebrand.receipt import read_receipt
-from template_press.rebrand.rules import Rules, load_rules
+from template_press.rebrand.receipt import read_receipt, write_receipt
+from template_press.rebrand.rules import DEFAULT_RULES, Rules, load_rules
 
 
 def _fail(msg: str) -> int:
@@ -137,8 +138,44 @@ def main(argv: list[str] | None = None) -> int:
     return _press(target, source, dest, rules)
 
 
+def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> None:
+    for lockfile in rules.regenerate:
+        if not (target / lockfile).is_file():
+            continue
+        if lockfile == "uv.lock":
+            result = subprocess.run(
+                ["uv", "lock"],  # noqa: S607
+                cwd=target,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                report.regenerated.append(lockfile)
+            else:
+                report.skipped.append(f"regenerate {lockfile} (uv lock failed)")
+        else:
+            report.skipped.append(f"regenerate {lockfile} (no regenerator)")
+
+
 def _press(target: Path, source: Identity, dest: Identity, rules: Rules) -> int:
-    raise NotImplementedError  # wired in the apply/verify/receipt task
+    report = apply(target, source, dest, rules)
+    _regenerate_lockfiles(target, rules, report)
+    # Verification never honors target-side rewrite exclusions: opting a file
+    # out of rewriting must not opt it out of the leak scan (EMP-01).
+    doctor_rules = Rules(
+        exclude_dirs=rules.exclude_dirs,
+        exclude_files=DEFAULT_RULES.exclude_files,
+        regenerate=rules.regenerate,
+    )
+    leaks = find_leaks(target, source, doctor_rules)
+    if leaks:
+        print(render_leak_report(leaks), file=sys.stderr)
+        print(report.render(), file=sys.stderr)
+        return 1
+    receipt_path = write_receipt(target, source, dest, report)
+    print(report.render())
+    print(f"verified: no identity leftovers. receipt: {receipt_path}")
+    return 0
 
 
 if __name__ == "__main__":
