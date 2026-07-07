@@ -173,8 +173,12 @@ def _press(target: Path, source: Identity, dest: Identity, rules: Rules) -> int:
         print(report.render(), file=sys.stderr)
         return 1
     receipt_path = write_receipt(target, source, dest, report)
+    source_config_path = target / SOURCE_CONFIG_REL
+    source_config_path.parent.mkdir(parents=True, exist_ok=True)
+    source_config_path.write_text(render_source_config(dest), encoding="utf-8")
     print(report.render())
     print(f"verified: no identity leftovers. receipt: {receipt_path}")
+    print(f"updated {SOURCE_CONFIG_REL} to the new identity")
     return 0
 
 

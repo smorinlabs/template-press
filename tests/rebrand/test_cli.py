@@ -2,7 +2,11 @@ import subprocess
 from pathlib import Path
 
 from template_press.rebrand.cli import main
-from template_press.rebrand.config import SOURCE_CONFIG_REL, render_source_config
+from template_press.rebrand.config import (
+    SOURCE_CONFIG_REL,
+    load_source_config,
+    render_source_config,
+)
 from template_press.rebrand.receipt import RECEIPT_REL
 
 from .conftest import DEST, SOURCE
@@ -114,6 +118,18 @@ def test_happy_path_presses_verifies_and_writes_receipt(
     assert (src_target / "src" / "potato_launcher" / "cli.py").is_file()
     readme = (src_target / "README.md").read_text(encoding="utf-8")
     assert "demo" not in readme and "Compress" in readme
+
+
+def test_success_updates_source_config_to_new_identity(
+    src_target: Path, tmp_path: Path
+):
+    write_source_config(src_target)
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 0
+    assert load_source_config(src_target, override=None) == DEST
 
 
 def test_leak_after_apply_exits_1_and_writes_no_receipt(
