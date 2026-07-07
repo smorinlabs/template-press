@@ -38,6 +38,8 @@ clones, containers, and remote agent sessions start without it — run
 | Sync dev env | `uv sync --group dev --extra web` (PEP 735 — not `pip install '.[dev]'`) |
 | All checks | `just check` |
 | Run tests | `pytest` (default excludes `slow`/`live` markers per ITM-046; full: `pytest -m ""`) |
+| Rebrand a target (preview) | `uv run python -m template_press.rebrand.cli --target <dir> --config <answers.toml> --dry-run` |
+| Rebrand acceptance matrix | `just matrix` (live; see `.claude/skills/rebrand-matrix/`) |
 | Run one test | `pytest tests/test_file.py::test_name` |
 | Lint | `uv run ruff check .` |
 | Format | `just format` or `uv run ruff format src/template_press/` |
