@@ -69,7 +69,9 @@ def iter_target_files(target: Path, rules: Rules) -> list[Path]:
         ],
         check=True,
         capture_output=True,
-        text=True,
+        # git emits UTF-8 path bytes; text=True would decode with the locale
+        # codepage on Windows (cp1252) and mojibake non-ASCII filenames.
+        encoding="utf-8",
     )
     out: list[Path] = []
     for line in result.stdout.split("\0"):
