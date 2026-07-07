@@ -56,7 +56,8 @@ def render_leak_report(leaks: list[Leak], limit: int = 20) -> str:
     if len(leaks) > limit:
         lines.append(f"  … and {len(leaks) - limit} more")
     lines.append(
-        "hint: fix the leftovers (or exclude generated files via "
-        ".press/rules.toml) and re-run with --force."
+        "hint: restore the target (git -C <target> checkout . && git clean "
+        "-fd), fix the root cause (or exclude the directory via "
+        ".press/rules.toml), then press again."
     )
     return "\n".join(lines)

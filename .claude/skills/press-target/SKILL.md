@@ -22,8 +22,11 @@ mismatch; a completed run is verified leak-free before a receipt is written.
    user confirms the identity is right.
 4. Apply: same command without `--dry-run`.
 5. Interpret exit codes: 0 = verified + receipt written; 1 = leaks found,
-   NO receipt (show the leak report; fix or add `.press/rules.toml`
-   excludes for generated files, then re-run with `--force`); 2 =
+   NO receipt (the target is already rewritten — restore it first:
+   `git -C <TARGET> checkout . && git clean -fd`; then fix the root cause,
+   or exclude the offending directory via `.press/rules.toml`, and press
+   again from a clean tree — do NOT re-run with `--force` as the remedy,
+   it re-applies onto the same half-rewritten state); 2 =
    precondition/mismatch (report, do not retry blindly).
 6. Show the receipt: `<TARGET>/.press/receipt.toml`, and remind the user to
    review `git -C <TARGET> diff --stat` and commit in the target.
