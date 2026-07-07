@@ -207,3 +207,21 @@ def test_identical_identity_press_exits_2(src_target: Path, tmp_path: Path):
         ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
     )
     assert code == 2
+
+
+def test_mid_apply_oserror_exits_1_with_partial_warning(
+    src_target: Path, tmp_path: Path, capsys
+):
+    write_source_config(src_target)
+    # Sorts after README.md etc., so earlier files are rewritten first.
+    readonly = src_target / "zz_readonly.md"
+    readonly.write_text("demo_widget survives here\n", encoding="utf-8")
+    readonly.chmod(0o444)
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    readonly.chmod(0o644)  # let pytest clean the tmp dir
+    assert code == 1
+    assert "PARTIALLY rewritten" in capsys.readouterr().err
+    assert not (src_target / RECEIPT_REL).exists()

@@ -143,9 +143,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             print("(dry run — nothing applied)")
             return 0
-        return _press(target, source, dest, rules)
     except (ValidationError, tomllib.TOMLDecodeError, OSError) as exc:
         return _fail(str(exc))
+    try:
+        return _press(target, source, dest, rules)
+    except OSError as exc:
+        # Exit 2 means "nothing applied"; a mid-apply failure is not that.
+        print(
+            f"error: {exc} — target may be PARTIALLY rewritten; restore with "
+            f"`git -C {target} checkout . && git clean -fd`",
+            file=sys.stderr,
+        )
+        return 1
 
 
 def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> None:
