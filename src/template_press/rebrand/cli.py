@@ -84,7 +84,9 @@ def _resolve_source(
                 f"source-config by hand."
             )
         try:
-            candidate = Identity.from_mapping({k: v for k, v in proposal.items() if v})
+            candidate = Identity.from_mapping(
+                {k: v for k, v in proposal.items() if v is not None}
+            )
             candidate.validate()
         except ValidationError as exc:
             return _fail(f"discovered identity is invalid: {exc}")
@@ -116,8 +118,6 @@ def _collisions(source: Identity, dest: Identity) -> list[str]:
     changed = {f: v for f, v in src.items() if v != dst[f]}
     for dest_field, dest_value in dst.items():
         for src_field, src_value in changed.items():
-            if dest_field == src_field and dest_value == src_value:
-                continue
             if token_occurs(dest_value, src_field, src_value):
                 out.append(
                     f"destination {dest_field}={dest_value!r} contains the "

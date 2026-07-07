@@ -24,6 +24,8 @@ class Rules:
     # The deliberate, committed ignore set: directories whose surviving
     # source-identity content is VALID (vendored trees, historical docs).
     # Exempts them from the doctor's leak scan only — never from rewriting.
+    # Matched like exclude_dirs: by single path COMPONENT at any depth
+    # ("legacy" ignores every dir named legacy; "docs/old" never matches).
     verify_ignore: frozenset[str] = frozenset()
 
 
