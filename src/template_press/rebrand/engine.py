@@ -62,6 +62,7 @@ def iter_target_files(target: Path, rules: Rules) -> list[Path]:
             "-C",
             str(target),
             "ls-files",
+            "-z",
             "--cached",
             "--others",
             "--exclude-standard",
@@ -71,7 +72,9 @@ def iter_target_files(target: Path, rules: Rules) -> list[Path]:
         text=True,
     )
     out: list[Path] = []
-    for line in result.stdout.splitlines():
+    for line in result.stdout.split("\0"):
+        if not line:
+            continue
         rel = Path(line)
         if _is_excluded(rel, rules):
             continue

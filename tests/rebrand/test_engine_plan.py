@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 from template_press.rebrand.engine import (
@@ -18,6 +19,19 @@ def test_iter_target_files_respects_gitignore_and_excludes(src_target: Path):
     assert "README.md" in rels and "src/demo_widget/cli.py" in rels
     assert not any(r.startswith(".venv") for r in rels)
     assert not any(r.startswith(".git/") for r in rels)
+
+
+def test_iter_target_files_sees_non_ascii_paths(src_target: Path):
+    doc = src_target / "文档.py"
+    doc.write_text("import demo_widget\n", encoding="utf-8")
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    files = iter_target_files(src_target, DEFAULT_RULES)
+    rels = {f.relative_to(src_target).as_posix() for f in files}
+    assert "文档.py" in rels
 
 
 def test_replacement_pairs_longest_first():
