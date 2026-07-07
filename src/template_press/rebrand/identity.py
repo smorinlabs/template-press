@@ -110,6 +110,11 @@ class Identity:
             "owner": self.owner,
         }
 
+    def as_dict_prompted(self) -> dict[str, str]:
+        d = self.as_dict()
+        d.pop("app_name_upper")
+        return d
+
     def validate(self) -> None:
         for field_name, value in self.as_dict().items():
             validator = VALIDATORS.get(field_name)
