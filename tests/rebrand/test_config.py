@@ -1,3 +1,5 @@
+import tomllib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -47,3 +49,14 @@ def test_missing_field_raises_validation_error(tmp_path: Path):
     p.write_text('[answers]\npackage_name = "x_only"\n', encoding="utf-8")
     with pytest.raises(ValidationError):
         load_answers(p)
+
+
+def test_render_source_config_escapes_quotes_in_author(tmp_path: Path):
+    source = replace(SOURCE, author='Demo "Quoted" Author')
+    rendered = render_source_config(source)
+    data = tomllib.loads(rendered)
+    assert data["identity"]["author"] == 'Demo "Quoted" Author'
+
+    (tmp_path / ".press").mkdir()
+    (tmp_path / SOURCE_CONFIG_REL).write_text(rendered, encoding="utf-8")
+    assert load_source_config(tmp_path, override=None) == source

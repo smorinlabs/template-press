@@ -15,6 +15,23 @@ from template_press.rebrand.identity import Identity, ValidationError
 SOURCE_CONFIG_REL = Path(".press") / "source.toml"
 
 
+def toml_string(value: str) -> str:
+    """Render a str as a TOML basic-string literal (quoted, escaped)."""
+    out = []
+    for ch in value:
+        if ch in ('"', "\\"):
+            out.append("\\" + ch)
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ord(ch) < 0x20 or ch == "\x7f":
+            out.append(f"\\u{ord(ch):04X}")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
+
+
 def load_identity_toml(path: Path, table: str) -> Identity:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     section = data.get(table)
@@ -41,7 +58,7 @@ def render_source_config(identity: Identity) -> str:
         "# and refuses to run on mismatch. Commit this file.",
         "[identity]",
     ]
-    lines += [f'{k} = "{v}"' for k, v in identity.as_dict_prompted().items()]
+    lines += [f"{k} = {toml_string(v)}" for k, v in identity.as_dict_prompted().items()]
     return "\n".join(lines) + "\n"
 
 

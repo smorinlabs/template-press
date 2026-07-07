@@ -1,4 +1,5 @@
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 
 from template_press.rebrand.engine import ApplyReport
@@ -22,3 +23,15 @@ def test_write_and_read_receipt(tmp_path: Path):
 
 def test_read_receipt_absent(tmp_path: Path):
     assert read_receipt(tmp_path) is None
+
+
+def test_write_and_read_receipt_escapes_special_chars(tmp_path: Path):
+    source = replace(SOURCE, author='Demo "Quoted" Back\\slash')
+    dest = replace(DEST, author="Line1\nLine2")
+    report = ApplyReport()
+    write_receipt(tmp_path, source, dest, report)
+    raw = read_receipt(tmp_path)
+    assert raw is not None
+    data = tomllib.loads(raw)
+    assert data["press"]["from"]["author"] == 'Demo "Quoted" Back\\slash'
+    assert data["press"]["to"]["author"] == "Line1\nLine2"

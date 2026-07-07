@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+from template_press.rebrand.config import toml_string
 from template_press.rebrand.engine import ApplyReport
 from template_press.rebrand.identity import Identity
 
@@ -25,7 +26,7 @@ def read_receipt(target: Path) -> str | None:
 
 def _identity_table(name: str, identity: Identity) -> list[str]:
     lines = [f"[press.{name}]"]
-    lines += [f'{k} = "{v}"' for k, v in identity.as_dict_prompted().items()]
+    lines += [f"{k} = {toml_string(v)}" for k, v in identity.as_dict_prompted().items()]
     return lines
 
 
