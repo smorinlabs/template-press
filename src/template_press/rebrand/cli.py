@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from template_press.rebrand.config import (
@@ -76,7 +77,11 @@ def _resolve_source(
                 f"could not resolve: {', '.join(unresolved)}. Write the "
                 f"source-config by hand."
             )
-        candidate = Identity.from_mapping({k: v for k, v in proposal.items() if v})
+        try:
+            candidate = Identity.from_mapping({k: v for k, v in proposal.items() if v})
+            candidate.validate()
+        except ValidationError as exc:
+            return _fail(f"discovered identity is invalid: {exc}")
         if not accept_discovery:
             print(
                 f"no source-config found at {SOURCE_CONFIG_REL}.\n"
@@ -114,28 +119,33 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     target = args.target.resolve()
-    problem = check_preconditions(target, args.force, args.allow_dirty)
-    if problem is not None:
-        return _fail(problem)
-
-    source = _resolve_source(target, args.source_config, args.accept_discovery)
-    if isinstance(source, int):
-        return source
-
-    if args.config is None:
-        return _fail("--config ANSWERS.toml is required")
     try:
-        dest = load_answers(args.config)
-    except (ValidationError, OSError) as exc:
-        return _fail(str(exc))
+        problem = check_preconditions(target, args.force, args.allow_dirty)
+        if problem is not None:
+            return _fail(problem)
 
-    rules = load_rules(target)
-    plan = build_plan(target, source, dest, rules)
-    print(plan.render())
-    if args.dry_run:
-        print("(dry run — nothing applied)")
-        return 0
-    return _press(target, source, dest, rules)
+        source = _resolve_source(target, args.source_config, args.accept_discovery)
+        if isinstance(source, int):
+            return source
+
+        if args.config is None:
+            return _fail("--config ANSWERS.toml is required")
+        dest = load_answers(args.config)
+
+        if source == dest:
+            return _fail(
+                "source and destination identities are identical — nothing to press"
+            )
+
+        rules = load_rules(target)
+        plan = build_plan(target, source, dest, rules)
+        print(plan.render())
+        if args.dry_run:
+            print("(dry run — nothing applied)")
+            return 0
+        return _press(target, source, dest, rules)
+    except (ValidationError, tomllib.TOMLDecodeError, OSError) as exc:
+        return _fail(str(exc))
 
 
 def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> None:
