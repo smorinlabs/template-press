@@ -1,6 +1,8 @@
 # Template Press — Reusable Init/Post-Init Engine Plan
 
-- **Status:** Accepted (implementation not started)
+- **Status:** Superseded in part (2026-06-23) — §3–7 (in-place model) are
+  replaced by [0006](0006-external-target-model.md); §1–2 naming decisions
+  and D10 (computed status) remain accepted.
 - **Type:** Design / decision record
 - **Created:** 2026-06-12
 - **Applies to:** the `init/` system (rebrand + post-init) and its future
