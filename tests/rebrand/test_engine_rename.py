@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 from template_press.rebrand.engine import apply
@@ -23,3 +24,19 @@ def test_app_token_filename_renamed(src_target: Path):
     apply(src_target, SOURCE, DEST, DEFAULT_RULES)
     assert (src_target / "potato_config.toml").is_file()
     assert not (src_target / "press_config.toml").exists()
+
+
+def test_nested_token_bearing_paths_rename_fully(src_target: Path):
+    extra = src_target / "src" / "demo_widget" / "demo_widget_extra.py"
+    extra.write_text('"""demo_widget extra."""\n', encoding="utf-8")
+    # S603, S607: git binary is hardcoded (not from untrusted input)
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    report = apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+    moved = src_target / "src" / "potato_launcher" / "potato_launcher_extra.py"
+    assert moved.is_file()
+    assert not (src_target / "src" / "demo_widget").exists()
+    assert ("src/demo_widget", "src/potato_launcher") in report.renamed

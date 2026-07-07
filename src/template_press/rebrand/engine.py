@@ -133,6 +133,7 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                     old_prefix = Path(*rel.parts[: i + 1]).as_posix()
                     new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
                     rename_map.setdefault(old_prefix, new_prefix)
+                    break
     for old, new in sorted(rename_map.items()):
         plan.items.append(PlanItem("rename", old, f"→ {new}"))
     return plan
@@ -185,17 +186,18 @@ def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> Apply
     return report
 
 
-def _apply_renames(
+def _rename_pass_once(
     target: Path,
     pairs: list[tuple[str, str, str]],
     rules: Rules,
     report: ApplyReport,
-) -> None:
-    """Rename tracked paths whose components carry identity tokens.
+) -> bool:
+    """Run one shallowest-prefix rename pass; return True if any rename ran.
 
-    Collapses each differing path to its shallowest renamed ancestor so a
-    package dir moves once (src/demo_widget → src/potato_launcher) instead
-    of file-by-file, then renames deepest-first to keep parents valid.
+    Rescans `iter_target_files` fresh so each pass sees the previous pass's
+    moves, then collapses each differing path to only its shallowest
+    renamed ancestor (one path level per pass) and executes deepest-first
+    to keep parents valid.
     """
     rename_map: dict[str, str] = {}
     for path in iter_target_files(target, rules):
@@ -210,11 +212,39 @@ def _apply_renames(
                 old_prefix = Path(*rel.parts[: i + 1]).as_posix()
                 new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
                 rename_map.setdefault(old_prefix, new_prefix)
+                break
+    performed = False
     for old in sorted(rename_map, key=lambda p: -len(Path(p).parts)):
         src, dst = target / old, target / rename_map[old]
         if not src.exists():
             report.skipped.append(f"rename {old} (missing)")
             continue
+        if dst.exists():
+            report.skipped.append(f"rename {old} (destination exists)")
+            continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         src.rename(dst)
         report.renamed.append((old, rename_map[old]))
+        performed = True
+    return performed
+
+
+def _apply_renames(
+    target: Path,
+    pairs: list[tuple[str, str, str]],
+    rules: Rules,
+    report: ApplyReport,
+) -> None:
+    """Rename tracked paths whose components carry identity tokens.
+
+    Runs `_rename_pass_once` to a fixpoint: each pass renames only the
+    shallowest differing path level (e.g. src/demo_widget →
+    src/potato_launcher) and re-scans the target before the next pass, so a
+    token-bearing file nested inside a token-bearing dir gets its dir moved
+    on one pass and its (now-relocated) file renamed on the next, instead of
+    colliding mid-move. Bounded to 32 passes (depth bound); stops as soon as
+    a pass performs no renames.
+    """
+    for _ in range(32):
+        if not _rename_pass_once(target, pairs, rules, report):
+            return
