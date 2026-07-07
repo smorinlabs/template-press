@@ -68,7 +68,7 @@ def main() -> int:
 
 def _git(repo: Path, *args: str) -> None:
     # S603, S607: git binary is hardcoded (not from untrusted input)
-    subprocess.run(  # noqa: S603, S607
+    subprocess.run(  # noqa: S603
         ["git", "-C", str(repo), *args],  # noqa: S607
         check=True,
         capture_output=True,
