@@ -1,0 +1,145 @@
+"""press rebrand — point the press at a target repo (ARCH-01).
+
+Pipeline: preconditions → source identity (config-first, discovery
+validates) → answers → plan → [--dry-run stops here] → apply → regenerate
+lockfiles → VERIFY (no-leak doctor) → receipt. Exit codes: 0 ok, 1 leaks
+found after apply (no receipt), 2 precondition/config error (no writes).
+"""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+from template_press.rebrand.config import (
+    SOURCE_CONFIG_REL,
+    load_answers,
+    load_source_config,
+    render_source_config,
+)
+from template_press.rebrand.discovery import discover, mismatches
+from template_press.rebrand.engine import build_plan
+from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.receipt import read_receipt
+from template_press.rebrand.rules import Rules, load_rules
+
+
+def _fail(msg: str) -> int:
+    print(f"error: {msg}", file=sys.stderr)
+    return 2
+
+
+def check_preconditions(target: Path, force: bool, allow_dirty: bool) -> str | None:
+    """Return an error message, or None when the target is pressable."""
+    if not target.is_dir():
+        return f"target does not exist or is not a directory: {target}"
+    if not (target / ".git").exists():
+        return f"target is not a git repository: {target}"
+    if read_receipt(target) is not None and not force:
+        return (
+            "target already has a press receipt (.press/receipt.toml); "
+            "re-press with --force"
+        )
+    if not allow_dirty:
+        status = subprocess.run(  # noqa: S603
+            ["git", "-C", str(target), "status", "--porcelain"],  # noqa: S607
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if status.stdout.strip():
+            return "target working tree is dirty; commit/stash or --allow-dirty"
+    return None
+
+
+def _resolve_source(
+    target: Path, override: Path | None, accept_discovery: bool
+) -> Identity | int:
+    source = load_source_config(target, override)
+    if source is None:
+        found = discover(target)
+        proposal = {
+            "package_name": found.package_name,
+            "repo_name": found.repo_name,
+            "app_name": found.app_name,
+            "author": found.author,
+            "email": found.email,
+            "owner": found.owner,
+        }
+        unresolved = [k for k, v in proposal.items() if v is None]
+        if unresolved:
+            return _fail(
+                f"no source-config at {SOURCE_CONFIG_REL} and discovery "
+                f"could not resolve: {', '.join(unresolved)}. Write the "
+                f"source-config by hand."
+            )
+        candidate = Identity.from_mapping({k: v for k, v in proposal.items() if v})
+        if not accept_discovery:
+            print(
+                f"no source-config found at {SOURCE_CONFIG_REL}.\n"
+                f"Discovery proposes:\n\n{render_source_config(candidate)}\n"
+                f"Save it there (and commit), or re-run with "
+                f"--accept-discovery to write + use it.",
+            )
+            return 2
+        path = target / SOURCE_CONFIG_REL
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(render_source_config(candidate), encoding="utf-8")
+        print(f"wrote {SOURCE_CONFIG_REL} from discovery")
+        source = candidate
+    problems = mismatches(source, discover(target))
+    if problems:
+        print(
+            "error: source-config does not match the target "
+            "(refusing to press — this is the silent-half-rebrand guard):",
+        )
+        for p in problems:
+            print(f"  {p}")
+        return 2
+    return source
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="press rebrand", description=__doc__)
+    parser.add_argument("--target", type=Path, required=True)
+    parser.add_argument("--config", type=Path, help="answers TOML (TO identity)")
+    parser.add_argument("--source-config", type=Path, dest="source_config")
+    parser.add_argument("--accept-discovery", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--allow-dirty", action="store_true")
+    args = parser.parse_args(argv)
+
+    target = args.target.resolve()
+    problem = check_preconditions(target, args.force, args.allow_dirty)
+    if problem is not None:
+        return _fail(problem)
+
+    source = _resolve_source(target, args.source_config, args.accept_discovery)
+    if isinstance(source, int):
+        return source
+
+    if args.config is None:
+        return _fail("--config ANSWERS.toml is required")
+    try:
+        dest = load_answers(args.config)
+    except (ValidationError, OSError) as exc:
+        return _fail(str(exc))
+
+    rules = load_rules(target)
+    plan = build_plan(target, source, dest, rules)
+    print(plan.render())
+    if args.dry_run:
+        print("(dry run — nothing applied)")
+        return 0
+    return _press(target, source, dest, rules)
+
+
+def _press(target: Path, source: Identity, dest: Identity, rules: Rules) -> int:
+    raise NotImplementedError  # wired in the apply/verify/receipt task
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
