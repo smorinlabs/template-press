@@ -41,3 +41,25 @@ def test_apply_skips_excluded_files(src_target: Path):
     apply(src_target, SOURCE, DEST, DEFAULT_RULES)
     text = (src_target / "CHANGELOG.md").read_text(encoding="utf-8")
     assert "demo_widget" in text  # excluded by default rules
+
+
+def test_symlink_content_is_never_followed(src_target: Path, tmp_path: Path):
+    import os
+    import subprocess as sp
+
+    if os.name == "nt":  # symlink creation needs privileges on Windows
+        import pytest
+
+        pytest.skip("symlink semantics differ on Windows")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("demo_widget lives outside\n", encoding="utf-8")
+    link = src_target / "link.txt"
+    link.symlink_to(outside)
+    sp.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    report = apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+    assert outside.read_text(encoding="utf-8") == "demo_widget lives outside\n"
+    assert any("link.txt (symlink)" in s for s in report.skipped)

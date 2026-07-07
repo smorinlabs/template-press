@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from template_press.rebrand.engine import _read_text, iter_target_files
+from template_press.rebrand.engine import iter_target_files
 from template_press.rebrand.identity import Identity, token_occurs
 from template_press.rebrand.rules import Rules
 
@@ -23,7 +23,21 @@ class Leak:
     path: str
     field: str
     value: str
-    where: str  # "content" | "path"
+    where: str  # "content" | "path" | "unverifiable"
+
+
+def _read_for_scan(path: Path) -> str | None:
+    """Content for scanning; None for binary/symlink; OSError propagates.
+
+    Unlike the engine's lenient reader, the doctor must NOT silently skip an
+    unreadable file — a file it cannot scan is a file it cannot certify.
+    """
+    if path.is_symlink():
+        return None  # content lives outside the target; the name is scanned
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None  # binary: the rewrite pass cannot alter it either
 
 
 def find_leaks(target: Path, source: Identity, rules: Rules) -> list[Leak]:
@@ -32,7 +46,11 @@ def find_leaks(target: Path, source: Identity, rules: Rules) -> list[Leak]:
     for path in iter_target_files(target, rules):
         rel = path.relative_to(target)
         rel_posix = rel.as_posix()
-        text = _read_text(path)
+        try:
+            text = _read_for_scan(path)
+        except OSError:
+            leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
+            text = None
         if text is not None:
             for field_name, value in fields.items():
                 if token_occurs(text, field_name, value):

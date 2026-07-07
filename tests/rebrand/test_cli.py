@@ -252,3 +252,22 @@ def test_failed_lock_regeneration_exits_1_no_receipt(
     assert code == 1
     assert "lockfile regeneration failed" in capsys.readouterr().err
     assert not (src_target / RECEIPT_REL).exists()
+
+
+def test_dry_run_with_accept_discovery_writes_nothing(
+    src_target: Path, tmp_path: Path, capsys
+):
+    answers = write_answers(tmp_path)
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--accept-discovery",
+            "--dry-run",
+        ]
+    )
+    assert code == 0
+    assert not (src_target / SOURCE_CONFIG_REL).exists()
+    assert "would write" in capsys.readouterr().out

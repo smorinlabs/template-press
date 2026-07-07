@@ -57,7 +57,7 @@ def check_preconditions(target: Path, force: bool, allow_dirty: bool) -> str | N
 
 
 def _resolve_source(
-    target: Path, override: Path | None, accept_discovery: bool
+    target: Path, override: Path | None, accept_discovery: bool, dry_run: bool
 ) -> Identity | int:
     source = load_source_config(target, override)
     if source is None:
@@ -90,10 +90,14 @@ def _resolve_source(
                 f"--accept-discovery to write + use it.",
             )
             return 2
-        path = target / SOURCE_CONFIG_REL
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(render_source_config(candidate), encoding="utf-8")
-        print(f"wrote {SOURCE_CONFIG_REL} from discovery")
+        if dry_run:
+            # A preview must be side-effect free; the real run writes it.
+            print(f"(dry run) would write {SOURCE_CONFIG_REL} from discovery")
+        else:
+            path = target / SOURCE_CONFIG_REL
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(render_source_config(candidate), encoding="utf-8")
+            print(f"wrote {SOURCE_CONFIG_REL} from discovery")
         source = candidate
     problems = mismatches(source, discover(target))
     if problems:
@@ -124,7 +128,9 @@ def main(argv: list[str] | None = None) -> int:
         if problem is not None:
             return _fail(problem)
 
-        source = _resolve_source(target, args.source_config, args.accept_discovery)
+        source = _resolve_source(
+            target, args.source_config, args.accept_discovery, args.dry_run
+        )
         if isinstance(source, int):
             return source
 

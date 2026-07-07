@@ -95,6 +95,8 @@ def replacement_pairs(source: Identity, dest: Identity) -> list[tuple[str, str, 
 
 
 def _read_text(path: Path) -> str | None:
+    if path.is_symlink():
+        return None  # never follow a link: writes must stay inside the target
     try:
         return path.read_text(encoding="utf-8")
     except (UnicodeDecodeError, OSError):
@@ -170,7 +172,8 @@ def _apply_replacements(
         rel = path.relative_to(target).as_posix()
         text = _read_text(path)
         if text is None:
-            report.skipped.append(f"replace {rel} (binary)")
+            kind = "symlink" if path.is_symlink() else "binary"
+            report.skipped.append(f"replace {rel} ({kind})")
             continue
         new_text = text
         for f, cur, repl in pairs:

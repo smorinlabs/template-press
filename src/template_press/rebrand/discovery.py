@@ -101,4 +101,9 @@ def mismatches(source: Identity, found: Discovered) -> list[str]:
                 f"{declared[field_name]!r} but target shows "
                 f"{discovered_value!r}"
             )
+    if found.package_name is not None and found.layout is None:
+        out.append(
+            f"layout: pyproject declares {found.package_name!r} but neither "
+            f"src/{found.package_name}/ nor {found.package_name}/ exists"
+        )
     return out

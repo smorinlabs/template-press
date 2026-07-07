@@ -106,9 +106,41 @@ def test_app_name_upper_spares_embedded_words():
     )
 
 
-def test_long_tokens_use_plain_substring():
-    assert token_pattern("package_name", "demo_widget") is None
+def test_all_fields_are_boundary_matched():
+    # OQ12: boundary-safe replacement is the default for every field.
+    assert token_pattern("package_name", "demo_widget") is not None
     out = replace_token(
         "import demo_widget.cli", "package_name", "demo_widget", "potato_launcher"
     )
     assert out == "import potato_launcher.cli"
+    # underscore stays a separator: compound names still rewrite
+    assert (
+        replace_token(
+            "demo_widget_extra.py", "package_name", "demo_widget", "potato_launcher"
+        )
+        == "potato_launcher_extra.py"
+    )
+    # but letter-adjacent occurrences do not
+    assert (
+        replace_token("xdemo_widget", "package_name", "demo_widget", "p")
+        == "xdemo_widget"
+    )
+
+
+def test_short_owner_author_do_not_rewrite_inside_words():
+    assert replace_token("ongoing work", "owner", "go", "potatolabs") == (
+        "ongoing work"
+    )
+    assert replace_token("go run it", "owner", "go", "potatolabs") == (
+        "potatolabs run it"
+    )
+    assert replace_token("Announcement", "author", "Ann", "Potato Farmer") == (
+        "Announcement"
+    )
+
+
+def test_app_name_upper_rewrites_digit_suffixed_codes():
+    text = "raise PressError('PRESS000') from PRESS_LOG"
+    out = replace_token(text, "app_name_upper", "PRESS", "POTATO")
+    assert "POTATO000" in out and "POTATO_LOG" in out
+    assert replace_token("EXPRESS", "app_name_upper", "PRESS", "POTATO") == ("EXPRESS")

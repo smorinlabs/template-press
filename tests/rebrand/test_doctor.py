@@ -44,3 +44,26 @@ def test_render_leak_report_is_actionable():
         [Leak(path="a.md", field="app_name", value="press", where="content")]
     )
     assert "a.md" in text and "press" in text
+
+
+def test_unreadable_file_fails_verification(src_target: Path):
+    import os
+
+    if os.name == "nt" or os.geteuid() == 0:
+        import pytest
+
+        pytest.skip("permission semantics differ on Windows/root")
+    from template_press.rebrand.engine import apply
+    from template_press.rebrand.rules import DEFAULT_RULES
+
+    from .conftest import DEST, SOURCE
+
+    apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+    secret = src_target / "unreadable.md"
+    secret.write_text("clean content\n", encoding="utf-8")
+    secret.chmod(0o000)
+    try:
+        leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+    finally:
+        secret.chmod(0o644)
+    assert any(e.where == "unverifiable" for e in leaks)

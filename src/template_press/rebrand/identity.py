@@ -130,21 +130,24 @@ class Identity:
 
 
 def token_pattern(field: str, value: str) -> re.Pattern[str] | None:
-    """Boundary matcher for fields whose values are unsafe as raw substrings.
+    """Boundary matcher — boundary-safe replacement is the default (OQ12).
 
     An app token like ``press`` is an English word inside unrelated prose
     (compress, expression, pressure). Match it as a standalone token or a
     filename/env prefix, never inside another word. Underscore counts as a
     separator on the RIGHT of app_name (press_config.toml) and on the LEFT
-    of app_name_upper (_PRESS_COMPLETE) — mirroring the proven matcher.
-    Long compound tokens (package/repo names) return None: plain substring
-    replacement, longest-first, is exact for them.
+    of app_name_upper (_PRESS_COMPLETE); digits are allowed AFTER
+    app_name_upper so identity-prefixed constants (PRESS000 error codes)
+    are rewritten. Every other field uses alphanumeric boundaries: short
+    values (owner ``go``, author ``Ann``) must not rewrite the inside of
+    unrelated words (ongoing, Announcement), while ``_``/``-``/``.``/``/``
+    remain separators so compound forms (demo_widget_extra) still match.
     """
     if field == "app_name":
         return re.compile(rf"(?<![A-Za-z0-9_-]){re.escape(value)}(?![A-Za-z0-9-])")
     if field == "app_name_upper":
-        return re.compile(rf"(?<![A-Za-z0-9-]){re.escape(value)}(?![A-Za-z0-9-])")
-    return None
+        return re.compile(rf"(?<![A-Za-z0-9-]){re.escape(value)}(?![A-Za-z-])")
+    return re.compile(rf"(?<![A-Za-z0-9]){re.escape(value)}(?![A-Za-z0-9])")
 
 
 def token_occurs(text: str, field: str, value: str) -> bool:
