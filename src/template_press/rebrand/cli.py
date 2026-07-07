@@ -176,22 +176,22 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {c}", file=sys.stderr)
             return 2
 
-        # All exit-2 gates passed — perform the deferred source-config write.
-        if write_pending:
-            if args.dry_run:
-                print(f"(dry run) would write {SOURCE_CONFIG_REL} from discovery")
-            else:
-                path = target / SOURCE_CONFIG_REL
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(render_source_config(source), encoding="utf-8")
-                print(f"wrote {SOURCE_CONFIG_REL} from discovery")
-
         rules = load_rules(target)
         plan = build_plan(target, source, dest, rules)
         print(plan.render())
         if args.dry_run:
+            if write_pending:
+                print(f"(dry run) would write {SOURCE_CONFIG_REL} from discovery")
             print("(dry run — nothing applied)")
             return 0
+        # LAST gate before apply: every exit-2 path (rules/plan included) is
+        # behind us, so the deferred source-config write can no longer be
+        # followed by a "no writes" exit code.
+        if write_pending:
+            path = target / SOURCE_CONFIG_REL
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(render_source_config(source), encoding="utf-8")
+            print(f"wrote {SOURCE_CONFIG_REL} from discovery")
     except (
         ValidationError,
         tomllib.TOMLDecodeError,

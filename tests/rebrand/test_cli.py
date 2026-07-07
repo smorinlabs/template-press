@@ -408,3 +408,27 @@ def test_accept_discovery_mismatch_leaves_no_source_config(tmp_path: Path):
     )
     assert code == 2  # layout mismatch: no package dir exists
     assert not (repo / SOURCE_CONFIG_REL).exists()
+
+
+def test_accept_discovery_bad_rules_toml_leaves_no_source_config(
+    src_target: Path, tmp_path: Path
+):
+    """Fable final review: rules/plan failures after the deferred write must
+    not leave a source-config behind on an exit-2 path."""
+    (src_target / ".press").mkdir()
+    (src_target / ".press" / "rules.toml").write_text(
+        "not [ valid toml", encoding="utf-8"
+    )
+    answers = write_answers(tmp_path)
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--accept-discovery",
+            "--allow-dirty",
+        ]
+    )
+    assert code == 2
+    assert not (src_target / SOURCE_CONFIG_REL).exists()
