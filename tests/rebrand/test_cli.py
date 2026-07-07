@@ -225,3 +225,30 @@ def test_mid_apply_oserror_exits_1_with_partial_warning(
     assert code == 1
     assert "PARTIALLY rewritten" in capsys.readouterr().err
     assert not (src_target / RECEIPT_REL).exists()
+
+
+def test_failed_lock_regeneration_exits_1_no_receipt(
+    src_target: Path, tmp_path: Path, monkeypatch, capsys
+):
+    """Greptile PR#15: a stale lockfile must never get a verified receipt."""
+    import subprocess as sp
+
+    from template_press.rebrand import cli as cli_mod
+
+    write_source_config(src_target)
+    (src_target / "uv.lock").write_text("demo_widget==0.1.0\n", encoding="utf-8")
+    real_run = sp.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:2] == ["uv", "lock"]:
+            return sp.CompletedProcess(cmd, returncode=1, stdout="", stderr="boom")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 1
+    assert "lockfile regeneration failed" in capsys.readouterr().err
+    assert not (src_target / RECEIPT_REL).exists()

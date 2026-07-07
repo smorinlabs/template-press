@@ -143,11 +143,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             print("(dry run — nothing applied)")
             return 0
-    except (ValidationError, tomllib.TOMLDecodeError, OSError) as exc:
+    except (
+        ValidationError,
+        tomllib.TOMLDecodeError,
+        OSError,
+        subprocess.CalledProcessError,
+    ) as exc:
         return _fail(str(exc))
     try:
         return _press(target, source, dest, rules)
-    except OSError as exc:
+    except (OSError, subprocess.CalledProcessError) as exc:
         # Exit 2 means "nothing applied"; a mid-apply failure is not that.
         print(
             f"error: {exc} — target may be PARTIALLY rewritten; restore with "
@@ -157,7 +162,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> None:
+def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> list[str]:
+    """Regenerate listed lockfiles; return the ones that FAILED to regenerate.
+
+    A lockfile is excluded from both rewriting and the doctor scan, so a
+    failed regeneration would leave source-identity content behind invisibly.
+    Callers must treat failures as verification failures (no receipt).
+    """
+    failed: list[str] = []
     for lockfile in rules.regenerate:
         if not (target / lockfile).is_file():
             continue
@@ -172,13 +184,27 @@ def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> No
                 report.regenerated.append(lockfile)
             else:
                 report.skipped.append(f"regenerate {lockfile} (uv lock failed)")
+                failed.append(lockfile)
         else:
             report.skipped.append(f"regenerate {lockfile} (no regenerator)")
+            failed.append(lockfile)
+    return failed
 
 
 def _press(target: Path, source: Identity, dest: Identity, rules: Rules) -> int:
     report = apply(target, source, dest, rules)
-    _regenerate_lockfiles(target, rules, report)
+    failed_locks = _regenerate_lockfiles(target, rules, report)
+    if failed_locks:
+        print(
+            f"error: lockfile regeneration failed for "
+            f"{', '.join(failed_locks)} — the lockfile still carries the old "
+            f"identity and is exempt from the doctor scan, so this rebrand "
+            f"is INCOMPLETE; no receipt written. Regenerate it, then re-run "
+            f"with --force.",
+            file=sys.stderr,
+        )
+        print(report.render(), file=sys.stderr)
+        return 1
     # Verification never honors target-side rewrite exclusions: opting a file
     # out of rewriting must not opt it out of the leak scan (EMP-01).
     doctor_rules = Rules(

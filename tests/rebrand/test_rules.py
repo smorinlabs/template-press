@@ -29,3 +29,17 @@ def test_load_rules_merges_target_overrides(tmp_path: Path):
     assert ".git" in rules.exclude_dirs  # defaults kept
     assert "docs/history.md" in rules.exclude_files
     assert rules.regenerate == ("uv.lock", "bun.lock")
+
+
+def test_load_rules_rejects_non_list_override(tmp_path: Path):
+    import pytest
+
+    from template_press.rebrand.identity import ValidationError
+
+    press = tmp_path / ".press"
+    press.mkdir()
+    (press / "rules.toml").write_text(
+        '[rules]\nextra_exclude_files = "just-a-string"\n', encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="list of strings"):
+        load_rules(tmp_path)

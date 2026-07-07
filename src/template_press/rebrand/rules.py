@@ -11,6 +11,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from template_press.rebrand.identity import ValidationError
+
 RULES_REL = Path(".press") / "rules.toml"
 
 
@@ -41,6 +43,13 @@ DEFAULT_RULES = Rules(
 )
 
 
+def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
+    value = table.get(key, default)
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ValidationError(f"{RULES_REL}: [rules] {key} must be a list of strings")
+    return value
+
+
 def load_rules(target: Path) -> Rules:
     """DEFAULT_RULES, extended by the target's .press/rules.toml if present."""
     override_path = target / RULES_REL
@@ -48,10 +57,14 @@ def load_rules(target: Path) -> Rules:
         return DEFAULT_RULES
     data = tomllib.loads(override_path.read_text(encoding="utf-8"))
     table = data.get("rules", {})
+    if not isinstance(table, dict):
+        raise ValidationError(f"{RULES_REL}: [rules] must be a table")
     return Rules(
         exclude_dirs=DEFAULT_RULES.exclude_dirs
-        | frozenset(table.get("extra_exclude_dirs", [])),
+        | frozenset(_str_list(table, "extra_exclude_dirs", [])),
         exclude_files=DEFAULT_RULES.exclude_files
-        | frozenset(table.get("extra_exclude_files", [])),
-        regenerate=tuple(table.get("regenerate", DEFAULT_RULES.regenerate)),
+        | frozenset(_str_list(table, "extra_exclude_files", [])),
+        regenerate=tuple(
+            _str_list(table, "regenerate", list(DEFAULT_RULES.regenerate))
+        ),
     )
