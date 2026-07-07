@@ -9,7 +9,7 @@ from template_press.rebrand.config import (
 )
 from template_press.rebrand.receipt import RECEIPT_REL
 
-from .conftest import DEST, SOURCE
+from .conftest import DEST, SOURCE, write_answers_file
 
 
 def write_source_config(target: Path) -> None:
@@ -30,14 +30,7 @@ def write_source_config(target: Path) -> None:
 
 
 def write_answers(base: Path) -> Path:
-    p = base / "answers.toml"
-    p.write_text(
-        "[answers]\n"
-        + "\n".join(f'{k} = "{v}"' for k, v in DEST.as_dict_prompted().items())
-        + "\n",
-        encoding="utf-8",
-    )
-    return p
+    return write_answers_file(base, DEST)
 
 
 def test_missing_target_dir_exits_2(tmp_path: Path):

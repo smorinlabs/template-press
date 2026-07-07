@@ -1,0 +1,42 @@
+# R1/R2/R3 rebrand acceptance matrix (EMPIRICAL_BUGS.md, reborn as a
+# repeatable harness). Live: R1/R2 clone the real py-launch-blueprint from
+# GitHub; R3 presses a throwaway clone of this repo. Scheduled (network
+# dependency + real clones shouldn't gate every PR) plus workflow_dispatch
+# and a paths-filtered pull_request trigger for direct rebrand changes.
+# Locally: `just matrix` runs the identical script.
+
+name: rebrand-matrix
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'  # weekly, Monday 06:00 UTC
+  pull_request:
+    paths:
+      - src/template_press/rebrand/**
+      - tests/rebrand/**
+      - scripts/rebrand_matrix.sh
+
+permissions: {}
+
+concurrency:
+  group: rebrand-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  matrix:
+    name: r1-r2-r3
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Sync locked dev env
+        run: uv sync --locked --group dev --extra web
+
+      - name: Run R1/R2/R3 acceptance matrix
+        run: scripts/rebrand_matrix.sh

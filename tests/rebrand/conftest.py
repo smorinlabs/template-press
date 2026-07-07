@@ -113,3 +113,14 @@ def src_target(tmp_path: Path) -> Path:
 @pytest.fixture
 def flat_target(tmp_path: Path) -> Path:
     return make_target(tmp_path, layout="flat")
+
+
+def write_answers_file(base: Path, identity: Identity) -> Path:
+    p = base / "answers.toml"
+    p.write_text(
+        "[answers]\n"
+        + "\n".join(f'{k} = "{v}"' for k, v in identity.as_dict_prompted().items())
+        + "\n",
+        encoding="utf-8",
+    )
+    return p

@@ -243,6 +243,11 @@ alias tc := typecheck
 
 alias t := test
 
+# R1/R2/R3 rebrand acceptance matrix (live: clones py-launch-blueprint)
+[group('test'), group('dev')]
+matrix:
+    scripts/rebrand_matrix.sh
+
 # Run tests with coverage and generate term-missing + HTML + XML reports
 [group('test'), group('dev')]
 @coverage:
