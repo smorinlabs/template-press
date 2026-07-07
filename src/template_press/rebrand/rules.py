@@ -21,6 +21,12 @@ class Rules:
     exclude_dirs: frozenset[str]
     exclude_files: frozenset[str]  # POSIX paths relative to the target root
     regenerate: tuple[str, ...]  # lockfiles regenerated (not rewritten)
+    # The deliberate, committed ignore set: directories whose surviving
+    # source-identity content is VALID (vendored trees, historical docs).
+    # Exempts them from the doctor's leak scan only — never from rewriting.
+    # Matched like exclude_dirs: by single path COMPONENT at any depth
+    # ("legacy" ignores every dir named legacy; "docs/old" never matches).
+    verify_ignore: frozenset[str] = frozenset()
 
 
 DEFAULT_RULES = Rules(
@@ -43,10 +49,20 @@ DEFAULT_RULES = Rules(
 )
 
 
+_COMPONENT_KEYS = frozenset({"extra_exclude_dirs", "verify_ignore"})
+
+
 def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
     value = table.get(key, default)
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise ValidationError(f"{RULES_REL}: [rules] {key} must be a list of strings")
+    if key in _COMPONENT_KEYS:
+        nested = [v for v in value if "/" in v or "\\" in v]
+        if nested:
+            raise ValidationError(
+                f"{RULES_REL}: [rules] {key} entries are single directory "
+                f"NAMES matched at any depth, not paths — invalid: {nested}"
+            )
     return value
 
 
@@ -67,4 +83,5 @@ def load_rules(target: Path) -> Rules:
         regenerate=tuple(
             _str_list(table, "regenerate", list(DEFAULT_RULES.regenerate))
         ),
+        verify_ignore=frozenset(_str_list(table, "verify_ignore", [])),
     )

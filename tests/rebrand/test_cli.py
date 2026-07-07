@@ -271,3 +271,164 @@ def test_dry_run_with_accept_discovery_writes_nothing(
     assert code == 0
     assert not (src_target / SOURCE_CONFIG_REL).exists()
     assert "would write" in capsys.readouterr().out
+
+
+def test_chained_identity_collision_exits_2(src_target: Path, tmp_path: Path):
+    """Sweep F2: dest package == source app must refuse, not double-press."""
+    wrong_src = SOURCE.__class__(
+        **{**SOURCE.as_dict_prompted(), "package_name": "alpha", "app_name": "beta"}
+    )
+    (src_target / ".press").mkdir(exist_ok=True)
+    (src_target / SOURCE_CONFIG_REL).write_text(
+        render_source_config(wrong_src), encoding="utf-8"
+    )
+    # collision check runs before mismatch would matter — craft answers only
+    dest = {
+        **DEST.as_dict_prompted(),
+        "package_name": "beta",
+        "app_name": "gamma",
+    }
+    answers = tmp_path / "coll.toml"
+    answers.write_text(
+        "[answers]\n" + "\n".join(f'{k} = "{v}"' for k, v in dest.items()) + "\n",
+        encoding="utf-8",
+    )
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 2
+
+
+def test_embedding_old_app_name_exits_2_with_guidance(
+    src_target: Path, tmp_path: Path, capsys
+):
+    """Sweep F4: press -> press_two would deadlock the verifier; refuse."""
+    write_source_config(src_target)
+    dest = {**DEST.as_dict_prompted(), "app_name": "press_two"}
+    answers = tmp_path / "embed.toml"
+    answers.write_text(
+        "[answers]\n" + "\n".join(f'{k} = "{v}"' for k, v in dest.items()) + "\n",
+        encoding="utf-8",
+    )
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 2
+    assert "intermediate identity" in capsys.readouterr().err
+
+
+def test_extra_exclude_dirs_no_longer_hides_leaks(src_target: Path, tmp_path: Path):
+    """Sweep F3: rewrite dir-excludes must not blind the doctor."""
+    write_source_config(src_target)
+    legacy = src_target / "legacy"
+    legacy.mkdir()
+    (legacy / "old.txt").write_text("demo_widget stays\n", encoding="utf-8")
+    (src_target / ".press" / "rules.toml").write_text(
+        '[rules]\nextra_exclude_dirs = ["legacy"]\n', encoding="utf-8"
+    )
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 1
+    assert not (src_target / RECEIPT_REL).exists()
+
+
+def test_verify_ignore_is_the_sanctioned_ignore_set(src_target: Path, tmp_path: Path):
+    write_source_config(src_target)
+    legacy = src_target / "legacy"
+    legacy.mkdir()
+    (legacy / "old.txt").write_text("demo_widget stays on purpose\n", encoding="utf-8")
+    (src_target / ".press" / "rules.toml").write_text(
+        '[rules]\nextra_exclude_dirs = ["legacy"]\nverify_ignore = ["legacy"]\n',
+        encoding="utf-8",
+    )
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 0
+    assert (src_target / RECEIPT_REL).is_file()
+    text = (legacy / "old.txt").read_text(encoding="utf-8")
+    assert "demo_widget" in text  # deliberately preserved
+
+
+def test_partial_rebrand_keeping_author_verifies(src_target: Path, tmp_path: Path):
+    """Fable sweep finding: unchanged fields are not leaks."""
+    write_source_config(src_target)
+    dest = {
+        **DEST.as_dict_prompted(),
+        "author": SOURCE.author,
+        "email": SOURCE.email,
+    }
+    answers = tmp_path / "partial.toml"
+    answers.write_text(
+        "[answers]\n" + "\n".join(f'{k} = "{v}"' for k, v in dest.items()) + "\n",
+        encoding="utf-8",
+    )
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 0
+    assert (src_target / RECEIPT_REL).is_file()
+
+
+def test_accept_discovery_mismatch_leaves_no_source_config(tmp_path: Path):
+    """Docs sweep W1: exit 2 must mean no writes, even with --accept-discovery."""
+    import subprocess as sp
+
+    repo = tmp_path / "nolayout"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "ghost_pkg"\nversion = "0.1.0"\n'
+        'authors = [{ name = "G Host", email = "g@h.co" }]\n'
+        "[project.scripts]\n"
+        'ghost = "ghost_pkg.cli:main"\n',
+        encoding="utf-8",
+    )
+    for cmd in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "t@e.co"],
+        ["config", "user.name", "T"],
+        ["remote", "add", "origin", "https://github.com/gh/ghost-pkg.git"],
+        ["add", "-A"],
+        ["commit", "-q", "-m", "x"],
+    ):
+        sp.run(["git", "-C", str(repo), *cmd], check=True, capture_output=True)  # noqa: S603, S607
+    answers = write_answers(tmp_path)
+    code = main(
+        [
+            "--target",
+            str(repo),
+            "--config",
+            str(answers),
+            "--accept-discovery",
+            "--allow-dirty",
+        ]
+    )
+    assert code == 2  # layout mismatch: no package dir exists
+    assert not (repo / SOURCE_CONFIG_REL).exists()
+
+
+def test_accept_discovery_bad_rules_toml_leaves_no_source_config(
+    src_target: Path, tmp_path: Path
+):
+    """Fable final review: rules/plan failures after the deferred write must
+    not leave a source-config behind on an exit-2 path."""
+    (src_target / ".press").mkdir()
+    (src_target / ".press" / "rules.toml").write_text(
+        "not [ valid toml", encoding="utf-8"
+    )
+    answers = write_answers(tmp_path)
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--accept-discovery",
+            "--allow-dirty",
+        ]
+    )
+    assert code == 2
+    assert not (src_target / SOURCE_CONFIG_REL).exists()

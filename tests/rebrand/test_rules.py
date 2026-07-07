@@ -43,3 +43,17 @@ def test_load_rules_rejects_non_list_override(tmp_path: Path):
     )
     with pytest.raises(ValidationError, match="list of strings"):
         load_rules(tmp_path)
+
+
+def test_nested_dir_entries_are_rejected_loudly(tmp_path: Path):
+    import pytest
+
+    from template_press.rebrand.identity import ValidationError
+
+    press = tmp_path / ".press"
+    press.mkdir()
+    (press / "rules.toml").write_text(
+        '[rules]\nverify_ignore = ["docs/history"]\n', encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="single directory"):
+        load_rules(tmp_path)

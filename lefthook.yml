@@ -69,9 +69,9 @@ pre-push:
     # WL-001: locked via the dev group (`uv run`, not floating `uvx`).
     bandit:
       run: uv run bandit -r src/template_press/ -c pyproject.toml
-    # Init-system integrity — these are the checks the blueprint-guard
-    # CI workflow runs. Caught locally at pre-push, they prevent the
-    # "push → CI fails → push again" cycle that PR #319 went through.
+    # Init-system integrity — inherited from the blueprint, where a
+    # blueprint-guard CI workflow mirrors them (this repo has no such
+    # workflow; these local hooks are the only enforcement here).
     # `uv run --script` (not `uv run python ...`) so PEP 723 inline metadata
     # is honored — check_path_filter.py needs pyyaml from its dep block.
     # Marker-gate (P0004 dogfood D-v2-3 / PROBLEM-11): these are

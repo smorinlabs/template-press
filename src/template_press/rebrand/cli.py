@@ -23,7 +23,7 @@ from template_press.rebrand.config import (
 from template_press.rebrand.discovery import discover, mismatches
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import ApplyReport, apply, build_plan
-from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.identity import Identity, ValidationError, token_occurs
 from template_press.rebrand.receipt import read_receipt, write_receipt
 from template_press.rebrand.rules import DEFAULT_RULES, Rules, load_rules
 
@@ -57,8 +57,14 @@ def check_preconditions(target: Path, force: bool, allow_dirty: bool) -> str | N
 
 
 def _resolve_source(
-    target: Path, override: Path | None, accept_discovery: bool, dry_run: bool
-) -> Identity | int:
+    target: Path, override: Path | None, accept_discovery: bool
+) -> tuple[Identity, bool] | int:
+    """Resolve the FROM identity; second element = write source-config later.
+
+    The write is DEFERRED to main() so it happens only after every exit-2
+    gate has passed — keeping "exit 2 means no writes" true by construction.
+    """
+    write_pending = False
     source = load_source_config(target, override)
     if source is None:
         found = discover(target)
@@ -78,27 +84,14 @@ def _resolve_source(
                 f"source-config by hand."
             )
         try:
-            candidate = Identity.from_mapping({k: v for k, v in proposal.items() if v})
+            candidate = Identity.from_mapping(
+                {k: v for k, v in proposal.items() if v is not None}
+            )
             candidate.validate()
         except ValidationError as exc:
             return _fail(f"discovered identity is invalid: {exc}")
-        if not accept_discovery:
-            print(
-                f"no source-config found at {SOURCE_CONFIG_REL}.\n"
-                f"Discovery proposes:\n\n{render_source_config(candidate)}\n"
-                f"Save it there (and commit), or re-run with "
-                f"--accept-discovery to write + use it.",
-            )
-            return 2
-        if dry_run:
-            # A preview must be side-effect free; the real run writes it.
-            print(f"(dry run) would write {SOURCE_CONFIG_REL} from discovery")
-        else:
-            path = target / SOURCE_CONFIG_REL
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(render_source_config(candidate), encoding="utf-8")
-            print(f"wrote {SOURCE_CONFIG_REL} from discovery")
         source = candidate
+        write_pending = True
     problems = mismatches(source, discover(target))
     if problems:
         print(
@@ -108,7 +101,29 @@ def _resolve_source(
         for p in problems:
             print(f"  {p}")
         return 2
-    return source
+    return source, write_pending
+
+
+def _collisions(source: Identity, dest: Identity) -> list[str]:
+    """Destination values that embed a CHANGED source token.
+
+    Sequential substitution would re-rewrite such output (old app name
+    becoming the new package name chains two replacements), and the doctor
+    would flag correct output as a leak (press → press_two). Refusing up
+    front with guidance beats either silent corruption or a permanent
+    verification failure.
+    """
+    out: list[str] = []
+    src, dst = source.as_dict(), dest.as_dict()
+    changed = {f: v for f, v in src.items() if v != dst[f]}
+    for dest_field, dest_value in dst.items():
+        for src_field, src_value in changed.items():
+            if token_occurs(dest_value, src_field, src_value):
+                out.append(
+                    f"destination {dest_field}={dest_value!r} contains the "
+                    f"source {src_field} token {src_value!r}"
+                )
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -128,11 +143,18 @@ def main(argv: list[str] | None = None) -> int:
         if problem is not None:
             return _fail(problem)
 
-        source = _resolve_source(
-            target, args.source_config, args.accept_discovery, args.dry_run
-        )
-        if isinstance(source, int):
-            return source
+        resolved = _resolve_source(target, args.source_config, args.accept_discovery)
+        if isinstance(resolved, int):
+            return resolved
+        source, write_pending = resolved
+        if write_pending and not args.accept_discovery:
+            print(
+                f"no source-config found at {SOURCE_CONFIG_REL}.\n"
+                f"Discovery proposes:\n\n{render_source_config(source)}\n"
+                f"Save it there (and commit), or re-run with "
+                f"--accept-discovery to write + use it.",
+            )
+            return 2
 
         if args.config is None:
             return _fail("--config ANSWERS.toml is required")
@@ -142,13 +164,34 @@ def main(argv: list[str] | None = None) -> int:
             return _fail(
                 "source and destination identities are identical — nothing to press"
             )
+        collisions = _collisions(source, dest)
+        if collisions:
+            print(
+                "error: destination identity embeds source tokens — a single "
+                "press cannot produce a verifiable result; press in two steps "
+                "via an intermediate identity:",
+                file=sys.stderr,
+            )
+            for c in collisions:
+                print(f"  {c}", file=sys.stderr)
+            return 2
 
         rules = load_rules(target)
         plan = build_plan(target, source, dest, rules)
         print(plan.render())
         if args.dry_run:
+            if write_pending:
+                print(f"(dry run) would write {SOURCE_CONFIG_REL} from discovery")
             print("(dry run — nothing applied)")
             return 0
+        # LAST gate before apply: every exit-2 path (rules/plan included) is
+        # behind us, so the deferred source-config write can no longer be
+        # followed by a "no writes" exit code.
+        if write_pending:
+            path = target / SOURCE_CONFIG_REL
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(render_source_config(source), encoding="utf-8")
+            print(f"wrote {SOURCE_CONFIG_REL} from discovery")
     except (
         ValidationError,
         tomllib.TOMLDecodeError,
@@ -211,14 +254,17 @@ def _press(target: Path, source: Identity, dest: Identity, rules: Rules) -> int:
         )
         print(report.render(), file=sys.stderr)
         return 1
-    # Verification never honors target-side rewrite exclusions: opting a file
-    # out of rewriting must not opt it out of the leak scan (EMP-01).
+    # Verification never honors target-side REWRITE exclusions (EMP-01):
+    # neither extra_exclude_files nor extra_exclude_dirs can hide content
+    # from the doctor. The only sanctioned exemption is the explicit,
+    # committed verify_ignore list — the deliberate ignore set.
     doctor_rules = Rules(
-        exclude_dirs=rules.exclude_dirs,
+        exclude_dirs=DEFAULT_RULES.exclude_dirs | rules.verify_ignore,
         exclude_files=DEFAULT_RULES.exclude_files,
         regenerate=rules.regenerate,
+        verify_ignore=rules.verify_ignore,
     )
-    leaks = find_leaks(target, source, doctor_rules)
+    leaks = find_leaks(target, source, doctor_rules, dest=dest)
     if leaks:
         print(render_leak_report(leaks), file=sys.stderr)
         print(report.render(), file=sys.stderr)

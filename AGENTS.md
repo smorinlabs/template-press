@@ -63,8 +63,10 @@ workflow enforce it).
 1. `just setup` (idempotent — REQUIRED in fresh clones/containers so the
    hooks in step 4 actually fire; also refreshes deps).
 2. `just check` (full pipeline must pass).
-3. Init-system integrity (CI `blueprint-guard` + `init-integration` enforce
-   these). Rule behind the drift check: any added/renamed file containing an
+3. Init-system integrity (enforced locally by the lefthook pre-push
+   commands `init-guard-wiring`/`init-manifest-drift`/`init-path-filter`/
+   `init-tests`, marker-gated on `init/.blueprint-initialized` — no CI
+   workflow runs these in this repo). Rule behind the drift check: any added/renamed file containing an
    identity value (`template_press`, `template-press`, `press`,
    `PRESS`, author/owner names) must be listed in that value's `[[replace]]`
    block in `init/manifest.toml`, or a fork's `just init` ships
@@ -90,8 +92,9 @@ Conventional Commits with lowercase subject (commitlint enforces):
 <type>(<optional scope>): <lowercase subject>
 ```
 
-Allowed types: `feat`, `fix`, `perf`, `refactor`, `revert`, `deps`, `chore`,
-`docs`, `style`, `test`, `ci`, `build`.
+Allowed types: `feat`, `fix`, `perf`, `refactor`, `revert`, `chore`,
+`docs`, `style`, `test`, `ci`, `build` (commitlint-enforced; `deps` is NOT
+a type here — use `build(deps):` for dependency bumps).
 
 ## Code style
 
