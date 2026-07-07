@@ -144,3 +144,20 @@ def test_app_name_upper_rewrites_digit_suffixed_codes():
     out = replace_token(text, "app_name_upper", "PRESS", "POTATO")
     assert "POTATO000" in out and "POTATO_LOG" in out
     assert replace_token("EXPRESS", "app_name_upper", "PRESS", "POTATO") == ("EXPRESS")
+
+
+def test_empty_author_is_rejected():
+    with pytest.raises(ValidationError, match="author"):
+        make_identity(author="").validate()
+    with pytest.raises(ValidationError, match="author"):
+        make_identity(author="line\nbreak").validate()
+
+
+def test_token_pattern_refuses_empty_value():
+    with pytest.raises(ValidationError, match="empty"):
+        token_pattern("author", "")
+
+
+def test_replacement_is_literal_not_a_regex_template():
+    out = replace_token("by Old Name.", "author", "Old Name", r"C:\Users\1 Bob")
+    assert out == r"by C:\Users\1 Bob."

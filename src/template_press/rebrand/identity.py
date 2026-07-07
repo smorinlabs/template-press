@@ -54,6 +54,17 @@ def validate_email(value: str) -> str:
     return value
 
 
+def validate_author(value: str) -> str:
+    # No charset restriction (names are worldwide), but a degenerate value
+    # is catastrophic: an empty token compiles to a zero-width match-anywhere
+    # pattern and control chars break the rendered TOML/receipts.
+    if not value.strip():
+        raise ValidationError("author must not be empty")
+    if any(ord(ch) < 0x20 or ch == "\x7f" for ch in value):
+        raise ValidationError(f"author must not contain control characters: {value!r}")
+    return value
+
+
 def validate_app_name(name: str) -> str:
     # The app short name becomes the CLI command, file name prefixes
     # (<app>_config.toml), and — uppercased — the env-var prefix, so it must
@@ -70,6 +81,7 @@ VALIDATORS = {
     "package_name": validate_package_name,
     "repo_name": validate_repo_name,
     "app_name": validate_app_name,
+    "author": validate_author,
     "owner": validate_owner,
     "email": validate_email,
 }
@@ -143,6 +155,11 @@ def token_pattern(field: str, value: str) -> re.Pattern[str] | None:
     unrelated words (ongoing, Announcement), while ``_``/``-``/``.``/``/``
     remain separators so compound forms (demo_widget_extra) still match.
     """
+    if not value:
+        # A zero-width pattern matches everywhere and would splice the
+        # replacement between every token of every file. Validators reject
+        # empty values upstream; this guard makes the invariant local.
+        raise ValidationError(f"identity field {field!r} must not be empty")
     if field == "app_name":
         return re.compile(rf"(?<![A-Za-z0-9_-]){re.escape(value)}(?![A-Za-z0-9-])")
     if field == "app_name_upper":
@@ -160,5 +177,8 @@ def token_occurs(text: str, field: str, value: str) -> bool:
 def replace_token(text: str, field: str, current: str, replacement: str) -> str:
     pattern = token_pattern(field, current)
     if pattern is not None:
-        return pattern.sub(replacement, text)
+        # Function replacement: the destination value is LITERAL text, never
+        # a re template (a backslash in an author name must not become a
+        # group reference or crash re.sub).
+        return pattern.sub(lambda _: replacement, text)
     return text.replace(current, replacement)
