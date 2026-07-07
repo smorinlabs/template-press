@@ -8,7 +8,7 @@ TARGET is the undo button (`git checkout . && git clean -fd`).
 
 from __future__ import annotations
 
-import subprocess
+import subprocess  # nosec B404 — git ls-files enumerates the target
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -56,7 +56,7 @@ def iter_target_files(target: Path, rules: Rules) -> list[Path]:
     Uses `git ls-files --cached --others --exclude-standard` so the scan
     respects the target's .gitignore.
     """
-    result = subprocess.run(  # noqa: S603
+    result = subprocess.run(  # noqa: S603 # nosec B603 B607
         [  # noqa: S607
             "git",
             "-C",

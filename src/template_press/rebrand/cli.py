@@ -9,7 +9,7 @@ found after apply (no receipt), 2 precondition/config error (no writes).
 from __future__ import annotations
 
 import argparse
-import subprocess
+import subprocess  # nosec B404 — invokes git/uv on user-supplied targets
 import sys
 import tomllib
 from pathlib import Path
@@ -45,7 +45,7 @@ def check_preconditions(target: Path, force: bool, allow_dirty: bool) -> str | N
             "re-press with --force"
         )
     if not allow_dirty:
-        status = subprocess.run(  # noqa: S603
+        status = subprocess.run(  # noqa: S603 # nosec B603 B607
             ["git", "-C", str(target), "status", "--porcelain"],  # noqa: S607
             check=True,
             capture_output=True,
@@ -162,7 +162,7 @@ def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> No
         if not (target / lockfile).is_file():
             continue
         if lockfile == "uv.lock":
-            result = subprocess.run(
+            result = subprocess.run(  # nosec B603 B607
                 ["uv", "lock"],  # noqa: S607
                 cwd=target,
                 capture_output=True,

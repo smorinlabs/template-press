@@ -10,7 +10,7 @@ the silent half-rebrand failure mode (EMPIRICAL R2) with a hard stop.
 from __future__ import annotations
 
 import re
-import subprocess
+import subprocess  # nosec B404 — reads git origin of the target
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,7 +35,7 @@ class Discovered:
 
 
 def _origin(target: Path) -> tuple[str | None, str | None]:
-    result = subprocess.run(  # noqa: S603
+    result = subprocess.run(  # noqa: S603 # nosec B603 B607
         ["git", "-C", str(target), "remote", "get-url", "origin"],  # noqa: S607
         capture_output=True,
         text=True,
