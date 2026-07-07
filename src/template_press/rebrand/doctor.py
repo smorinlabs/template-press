@@ -1,0 +1,62 @@
+"""No-leak verification: the gate between apply() and the receipt (EMP-01).
+
+A rebrand that leaves ANY source-identity token behind — in file content or
+in a path name — is a failed rebrand. The CLI must exit non-zero and write
+no receipt. Port of init_doctor.check_no_identity_leftover, generalized to
+(target, identity, rules) and extended with path-name checking.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from template_press.rebrand.engine import _read_text, iter_target_files
+from template_press.rebrand.identity import Identity, token_occurs
+from template_press.rebrand.rules import Rules
+
+PATH_FIELDS: tuple[str, ...] = ("package_name", "repo_name", "app_name")
+
+
+@dataclass(frozen=True)
+class Leak:
+    path: str
+    field: str
+    value: str
+    where: str  # "content" | "path"
+
+
+def find_leaks(target: Path, source: Identity, rules: Rules) -> list[Leak]:
+    leaks: list[Leak] = []
+    fields = source.as_dict()
+    for path in iter_target_files(target, rules):
+        rel = path.relative_to(target)
+        rel_posix = rel.as_posix()
+        text = _read_text(path)
+        if text is not None:
+            for field_name, value in fields.items():
+                if token_occurs(text, field_name, value):
+                    leaks.append(Leak(rel_posix, field_name, value, "content"))
+        for component in rel.parts:
+            for field_name in PATH_FIELDS:
+                if token_occurs(component, field_name, fields[field_name]):
+                    leaks.append(
+                        Leak(rel_posix, field_name, fields[field_name], "path")
+                    )
+    return leaks
+
+
+def render_leak_report(leaks: list[Leak], limit: int = 20) -> str:
+    lines = [
+        f"error: {len(leaks)} source-identity leftover(s) — rebrand is "
+        f"INCOMPLETE; no receipt written."
+    ]
+    for leak in leaks[:limit]:
+        lines.append(f"  [{leak.where}] {leak.path}: {leak.field}={leak.value!r}")
+    if len(leaks) > limit:
+        lines.append(f"  … and {len(leaks) - limit} more")
+    lines.append(
+        "hint: fix the leftovers (or exclude generated files via "
+        ".press/rules.toml) and re-run with --force."
+    )
+    return "\n".join(lines)
