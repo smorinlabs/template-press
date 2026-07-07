@@ -136,3 +136,59 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
     for old, new in sorted(rename_map.items()):
         plan.items.append(PlanItem("rename", old, f"→ {new}"))
     return plan
+
+
+@dataclass
+class ApplyReport:
+    replaced: list[str] = field(default_factory=list)
+    renamed: list[tuple[str, str]] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    regenerated: list[str] = field(default_factory=list)
+
+    def render(self) -> str:
+        return (
+            f"Applied: {len(self.replaced)} replaced, "
+            f"{len(self.renamed)} renamed, "
+            f"{len(self.regenerated)} regenerated, "
+            f"{len(self.skipped)} skipped."
+        )
+
+
+def _apply_replacements(
+    target: Path,
+    pairs: list[tuple[str, str, str]],
+    rules: Rules,
+    report: ApplyReport,
+) -> None:
+    for path in iter_target_files(target, rules):
+        rel = path.relative_to(target).as_posix()
+        text = _read_text(path)
+        if text is None:
+            report.skipped.append(f"replace {rel} (binary)")
+            continue
+        new_text = text
+        for f, cur, repl in pairs:
+            new_text = replace_token(new_text, f, cur, repl)
+        if new_text != text:
+            path.write_text(new_text, encoding="utf-8")
+            report.replaced.append(rel)
+
+
+def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> ApplyReport:
+    """Execute the rebrand: replace pass, then rename pass."""
+    source.validate()
+    dest.validate()
+    report = ApplyReport()
+    pairs = replacement_pairs(source, dest)
+    _apply_replacements(target, pairs, rules, report)
+    _apply_renames(target, pairs, rules, report)
+    return report
+
+
+def _apply_renames(
+    target: Path,
+    pairs: list[tuple[str, str, str]],
+    rules: Rules,
+    report: ApplyReport,
+) -> None:
+    raise NotImplementedError  # implemented in the rename-pass task
