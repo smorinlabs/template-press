@@ -25,7 +25,8 @@ mismatch; a completed run is verified leak-free before a receipt is written.
    NO receipt (the target is already rewritten — restore it first:
    `git -C <TARGET> checkout . && git clean -fd`; then fix the root cause,
    or — for surviving identity that is VALID to keep, e.g. vendored code or
-   historical docs — add its directory to `verify_ignore` in
+   historical docs — add its directory NAME to both `extra_exclude_dirs`
+   (skips rewriting) and `verify_ignore` (skips the leak scan) in
    `.press/rules.toml`, and press again from a clean tree; do NOT re-run
    with `--force` as the remedy); 2 = precondition/mismatch (report, do not
    retry blindly).

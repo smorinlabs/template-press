@@ -49,10 +49,20 @@ DEFAULT_RULES = Rules(
 )
 
 
+_COMPONENT_KEYS = frozenset({"extra_exclude_dirs", "verify_ignore"})
+
+
 def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
     value = table.get(key, default)
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise ValidationError(f"{RULES_REL}: [rules] {key} must be a list of strings")
+    if key in _COMPONENT_KEYS:
+        nested = [v for v in value if "/" in v or "\\" in v]
+        if nested:
+            raise ValidationError(
+                f"{RULES_REL}: [rules] {key} entries are single directory "
+                f"NAMES matched at any depth, not paths — invalid: {nested}"
+            )
     return value
 
 
