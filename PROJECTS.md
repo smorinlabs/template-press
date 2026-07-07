@@ -24,7 +24,7 @@ file by hand — see Conventions.
 |-----|-------|------------------------------------------------------------------------|
 | P01 | `[x]` | [Init app-name rebrand robustness](projects/P01-init-rebrand-robustness.md) — per-field drift coverage (B) + derive non-contract internals (C) |
 | P02 | `[x]` | [Repo simplification & organization (SIMP series)](projects/P02-repo-simplification.md) — single-purpose PRs to simplify/consolidate Justfile, docs, setup, tests, workflows, agent configs |
-| P03 | `[?]` | [External-target rebrand press (clean-core rebuild)](projects/P03-external-target-rebrand-press-.md) — rebuild as standalone press: rebrand → provision, verify-then-mark |
+| P03 | `[~]` | [External-target rebrand press (clean-core rebuild)](projects/P03-external-target-rebrand-press-.md) — rebuild as standalone press: rebrand → provision, verify-then-mark |
 
 ## Conventions
 
