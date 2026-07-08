@@ -21,7 +21,7 @@
 name = "template_press"
 # ITM-070 — static version (ADR-06 cutover). release-please bumps this.
 version = "2.1.1"
-description = "CLI tools for interacting with Py, including project search functionality"
+description = "Standalone rebrand utility — press a new identity onto an external target repo"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT" # PEP 639 license expression (ITM-070, round-19).
@@ -39,34 +39,9 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = [
-  "click>=8.1.0",
-  "pydantic>=2.0.0",   # structured result models (the JSON representation)
-  "structlog>=24.1.0", # structured logging (human-friendly TTY / JSON otherwise)
-  "tomli-w>=1.0.0",    # writing the TOML config file (`config set`)
-  "requests>=2.31.0",
-  "rich>=13.0.0",
-]
-
-# Single-distribution + extras strategy. The library (core/) and CLI always
-# install; the web service ships behind the `web` extra:
-#   uv sync --extra web   /   pip install template-press[web]
-# Tracing is a further opt-in (`otel` extra) — heavy deps, soft-imported.
-[project.optional-dependencies]
-web = [
-  "fastapi>=0.110.0",
-  "uvicorn[standard]>=0.29.0",
-  "pydantic-settings>=2.4.0",                 # WEB-30 typed env settings
-  "fastapi-pagination>=0.12.26",              # WEB-03 pagination conventions
-  "slowapi>=0.1.9",                           # WEB-22 rate limiting
-  "prometheus-fastapi-instrumentator>=7.0.0", # WEB-11 RED metrics + /metrics
-]
-otel = [
-  # WEB-10 — distributed tracing (soft-imported by web/telemetry.py).
-  "opentelemetry-sdk>=1.27.0",
-  "opentelemetry-exporter-otlp>=1.27.0",
-  "opentelemetry-instrumentation-fastapi>=0.48b0",
-]
+# The rebrand engine is pure standard library (tomllib, re, dataclasses,
+# subprocess) — the shipped utility has ZERO runtime dependencies.
+dependencies = []
 
 # ITM-063 — PEP 735 dependency-groups (round-13 decision). Replaces
 # [project.optional-dependencies] dev+docs. Install via `uv sync --group <name>`.
@@ -76,10 +51,6 @@ dev = [
   "pytest-cov>=4.1.0",
   "ty>=0.0.1a16",        # per ADR-03 (pre-1.0; bump as needed)
   "ruff>=0.1.0",
-  "httpx>=0.27.0",       # fastapi TestClient transport (tests/web; web extra)
-  "schemathesis>=4.0.0", # WEB-50 contract fuzzing from the OpenAPI schema
-  "types-requests",
-  "types-Pygments",
   "cogapp",
   # WL-001 — hook/CI tools pinned via uv.lock (run with `uv run`, not floating
   # `uvx`), so local hooks and CI use the same version and upgrades arrive as
@@ -107,11 +78,12 @@ docs = [
 
 
 [project.scripts]
-# Noun-verb CLI (gh-style): press <noun> <verb>
-press = "template_press.cli.main:cli"
+# Noun-verb CLI (design 0006 §2): press <verb>. `rebrand` is live; `provision`
+# and `status` arrive with the M6 Provision phase.
+press = "template_press.press_cli:main"
 # Alias escape hatch (design 0004 §2): a legacy `press` exists on PyPI, so
 # ship `tpress` as a collision-proof alias console script.
-tpress = "template_press.cli.main:cli"
+tpress = "template_press.press_cli:main"
 
 # ITM-072 — package metadata URLs (round 19).
 [project.urls]
@@ -184,14 +156,8 @@ max-line-length = 88
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"] # Ignore unused imports in __init__.py files
 "tests/*" = ["S101", "S105", "S106"] # Ignore assert statements in tests
-"init/tests/**" = ["S101", "S105", "S106"] # same exemption — pytest convention
-"init/**" = [
-  "S603",
-  "S607",
-] # init/ wraps gh/just/uv via subprocess; that's the point
 # S101: assert statements removed under -O — security risk if assert is the only gate.
 # S105/S106: hardcoded password strings/variables in code.
-# S603/S607: subprocess module use + partial-path executables — init/ tooling wraps gh/just/uv intentionally.
 
 # ITM-018 — explicit format config (round-2; mirrors source). Values match Ruff
 # defaults but being explicit prevents silent drift if defaults change.
@@ -232,7 +198,7 @@ reportUnusedClass = true
 # ITM-027 — bandit config (round 3). Tests legitimately use `assert`
 # (pytest convention) — exclude_dirs covers tests/.
 [tool.bandit]
-exclude_dirs = ["tests", "init/tests", ".venv", "build", "dist"]
+exclude_dirs = ["tests", ".venv", "build", "dist"]
 skips = []                                                       # No global skips; add with rationale only.
 
 [tool.pytest.ini_options]

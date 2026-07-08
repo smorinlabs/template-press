@@ -8,146 +8,93 @@
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 [![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-yellow.svg)](https://www.conventionalcommits.org/)
 
-# Py Launch Blueprint: A Production-Ready 🐍 Python Project Template with Integrated Best Practices
- Py Launch Blueprint is a comprehensive Python project template that eliminates setup friction by providing a pre-configured development environment with carefully selected tools for linting, formatting, and type checking. It includes an annotated CLI example and detailed documentation explaining each tool choice and configuration decision, making it an ideal starting point for professional Python projects.
+# template-press
 
-![Py Launch Blueprint Logo](./assets/images/logos/template_press_logo_100x100.png)
+**Press a new identity onto an existing repository.** template-press is a
+standalone command-line utility: you point it at a target repo, it discovers
+and *validates* that repo's current identity, rewrites every occurrence to a
+new identity, and — only after verifying that none of the old identity
+survives — writes a receipt. A wrong or partial run fails loudly instead of
+silently corrupting the target.
 
-## Why Choose Py Launch Blueprint?
+It is **not** a project template you fork; it is a tool you run against other
+repos, one at a time. The rebrand engine is pure standard library, so the
+installed package has **zero runtime dependencies**.
 
-Py Launch Blueprint eliminates the setup friction in Python projects by providing a production-ready template with carefully curated tools and best practices.
-
-## Full documentation on ReadTheDocs
-- [template-press Docs](https://template-press.readthedocs.io/en/latest/)
-
-### 🚀 Key Features
-
-**Zero-config** development environment with **type safety** built in.
-
-## ✨ Features TLDR
-- 🛠️ **Dev Tools**: Ruff (linting/formatting), `ty` (type checking, Astral), lefthook (hooks), commitlint
-- 🔒 **Security**: gitleaks (commit/push), TruffleHog (CI), bandit (pre-push + CI), CodeQL
-- 🧠 **AI Ready**: AGENTS.md as the single canonical agent config (CLAUDE.md imports it; Cursor, Windsurf, Codex read it natively) + a project-bootstrap skill
-- 💪 **Production**: Python 3.12+, uv + uv_build, PEP 735 dependency-groups, static version
-- 🚀 **DX - Developer Experience**: VS Code DevContainer, sensible defaults, quality documentation
-- 🔄 **CI/CD**: GitHub Actions workflows, release-please version bumps, OIDC trusted publishing
-
-## Quick start
+## Install
 
 ```bash
-git clone https://github.com/smorinlabs/template-press.git
-cd template-press
-make bootstrap           # level 1 — base toolchain (just + uv); skip if installed
-just setup               # level 2 — dev env, git hooks, hook toolchain
-just check               # full quality pipeline
+uvx --from template-press press --help   # run without installing
+# or
+pip install template-press
 ```
 
-Install as a tool: `uvx --from template-press press` (uvx needs `--from` because the distribution name differs from the console-script name) or `pip install template-press && press`.
+## Usage
 
-The [`press` noun-verb CLI](EXAMPLECLI.md) documents the template's CLI conventions: global flags, the text/JSON/Markdown output contract, stable exit & error codes, and layered TOML config.
+```bash
+# preview the plan (writes nothing)
+press rebrand --target ../my-repo --config answers.toml --dry-run
 
-See [AGENTS.md](AGENTS.md) for the canonical command set, [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) for the daily workflow, and [docs/RELEASE.md](docs/RELEASE.md) for the release flow.
+# apply, verify, and write a receipt
+press rebrand --target ../my-repo --config answers.toml
+```
 
-## Web service (FastAPI)
+`answers.toml` describes the **destination** identity:
 
-The blueprint includes an optional REST API (`uv sync --extra web`, `just serve`) with production best practices already baked in: RFC 9457 problem+json errors, `/v1` versioning, pagination, Idempotency-Key replay, Prometheus metrics, opt-in OpenTelemetry tracing, rate limiting, security headers, typed env settings, a committed OpenAPI snapshot with breaking-change CI (oasdiff) and schemathesis fuzzing, generated typed clients, and a production Dockerfile. See [EXAMPLEWEB.md](EXAMPLEWEB.md) for the service walkthrough (the web counterpart of [EXAMPLECLI.md](EXAMPLECLI.md)), the [web service docs](docs/source/web/index.md), the [WEB-xx convention catalog](docs/design/0002-web-api-conventions.md), and [ADR 0013](docs/adr/0013-web-service-best-practices.md) for the design decisions.
+```toml
+[answers]
+package_name = "new_pkg"
+repo_name    = "new-repo"
+app_name     = "newcli"
+author       = "Jane Dev"
+email        = "jane@example.com"
+owner        = "janedev"
+```
 
-**Starting a new project from this template?** If you use Claude Code or any agent that reads `AGENTS.md`, just say *"create a new Python project from template-press"* — the [`new-python-project`](.claude/skills/new-python-project/SKILL.md) skill (Claude Code discovers it in `.claude/skills/`; Codex via the `.agents/skills/` symlink) will walk you through `gh repo create --template`, identity collection, the init rebrand with dry-run preview, and an optional handoff to post-init for publishing/Codecov/ReadTheDocs setup. For humans without an agent: the skill is also a copy-pasteable runbook. After init, work through [`docs/POST_INIT.md`](docs/POST_INIT.md) — the checklist of decisions, secrets, and repo settings to configure. Internal engineering docs (ADRs, design specs, research) live under [`docs/`](docs/README.md).
+The target's **current** identity is read from a committed
+`<target>/.press/source.toml`. On a first run, `--dry-run` prints a proposed
+source-config from discovery; review it and re-run with `--accept-discovery`
+to write and use it.
 
-### 🎯 Perfect For
-Teams and professionals needing maintainable, type-safe Python projects following best practices.
+## How it stays safe
 
-## Complete Feature List
+- **Config-first identity, discovery as a guard.** The committed source-config
+  is authoritative; discovery cross-checks it against the target and *refuses
+  to run on a mismatch*, so the press never rewrites the wrong repo.
+- **Verify-then-mark.** After rewriting, a no-leak scan confirms no source
+  identity remains. Any leftover ⇒ **exit 1 and no receipt** — a partial
+  rebrand is a loud failure, not a false success.
+- **Boundary-safe replacement.** Short tokens (`press`, an owner like `go`)
+  match only at word boundaries, so ordinary prose (`compress`, `ongoing`) is
+  never touched.
 
-### Development Tools
+## Exit codes
 
-- **Bootstrap dependency check and install with `make`**: Execute common development tasks with simple commands, standardizing workflows across team members.
+The exit code is the contract:
 
-- **Optional one-command toolchains with [`mise`](https://mise.jdx.dev/) or [`flox`](https://flox.dev/)**: `mise install` (root `mise.toml`) or `flox activate` (root `.flox/`) provisions the same 10-tool set as the native installers — pick whichever fits your machine; see [ADR 0005](docs/adr/0005-mise-flox-first-class-toolchains.md).
+| Code | Meaning |
+|------|---------|
+| `0` | Verified — rebrand complete, no source identity remains, receipt written. |
+| `1` | Leaks found after applying. No receipt; restore with `git -C <target> checkout . && git clean -fd`. |
+| `2` | Precondition/config error (missing target, dirty tree, identity mismatch, existing receipt without `--force`). Nothing written. |
 
-- **Command running with `just`**: Define and run project-specific commands with a modern Make alternative, simplifying complex operations with clear syntax.
+`--dry-run` exits `0` after printing the plan without touching the target (no receipt).
 
-- **Linting with `ruff`**: Catch errors and enforce code style at lightning speed (10-100x faster than traditional linters), reducing waiting time and improving developer productivity.
+## Documentation
 
-- **Type checking with [`ty`](https://docs.astral.sh/ty/)**: Prevent type-related bugs before they occur with Astral's fast Rust-based type checker, making your codebase more robust and easier to maintain as it grows.
+- Full docs: <https://template-press.readthedocs.io/>
+- Design contract: [`docs/design/0006-external-target-model.md`](docs/design/0006-external-target-model.md)
+- Agent runbooks: [`press-target`](.claude/skills/press-target/SKILL.md) (drive a
+  press) and [`rebrand-matrix`](.claude/skills/rebrand-matrix/SKILL.md) (the
+  R1/R2/R3 acceptance matrix)
 
-- **Formatting with `ruff`**: Ensure consistent code style across your project automatically, eliminating style debates and pull request revision cycles.
+## Contributing
 
-- **Git hooks with [`lefthook`](https://lefthook.dev/)**: Enforce quality standards before code enters your repository (secret scanning, linting, commit-message checks at commit/push), preventing bad code from ever being committed and reducing technical debt.
+See [`AGENTS.md`](AGENTS.md) for the canonical toolchain and verification flow
+(`just setup` → `just check` → commit) and
+[`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md) for the human contributor
+guide.
 
-- **TOML formatting and validation with `taplo`**: Verify Toml files for syntax correctness, maintain consistent configuration files, ensuring readability and avoiding syntax errors in critical project settings.
+## License
 
-- **YAML validation with [yamllint](docs/source/tools/yaml_lint.md)**: Verify YAML files for syntax correctness, preventing configuration errors and deployment failures.
-
-### Project Structure & Management
-
-- **Project configuration with `pyproject.toml`**: Organize all project settings in one standardized location, simplifying maintenance and configuration.
-
-- **Dependency groups separation**: Organize dependencies into main, dev, and doc categories, preventing bloated installations and clarifying requirements as part of `pyproject.toml` configuration.
-
-- **Dependency management with [`uv`](https://docs.astral.sh/uv/)**: Install and manage packages at blazing speed (100x faster than pip/poetry), dramatically reducing environment setup time.
-
-- **Build system with `uv_build`**: Build wheel and source distributions with uv's build backend and `uv build`.
-
-- **Versioning with explicit project metadata**: Keep release tags aligned with the static version in `pyproject.toml` for predictable package metadata.
-
-- **Copyright license automation**: Automatically add license headers to all files, ensuring legal compliance without manual effort.
-
-### Documentation
-
-- **Documentation with `sphinx + MyST`**: Generate comprehensive documentation that supports both reStructuredText and Markdown, improving contributor accessibility.
-
-- **`Read the Docs` integration**: Deploy documentation automatically, providing instant hosting and versioning for your project's documentation.
-
-- **Changelog management with `release-please`**: Generate the changelog and version bumps automatically from Conventional Commits, improving project transparency and adoption.
-
-### Testing & Quality Assurance
-
-- **Testing framework with `pytest`**: Write and run tests with a modern, powerful testing framework that supports fixtures and parameterization.
-
-- **CI/CD with `GitHub Actions`**: Automatically test, build, and deploy your project on multiple Python versions, catching compatibility issues early.
-
-- **Matrix testing with `GitHub Actions`**: Run tests across multiple Python versions and operating systems, ensuring broad compatibility.
-
-- **Simplified debugging info with `just debug-info`**: Automatically collect and format essential system, tool, and dependency information for streamlined bug reporting via a simple command.
-
-### GitHub Integration
-
-- **Pull request template**: Guide contributors through the PR process with structured information requirements, improving submission quality.
-
-- **Issue templates (Feature, Bug, Documentation)**: Standardize issue reporting with appropriate fields for each type, gathering all necessary information upfront.
-
-- **Automated contributor recognition with `contributors-please`**: Automatically update contributor lists, acknowledging all project participants without manual tracking.
-
-- **Conventional commits enforced with `commitlint`**: Enforce structured commit messages so `release-please` can automate changelog generation and version bumps.
-
-- **Security policy**: Establish clear vulnerability reporting procedures, promoting responsible disclosure and faster security fixes.
-
-- **Code of conduct**: Set community behavior expectations, fostering an inclusive and respectful project environment.
-
-- **Contributing guidelines**: Provide clear instructions for contributors, reducing friction for new participants.
-
-- **Automated dependency security scanning with `codeql`**: Detect vulnerable dependencies automatically, protecting your users from known security issues.
-
-- **CLA (Contributor License Agreement) check via [`CLA Assistant`](docs/source/tools/cla-assistant.md)**: Ensure all contributors have signed appropriate licensing agreements, protecting the project legally.
-
-### IDE Integration
-
-- **VS Code integration**: Provide optimized settings and configurations for Visual Studio Code, enhancing developer productivity.
-
-- **PyRight configuration**: Enable accurate, real-time type checking in the editor, catching errors before running tests.
-
-- **Editor extensions recommendations**: Suggest optimal VS Code extensions automatically, standardizing the development environment.
-
-### AI Integration
-
-- **AI assistance with common agents `Cursor, Windsurf, Claude Code, Codex`**: Support popular AI coding assistants enabling AI-powered development.
-
-- **Cursor Rules configuration**: Optimize Cursor AI assistant for your specific project structure, improving suggestion relevance.
-
-- **Windsurf Rules configuration**: Configure Windsurf IDE to understand your project architecture, enhancing code generation quality.
-
-Start your next Python project with confidence, knowing you're building on a foundation of best practices and modern development tools.
-
-## Full documentation on ReadTheDocs including how to run
-- [template-press Docs](https://template-press.readthedocs.io/en/latest/)
+MIT — see [`LICENSE`](LICENSE).

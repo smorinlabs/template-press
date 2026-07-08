@@ -21,7 +21,7 @@ make bootstrap   # Level 1 — base toolchain (just + uv); bare machines only
 just setup       # Level 2 — everything else (run every fresh clone/container/session)
 ```
 
-`just setup` syncs the dev env (`uv sync --group dev --extra web`), wires
+`just setup` syncs the dev env (`uv sync --group dev`), wires
 lefthook git hooks, and installs the hook toolchain (bun + `bun install`,
 gitleaks, taplo, yamlfmt). It starts by running the Makefile's `make check`
 gate and fails with a pointer to `make bootstrap` if the base toolchain is
@@ -35,54 +35,43 @@ clones, containers, and remote agent sessions start without it — run
 
 | Task | Command |
 |---|---|
-| Sync dev env | `uv sync --group dev --extra web` (PEP 735 — not `pip install '.[dev]'`) |
+| Sync dev env | `uv sync --group dev` (PEP 735 — not `pip install '.[dev]'`) |
 | All checks | `just check` |
 | Run tests | `pytest` (default excludes `slow`/`live` markers per ITM-046; full: `pytest -m ""`) |
-| Rebrand a target (preview) | `uv run python -m template_press.rebrand.cli --target <dir> --config <answers.toml> --dry-run` |
+| Rebrand a target (preview) | `uv run press rebrand --target <dir> --config <answers.toml> --dry-run` |
 | Rebrand acceptance matrix | `just matrix` (live; see `.claude/skills/rebrand-matrix/`) |
 | Run one test | `pytest tests/test_file.py::test_name` |
 | Lint | `uv run ruff check .` |
 | Format | `just format` or `uv run ruff format src/template_press/` |
 | Format check | `uv run ruff format --check .` |
-| Typecheck | `uv run --extra web ty check src/template_press/` (ITM-026 / ADR-03; `--extra web` so web/ imports resolve) |
+| Typecheck | `uv run ty check src/template_press/` (ITM-026 / ADR-03) |
 | Dependency CVE audit | `just audit` (WL-014; same pipeline as the weekly CI workflow) |
-| Web tests / dev server | `just test-web` / `just serve` (FastAPI, `web` extra) |
 | Secret scan | `scripts/check-gitleaks.sh --staged` or `--range` |
 | Build | `uv build` (uv_build backend per ADR-06) |
 
 Hook/CI tools run from the locked dev group (`uv run`, never floating
 `uvx`) per WL-001 — versions come from `uv.lock`.
 
-Web API conventions (problem+json, `/v1`, pagination, WEB-xx ids):
-`docs/design/0002-web-api-conventions.md`. After ANY web route change:
-`just export-openapi` and commit the snapshot (a test + the api-contract
-workflow enforce it).
+The rebrand engine is pure standard library — the shipped package has zero
+runtime dependencies. The design contract is
+[`docs/design/0006-external-target-model.md`](docs/design/0006-external-target-model.md).
 
 ## Verification flow before commit/PR
 
 1. `just setup` (idempotent — REQUIRED in fresh clones/containers so the
-   hooks in step 4 actually fire; also refreshes deps).
+   hooks in step 3 actually fire; also refreshes deps).
 2. `just check` (full pipeline must pass).
-3. Init-system integrity (enforced locally by the lefthook pre-push
-   commands `init-guard-wiring`/`init-manifest-drift`/`init-path-filter`/
-   `init-tests`, marker-gated on `init/.blueprint-initialized` — no CI
-   workflow runs these in this repo). Rule behind the drift check: any added/renamed file containing an
-   identity value (`template_press`, `template-press`, `press`,
-   `PRESS`, author/owner names) must be listed in that value's `[[replace]]`
-   block in `init/manifest.toml`, or a fork's `just init` ships
-   half-renamed. Then run:
-   - `uv run --script init/ci/check_manifest_drift.py`
-   - `uv run pytest init/tests/ --override-ini="addopts=" -q`
-4. Stage + commit. Lefthook fires automatically:
+3. Stage + commit. Lefthook fires automatically:
    - **commit-msg** → commitlint (Conventional Commits, lowercase subject).
    - **pre-commit** → gitleaks + editorconfig-checker + yamllint + codespell
      + ruff check/format on staged Python files.
-   - **pre-push** → gitleaks range scan + bandit + init-system integrity
-     (guard wiring, manifest drift, path filter, init tests).
+   - **pre-push** → gitleaks range scan + bandit.
 
    If lefthook was not installed (step 1 skipped), the hooks are silent
-   no-ops — do NOT push until you have either installed it or run the
-   step-3 checks manually.
+   no-ops — do NOT push until you have either installed it or run `just
+   check` manually.
+4. After ANY change to `src/template_press/rebrand/`, run `just matrix`
+   (the R1/R2/R3 acceptance matrix; see `.claude/skills/rebrand-matrix/`).
 
 ## Commit message format
 
@@ -130,33 +119,20 @@ a type here — use `build(deps):` for dependency bumps).
 cuts a `v*` tag; `publish.yml` uploads to TestPyPI then PyPI via OIDC
 Trusted Publishing. See [ITM-053..060] for the full chain.
 
-## Creating a new project from this template
+## Running the press
 
-When the user wants to bootstrap a new Python project from this template
-(phrases like *"create a new project from template-press"*, *"start a
-new Python project from this template"*, *"scaffold a project from the
-blueprint"*), follow the runbook at
-[`.claude/skills/new-python-project/SKILL.md`](.claude/skills/new-python-project/SKILL.md).
-Claude Code discovers it as the project skill `new-python-project`; Codex
-discovers the same directory via the `.agents/skills/new-python-project`
-symlink.
+template-press is a utility you point at an external target repo, not a
+project template. To press an identity onto a repo, follow the
+[`press-target`](.claude/skills/press-target/SKILL.md) skill (dry-run →
+identity validation → apply → verify → receipt). Command shape:
+`press rebrand --target <path> --config <answers.toml>` (in a dev checkout,
+`uv run press rebrand …`). The design contract is
+[`docs/design/0006-external-target-model.md`](docs/design/0006-external-target-model.md);
+`provision`/`status` verbs arrive with the M6 Provision phase.
 
-It encodes the full sequence: precondition checks (`gh`/`uv`), identity
-collection, `gh repo create --template` instantiation, the init rebrand
-(`init/init.py`) with a dry-run preview, initial commit + push, and an
-optional handoff to post-init (`init/post_init.py`) for publishing/Codecov/
-RTD setup — `just` is NOT required for the bootstrap. Auto-triggering is
-**unreliable** (empirically 0% recall — agents tend to do the bootstrap
-directly and skip the skill); for predictable invocation, tell the agent
-explicitly: *"Use the `new-python-project` skill."* For any agent following
-this file, the SKILL.md is a direct runbook — every step is a
-copy-pasteable shell block.
+## Single source of truth
 
-## For generated projects
-
-If you scaffold from this template and your project's command surface
-diverges (extra tools, different test runner, custom hooks), update **this
-file** — it is the single source of truth. `CLAUDE.md` imports it; add
+`AGENTS.md` is the canonical agent guidance; `CLAUDE.md` imports it, so add
 Claude-specific notes there only. Vendor-specific rule files (`.cursor/`,
 `.windsurf*`) are deliberately absent: Cursor, Windsurf, and Codex all read
 `AGENTS.md` directly.

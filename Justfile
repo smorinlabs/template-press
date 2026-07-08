@@ -9,13 +9,6 @@ contributors_owner := "smorinlabs"
 contributors_package := "contributors-please@1"
 args := " "
 
-# Blueprint setup guard — Tier 1 (universal discovery warning).
-# `just` evaluates top-level `:=` variables EAGERLY on every recipe run, so this
-# fires on every recipe with zero per-recipe boilerplate. `guard.sh warn` prints
-# to stderr and MUST exit 0 — a non-zero exit from a `shell()` call aborts `just`.
-# `just --list` / `--summary` do not evaluate variables, so introspection stays silent.
-_blueprint_notice := shell('bash init/guard.sh warn')
-
 # Text colors
 BLACK := '\033[30m'
 RED := '\033[31m'
@@ -126,8 +119,8 @@ setup:
     # Tools installed below land in these dirs; make them visible to the
     # rest of this run (the final check-deps) even on a fresh machine.
     export PATH="$HOME/.local/bin:$HOME/.bun/bin:${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
-    echo -e "{{BLUE}}[1/4] Syncing dev environment: uv sync --group dev --extra web{{NC}}"
-    uv sync --group dev --extra web
+    echo -e "{{BLUE}}[1/4] Syncing dev environment: uv sync --group dev{{NC}}"
+    uv sync --group dev
     echo -e "{{BLUE}}[2/4] Installing hook toolchain (bun, lefthook, gitleaks)...{{NC}}"
     scripts/install-bun.sh
     scripts/install-lefthook.sh
@@ -144,7 +137,7 @@ setup:
 # Install package in editable mode with dev dependencies
 [group('install'), group('quick start')]
 @install-dev: check-deps
-    uv sync --group dev --extra web
+    uv sync --group dev
 
 # Install Taplo from upstream pre-built binary (much faster than `cargo install`,
 # which compiles from source — ~1s vs ~2min). Detects OS + arch and pulls the
@@ -232,7 +225,7 @@ alias l := lint
 @typecheck:
     echo "Running type checker..."
     echo "  ty (ITM-026, per ADR-03)"
-    uv run --extra web ty check {{py_package_path}}/
+    uv run ty check {{py_package_path}}/
 
 alias tc := typecheck
 
@@ -271,39 +264,6 @@ alias ca := check
 @run cmd=app_name *args=args:
     uvx --with-editable . {{cmd}} {{args}}
 
-# Run the FastAPI dev server (web extra) with auto-reload. Dev defaults to
-# pretty console logs (prod default is JSON; WEB-12) — export
-# <APP_NAME>_WEB_LOG_FORMAT yourself to override.
-[group('run'), group('dev')]
-serve host="127.0.0.1" port="8000":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    var="$(echo {{app_name}} | tr '[:lower:]' '[:upper:]')_WEB_LOG_FORMAT"
-    export "${var}=${!var:-console}"
-    exec uv run --extra web uvicorn {{py_package_name}}.web.app:create_app --factory --host {{host}} --port {{port}} --reload --timeout-graceful-shutdown 5
-
-# Run web layer tests incl. slow contract fuzzing (web extra; httpx for TestClient)
-[group('test'), group('dev')]
-@test-web *options:
-    uv run --extra web pytest tests/web -m "" {{options}}
-
-# Regenerate the committed OpenAPI snapshot (WEB-51). Run after ANY route
-# change — tests/web/test_openapi_snapshot.py fails until you do.
-[group('build'), group('dev')]
-@export-openapi:
-    uv run --extra web python scripts/export_openapi.py
-
-# Generate a typed Python client from the OpenAPI snapshot (WEB-60)
-[group('build')]
-@client-python out="clients/python":
-    uvx openapi-python-client generate --path docs/api/openapi.json --output-path {{out}} --overwrite
-    echo "client written to {{out}}"
-
-# Build the production web-service image (WEB-32)
-[group('build')]
-@docker-web tag="press-web:dev": _guard
-    docker build -t {{tag}} .
-
 # Audit locked dependencies (all extras + groups) against known CVEs (WL-014).
 # Same pipeline as the scheduled dep-audit workflow.
 [group('dev')]
@@ -316,35 +276,9 @@ audit:
         --format requirements.txt --quiet -o "$tmp"
     uv run pip-audit --strict --disable-pip -r "$tmp"
 
-# Blueprint setup guard — Tier 2 (hard block on the risk subset).
-# Private. Used as a dependency on recipes that produce a wrong artifact,
-# an external side effect, or an identity-bearing write when run un-migrated.
-[private]
-@_guard:
-    bash init/guard.sh block
-
-# Run the blueprint init walkthrough (re-brands this project).
-# `init` and `init-doctor` deliberately OMIT the _guard dependency — they are
-# the escape hatch and must always be runnable.
-[group('setup'), group('init')]
-init *args=args:
-    uv run init/init.py {{args}}
-
-# Audit blueprint migration completeness and environment readiness.
-[group('setup'), group('init')]
-init-doctor *args=args:
-    uv run init/init_doctor.py {{args}}
-
-# Post-init walkthrough: configure publishing (PyPI/release-please),
-# Codecov uploads, and ReadTheDocs. Run AFTER `just init` and after the
-# first push to GitHub (or with --skip-remote for local-only changes).
-[group('setup'), group('init')]
-post-init *args=args:
-    uv run init/post_init.py {{args}}
-
 # Build package
 [group('build'), group('dev')]
-@build: _guard check
+@build: check
     uv build
 
 alias b := build
@@ -534,7 +468,7 @@ check-gitleaks mode="full":
 # Create a test repository from a PR
 [group('workflow')]
 [confirm("Are you sure you want to create a new repository from a PR?")]
-pr-to-testrepo pr_number new_repo_name="test-actions-repo": _guard
+pr-to-testrepo pr_number new_repo_name="test-actions-repo":
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -614,7 +548,7 @@ pr-to-testrepo pr_number new_repo_name="test-actions-repo": _guard
 # Cleanup / Delete test repository from a PR from pr-to-testrepo
 [group('workflow')]
 [confirm("Are you sure you want to delete the remote repository '{{new_repo_name}}' and clean up the local directory?")]
-clean-pr-to-testrepo new_repo_name="test-actions-repo": _guard
+clean-pr-to-testrepo new_repo_name="test-actions-repo":
     #!/usr/bin/env bash
     set -euo pipefail
 

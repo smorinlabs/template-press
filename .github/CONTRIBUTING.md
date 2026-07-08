@@ -1,6 +1,6 @@
-# Contributing to Py Launch Blueprint
+# Contributing to template-press
 
-Thank you for your interest in contributing to Py Launch Blueprint! We welcome contributions from the community and are excited to see what you can bring to the project.
+Thank you for your interest in contributing to template-press! We welcome contributions from the community and are excited to see what you can bring to the project.
 
 ## Setup
 
@@ -15,7 +15,7 @@ make bootstrap
 just setup
 ```
 
-`just setup` syncs the dev environment (`uv sync --group dev --extra web`,
+`just setup` syncs the dev environment (`uv sync --group dev`,
 PEP 735 per ITM-063), installs bun/lefthook/gitleaks via the
 `scripts/install-*.sh` installers (bun per ADR-04, lefthook per ADR-01,
 gitleaks per ADR-02), runs `bun install` for commitlint deps, installs
@@ -59,7 +59,7 @@ Before we can accept your contributions, you will need to sign a Contributor Lic
 
 We have integrated the CLA Assistant bot to streamline the CLA signing process. When you open a pull request, the bot will check if you have signed the CLA. If you have not, it will provide a link to sign it.
 
-For more details on how the CLA Assistant works, see the [CLA Assistant documentation](docs/source/tools/cla-assistant.md).
+For more details on how the CLA Assistant works, see its [project page](https://cla-assistant.io/).
 
 ## How to Contribute
 
@@ -146,4 +146,4 @@ Subject must be lowercase (`subject-case` rule). commitlint will reject other ca
 
 If you need help or have any questions, feel free to open an issue on GitHub or reach out to the maintainers.
 
-Thank you for contributing to Py Launch Blueprint!
+Thank you for contributing to template-press!

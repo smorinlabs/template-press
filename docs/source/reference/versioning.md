@@ -39,5 +39,5 @@ Configure the `testpypi` and `pypi` GitHub environments as Trusted Publishers in
 ## Troubleshooting
 
 - **Version mismatch in CI**: update `project.version` in `pyproject.toml` before tagging.
-- **Build cannot find the package module**: check `[tool.uv.build-backend]` and keep `module-name = "template_press"` with `module-root = ""`.
+- **Build cannot find the package module**: check `[tool.uv.build-backend]` and keep `module-name = "template_press"` with `module-root = "src"`.
 - **Publishing fails with OIDC errors**: confirm the GitHub repository, workflow filename, environment, and package name match the Trusted Publishing settings in PyPI and TestPyPI.
