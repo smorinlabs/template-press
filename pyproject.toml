@@ -21,7 +21,7 @@
 name = "template_press"
 # ITM-070 — static version (ADR-06 cutover). release-please bumps this.
 version = "2.1.1"
-description = "CLI tools for interacting with Py, including project search functionality"
+description = "Standalone rebrand utility — press a new identity onto an external target repo"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT" # PEP 639 license expression (ITM-070, round-19).
@@ -39,34 +39,9 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = [
-  "click>=8.1.0",
-  "pydantic>=2.0.0",   # structured result models (the JSON representation)
-  "structlog>=24.1.0", # structured logging (human-friendly TTY / JSON otherwise)
-  "tomli-w>=1.0.0",    # writing the TOML config file (`config set`)
-  "requests>=2.31.0",
-  "rich>=13.0.0",
-]
-
-# Single-distribution + extras strategy. The library (core/) and CLI always
-# install; the web service ships behind the `web` extra:
-#   uv sync --extra web   /   pip install template-press[web]
-# Tracing is a further opt-in (`otel` extra) — heavy deps, soft-imported.
-[project.optional-dependencies]
-web = [
-  "fastapi>=0.110.0",
-  "uvicorn[standard]>=0.29.0",
-  "pydantic-settings>=2.4.0",                 # WEB-30 typed env settings
-  "fastapi-pagination>=0.12.26",              # WEB-03 pagination conventions
-  "slowapi>=0.1.9",                           # WEB-22 rate limiting
-  "prometheus-fastapi-instrumentator>=7.0.0", # WEB-11 RED metrics + /metrics
-]
-otel = [
-  # WEB-10 — distributed tracing (soft-imported by web/telemetry.py).
-  "opentelemetry-sdk>=1.27.0",
-  "opentelemetry-exporter-otlp>=1.27.0",
-  "opentelemetry-instrumentation-fastapi>=0.48b0",
-]
+# The rebrand engine is pure standard library (tomllib, re, dataclasses,
+# subprocess) — the shipped utility has ZERO runtime dependencies.
+dependencies = []
 
 # ITM-063 — PEP 735 dependency-groups (round-13 decision). Replaces
 # [project.optional-dependencies] dev+docs. Install via `uv sync --group <name>`.
@@ -76,10 +51,6 @@ dev = [
   "pytest-cov>=4.1.0",
   "ty>=0.0.1a16",        # per ADR-03 (pre-1.0; bump as needed)
   "ruff>=0.1.0",
-  "httpx>=0.27.0",       # fastapi TestClient transport (tests/web; web extra)
-  "schemathesis>=4.0.0", # WEB-50 contract fuzzing from the OpenAPI schema
-  "types-requests",
-  "types-Pygments",
   "cogapp",
   # WL-001 — hook/CI tools pinned via uv.lock (run with `uv run`, not floating
   # `uvx`), so local hooks and CI use the same version and upgrades arrive as
