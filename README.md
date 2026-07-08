@@ -78,6 +78,8 @@ The exit code is the contract:
 | `1` | Leaks found after applying. No receipt; restore with `git -C <target> checkout . && git clean -fd`. |
 | `2` | Precondition/config error (missing target, dirty tree, identity mismatch, existing receipt without `--force`). Nothing written. |
 
+`--dry-run` exits `0` after printing the plan without touching the target (no receipt).
+
 ## Documentation
 
 - Full docs: <https://template-press.readthedocs.io/>
