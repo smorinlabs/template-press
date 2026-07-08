@@ -33,3 +33,6 @@ node_modules/
 # Blueprint init system — local opt-out sentinel (silences the setup guard for
 # blueprint maintainers/contributors). NEVER committed; per-developer.
 init/.blueprint-contributor
+
+# Sphinx build output
+docs/_build/

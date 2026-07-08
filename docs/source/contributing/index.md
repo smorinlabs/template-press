@@ -18,7 +18,9 @@ We welcome feature requests and improvements! To suggest an enhancement, open a 
 - **Use Cases**: How it improves the project and potential applications.
 
 ### Submitting Pull Requests
-To contribute code, follow the steps in the [Development Workflow](../tasks/contributing_code.md#development-workflow) guide and send a pull request.
+To contribute code, follow the verification flow in
+[`AGENTS.md`](https://github.com/smorinlabs/template-press/blob/main/AGENTS.md)
+(`just setup` → `just check` → commit) and send a pull request.
 
 #### Pull Request Guidelines
 - Follow the project's **coding style**.
