@@ -1,6 +1,6 @@
-# Contributing to Py Launch Blueprint
+# Contributing to template-press
 
-Thank you for your interest in contributing to Py Launch Blueprint! We welcome contributions from the community and appreciate your efforts in improving the project.
+Thank you for your interest in contributing to template-press! We welcome contributions from the community and appreciate your efforts in improving the project.
 
 ## How to Contribute
 

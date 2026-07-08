@@ -21,7 +21,7 @@ make bootstrap   # Level 1 — base toolchain (just + uv); bare machines only
 just setup       # Level 2 — everything else (run every fresh clone/container/session)
 ```
 
-`just setup` syncs the dev env (`uv sync --group dev --extra web`), wires
+`just setup` syncs the dev env (`uv sync --group dev`), wires
 lefthook git hooks, and installs the hook toolchain (bun + `bun install`,
 gitleaks, taplo, yamlfmt). It starts by running the Makefile's `make check`
 gate and fails with a pointer to `make bootstrap` if the base toolchain is
@@ -35,28 +35,26 @@ clones, containers, and remote agent sessions start without it — run
 
 | Task | Command |
 |---|---|
-| Sync dev env | `uv sync --group dev --extra web` (PEP 735 — not `pip install '.[dev]'`) |
+| Sync dev env | `uv sync --group dev` (PEP 735 — not `pip install '.[dev]'`) |
 | All checks | `just check` |
 | Run tests | `pytest` (default excludes `slow`/`live` markers per ITM-046; full: `pytest -m ""`) |
-| Rebrand a target (preview) | `uv run python -m template_press.rebrand.cli --target <dir> --config <answers.toml> --dry-run` |
+| Rebrand a target (preview) | `uv run press rebrand --target <dir> --config <answers.toml> --dry-run` |
 | Rebrand acceptance matrix | `just matrix` (live; see `.claude/skills/rebrand-matrix/`) |
 | Run one test | `pytest tests/test_file.py::test_name` |
 | Lint | `uv run ruff check .` |
 | Format | `just format` or `uv run ruff format src/template_press/` |
 | Format check | `uv run ruff format --check .` |
-| Typecheck | `uv run --extra web ty check src/template_press/` (ITM-026 / ADR-03; `--extra web` so web/ imports resolve) |
+| Typecheck | `uv run ty check src/template_press/` (ITM-026 / ADR-03) |
 | Dependency CVE audit | `just audit` (WL-014; same pipeline as the weekly CI workflow) |
-| Web tests / dev server | `just test-web` / `just serve` (FastAPI, `web` extra) |
 | Secret scan | `scripts/check-gitleaks.sh --staged` or `--range` |
 | Build | `uv build` (uv_build backend per ADR-06) |
 
 Hook/CI tools run from the locked dev group (`uv run`, never floating
 `uvx`) per WL-001 — versions come from `uv.lock`.
 
-Web API conventions (problem+json, `/v1`, pagination, WEB-xx ids):
-`docs/design/0002-web-api-conventions.md`. After ANY web route change:
-`just export-openapi` and commit the snapshot (a test + the api-contract
-workflow enforce it).
+The rebrand engine is pure standard library — the shipped package has zero
+runtime dependencies. The design contract is
+[`docs/design/0006-external-target-model.md`](docs/design/0006-external-target-model.md).
 
 ## Verification flow before commit/PR
 
