@@ -24,7 +24,7 @@ installed package has **zero runtime dependencies**.
 ## Install
 
 ```bash
-uvx template-press --help          # run without installing
+uvx --from template-press press --help   # run without installing
 # or
 pip install template-press
 ```
