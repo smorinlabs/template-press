@@ -9,13 +9,6 @@ contributors_owner := "smorinlabs"
 contributors_package := "contributors-please@1"
 args := " "
 
-# Blueprint setup guard — Tier 1 (universal discovery warning).
-# `just` evaluates top-level `:=` variables EAGERLY on every recipe run, so this
-# fires on every recipe with zero per-recipe boilerplate. `guard.sh warn` prints
-# to stderr and MUST exit 0 — a non-zero exit from a `shell()` call aborts `just`.
-# `just --list` / `--summary` do not evaluate variables, so introspection stays silent.
-_blueprint_notice := shell('bash init/guard.sh warn')
-
 # Text colors
 BLACK := '\033[30m'
 RED := '\033[31m'
@@ -283,35 +276,9 @@ audit:
         --format requirements.txt --quiet -o "$tmp"
     uv run pip-audit --strict --disable-pip -r "$tmp"
 
-# Blueprint setup guard — Tier 2 (hard block on the risk subset).
-# Private. Used as a dependency on recipes that produce a wrong artifact,
-# an external side effect, or an identity-bearing write when run un-migrated.
-[private]
-@_guard:
-    bash init/guard.sh block
-
-# Run the blueprint init walkthrough (re-brands this project).
-# `init` and `init-doctor` deliberately OMIT the _guard dependency — they are
-# the escape hatch and must always be runnable.
-[group('setup'), group('init')]
-init *args=args:
-    uv run init/init.py {{args}}
-
-# Audit blueprint migration completeness and environment readiness.
-[group('setup'), group('init')]
-init-doctor *args=args:
-    uv run init/init_doctor.py {{args}}
-
-# Post-init walkthrough: configure publishing (PyPI/release-please),
-# Codecov uploads, and ReadTheDocs. Run AFTER `just init` and after the
-# first push to GitHub (or with --skip-remote for local-only changes).
-[group('setup'), group('init')]
-post-init *args=args:
-    uv run init/post_init.py {{args}}
-
 # Build package
 [group('build'), group('dev')]
-@build: _guard check
+@build: check
     uv build
 
 alias b := build
@@ -501,7 +468,7 @@ check-gitleaks mode="full":
 # Create a test repository from a PR
 [group('workflow')]
 [confirm("Are you sure you want to create a new repository from a PR?")]
-pr-to-testrepo pr_number new_repo_name="test-actions-repo": _guard
+pr-to-testrepo pr_number new_repo_name="test-actions-repo":
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -581,7 +548,7 @@ pr-to-testrepo pr_number new_repo_name="test-actions-repo": _guard
 # Cleanup / Delete test repository from a PR from pr-to-testrepo
 [group('workflow')]
 [confirm("Are you sure you want to delete the remote repository '{{new_repo_name}}' and clean up the local directory?")]
-clean-pr-to-testrepo new_repo_name="test-actions-repo": _guard
+clean-pr-to-testrepo new_repo_name="test-actions-repo":
     #!/usr/bin/env bash
     set -euo pipefail
 

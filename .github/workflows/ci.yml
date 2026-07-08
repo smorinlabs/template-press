@@ -75,7 +75,7 @@ jobs:
           fi
 
   # ITM-025 - lint job (ruff check + format --check). Decided round 3 (option B).
-  # Always runs (fast) - ruff also lints docs snippets and init/ tooling.
+  # Always runs (fast) - ruff also lints docs snippets.
   lint:
     name: lint
     runs-on: blacksmith-4vcpu-ubuntu-2404
