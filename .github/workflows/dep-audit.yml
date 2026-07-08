@@ -61,8 +61,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      - name: Sync docs env (web extra so autodoc imports resolve)
-        run: uv sync --locked --group docs --extra web
+      - name: Sync docs env
+        run: uv sync --locked --group docs
 
       - name: Sphinx linkcheck
         run: >-

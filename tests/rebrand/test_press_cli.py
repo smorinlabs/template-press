@@ -35,3 +35,11 @@ def test_rebrand_delegates_and_enforces_target():
     with pytest.raises(SystemExit) as exc:
         main(["rebrand"])
     assert exc.value.code == 2
+
+
+def test_version_flag(capsys):
+    from template_press import __version__
+
+    assert main(["--version"]) == 0
+    out = capsys.readouterr().out.strip()
+    assert out == f"press {__version__}"

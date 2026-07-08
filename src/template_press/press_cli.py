@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 
+from template_press import __version__
 from template_press.rebrand import cli as rebrand_cli
 
 _RESERVED = {"provision", "status"}
@@ -25,6 +26,9 @@ commands:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] in ("-V", "--version"):
+        print(f"press {__version__}")
+        return 0
     if not args or args[0] in ("-h", "--help"):
         print(_USAGE)
         return 0
