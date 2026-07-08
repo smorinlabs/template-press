@@ -19,8 +19,9 @@ Rebuild as standalone press: rebrand → provision, verify-then-mark
       (empty/degenerate values), cross-identity collision guard,
       changed-fields-only verification, `verify_ignore` ignore set,
       symlink confinement, literal replacement
-- [ ] [P03-M4] Shed residue: delete legacy app + init/, doc site →
+- [x] [P03-M4] Shed residue: delete legacy app + init/, doc site →
       publishable skeleton, docs rewrite, repoint `press` console script
+      (merged #18)
 - [ ] [P03-M5] Self-publish: version reset 0.1.0, fresh CHANGELOG,
       release-please bootstrap, PyPI (`template-press` reserved)
 - [ ] [P03-M6] Provision phase: feature modules (detect/add/verify),
