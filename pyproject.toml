@@ -78,11 +78,12 @@ docs = [
 
 
 [project.scripts]
-# Noun-verb CLI (gh-style): press <noun> <verb>
-press = "template_press.cli.main:cli"
+# Noun-verb CLI (design 0006 §2): press <verb>. `rebrand` is live; `provision`
+# and `status` arrive with the M6 Provision phase.
+press = "template_press.press_cli:main"
 # Alias escape hatch (design 0004 §2): a legacy `press` exists on PyPI, so
 # ship `tpress` as a collision-proof alias console script.
-tpress = "template_press.cli.main:cli"
+tpress = "template_press.press_cli:main"
 
 # ITM-072 — package metadata URLs (round 19).
 [project.urls]
