@@ -47,8 +47,8 @@ dependencies = []
 # [project.optional-dependencies] dev+docs. Install via `uv sync --group <name>`.
 [dependency-groups]
 dev = [
-  "pytest>=7.0.0",
-  "pytest-cov>=4.1.0",
+  "pytest>=9.1.1",
+  "pytest-cov>=7.1.0",
   "ty>=0.0.1a16",        # per ADR-03 (pre-1.0; bump as needed)
   "ruff>=0.1.0",
   "cogapp",
@@ -61,7 +61,7 @@ dev = [
   "yamllint>=1.35.0",
   "pip-audit>=2.9.0",            # WL-014 — `just audit` + scheduled dep-audit workflow
   "twine>=6.1.0",                # WL-004 — dist metadata check in the build-smoke CI job
-  "syrupy>=4.8.0",               # WL-023 — CLI --help snapshot tests
+  "syrupy>=5.4.0",               # WL-023 — CLI --help snapshot tests
 ]
 
 docs = [
