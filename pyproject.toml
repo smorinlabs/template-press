@@ -61,7 +61,7 @@ dev = [
   "yamllint>=1.38.0",
   "pip-audit>=2.10.1",            # WL-014 — `just audit` + scheduled dep-audit workflow
   "twine>=6.2.0",                # WL-004 — dist metadata check in the build-smoke CI job
-  "syrupy>=5.4.0",               # WL-023 — CLI --help snapshot tests
+  "syrupy>=5.5.1",               # WL-023 — CLI --help snapshot tests
 ]
 
 docs = [
