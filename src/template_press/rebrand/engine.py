@@ -17,6 +17,15 @@ from template_press.rebrand.rules import Rules
 
 RENAME_FIELDS: tuple[str, ...] = ("package_name", "repo_name", "app_name")
 
+# A press/ directory is THIS tool's control dir — exempt from rewriting and
+# the no-leak scan — only when it holds one of these files (which legitimately
+# carry SOURCE identity). Any other press/ dir is ordinary target content.
+CONTROL_MARKERS: tuple[str, ...] = (
+    "press-source.toml",
+    "press-rules.toml",
+    "press-receipt.toml",
+)
+
 
 @dataclass
 class PlanItem:
@@ -50,11 +59,10 @@ def _is_excluded(rel: Path, rules: Rules) -> bool:
     return any(part in rules.exclude_dirs for part in rel.parts)
 
 
-def iter_target_files(target: Path, rules: Rules) -> list[Path]:
-    """All non-excluded tracked+untracked files under target, sorted.
+def _git_listed(target: Path) -> list[Path]:
+    """Relative paths git reports (tracked+untracked), honoring .gitignore.
 
-    Uses `git ls-files --cached --others --exclude-standard` so the scan
-    respects the target's .gitignore.
+    Uses `git ls-files --cached --others --exclude-standard`.
     """
     result = subprocess.run(  # noqa: S603 # nosec B603 B607
         [  # noqa: S607
@@ -73,12 +81,67 @@ def iter_target_files(target: Path, rules: Rules) -> list[Path]:
         # codepage on Windows (cp1252) and mojibake non-ASCII filenames.
         encoding="utf-8",
     )
+    return [Path(line) for line in result.stdout.split("\0") if line]
+
+
+def _press_dirs(files: list[Path]) -> set[str]:
+    """POSIX paths of every directory component literally named 'press'."""
+    dirs: set[str] = set()
+    for rel in files:
+        parts = rel.parts
+        for i in range(len(parts) - 1):  # directory components only
+            if parts[i] == "press":
+                dirs.add(Path(*parts[: i + 1]).as_posix())
+    return dirs
+
+
+def _control_press_dirs(target: Path, files: list[Path]) -> frozenset[str]:
+    """press/ dirs that ARE this tool's control dir (hold a CONTROL_MARKER).
+
+    Content-keyed, not name- or depth-keyed: a press/ directory is exempt
+    only when it carries a control file that legitimately holds SOURCE
+    identity. Every other press/ dir is ordinary target content.
+    """
+    return frozenset(
+        d
+        for d in _press_dirs(files)
+        if any((target / d / m).is_file() for m in CONTROL_MARKERS)
+    )
+
+
+def _under_control_press(rel: Path, control: frozenset[str]) -> bool:
+    parts = rel.parts
+    for i in range(len(parts) - 1):
+        if parts[i] == "press" and Path(*parts[: i + 1]).as_posix() in control:
+            return True
+    return False
+
+
+def stray_press_dirs(target: Path) -> list[str]:
+    """press/ dirs that are NOT the control dir (no control marker).
+
+    They are treated as ordinary content — rewritten AND leak-scanned — so
+    surviving source tokens under them cannot yield a false 'verified'. The
+    CLI warns about them so a human can confirm the rewrite was intended.
+    """
+    files = _git_listed(target)
+    return sorted(_press_dirs(files) - _control_press_dirs(target, files))
+
+
+def iter_target_files(target: Path, rules: Rules) -> list[Path]:
+    """All non-excluded tracked+untracked files under target, sorted.
+
+    Excludes rules.exclude_files / exclude_dirs and this tool's control
+    press/ dir (content-keyed via CONTROL_MARKERS). A press/ dir without a
+    marker is NOT exempt — it is scanned and rewritten like any content.
+    """
+    files = _git_listed(target)
+    control = _control_press_dirs(target, files)
     out: list[Path] = []
-    for line in result.stdout.split("\0"):
-        if not line:
-            continue
-        rel = Path(line)
+    for rel in files:
         if _is_excluded(rel, rules):
+            continue
+        if _under_control_press(rel, control):
             continue
         path = target / rel
         if path.is_file():

@@ -32,8 +32,11 @@ class Rules:
 DEFAULT_RULES = Rules(
     exclude_dirs=frozenset(
         {
+            # NB: the control "press/" dir is NOT excluded here — the engine
+            # exempts it content-keyed (only when it holds a press-*.toml
+            # marker), so an unrelated press/ dir in a target is still
+            # rewritten and leak-scanned. See engine.CONTROL_MARKERS.
             ".git",
-            "press",
             "node_modules",
             ".venv",
             "dist",
