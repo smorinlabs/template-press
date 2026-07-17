@@ -22,6 +22,9 @@ Rebuild as standalone press: rebrand → provision, verify-then-mark
 - [x] [P03-M4] Shed residue: delete legacy app + init/, doc site →
       publishable skeleton, docs rewrite, repoint `press` console script
       (merged #18)
+- [x] [P03-M4b] Rename press control dir to `press/` + `press-` file
+      prefix (visible, uniquely greppable); `press-answers.toml` +
+      `press/press-answers.example.toml` convention. Breaking (v3.0.0).
 - [ ] [P03-M5] Self-publish: version reset 0.1.0, fresh CHANGELOG,
       release-please bootstrap, PyPI (`template-press` reserved)
 - [ ] [P03-M6] Provision phase: feature modules (detect/add/verify),
@@ -30,7 +33,7 @@ Rebuild as standalone press: rebrand → provision, verify-then-mark
 ### Open questions
 
 - ~~R3 self-press allowlist~~ — resolved empirically: R3 presses this repo
-  clean with no allowlist; `verify_ignore` in `.press/rules.toml` is now
+  clean with no allowlist; `verify_ignore` in `press/press-rules.toml` is now
   the mechanism if one is ever needed.
 
 ### Notes
@@ -47,4 +50,4 @@ Rebuild as standalone press: rebrand → provision, verify-then-mark
   drift guard — a configuration declaring keywords that must be completely
   eliminated from the target repo, testable ("is anything still there?").
   The ignore-set half of this requirement shipped as `verify_ignore`
-  (`.press/rules.toml`); the CI-mode verify command remains to scope.
+  (`press/press-rules.toml`); the CI-mode verify command remains to scope.
