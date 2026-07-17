@@ -14,7 +14,7 @@ from template_press.rebrand.config import toml_string
 from template_press.rebrand.engine import ApplyReport
 from template_press.rebrand.identity import Identity
 
-RECEIPT_REL = Path(".press") / "receipt.toml"
+RECEIPT_REL = Path("press") / "press-receipt.toml"
 
 
 def read_receipt(target: Path) -> str | None:
@@ -37,7 +37,7 @@ def write_receipt(
     path.parent.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).isoformat(timespec="seconds")
     lines = [
-        "# .press/receipt.toml — written by template-press AFTER the no-leak",
+        "# press/press-receipt.toml — written by template-press AFTER the no-leak",
         "# verification pass. Presence means: this rebrand completed and was",
         "# verified. Delete it (or use --force) to press again.",
         "[press]",
