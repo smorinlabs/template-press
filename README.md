@@ -33,13 +33,13 @@ pip install template-press
 
 ```bash
 # preview the plan (writes nothing)
-press rebrand --target ../my-repo --config answers.toml --dry-run
+press rebrand --target ../my-repo --config press-answers.toml --dry-run
 
 # apply, verify, and write a receipt
-press rebrand --target ../my-repo --config answers.toml
+press rebrand --target ../my-repo --config press-answers.toml
 ```
 
-`answers.toml` describes the **destination** identity:
+`press-answers.toml` describes the **destination** identity:
 
 ```toml
 [answers]
@@ -51,8 +51,14 @@ email        = "jane@example.com"
 owner        = "janedev"
 ```
 
+Keep your filled-in `press-answers.toml` out of the target (it is transient
+operator input, not committed state). A repo may commit a
+`press/press-answers.example.toml` placeholder to advertise the field
+shape — copy it, fill it, and pass it via `--config`. It has the same
+`[answers]` fields shown above.
+
 The target's **current** identity is read from a committed
-`<target>/.press/source.toml`. On a first run, `--dry-run` prints a proposed
+`<target>/press/press-source.toml`. On a first run, `--dry-run` prints a proposed
 source-config from discovery; review it and re-run with `--accept-discovery`
 to write and use it.
 

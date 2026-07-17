@@ -16,7 +16,7 @@ from .conftest import DEST, SOURCE
 
 
 def test_source_config_round_trip(tmp_path: Path):
-    (tmp_path / ".press").mkdir()
+    (tmp_path / "press").mkdir()
     (tmp_path / SOURCE_CONFIG_REL).write_text(
         render_source_config(SOURCE), encoding="utf-8"
     )
@@ -57,6 +57,6 @@ def test_render_source_config_escapes_quotes_in_author(tmp_path: Path):
     data = tomllib.loads(rendered)
     assert data["identity"]["author"] == 'Demo "Quoted" Author'
 
-    (tmp_path / ".press").mkdir()
+    (tmp_path / "press").mkdir()
     (tmp_path / SOURCE_CONFIG_REL).write_text(rendered, encoding="utf-8")
     assert load_source_config(tmp_path, override=None) == source

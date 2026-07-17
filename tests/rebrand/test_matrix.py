@@ -56,7 +56,7 @@ def test_r1_press_blueprint_clone_clean(tmp_path: Path):
 @pytest.mark.live
 def test_r2_mismatched_identity_fails_loudly(tmp_path: Path):
     target = clone(BLUEPRINT, tmp_path / "plb2")
-    (target / ".press").mkdir()
+    (target / "press").mkdir()
     (target / SOURCE_CONFIG_REL).write_text(
         "[identity]\n"
         'package_name = "template_press"\n'

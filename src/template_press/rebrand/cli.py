@@ -41,7 +41,7 @@ def check_preconditions(target: Path, force: bool, allow_dirty: bool) -> str | N
         return f"target is not a git repository: {target}"
     if read_receipt(target) is not None and not force:
         return (
-            "target already has a press receipt (.press/receipt.toml); "
+            "target already has a press receipt (press/press-receipt.toml); "
             "re-press with --force"
         )
     if not allow_dirty:

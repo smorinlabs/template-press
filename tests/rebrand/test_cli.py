@@ -13,7 +13,7 @@ from .conftest import DEST, SOURCE, write_answers_file
 
 
 def write_source_config(target: Path) -> None:
-    (target / ".press").mkdir(exist_ok=True)
+    (target / "press").mkdir(exist_ok=True)
     (target / SOURCE_CONFIG_REL).write_text(
         render_source_config(SOURCE), encoding="utf-8"
     )
@@ -64,7 +64,7 @@ def test_mismatched_source_config_fails_loudly_no_writes(
     wrong = SOURCE.__class__(
         **{**SOURCE.as_dict_prompted(), "package_name": "other_pkg"}
     )
-    (src_target / ".press").mkdir()
+    (src_target / "press").mkdir()
     (src_target / SOURCE_CONFIG_REL).write_text(
         render_source_config(wrong), encoding="utf-8"
     )
@@ -131,8 +131,8 @@ def test_leak_after_apply_exits_1_and_writes_no_receipt(
     """EMP-01 regression: a partial rebrand must fail loudly, no receipt."""
     write_source_config(src_target)
     # Excluded from rewriting but NOT from the doctor scan → guaranteed leak.
-    (src_target / ".press").mkdir(exist_ok=True)
-    (src_target / ".press" / "rules.toml").write_text(
+    (src_target / "press").mkdir(exist_ok=True)
+    (src_target / "press" / "press-rules.toml").write_text(
         '[rules]\nextra_exclude_files = ["notes.md"]\n', encoding="utf-8"
     )
     (src_target / "notes.md").write_text(
@@ -147,7 +147,7 @@ def test_leak_after_apply_exits_1_and_writes_no_receipt(
 
 
 def test_malformed_source_config_exits_2(src_target: Path, tmp_path: Path):
-    (src_target / ".press").mkdir()
+    (src_target / "press").mkdir()
     (src_target / SOURCE_CONFIG_REL).write_text("not [ valid toml", encoding="utf-8")
     answers = write_answers(tmp_path)
     code = main(
@@ -278,7 +278,7 @@ def test_chained_identity_collision_exits_2(src_target: Path, tmp_path: Path):
     wrong_src = SOURCE.__class__(
         **{**SOURCE.as_dict_prompted(), "package_name": "alpha", "app_name": "beta"}
     )
-    (src_target / ".press").mkdir(exist_ok=True)
+    (src_target / "press").mkdir(exist_ok=True)
     (src_target / SOURCE_CONFIG_REL).write_text(
         render_source_config(wrong_src), encoding="utf-8"
     )
@@ -323,7 +323,7 @@ def test_extra_exclude_dirs_no_longer_hides_leaks(src_target: Path, tmp_path: Pa
     legacy = src_target / "legacy"
     legacy.mkdir()
     (legacy / "old.txt").write_text("demo_widget stays\n", encoding="utf-8")
-    (src_target / ".press" / "rules.toml").write_text(
+    (src_target / "press" / "press-rules.toml").write_text(
         '[rules]\nextra_exclude_dirs = ["legacy"]\n', encoding="utf-8"
     )
     answers = write_answers(tmp_path)
@@ -339,7 +339,7 @@ def test_verify_ignore_is_the_sanctioned_ignore_set(src_target: Path, tmp_path: 
     legacy = src_target / "legacy"
     legacy.mkdir()
     (legacy / "old.txt").write_text("demo_widget stays on purpose\n", encoding="utf-8")
-    (src_target / ".press" / "rules.toml").write_text(
+    (src_target / "press" / "press-rules.toml").write_text(
         '[rules]\nextra_exclude_dirs = ["legacy"]\nverify_ignore = ["legacy"]\n',
         encoding="utf-8",
     )
@@ -415,8 +415,8 @@ def test_accept_discovery_bad_rules_toml_leaves_no_source_config(
 ):
     """Fable final review: rules/plan failures after the deferred write must
     not leave a source-config behind on an exit-2 path."""
-    (src_target / ".press").mkdir()
-    (src_target / ".press" / "rules.toml").write_text(
+    (src_target / "press").mkdir()
+    (src_target / "press" / "press-rules.toml").write_text(
         "not [ valid toml", encoding="utf-8"
     )
     answers = write_answers(tmp_path)

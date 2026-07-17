@@ -1,8 +1,9 @@
 """Load/render the two per-run identity configs (OQ3 two-file model).
 
-source-config (FROM, committed in the target at .press/source.toml) — the
+source-config (FROM, committed in the target at press/press-source.toml) — the
 authoritative identity being replaced. answers (TO) — the identity being
-pressed in, from an [answers] TOML (same shape as the repo's answers.toml).
+pressed in, from an [answers] TOML at a caller-supplied path
+(conventionally named press-answers.toml, but any path works).
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from pathlib import Path
 
 from template_press.rebrand.identity import Identity, ValidationError
 
-SOURCE_CONFIG_REL = Path(".press") / "source.toml"
+SOURCE_CONFIG_REL = Path("press") / "press-source.toml"
 
 
 def toml_string(value: str) -> str:
@@ -53,7 +54,7 @@ def load_source_config(target: Path, override: Path | None) -> Identity | None:
 
 def render_source_config(identity: Identity) -> str:
     lines = [
-        "# .press/source.toml — this repo's CURRENT identity (the FROM side",
+        "# press/press-source.toml — this repo's CURRENT identity (the FROM side",
         "# of a rebrand). Authoritative: press validates it against the repo",
         "# and refuses to run on mismatch. Commit this file.",
         "[identity]",
