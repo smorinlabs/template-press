@@ -41,9 +41,29 @@ humans and agents:
 
 The TOML table names inside each file are unchanged: `[identity]` in
 press-source.toml, `[answers]` in the answers file, `[rules]` in
-press-rules.toml, `[press]` in press-receipt.toml. The answers file passed
-via `--config` is unaffected — it is an arbitrary caller-supplied path, not
-a fixed target artifact.
+press-rules.toml, `[press]` in press-receipt.toml.
+
+### The answers file (TO identity)
+
+The answers file follows the same naming convention: `press-answers.toml`.
+Its `--config` mechanism is unchanged — it stays a **required, arbitrary
+caller-supplied path** with no default lookup and no fallback. What changes
+is convention and documentation:
+
+- **Recommended real-answers name:** `press-answers.toml`, kept by the
+  operator (typically repo root, gitignored) and passed via
+  `--config press-answers.toml`. It is transient operator input — the
+  filled-in destination identity — not committed target state. This also
+  fits the template-repo case (one repo pressed by many operators, each
+  with different answers).
+- **Committed shape template:** a repo MAY ship
+  `press/press-answers.example.toml` — a committed placeholder with the
+  field shape and placeholder values, exactly like `.env.example`. It sits
+  inside `press/`, so it is exempt from rewriting and the leak scan (its
+  placeholder tokens are never treated as source identity). Operators
+  `cp press/press-answers.example.toml press-answers.toml`, fill it, and
+  press. The example is a **documentation convention that maintainers add
+  by hand**; the tool does NOT generate it (see Out of scope).
 
 ## Decisions
 
@@ -59,6 +79,12 @@ a fixed target artifact.
   project's "no backwards-compat shims unless asked" rule and carries
   near-zero risk: there are effectively no live externally-pressed targets
   yet. The break is recorded in the changelog via a breaking-change commit.
+- **Answers file:** name it `press-answers.toml` for symmetry with the
+  other three files. Real answers stay transient operator input passed via
+  the (unchanged, still-required) `--config` flag — no committed live
+  answers, no default lookup. A repo may ship a committed
+  `press/press-answers.example.toml` placeholder to advertise the field
+  shape; the tool does not generate it.
 
 ## Changes
 
@@ -104,12 +130,17 @@ fail, then apply the code change:
 
 ### Docs
 
-- **Update (live/canonical):** `README.md`;
+- **Update (live/canonical):** `README.md`; `AGENTS.md` (the canonical
+  commands table and "Running the press" example both show
+  `--config <answers.toml>` → `--config press-answers.toml`; `CLAUDE.md`
+  imports AGENTS.md, so no separate edit);
   `docs/design/0006-external-target-model.md` (canonical current model);
   `docs/source/index.md`; `docs/source/reference/cli.md`;
-  `.claude/skills/press-target/SKILL.md`; the `projects/P03-…` tracking
-  file. Review `docs/design/0001-press-cli-conventions.md` — update if it
-  documents the live contract.
+  `.claude/skills/press-target/SKILL.md` (also document the
+  `press-answers.example.toml` copy-and-fill convention); the
+  `projects/P03-…` tracking file. Review
+  `docs/design/0001-press-cli-conventions.md` — update if it documents the
+  live contract.
 - **Leave as-is (historical records):**
   `docs/superpowers/plans/2026-06-23-rebrand-core.md` and
   `docs/superpowers/plans/2026-07-08-m4-shed-residue.md`. These are dated
@@ -144,7 +175,11 @@ is not hand-edited — release-please owns it.
 ## Out of scope
 
 - No `.press/` migration tooling or fallback reads (clean break decided).
-- No change to the answers-file (`--config`) mechanism or the `[identity]`
-  /`[answers]`/`[rules]`/`[press]` table names.
+- No change to the answers-file `--config` mechanism (stays required, no
+  default lookup) or the `[identity]`/`[answers]`/`[rules]`/`[press]` table
+  names. Only the recommended answers-file *name* and docs change.
+- No tool codegen of `press-answers.example.toml`. Auto-scaffolding an
+  answers template is a `press init`-style feature for the future Provision
+  phase, not this rename. Here it is a documentation convention only.
 - No changes to the rewrite/rename engine, discovery, or the exit-code
   contract beyond the four constants and their strings.
