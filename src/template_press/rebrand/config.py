@@ -2,8 +2,8 @@
 
 source-config (FROM, committed in the target at press/press-source.toml) — the
 authoritative identity being replaced. answers (TO) — the identity being
-pressed in, from an [answers] TOML (same shape as the caller-supplied
-press-answers.toml).
+pressed in, from an [answers] TOML at a caller-supplied path
+(conventionally named press-answers.toml, but any path works).
 """
 
 from __future__ import annotations

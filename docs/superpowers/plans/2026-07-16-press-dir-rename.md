@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status: COMPLETE (2026-07-16)** — implemented and merged as `P03-M4b`. The unchecked `- [ ]` boxes below are the plan exactly as authored (a pre-execution record); they are not open work.
+
 **Goal:** Rename the per-target press control files from the hidden
 `.press/{source,rules,receipt}.toml` to a visible, uniquely-greppable
 `press/press-{source,rules,receipt}.toml`, and adopt `press-answers.toml`
@@ -92,7 +94,7 @@ scoped replacements (safe — `".press"` and `"rules.toml"` appear only as
 these fixture literals in the test files):
 
 ```bash
-cd /Users/stevemorin/c/template-press
+cd "$(git rev-parse --show-toplevel)"
 # dir literal .press -> press (test_config, test_rules, test_cli, test_matrix)
 sed -i '' 's/"\.press"/"press"/g' \
   tests/rebrand/test_config.py tests/rebrand/test_rules.py \
@@ -149,7 +151,7 @@ rebrand package (matches only literal `.press/<name>.toml` path strings; the
 constants are already changed in Step 3):
 
 ```bash
-cd /Users/stevemorin/c/template-press
+cd "$(git rev-parse --show-toplevel)"
 sed -i '' \
   -e 's#\.press/source\.toml#press/press-source.toml#g' \
   -e 's#\.press/rules\.toml#press/press-rules.toml#g' \
@@ -226,7 +228,7 @@ name (`answers.toml` → `press-answers.toml`) and its angle-bracket
 placeholder forms:
 
 ```bash
-cd /Users/stevemorin/c/template-press
+cd "$(git rev-parse --show-toplevel)"
 DOCS="README.md AGENTS.md docs/design/0006-external-target-model.md \
 docs/source/index.md docs/source/reference/cli.md \
 .claude/skills/press-target/SKILL.md"
@@ -244,7 +246,7 @@ sed -i '' \
 
 - [ ] **Step 2: Verify the path/name sweep landed and nothing stale remains**
 
-Run: `grep -rnE '\.press(/|`)|answers\.toml' README.md AGENTS.md docs/design/0006-external-target-model.md docs/source/index.md docs/source/reference/cli.md .claude/skills/press-target/SKILL.md`
+Run: `grep -rnE '\.press(/|`)|(^|[^[:alnum:]_-])answers\.toml([^[:alnum:]_.-]|$)' README.md AGENTS.md docs/design/0006-external-target-model.md docs/source/index.md docs/source/reference/cli.md .claude/skills/press-target/SKILL.md`
 Expected: no output. (Any remaining hit is a form the sed missed — fix it by hand to the `press/press-*` / `press-answers.toml` equivalent.)
 
 - [ ] **Step 3: Document the `press-answers.example.toml` convention**
@@ -262,7 +264,7 @@ copy-and-fill convention. Insert after that line:
 In `README.md`, right after the sentence introducing `press-answers.toml`
 (was L42), add the example-file note and a shape sample:
 
-```markdown
+````markdown
 Keep your filled-in `press-answers.toml` out of the target (it is transient
 operator input, not committed state). A repo may commit a
 `press/press-answers.example.toml` placeholder to advertise the field
@@ -277,7 +279,7 @@ author       = "Your Name"
 email        = "you@example.com"
 owner        = "your-gh-owner"
 ```
-```
+````
 
 - [ ] **Step 4: Review design 0001 (no change expected)**
 
@@ -320,7 +322,7 @@ git commit -m "docs: adopt press/press-* paths and press-answers.toml convention
 both to the new path:
 
 ```bash
-cd /Users/stevemorin/c/template-press
+cd "$(git rev-parse --show-toplevel)"
 sed -i '' 's#\.press/rules\.toml#press/press-rules.toml#g' \
   projects/P03-external-target-rebrand-press-.md
 ```
