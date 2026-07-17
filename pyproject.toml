@@ -95,7 +95,7 @@ Issues = "https://github.com/smorinlabs/template-press/issues"
 
 # ITM-073 — uv_build (ADR-06 cutover; replaces Hatchling + hatch-vcs).
 [build-system]
-requires = ["uv_build>=0.5,<1.0"]
+requires = ["uv_build>=0.11.28,<1.0"]
 build-backend = "uv_build"
 
 # ITM-074 — uv_build module configuration.
