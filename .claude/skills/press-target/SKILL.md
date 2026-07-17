@@ -15,11 +15,12 @@ mismatch; a completed run is verified leak-free before a receipt is written.
 ## Steps
 
 1. Preconditions: target is a git repo with a clean tree.
-2. Preview (never skip):
-   `press rebrand --target <TARGET> --config <press-answers.toml> --dry-run`
-   If the target ships a `press/press-answers.example.toml` template, copy it
-   first and fill in the destination identity:
+2. Preview (never skip): if the target ships a
+   `press/press-answers.example.toml` template, copy it first and fill in
+   the destination identity:
    `cp <TARGET>/press/press-answers.example.toml press-answers.toml`
+   Then run the dry run:
+   `press rebrand --target <TARGET> --config <press-answers.toml> --dry-run`
    (in a dev checkout of template-press: `uv run press rebrand …`)
 3. If the target has no `press/press-source.toml`, review the discovery proposal
    printed by the dry run; re-run with `--accept-discovery` only after the

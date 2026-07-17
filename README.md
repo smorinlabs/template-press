@@ -54,17 +54,8 @@ owner        = "janedev"
 Keep your filled-in `press-answers.toml` out of the target (it is transient
 operator input, not committed state). A repo may commit a
 `press/press-answers.example.toml` placeholder to advertise the field
-shape — copy it, fill it, and pass it via `--config`:
-
-```toml
-[answers]
-package_name = "my_package"
-repo_name    = "my-repo"
-app_name     = "my-app"
-author       = "Your Name"
-email        = "you@example.com"
-owner        = "your-gh-owner"
-```
+shape — copy it, fill it, and pass it via `--config`. It has the same
+`[answers]` fields shown above.
 
 The target's **current** identity is read from a committed
 `<target>/press/press-source.toml`. On a first run, `--dry-run` prints a proposed
