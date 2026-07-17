@@ -22,7 +22,12 @@ from template_press.rebrand.config import (
 )
 from template_press.rebrand.discovery import discover, mismatches
 from template_press.rebrand.doctor import find_leaks, render_leak_report
-from template_press.rebrand.engine import ApplyReport, apply, build_plan
+from template_press.rebrand.engine import (
+    ApplyReport,
+    apply,
+    build_plan,
+    stray_press_dirs,
+)
 from template_press.rebrand.identity import Identity, ValidationError, token_occurs
 from template_press.rebrand.receipt import read_receipt, write_receipt
 from template_press.rebrand.rules import DEFAULT_RULES, Rules, load_rules
@@ -179,6 +184,16 @@ def main(argv: list[str] | None = None) -> int:
         rules = load_rules(target)
         plan = build_plan(target, source, dest, rules)
         print(plan.render())
+        strays = stray_press_dirs(target)
+        if strays:
+            print(
+                "warning: these press/ director(ies) are NOT this tool's "
+                "control dir (no press-*.toml marker); their contents are "
+                "rewritten and leak-scanned as ordinary content — review:",
+                file=sys.stderr,
+            )
+            for stray in strays:
+                print(f"  {stray}", file=sys.stderr)
         if args.dry_run:
             if write_pending:
                 print(f"(dry run) would write {SOURCE_CONFIG_REL} from discovery")

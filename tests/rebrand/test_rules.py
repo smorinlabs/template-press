@@ -5,7 +5,10 @@ from template_press.rebrand.rules import DEFAULT_RULES, load_rules
 
 def test_defaults_exclude_state_and_vcs_dirs():
     assert ".git" in DEFAULT_RULES.exclude_dirs
-    assert "press" in DEFAULT_RULES.exclude_dirs
+    # The control press/ dir is exempted content-keyed by the engine
+    # (CONTROL_MARKERS), NOT via a blanket any-depth exclude_dirs entry —
+    # so an unrelated press/ in a target is still rewritten + leak-scanned.
+    assert "press" not in DEFAULT_RULES.exclude_dirs
     assert "uv.lock" in DEFAULT_RULES.exclude_files
     assert "uv.lock" in DEFAULT_RULES.regenerate
 

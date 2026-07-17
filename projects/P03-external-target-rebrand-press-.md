@@ -25,12 +25,22 @@ Rebuild as standalone press: rebrand → provision, verify-then-mark
 - [x] [P03-M4b] Rename press control dir to `press/` + `press-` file
       prefix (visible, uniquely greppable); `press-answers.toml` +
       `press/press-answers.example.toml` convention. Breaking (v3.0.0).
-- [ ] [P03-M4c] Guard the `press/` dir-name collision: emit a doctor /
-      dry-run WARNING when the target has a non-control `press/` directory
-      (one lacking `press-source.toml` / `press-receipt.toml`) so surviving
-      source tokens there cannot yield a false "verified" receipt. Owns the
-      "Accepted risk" note in the 2026-07-16 press-dir-rename spec; do before
-      M5 external adoption.
+- [x] [P03-M4c] Guard the `press/` dir-name collision: exempt a `press/`
+      dir from rewrite + no-leak scan ONLY when it holds a control marker
+      (`press-*.toml`, content-keyed via `engine.CONTROL_MARKERS`), so an
+      unrelated `press/` in a target is rewritten + scanned like any content
+      and can never yield a false "verified" receipt; the CLI warns about
+      such stray dirs. Closes the "Accepted risk" note in the 2026-07-16
+      press-dir-rename spec.
+- [ ] [P03-M4d] Follow-ups from the M4c review: (1) on a first
+      `--accept-discovery` press the preview's stray-`press/` warning can
+      transiently mislabel the soon-to-be control dir (non-mutating; apply
+      /doctor are correct) — compute the preview after the deferred
+      source-config write or seed the known control path; (2) a pre-existing
+      root `press/` still collides with the tool's control location (the
+      control files get written into it) — add a precondition warn/refuse;
+      (3) minor: share one `git ls-files` between build_plan and
+      stray_press_dirs.
 - [ ] [P03-M5] Self-publish: version reset 0.1.0, fresh CHANGELOG,
       release-please bootstrap, PyPI (`template-press` reserved)
 - [ ] [P03-M6] Provision phase: feature modules (detect/add/verify),
