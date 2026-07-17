@@ -38,7 +38,7 @@ clones, containers, and remote agent sessions start without it — run
 | Sync dev env | `uv sync --group dev` (PEP 735 — not `pip install '.[dev]'`) |
 | All checks | `just check` |
 | Run tests | `pytest` (default excludes `slow`/`live` markers per ITM-046; full: `pytest -m ""`) |
-| Rebrand a target (preview) | `uv run press rebrand --target <dir> --config <answers.toml> --dry-run` |
+| Rebrand a target (preview) | `uv run press rebrand --target <dir> --config <press-answers.toml> --dry-run` |
 | Rebrand acceptance matrix | `just matrix` (live; see `.claude/skills/rebrand-matrix/`) |
 | Run one test | `pytest tests/test_file.py::test_name` |
 | Lint | `uv run ruff check .` |
@@ -125,7 +125,7 @@ template-press is a utility you point at an external target repo, not a
 project template. To press an identity onto a repo, follow the
 [`press-target`](.claude/skills/press-target/SKILL.md) skill (dry-run →
 identity validation → apply → verify → receipt). Command shape:
-`press rebrand --target <path> --config <answers.toml>` (in a dev checkout,
+`press rebrand --target <path> --config <press-answers.toml>` (in a dev checkout,
 `uv run press rebrand …`). The design contract is
 [`docs/design/0006-external-target-model.md`](docs/design/0006-external-target-model.md);
 `provision`/`status` verbs arrive with the M6 Provision phase.

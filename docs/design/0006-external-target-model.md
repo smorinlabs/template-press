@@ -23,19 +23,19 @@ project template and ships no application. First target:
 
 ## Rebrand model (this repo's current work)
 
-1. **Source identity is config-first**: `<target>/.press/source.toml`
+1. **Source identity is config-first**: `<target>/press/press-source.toml`
    (committed in the target) is authoritative. Discovery (pyproject name,
    `[project.scripts]` key, git origin, src/flat layout) **validates** it and
    fails loudly on mismatch. Discovery never silently drives a run.
 2. **Rules are generic and scan-based**: the tool carries rewrite rules
    (boundary-safe by default); it does not carry any target's identity or
-   file list. Per-target overrides: `<target>/.press/rules.toml`.
+   file list. Per-target overrides: `<target>/press/press-rules.toml`.
 3. **Verify-then-mark**: after apply, a no-leak doctor pass scans the target
    for surviving source-identity tokens (changed fields only; the explicit
-   `verify_ignore` list in `.press/rules.toml` is the one sanctioned
+   `verify_ignore` list in `press/press-rules.toml` is the one sanctioned
    exemption). Any leak ⇒ exit 1 and NO receipt. The receipt
-   (`<target>/.press/receipt.toml`) records the verified state, and on
-   success `.press/source.toml` is refreshed to the new identity so a
+   (`<target>/press/press-receipt.toml`) records the verified state, and on
+   success `press/press-source.toml` is refreshed to the new identity so a
    future re-press starts from a valid baseline.
 4. **The tool never ships into the target** — no marker in the tool's tree,
    no self-prune, no self-commit.

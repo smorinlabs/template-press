@@ -28,11 +28,11 @@ pip install template-press
 ## Quick start
 
 ```bash
-press rebrand --target ../my-repo --config answers.toml --dry-run   # preview
-press rebrand --target ../my-repo --config answers.toml             # apply
+press rebrand --target ../my-repo --config press-answers.toml --dry-run   # preview
+press rebrand --target ../my-repo --config press-answers.toml             # apply
 ```
 
-`answers.toml` describes the destination identity:
+`press-answers.toml` describes the destination identity:
 
 ```toml
 [answers]
@@ -47,7 +47,7 @@ owner        = "janedev"
 ## How it stays safe
 
 - **Config-first identity.** The target's current identity is read from a
-  committed `.press/source.toml`; discovery *validates* it and refuses to run
+  committed `press/press-source.toml`; discovery *validates* it and refuses to run
   on a mismatch, so the press never silently rewrites the wrong repo.
 - **Verify-then-mark.** After rewriting, a no-leak scan confirms no source
   identity survives. Any leftover ⇒ exit 1 and **no receipt** — a partial
