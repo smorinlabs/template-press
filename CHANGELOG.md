@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.0](https://github.com/smorinlabs/template-press/compare/v3.0.0...v3.1.0) (2026-07-17)
+
+
+### Features
+
+* guard press/ dir-name collision with content-keyed exemption ([#30](https://github.com/smorinlabs/template-press/issues/30)) ([ca213cf](https://github.com/smorinlabs/template-press/commit/ca213cf570ad356893c84511de7949813ee101bf))
+
 ## [3.0.0](https://github.com/smorinlabs/template-press/compare/v2.1.1...v3.0.0) (2026-07-17)
 
 
