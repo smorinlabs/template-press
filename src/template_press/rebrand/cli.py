@@ -228,7 +228,14 @@ def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> li
     """
     failed: list[str] = []
     for lockfile in rules.regenerate:
-        if not (target / lockfile).is_file():
+        lockpath = target / lockfile
+        if lockpath.is_symlink():  # lstat-based, no-follow — check first
+            report.skipped.append(
+                f"regenerate {lockfile} (symlink — refusing to write through)"
+            )
+            failed.append(lockfile)
+            continue
+        if not lockpath.is_file():
             continue
         if lockfile == "uv.lock":
             result = subprocess.run(  # nosec B603 B607

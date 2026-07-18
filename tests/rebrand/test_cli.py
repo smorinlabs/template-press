@@ -264,6 +264,56 @@ def test_failed_lock_regeneration_exits_1_no_receipt(
     assert not (src_target / RECEIPT_REL).exists()
 
 
+def test_regen_refuses_symlinked_lockfile_no_external_write(
+    tmp_path: Path, monkeypatch
+):
+    """M1: a symlinked uv.lock must be refused, never written through.
+
+    `uv.lock` -> external file under tmp_path. `_regenerate_lockfiles` must
+    reject it on the leaf is_symlink() check BEFORE ever invoking `uv lock`,
+    so the external file is never touched.
+    """
+    import subprocess as sp
+
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.engine import ApplyReport
+    from template_press.rebrand.rules import DEFAULT_RULES
+
+    target = tmp_path / "target"
+    target.mkdir()
+    external = tmp_path / "external.lock"
+    external_content = "external-untouched==1.0.0\n"
+    external.write_text(external_content, encoding="utf-8")
+    external_inode = external.stat().st_ino
+
+    (target / "uv.lock").symlink_to(external)
+
+    uv_lock_calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:2] == ["uv", "lock"]:
+            uv_lock_calls.append(cmd)
+            # Simulates what a real `uv lock` does: write the relative
+            # lockfile path in cwd. If the symlink guard is bypassed, this
+            # follows the symlink and mutates the external file.
+            (Path(kwargs["cwd"]) / "uv.lock").write_text(
+                "mutated-by-uv-lock\n", encoding="utf-8"
+            )
+            return sp.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+
+    report = ApplyReport()
+    failed = cli_mod._regenerate_lockfiles(target, DEFAULT_RULES, report)
+
+    assert uv_lock_calls == []  # uv lock must never run against a symlink
+    assert failed == ["uv.lock"]
+    assert any("symlink" in s for s in report.skipped)
+    assert external.read_text(encoding="utf-8") == external_content
+    assert external.stat().st_ino == external_inode
+
+
 def test_dry_run_with_accept_discovery_writes_nothing(
     src_target: Path, tmp_path: Path, capsys
 ):
