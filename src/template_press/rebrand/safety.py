@@ -52,6 +52,7 @@ __all__ = [
     "SafeRelPath",
     "SafetyError",
     "UnsafePathError",
+    "assert_ancestors_real",
     "assert_under_root",
     "git_hardening_args",
     "is_regular_lstat",
@@ -185,6 +186,34 @@ def assert_under_root(path: Path, root: Path) -> None:
             break  # remaining (leaf) components do not exist yet
         if stat.S_ISLNK(st.st_mode):
             raise ContainmentError(f"symlink component in sink path: {cur}")
+
+
+def assert_ancestors_real(path: Path, root: Path) -> None:
+    """Assert every ANCESTOR directory of ``path`` (root-inclusive down to, but
+    EXCLUDING, the leaf) is real — a no-follow ``lstat`` walk that TOLERATES a
+    symlink leaf.
+
+    Unlike ``assert_under_root`` (which rejects a symlink leaf), this permits
+    the leaf itself to be a symlink — moving or retargeting a token-bearing
+    symlink is legitimate — while still refusing a symlinked ANCESTOR, so
+    ``os.unlink`` / ``os.rename`` / ``os.symlink`` on ``path`` cannot traverse a
+    symlinked ancestor out of ``root``. A root-level leaf (no ancestors under
+    ``root``) always passes.
+    """
+    root_r = root.resolve()
+    parent_r = path.parent.resolve()  # follows ancestor symlinks — an escaping
+    if not _is_within(parent_r, root_r):  # ancestor lands outside the root
+        raise ContainmentError(f"sink parent {parent_r} resolves outside root {root_r}")
+    rel_parts = _literal_rel_parts(path, root, root_r)
+    cur = root_r
+    for part in rel_parts[:-1]:  # ancestors ONLY — the leaf is tolerated
+        cur = cur / part
+        try:
+            st = os.lstat(cur)
+        except FileNotFoundError:
+            break  # remaining (leaf-side) components do not exist yet
+        if stat.S_ISLNK(st.st_mode):
+            raise ContainmentError(f"symlink ancestor in sink path: {cur}")
 
 
 def _literal_rel_parts(path: Path, root: Path, root_r: Path) -> tuple[str, ...]:

@@ -15,7 +15,11 @@ from pathlib import Path
 
 from template_press.rebrand.identity import Identity, replace_token, token_occurs
 from template_press.rebrand.rules import Rules
-from template_press.rebrand.safety import ContainmentError, assert_under_root
+from template_press.rebrand.safety import (
+    ContainmentError,
+    assert_ancestors_real,
+    assert_under_root,
+)
 
 RENAME_FIELDS: tuple[str, ...] = (
     "package_name",
@@ -305,6 +309,11 @@ def _retarget_symlinks(
         if not path.is_symlink():  # TOCTOU: refuse a swapped-in non-symlink
             report.skipped.append(f"retarget {rel.as_posix()} (no longer a symlink)")
             continue
+        # Validate the LINK LOCATION's ancestors (not just the sink): a
+        # symlinked ancestor of `path` would land unlink/symlink OUTSIDE the
+        # target. Fail closed (propagate) on a hostile ancestor — never
+        # silently skip a containment violation.
+        assert_ancestors_real(path, target)
         os.unlink(path)
         os.symlink(new_link, path)
         report.replaced.append(rel.as_posix())
@@ -360,6 +369,12 @@ def _rename_pass_once(
         if dst.exists():
             report.skipped.append(f"rename {old} (destination exists)")
             continue
+        # A symlinked ancestor on either endpoint would move CONTENT through a
+        # symlink out of the target. Tolerates a token-bearing symlink LEAF
+        # (renaming a symlink is legitimate); fails closed (propagates) on a
+        # symlinked ancestor.
+        assert_ancestors_real(src, target)
+        assert_ancestors_real(dst, target)
         dst.parent.mkdir(parents=True, exist_ok=True)
         src.rename(dst)
         report.renamed.append((old, rename_map[old]))

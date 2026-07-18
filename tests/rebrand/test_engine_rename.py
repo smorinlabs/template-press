@@ -1,9 +1,13 @@
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from template_press.rebrand.engine import apply
 from template_press.rebrand.rules import DEFAULT_RULES
+from template_press.rebrand.safety import ContainmentError
 
 from .conftest import DEST, SOURCE
 
@@ -14,6 +18,45 @@ def _git_add(repo: Path) -> None:
         check=True,
         capture_output=True,
     )
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(repo), *args],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+
+
+def _diverged_symlink_ancestor_repo(tmp_path: Path, leaf: str) -> tuple[Path, Path]:
+    """A committed target whose real dir ``a/`` (holding ``a/<leaf>``) is, in a
+    dirty working tree, swapped to a symlink pointing at an EXTERNAL dir.
+
+    ``git ls-files`` still reports ``a/<leaf>`` from the INDEX, so any op on
+    ``tgt/a/<leaf>`` that fails to validate ancestors traverses the ``a``
+    symlink and mutates the external tree. Both dirs live under ``tmp_path``.
+    """
+    tgt = tmp_path / "tgt"
+    ext = tmp_path / "ext"
+    tgt.mkdir()
+    ext.mkdir()
+    _git(tgt, "init", "-q")
+    _git(tgt, "config", "user.email", "a@b.c")
+    _git(tgt, "config", "user.name", "x")
+    (tgt / "a").mkdir()
+    if leaf == "leaf":
+        # token-bearing relative symlink (retarget candidate)
+        os.symlink("../tgt/demo_widget/thing", tgt / "a" / "leaf")
+    else:
+        # token-bearing regular file (rename candidate)
+        (tgt / "a" / leaf).write_text("in-repo content\n", encoding="utf-8")
+    (tgt / "keep.txt").write_text("hi\n", encoding="utf-8")
+    _git(tgt, "add", "-A")
+    _git(tgt, "commit", "-q", "-m", "init")
+    # DIVERGE: replace the real dir a/ with a symlink to the external dir.
+    shutil.rmtree(tgt / "a")
+    os.symlink(str(ext), tgt / "a")
+    return tgt, ext
 
 
 def test_package_dir_renamed_src_layout(src_target: Path):
@@ -98,3 +141,41 @@ def test_app_name_upper_renamed(src_target: Path):
     apply(src_target, SOURCE, DEST, DEFAULT_RULES)
     assert (src_target / "POTATO_GUIDE.md").is_file()
     assert not (src_target / "PRESS_GUIDE.md").exists()
+
+
+def test_retarget_refuses_symlinked_ancestor_no_external_write(tmp_path: Path):
+    """PoC mirror (C1): a token-bearing symlink whose ANCESTOR dir is (dirty
+    state) a symlink to an external tree must NOT be retargeted through that
+    ancestor. ``apply`` must fail closed (ContainmentError) and the external
+    object's inode must be unchanged (nothing unlinked/recreated outside)."""
+    tgt, ext = _diverged_symlink_ancestor_repo(tmp_path, leaf="leaf")
+    # External sink the escape would delete + recreate.
+    os.symlink("../tgt/demo_widget/thing", ext / "leaf")
+    ext_inode_before = os.lstat(ext / "leaf").st_ino
+    ext_link_before = os.readlink(ext / "leaf")
+
+    with pytest.raises(ContainmentError):
+        apply(tgt, SOURCE, DEST, DEFAULT_RULES)
+
+    # The external object is byte-for-byte untouched: same inode, same target.
+    assert (ext / "leaf").is_symlink()
+    assert os.lstat(ext / "leaf").st_ino == ext_inode_before
+    assert os.readlink(ext / "leaf") == ext_link_before
+
+
+def test_rename_refuses_symlinked_ancestor_no_external_write(tmp_path: Path):
+    """Same-class hole (I1) in the rename pass: a token-bearing path whose
+    ANCESTOR dir is a symlink to an external tree must NOT be renamed through
+    that ancestor. ``apply`` fails closed and the external file is untouched."""
+    tgt, ext = _diverged_symlink_ancestor_repo(tmp_path, leaf="demo_widget.txt")
+    # External content the rename would move through the symlinked ancestor.
+    (ext / "demo_widget.txt").write_text("external\n", encoding="utf-8")
+    ext_inode_before = os.lstat(ext / "demo_widget.txt").st_ino
+
+    with pytest.raises(ContainmentError):
+        apply(tgt, SOURCE, DEST, DEFAULT_RULES)
+
+    # The external file was neither moved nor recreated.
+    assert (ext / "demo_widget.txt").is_file()
+    assert os.lstat(ext / "demo_widget.txt").st_ino == ext_inode_before
+    assert not (ext / "potato_launcher.txt").exists()
