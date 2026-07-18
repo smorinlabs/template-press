@@ -46,6 +46,17 @@ def test_render_leak_report_is_actionable():
     assert "a.md" in text and "press" in text
 
 
+def test_app_name_upper_path_leak_detected(src_target: Path):
+    """Surviving uppercase app tokens in paths should be detected as leaks."""
+    apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+    (src_target / "PRESS_NOTES.md").write_text("x", encoding="utf-8")
+    leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+    assert any(
+        e.path == "PRESS_NOTES.md" and e.field == "app_name_upper" and e.where == "path"
+        for e in leaks
+    )
+
+
 def test_unreadable_file_fails_verification(src_target: Path):
     import os
 

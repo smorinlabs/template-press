@@ -40,3 +40,17 @@ def test_nested_token_bearing_paths_rename_fully(src_target: Path):
     assert moved.is_file()
     assert not (src_target / "src" / "demo_widget").exists()
     assert ("src/demo_widget", "src/potato_launcher") in report.renamed
+
+
+def test_app_name_upper_renamed(src_target: Path):
+    """Uppercased app token in filenames should be renamed."""
+    (src_target / "PRESS_GUIDE.md").write_text("# Press Guide\n", encoding="utf-8")
+    # S603, S607: git binary is hardcoded (not from untrusted input)
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+    assert (src_target / "POTATO_GUIDE.md").is_file()
+    assert not (src_target / "PRESS_GUIDE.md").exists()

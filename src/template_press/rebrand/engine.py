@@ -15,7 +15,12 @@ from pathlib import Path
 from template_press.rebrand.identity import Identity, replace_token, token_occurs
 from template_press.rebrand.rules import Rules
 
-RENAME_FIELDS: tuple[str, ...] = ("package_name", "repo_name", "app_name")
+RENAME_FIELDS: tuple[str, ...] = (
+    "package_name",
+    "repo_name",
+    "app_name",
+    "app_name_upper",
+)
 
 # A press/ directory is THIS tool's control dir — exempt from rewriting and
 # the no-leak scan — only when it holds one of these files (which legitimately

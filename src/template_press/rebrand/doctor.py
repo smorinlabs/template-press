@@ -15,7 +15,12 @@ from template_press.rebrand.engine import iter_target_files
 from template_press.rebrand.identity import Identity, token_occurs
 from template_press.rebrand.rules import Rules
 
-PATH_FIELDS: tuple[str, ...] = ("package_name", "repo_name", "app_name")
+PATH_FIELDS: tuple[str, ...] = (
+    "package_name",
+    "repo_name",
+    "app_name",
+    "app_name_upper",
+)
 
 
 @dataclass(frozen=True)
