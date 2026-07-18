@@ -8,6 +8,7 @@ no receipt. Port of init_doctor.check_no_identity_leftover, generalized to
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,7 +29,7 @@ class Leak:
     path: str
     field: str
     value: str
-    where: str  # "content" | "path" | "unverifiable"
+    where: str  # "content" | "path" | "symlink" | "unverifiable"
 
 
 def _read_for_scan(path: Path) -> str | None:
@@ -75,6 +76,13 @@ def find_leaks(
             for field_name, value in fields.items():
                 if token_occurs(text, field_name, value):
                     leaks.append(Leak(rel_posix, field_name, value, "content"))
+        if path.is_symlink():
+            # A symlink's bytes are its target string, not file content — an
+            # identity token embedded there would dangle/leak in a pressed fork.
+            link = os.readlink(path)
+            for field_name, value in fields.items():
+                if token_occurs(link, field_name, value):
+                    leaks.append(Leak(rel_posix, field_name, value, "symlink"))
         for i, component in enumerate(rel.parts):
             if _is_root_press(rel, i):
                 continue

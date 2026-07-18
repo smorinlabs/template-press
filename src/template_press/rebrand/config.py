@@ -11,9 +11,35 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from template_press.rebrand.engine import ROOT_CONTROL
 from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.safety import ContainmentError, assert_under_root
 
 SOURCE_CONFIG_REL = Path("press") / "press-source.toml"
+
+
+def assert_control_real(target: Path) -> None:
+    """Reject a control dir / artifact that is (or hides behind) a symlink (D8).
+
+    The control location is tool-managed and must be REAL: a symlinked
+    ``press/`` (or a symlinked control artifact inside it) could redirect a
+    control-file WRITE out of the target tree, or make a control-file READ
+    trust external content. Called once at the top of the shared load path
+    (``load_source_config``) so both rebrand's resolve/write-from-discovery
+    and (later) verify's preflight are guarded. Raises ``ContainmentError``
+    (a ``SafetyError``/``ValueError``) → the CLI maps it to exit 2.
+    """
+    control = target / "press"
+    # No symlinked ancestor and the leaf itself is not a symlink (no-follow
+    # lstat walk); the belt-and-suspenders is_symlink covers the present-leaf
+    # case explicitly.
+    assert_under_root(control, target)
+    if control.is_symlink():
+        raise ContainmentError(f"control dir is a symlink: {control}")
+    for rel in ROOT_CONTROL:
+        artifact = target / rel
+        if artifact.is_symlink():
+            raise ContainmentError(f"control artifact is a symlink: {artifact}")
 
 
 def toml_string(value: str) -> str:
@@ -46,6 +72,7 @@ def load_identity_toml(path: Path, table: str) -> Identity:
 
 
 def load_source_config(target: Path, override: Path | None) -> Identity | None:
+    assert_control_real(target)
     path = override if override is not None else target / SOURCE_CONFIG_REL
     if not path.is_file():
         return None

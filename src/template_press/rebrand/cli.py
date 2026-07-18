@@ -31,6 +31,7 @@ from template_press.rebrand.engine import (
 from template_press.rebrand.identity import Identity, ValidationError, token_occurs
 from template_press.rebrand.receipt import read_receipt, write_receipt
 from template_press.rebrand.rules import DEFAULT_RULES, Rules, load_rules
+from template_press.rebrand.safety import SafetyError, write_control
 
 
 def _fail(msg: str) -> int:
@@ -203,20 +204,19 @@ def main(argv: list[str] | None = None) -> int:
         # behind us, so the deferred source-config write can no longer be
         # followed by a "no writes" exit code.
         if write_pending:
-            path = target / SOURCE_CONFIG_REL
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(render_source_config(source), encoding="utf-8")
+            write_control(target, SOURCE_CONFIG_REL, render_source_config(source))
             print(f"wrote {SOURCE_CONFIG_REL} from discovery")
     except (
         ValidationError,
         tomllib.TOMLDecodeError,
         OSError,
         subprocess.CalledProcessError,
+        SafetyError,
     ) as exc:
         return _fail(str(exc))
     try:
         return _press(target, source, dest, rules)
-    except (OSError, subprocess.CalledProcessError) as exc:
+    except (OSError, subprocess.CalledProcessError, SafetyError) as exc:
         # Exit 2 means "nothing applied"; a mid-apply failure is not that.
         print(
             f"error: {exc} — target may be PARTIALLY rewritten; restore with "
@@ -285,9 +285,7 @@ def _press(target: Path, source: Identity, dest: Identity, rules: Rules) -> int:
         print(report.render(), file=sys.stderr)
         return 1
     receipt_path = write_receipt(target, source, dest, report)
-    source_config_path = target / SOURCE_CONFIG_REL
-    source_config_path.parent.mkdir(parents=True, exist_ok=True)
-    source_config_path.write_text(render_source_config(dest), encoding="utf-8")
+    write_control(target, SOURCE_CONFIG_REL, render_source_config(dest))
     print(report.render())
     if report.skipped:
         print("skipped (review):")

@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 
@@ -408,6 +409,22 @@ def test_accept_discovery_mismatch_leaves_no_source_config(tmp_path: Path):
     )
     assert code == 2  # layout mismatch: no package dir exists
     assert not (repo / SOURCE_CONFIG_REL).exists()
+
+
+def test_rebrand_symlinked_control_dir_exits_2_no_write(
+    src_target: Path, tmp_path: Path
+):
+    """D8: a symlinked press/ control dir is a hard exit-2 precondition error;
+    nothing is written through the link (the external decoy stays empty)."""
+    decoy = tmp_path / "outside" / "decoy"
+    decoy.mkdir(parents=True)
+    os.symlink(decoy, src_target / "press", target_is_directory=True)
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 2
+    assert list(decoy.iterdir()) == []  # nothing written through the symlink
 
 
 def test_accept_discovery_bad_rules_toml_leaves_no_source_config(

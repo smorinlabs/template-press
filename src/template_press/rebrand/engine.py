@@ -8,12 +8,14 @@ TARGET is the undo button (`git checkout . && git clean -fd`).
 
 from __future__ import annotations
 
+import os
 import subprocess  # nosec B404 — git ls-files enumerates the target
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from template_press.rebrand.identity import Identity, replace_token, token_occurs
 from template_press.rebrand.rules import Rules
+from template_press.rebrand.safety import ContainmentError, assert_under_root
 
 RENAME_FIELDS: tuple[str, ...] = (
     "package_name",
@@ -265,13 +267,57 @@ def _apply_replacements(
             report.replaced.append(rel)
 
 
+def _retarget_symlinks(
+    target: Path,
+    pairs: list[tuple[str, str, str]],
+    report: ApplyReport,
+) -> None:
+    """Rewrite in-repo RELATIVE symlink targets carrying identity tokens.
+
+    Only the link STRING is rewritten — the pointed-to file is never read,
+    written, or followed. Candidates come from ``_git_listed`` filtered by a
+    no-follow ``is_symlink`` lstat (NOT ``iter_target_files``, which follows
+    links). A symlink is left untouched when its target is absolute, carries
+    no token, or would escape the root after rewriting (containment via the
+    reused ``assert_under_root`` on the resolved sink). The link is recreated
+    with unlink + symlink, guarded by an immediate ``is_symlink`` re-check to
+    refuse a TOCTOU swap.
+    """
+    target_r = target.resolve()
+    for rel in _git_listed(target):
+        path = target / rel
+        if not path.is_symlink():
+            continue
+        link = os.readlink(path)
+        if os.path.isabs(link):
+            continue  # never rewrite or follow an absolute target
+        new_link = link
+        for f, cur, repl in pairs:
+            new_link = replace_token(new_link, f, cur, repl)
+        if new_link == link:
+            continue
+        sink = (path.parent / new_link).resolve()
+        try:
+            assert_under_root(sink, target_r)
+        except ContainmentError:
+            report.skipped.append(f"retarget {rel.as_posix()} (escaping target)")
+            continue
+        if not path.is_symlink():  # TOCTOU: refuse a swapped-in non-symlink
+            report.skipped.append(f"retarget {rel.as_posix()} (no longer a symlink)")
+            continue
+        os.unlink(path)
+        os.symlink(new_link, path)
+        report.replaced.append(rel.as_posix())
+
+
 def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> ApplyReport:
-    """Execute the rebrand: replace pass, then rename pass."""
+    """Execute the rebrand: replace pass, symlink-retarget pass, rename pass."""
     source.validate()
     dest.validate()
     report = ApplyReport()
     pairs = replacement_pairs(source, dest)
     _apply_replacements(target, pairs, rules, report)
+    _retarget_symlinks(target, pairs, report)
     _apply_renames(target, pairs, rules, report)
     return report
 

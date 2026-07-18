@@ -1,3 +1,5 @@
+import os
+import subprocess
 from pathlib import Path
 
 from template_press.rebrand.doctor import find_leaks, render_leak_report
@@ -53,6 +55,28 @@ def test_app_name_upper_path_leak_detected(src_target: Path):
     leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
     assert any(
         e.path == "PRESS_NOTES.md" and e.field == "app_name_upper" and e.where == "path"
+        for e in leaks
+    )
+
+
+def test_doctor_flags_symlink_target_embedding_identity(src_target: Path):
+    """A symlink whose os.readlink target embeds a source token is a leak: a
+    link target carrying identity would dangle/leak in a pressed fork."""
+    link = src_target / "link.txt"
+    # Points to an existing file (so is_file() follows and the link appears in
+    # iter_target_files); the readlink string embeds package_name.
+    os.symlink("src/demo_widget/cli.py", link)
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+    assert any(
+        e.path == "link.txt"
+        and e.field == "package_name"
+        and e.value == "demo_widget"
+        and e.where == "symlink"
         for e in leaks
     )
 
