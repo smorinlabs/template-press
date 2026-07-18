@@ -145,7 +145,41 @@ def test_unreadable_file_is_unscannable(src_target: Path):
     finally:
         secret.chmod(0o644)
     hits = [f for f in findings if f.path == "secret.md"]
-    assert hits and all(f.where == "unscannable" for f in hits)
+    assert hits and all(
+        f.where == "unscannable" and f.field == "io" and f.value == "unreadable"
+        for f in hits
+    )
+
+
+def test_lstat_guard_failure_on_absent_file_is_unscannable_io(src_target: Path):
+    """Defense-in-depth TOCTOU coverage: a path git's index still lists as a
+    plain file (so `scan_paths` tags it `kind="file"`) but that is ABSENT
+    from the working tree by read time — `is_regular_lstat` returns False
+    (`os.lstat` raises `FileNotFoundError`) for it, so `_scan_file`'s guard
+    fires and must flag it `unscannable`/`io`/`unreadable` rather than
+    silently skip it.
+    """
+    ghost = src_target / "ghost.md"
+    ghost.write_text("demo_widget leak\n", encoding="utf-8")
+    _git(src_target, "add", "-A")
+    _git(src_target, "commit", "-q", "-m", "add file to later remove from worktree")
+    ghost.unlink()  # still tracked in the index; gone from the working tree
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "ghost.md"]
+    assert len(hits) == 1
+    hit = hits[0]
+    assert hit.where == "unscannable"
+    assert hit.field == "io"
+    assert hit.value == "unreadable"
+    assert hit.line is None
+    assert hit.col is None
 
 
 def test_dangling_symlink_readlink_leak_is_i2_closure(src_target: Path):

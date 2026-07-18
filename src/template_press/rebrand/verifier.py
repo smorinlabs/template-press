@@ -52,6 +52,13 @@ class Finding:
     ``"content"`` (1-based line number, character offset within the line)
     and ``"binary"`` (``line=None``, byte offset into the file); every other
     ``where`` carries ``line=None, col=None``.
+
+    An ``"unscannable"`` finding is field-agnostic (an I/O error prevents
+    scanning regardless of which field might have been present) but still
+    needs a non-``None`` ``field``/``value`` pair so it remains ignorable by
+    a `field` + path-anchor ignore rule (Task 8): it carries
+    ``field="io", value="unreadable"``, mirroring the existing
+    ``doctor.Leak(rel, "io", "unreadable", ...)`` convention.
     """
 
     path: str
@@ -176,12 +183,12 @@ def _scan_file(
         # "file" from an earlier lstat that may be stale by now (or, in
         # principle, an on-disk node git cannot represent). Never follow,
         # never guess — flag it unscannable rather than silently skip.
-        return [Finding(posix, "", "", "unscannable", None, None, "")]
+        return [Finding(posix, "io", "unreadable", "unscannable", None, None, "")]
     try:
         data = path.read_bytes()
     except OSError:
         # `where="unscannable"` is reserved for real I/O errors ONLY.
-        return [Finding(posix, "", "", "unscannable", None, None, "")]
+        return [Finding(posix, "io", "unreadable", "unscannable", None, None, "")]
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
