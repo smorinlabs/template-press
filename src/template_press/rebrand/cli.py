@@ -12,6 +12,7 @@ import argparse
 import subprocess  # nosec B404 — invokes git/uv on user-supplied targets
 import sys
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 from template_press.rebrand.config import (
@@ -214,16 +215,8 @@ def main(argv: list[str] | None = None) -> int:
         SafetyError,
     ) as exc:
         return _fail(str(exc))
-    try:
-        return _press(target, source, dest, rules)
-    except (OSError, subprocess.CalledProcessError, SafetyError) as exc:
-        # Exit 2 means "nothing applied"; a mid-apply failure is not that.
-        print(
-            f"error: {exc} — target may be PARTIALLY rewritten; restore with "
-            f"`git -C {target} checkout . && git clean -fd`",
-            file=sys.stderr,
-        )
-        return 1
+    outcome = _press(target, source, dest, rules)
+    return 1 if (outcome.env_error is not None or outcome.leaked) else 0
 
 
 def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> list[str]:
@@ -255,45 +248,90 @@ def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> li
     return failed
 
 
-def _press(target: Path, source: Identity, dest: Identity, rules: Rules) -> int:
-    report = apply(target, source, dest, rules)
-    failed_locks = _regenerate_lockfiles(target, rules, report)
-    if failed_locks:
+@dataclass
+class PressOutcome:
+    """Structurally distinguishes an env/tool failure from a doctor leak.
+
+    `renamed`/`regenerated` carry `ApplyReport` provenance through to callers
+    even on failure (empty when `apply` itself never completed).
+    """
+
+    leaked: bool
+    renamed: list[tuple[str, str]]
+    regenerated: list[str]
+    env_error: str | None
+
+
+def _press(
+    target: Path, source: Identity, dest: Identity, rules: Rules
+) -> PressOutcome:
+    report = None
+    try:
+        report = apply(target, source, dest, rules)
+        failed_locks = _regenerate_lockfiles(target, rules, report)
+        if failed_locks:
+            print(
+                f"error: lockfile regeneration failed for "
+                f"{', '.join(failed_locks)} — the lockfile still carries the old "
+                f"identity and is exempt from the doctor scan, so this rebrand "
+                f"is INCOMPLETE; no receipt written. Regenerate it, then re-run "
+                f"with --force.",
+                file=sys.stderr,
+            )
+            print(report.render(), file=sys.stderr)
+            return PressOutcome(
+                False,
+                report.renamed,
+                report.regenerated,
+                env_error=f"lockfile regeneration failed for {', '.join(failed_locks)}",
+            )
+        # Verification never honors target-side REWRITE exclusions (EMP-01):
+        # neither extra_exclude_files nor extra_exclude_dirs can hide content
+        # from the doctor. The only sanctioned exemption is the explicit,
+        # committed verify_ignore list — the deliberate ignore set.
+        doctor_rules = Rules(
+            exclude_dirs=DEFAULT_RULES.exclude_dirs | rules.verify_ignore,
+            exclude_files=DEFAULT_RULES.exclude_files,
+            regenerate=rules.regenerate,
+            verify_ignore=rules.verify_ignore,
+        )
+        leaks = find_leaks(target, source, doctor_rules, dest=dest)
+        if leaks:
+            print(render_leak_report(leaks), file=sys.stderr)
+            print(report.render(), file=sys.stderr)
+            return PressOutcome(
+                True, report.renamed, report.regenerated, env_error=None
+            )
+        receipt_path = write_receipt(target, source, dest, report)
+        write_control(target, SOURCE_CONFIG_REL, render_source_config(dest))
+        print(report.render())
+        if report.skipped:
+            print("skipped (review):")
+            for entry in report.skipped:
+                print(f"  {entry}")
+        print(f"verified: no identity leftovers. receipt: {receipt_path}")
+        print(f"updated {SOURCE_CONFIG_REL} to the new identity")
+        return PressOutcome(False, report.renamed, report.regenerated, env_error=None)
+    except (
+        FileNotFoundError,
+        OSError,
+        subprocess.CalledProcessError,
+        SafetyError,
+    ) as exc:
+        # Exit 2 (main's pre-_press gate) means "nothing applied"; a
+        # mid-mutation failure here is not that — target may be PARTIALLY
+        # rewritten.
         print(
-            f"error: lockfile regeneration failed for "
-            f"{', '.join(failed_locks)} — the lockfile still carries the old "
-            f"identity and is exempt from the doctor scan, so this rebrand "
-            f"is INCOMPLETE; no receipt written. Regenerate it, then re-run "
-            f"with --force.",
+            f"error: {exc} — target may be PARTIALLY rewritten; restore with "
+            f"`git -C {target} checkout . && git clean -fd`",
             file=sys.stderr,
         )
-        print(report.render(), file=sys.stderr)
-        return 1
-    # Verification never honors target-side REWRITE exclusions (EMP-01):
-    # neither extra_exclude_files nor extra_exclude_dirs can hide content
-    # from the doctor. The only sanctioned exemption is the explicit,
-    # committed verify_ignore list — the deliberate ignore set.
-    doctor_rules = Rules(
-        exclude_dirs=DEFAULT_RULES.exclude_dirs | rules.verify_ignore,
-        exclude_files=DEFAULT_RULES.exclude_files,
-        regenerate=rules.regenerate,
-        verify_ignore=rules.verify_ignore,
-    )
-    leaks = find_leaks(target, source, doctor_rules, dest=dest)
-    if leaks:
-        print(render_leak_report(leaks), file=sys.stderr)
-        print(report.render(), file=sys.stderr)
-        return 1
-    receipt_path = write_receipt(target, source, dest, report)
-    write_control(target, SOURCE_CONFIG_REL, render_source_config(dest))
-    print(report.render())
-    if report.skipped:
-        print("skipped (review):")
-        for entry in report.skipped:
-            print(f"  {entry}")
-    print(f"verified: no identity leftovers. receipt: {receipt_path}")
-    print(f"updated {SOURCE_CONFIG_REL} to the new identity")
-    return 0
+        return PressOutcome(
+            False,
+            report.renamed if report else [],
+            report.regenerated if report else [],
+            env_error=str(exc),
+        )
 
 
 if __name__ == "__main__":

@@ -458,3 +458,128 @@ def test_accept_discovery_bad_rules_toml_leaves_no_source_config(
     )
     assert code == 2
     assert not (src_target / SOURCE_CONFIG_REL).exists()
+
+
+def test_press_outcome_env_error_on_regen_failure(tmp_path: Path, monkeypatch):
+    """B5/C-7/C-11: nonzero regen surfaces as PressOutcome.env_error, not a leak."""
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.rules import load_rules
+
+    from .conftest import make_target
+
+    monkeypatch.setattr(cli_mod, "_regenerate_lockfiles", lambda *a, **k: ["uv.lock"])
+
+    direct_target = make_target(tmp_path / "direct", layout="src")
+    write_source_config(direct_target)
+    rules = load_rules(direct_target)
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules)
+    assert outcome.env_error is not None
+    assert outcome.leaked is False
+
+    main_target = make_target(tmp_path / "main", layout="src")
+    write_source_config(main_target)
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(main_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 1
+
+
+def test_press_outcome_env_error_on_missing_tool(tmp_path: Path, monkeypatch):
+    """A missing regen tool (FileNotFoundError) normalizes into env_error."""
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.rules import load_rules
+
+    from .conftest import make_target
+
+    def boom(*_args, **_kwargs):
+        raise FileNotFoundError("uv: command not found")
+
+    monkeypatch.setattr(cli_mod, "_regenerate_lockfiles", boom)
+
+    target = make_target(tmp_path / "direct", layout="src")
+    write_source_config(target)
+    rules = load_rules(target)
+    outcome = cli_mod._press(target, SOURCE, DEST, rules)
+    assert outcome.env_error is not None
+
+
+def test_press_outcome_env_error_on_apply_ioerror(tmp_path: Path, monkeypatch):
+    """A mid-apply OSError means `report` never comes into existence."""
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.rules import load_rules
+
+    from .conftest import make_target
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli_mod, "apply", boom)
+
+    direct_target = make_target(tmp_path / "direct", layout="src")
+    write_source_config(direct_target)
+    rules = load_rules(direct_target)
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules)
+    assert outcome.env_error is not None
+    assert outcome.renamed == []
+
+    main_target = make_target(tmp_path / "main", layout="src")
+    write_source_config(main_target)
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(main_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 1
+
+
+def test_press_outcome_env_error_on_receipt_write_failure(tmp_path: Path, monkeypatch):
+    """A post-verification receipt-write failure is still an env failure."""
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.rules import load_rules
+
+    from .conftest import make_target
+
+    def boom(*_args, **_kwargs):
+        raise OSError("cannot write receipt")
+
+    monkeypatch.setattr(cli_mod, "write_receipt", boom)
+
+    direct_target = make_target(tmp_path / "direct", layout="src")
+    write_source_config(direct_target)
+    rules = load_rules(direct_target)
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules)
+    assert outcome.env_error is not None
+
+    main_target = make_target(tmp_path / "main", layout="src")
+    write_source_config(main_target)
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(main_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 1
+
+
+def test_press_outcome_success_no_env_error(tmp_path: Path):
+    """A clean press yields a PressOutcome with no env_error and no leak."""
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.rules import load_rules
+
+    from .conftest import make_target
+
+    direct_target = make_target(tmp_path / "direct", layout="src")
+    write_source_config(direct_target)
+    rules = load_rules(direct_target)
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules)
+    assert isinstance(outcome, cli_mod.PressOutcome)
+    assert outcome.env_error is None
+    assert outcome.leaked is False
+    assert outcome.renamed  # package dir renamed demo_widget -> potato_launcher
+    assert outcome.regenerated == []  # no uv.lock in the fixture
+
+    main_target = make_target(tmp_path / "main", layout="src")
+    write_source_config(main_target)
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(main_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 0
