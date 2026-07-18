@@ -127,3 +127,64 @@ def test_raw_fields_key_not_accepted():
     # typo/misunderstanding of the append-only model, not silently honored.
     with pytest.raises(ValidationError):
         parse_verify_config({"fields": ["app_name"]})
+
+
+# --- fail-closed shape validation (malformed TOML) ---------------------
+
+
+def test_extra_fields_non_list_raises_validation_error():
+    with pytest.raises(ValidationError, match="must be a list of strings"):
+        parse_verify_config({"extra_fields": 42})
+
+
+def test_extra_fields_bare_string_raises_validation_error():
+    # A bare str is iterable (char-by-char) — must be rejected as a shape
+    # error, not silently walked as ["e", "m", "a", "i", "l"].
+    with pytest.raises(ValidationError, match="must be a list of strings"):
+        parse_verify_config({"extra_fields": "email"})
+
+
+def test_extra_fields_non_str_element_raises_validation_error():
+    with pytest.raises(ValidationError, match="must be a list of strings"):
+        parse_verify_config({"extra_fields": ["email", 42]})
+
+
+def test_substring_fields_non_list_raises_validation_error():
+    with pytest.raises(ValidationError, match="must be a list of strings"):
+        parse_verify_config({"substring_fields": 42})
+
+
+def test_substring_fields_non_str_element_raises_validation_error():
+    with pytest.raises(ValidationError, match="must be a list of strings"):
+        parse_verify_config({"substring_fields": ["package_name", 42]})
+
+
+def test_ignore_non_list_raises_validation_error():
+    with pytest.raises(ValidationError, match="must be a list of tables"):
+        parse_verify_config({"ignore": "x"})
+
+
+def test_ignore_entry_non_dict_raises_validation_error():
+    with pytest.raises(ValidationError, match="must be a table"):
+        parse_verify_config({"ignore": [1]})
+
+
+def test_ignore_entry_unknown_key_raises_validation_error():
+    with pytest.raises(ValidationError, match="unknown key"):
+        parse_verify_config(
+            {
+                "ignore": [
+                    {
+                        "field": "app_name",
+                        "file": "a",
+                        "anchor": "a",
+                        "raeson": "typo for reason",
+                    }
+                ]
+            }
+        )
+
+
+def test_equal_fields_non_str_raises_validation_error():
+    with pytest.raises(ValidationError):
+        parse_verify_config({"equal_fields": 42})

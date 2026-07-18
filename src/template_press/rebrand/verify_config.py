@@ -34,11 +34,32 @@ _TOP_LEVEL_KEYS: frozenset[str] = frozenset(
     {"extra_fields", "substring_fields", "equal_fields", "ignore"}
 )
 
+_IGNORE_KEYS: frozenset[str] = frozenset(
+    {"field", "value", "file", "anchor", "line", "ordinal", "force", "reason"}
+)
+
+
+def _str_list(table: dict, key: str) -> list[str]:
+    """``table[key]`` (default ``[]``) as a list of str — fail closed on any
+    other shape (mirrors ``rules.py:_str_list``'s isinstance guard)."""
+    value = table.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ValidationError(f"[verify] {key} must be a list of strings: {value!r}")
+    return value
+
 
 def _parse_ignore(entry: dict) -> Ignore:
     """One ``[[verify.ignore]]`` table -> ``Ignore``; missing optionals ->
     ``None``/``False``/``""`` (``Ignore.__post_init__`` rejects field & value
-    both ``None``)."""
+    both ``None``). Fails closed on a non-table entry or an unknown key
+    (e.g. a misspelled ``reason``) rather than silently defaulting."""
+    if not isinstance(entry, dict):
+        raise ValidationError(f"[verify.ignore] entry must be a table: {entry!r}")
+    unknown = set(entry) - _IGNORE_KEYS
+    if unknown:
+        raise ValidationError(
+            f"[verify.ignore] unknown key(s): {', '.join(sorted(unknown))}"
+        )
     return Ignore(
         field=entry.get("field"),
         value=entry.get("value"),
@@ -75,13 +96,13 @@ def parse_verify_config(table: dict | None) -> VerifyConfig:
         raise ValidationError(f"[verify] unknown key(s): {', '.join(sorted(unknown))}")
 
     fields = list(DEFAULT_FIELDS)
-    for name in table.get("extra_fields", []):
+    for name in _str_list(table, "extra_fields"):
         if name not in KNOWN_FIELDS:
             raise ValidationError(f"[verify] extra_fields: unknown field {name!r}")
         if name not in fields:
             fields.append(name)
 
-    substring_fields = frozenset(table.get("substring_fields", []))
+    substring_fields = frozenset(_str_list(table, "substring_fields"))
     unknown_substring = substring_fields - set(fields)
     if unknown_substring:
         raise ValidationError(
@@ -90,12 +111,17 @@ def parse_verify_config(table: dict | None) -> VerifyConfig:
         )
 
     equal_fields = table.get("equal_fields", "warn")
-    if equal_fields not in ("warn", "error"):
+    if not isinstance(equal_fields, str) or equal_fields not in ("warn", "error"):
         raise ValidationError(
             f"[verify] equal_fields must be 'warn' or 'error': {equal_fields!r}"
         )
 
-    ignores = tuple(_parse_ignore(entry) for entry in table.get("ignore", []))
+    raw_ignores = table.get("ignore", [])
+    if not isinstance(raw_ignores, list):
+        raise ValidationError(
+            f"[verify] ignore must be a list of tables: {raw_ignores!r}"
+        )
+    ignores = tuple(_parse_ignore(entry) for entry in raw_ignores)
 
     return VerifyConfig(
         fields=tuple(fields),
