@@ -19,7 +19,12 @@ Guards implemented here (see the plan's Defensive Hardening section):
   control-artifact write (D8 applied per write, not once at preflight).
 * **G5 / G5+** ``scrubbed_git_env`` / ``scrubbed_uv_env`` / ``git_hardening_args``
   — neutralize a poisoned ``GIT_DIR`` / global config / ``UV_*`` and disable
-  on-target ``core.fsmonitor`` / ``core.hooksPath`` / ext transport.
+  on-target ``core.fsmonitor`` / ``core.hooksPath`` / ext transport. Residual:
+  a repo-local clean/smudge filter driver cannot be disabled by name via
+  ``-c`` (see ``git_hardening_args`` docstring), so on-target callers should
+  prefer index/object reads (``git ls-files`` / ``git ls-tree`` /
+  ``git cat-file`` / ``git write-tree``) over working-tree-reading
+  ``git status`` where feasible.
 * **G6** ``owned_sandbox`` / ``refuse_unsafe_root`` — a ``mkdtemp`` 0700 root,
   disjoint from the target, cleaned up as the only owned child.
 * **G8** ``is_regular_lstat`` — scan only ``lstat``-regular files (no
@@ -358,9 +363,32 @@ def scrubbed_uv_env(
 def git_hardening_args() -> list[str]:
     """``-c`` flags for EVERY on-target git invocation (G5+).
 
-    The target's own ``.git/config`` is attacker-controlled input; a committed
-    ``core.fsmonitor`` / ``core.hooksPath`` / clean-smudge filter would execute
-    during "read-only" enumeration. These flags neutralize that surface.
+    The target's own ``.git/config`` is attacker-controlled input. These flags
+    neutralize four specific on-target surfaces: a committed
+    ``core.fsmonitor`` hook, a committed ``core.hooksPath`` redirect, the
+    ``ext::`` transport, and an unwanted GPG-signing prompt on commit.
+
+    Residual (NOT covered by these flags): a repo-local ``.git/config``
+    ``[filter "<name>"] clean = <cmd>`` / ``smudge = <cmd>`` definition. Git
+    filter drivers are arbitrarily named, so no fixed set of ``-c`` overrides
+    can disable one by name — there is no wildcard equivalent to
+    ``core.fsmonitor=`` for filters. If the target's working tree has a
+    stat-mismatched file wired to such a filter, a working-tree-reading
+    command (e.g. ``git status``) can still execute attacker-controlled code
+    on this machine. Global/system filter *definitions* are already
+    neutralized by ``scrubbed_git_env`` (``GIT_CONFIG_GLOBAL`` /
+    ``GIT_CONFIG_SYSTEM`` redirected to ``os.devnull``); only a repo-local
+    definition survives, and only when it is exercised by a working-tree
+    read.
+
+    Design note for callers (see also the module docstring): on-target
+    enumeration and read-only checks should PREFER index/object reads
+    (``git ls-files``, ``git ls-tree``, ``git cat-file``, ``git write-tree``)
+    over working-tree-reading commands (``git status``) wherever the check
+    can be expressed that way, since index/object reads do not invoke
+    clean/smudge filters. Treat ``git_hardening_args()`` as covering
+    fsmonitor/hooksPath/ext-transport/gpgsign only — not as blanket cover for
+    a working-tree read on a hostile target.
     """
     return [
         "-c",
