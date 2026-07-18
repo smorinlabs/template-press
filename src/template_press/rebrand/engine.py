@@ -31,6 +31,18 @@ CONTROL_MARKERS: tuple[str, ...] = (
     "press-receipt.toml",
 )
 
+# Exact-root-artifact exemption (plan Decision D3: exempt an exact artifact,
+# never a location). Only these literal root-level control files are exempt
+# from iteration — never a whole press/ subtree. rel.as_posix() membership.
+ROOT_CONTROL: frozenset[str] = frozenset(
+    {
+        "press/press-source.toml",
+        "press/press-rules.toml",
+        "press/press-receipt.toml",
+        "press/press-answers.toml",
+    }
+)
+
 
 @dataclass
 class PlanItem:
@@ -114,12 +126,13 @@ def _control_press_dirs(target: Path, files: list[Path]) -> frozenset[str]:
     )
 
 
-def _under_control_press(rel: Path, control: frozenset[str]) -> bool:
-    parts = rel.parts
-    for i in range(len(parts) - 1):
-        if parts[i] == "press" and Path(*parts[: i + 1]).as_posix() in control:
-            return True
-    return False
+def _is_root_press(rel: Path, i: int) -> bool:
+    """Component i of rel is the protected root control dir literally 'press'.
+
+    The root press/ dir holds ROOT_CONTROL; renaming or path-flagging it
+    would break control-file exemption when app_name == 'press'.
+    """
+    return i == 0 and rel.parts[i] == "press"
 
 
 def stray_press_dirs(target: Path) -> list[str]:
@@ -136,17 +149,16 @@ def stray_press_dirs(target: Path) -> list[str]:
 def iter_target_files(target: Path, rules: Rules) -> list[Path]:
     """All non-excluded tracked+untracked files under target, sorted.
 
-    Excludes rules.exclude_files / exclude_dirs and this tool's control
-    press/ dir (content-keyed via CONTROL_MARKERS). A press/ dir without a
-    marker is NOT exempt — it is scanned and rewritten like any content.
+    Excludes rules.exclude_files / exclude_dirs and the exact root control
+    artifacts in ROOT_CONTROL. Everything else under a press/ dir — root or
+    nested — is ordinary content: scanned and rewritten like any file.
     """
     files = _git_listed(target)
-    control = _control_press_dirs(target, files)
     out: list[Path] = []
     for rel in files:
         if _is_excluded(rel, rules):
             continue
-        if _under_control_press(rel, control):
+        if rel.as_posix() in ROOT_CONTROL:
             continue
         path = target / rel
         if path.is_file():
@@ -205,6 +217,8 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                 zip(rel.parts, new_rel.parts, strict=True)
             ):
                 if old_part != new_part:
+                    if _is_root_press(rel, i):
+                        break
                     old_prefix = Path(*rel.parts[: i + 1]).as_posix()
                     new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
                     rename_map.setdefault(old_prefix, new_prefix)
@@ -285,6 +299,8 @@ def _rename_pass_once(
             zip(rel.parts, new_rel.parts, strict=True)
         ):
             if old_part != new_part:
+                if _is_root_press(rel, i):
+                    break
                 old_prefix = Path(*rel.parts[: i + 1]).as_posix()
                 new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
                 rename_map.setdefault(old_prefix, new_prefix)

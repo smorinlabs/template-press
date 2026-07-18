@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from template_press.rebrand.engine import iter_target_files
+from template_press.rebrand.engine import _is_root_press, iter_target_files
 from template_press.rebrand.identity import Identity, token_occurs
 from template_press.rebrand.rules import Rules
 
@@ -75,7 +75,9 @@ def find_leaks(
             for field_name, value in fields.items():
                 if token_occurs(text, field_name, value):
                     leaks.append(Leak(rel_posix, field_name, value, "content"))
-        for component in rel.parts:
+        for i, component in enumerate(rel.parts):
+            if _is_root_press(rel, i):
+                continue
             for field_name in PATH_FIELDS:
                 value = fields.get(field_name)
                 if value is not None and token_occurs(component, field_name, value):
