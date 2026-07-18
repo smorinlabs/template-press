@@ -19,6 +19,7 @@ from template_press.rebrand.safety import (
     ContainmentError,
     assert_ancestors_real,
     assert_under_root,
+    safe_write,
 )
 
 RENAME_FIELDS: tuple[str, ...] = (
@@ -267,7 +268,14 @@ def _apply_replacements(
         for f, cur, repl in pairs:
             new_text = replace_token(new_text, f, cur, repl)
         if new_text != text:
-            path.write_text(new_text, encoding="utf-8")
+            # Route through safe_write: its assert_under_root closes the
+            # ancestor-symlink hole (a symlinked ancestor would write OUTSIDE
+            # the target), and its atomic temp + os.replace makes the write
+            # hardlink-SAFE (a new inode). refuse_hardlink=False because that
+            # atomicity already protects an external hardlink WITHOUT falsely
+            # refusing a legitimate in-repo hardlinked file. A symlink LEAF
+            # never reaches here — _read_text returns None for it upstream.
+            safe_write(target, rel, new_text, refuse_hardlink=False)
             report.replaced.append(rel)
 
 

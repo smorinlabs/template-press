@@ -179,3 +179,25 @@ def test_rename_refuses_symlinked_ancestor_no_external_write(tmp_path: Path):
     assert (ext / "demo_widget.txt").is_file()
     assert os.lstat(ext / "demo_widget.txt").st_ino == ext_inode_before
     assert not (ext / "potato_launcher.txt").exists()
+
+
+def test_replace_refuses_symlinked_ancestor_no_external_write(tmp_path: Path):
+    """Same-class hole in the CONTENT replace pass: a token-free-named regular
+    file whose ANCESTOR dir is a symlink to an external tree, where the external
+    file's CONTENT carries a source token, must NOT be rewritten through that
+    ancestor. ``apply`` fails closed; the external file's inode + content are
+    untouched (no write-through)."""
+    tgt, ext = _diverged_symlink_ancestor_repo(tmp_path, leaf="file.txt")
+    # External file content embeds the source token — a write-through would
+    # rewrite demo_widget -> potato_launcher in a file OUTSIDE the target.
+    (ext / "file.txt").write_text("mentions demo_widget here\n", encoding="utf-8")
+    ext_inode_before = os.lstat(ext / "file.txt").st_ino
+    ext_content_before = (ext / "file.txt").read_text(encoding="utf-8")
+
+    with pytest.raises(ContainmentError):
+        apply(tgt, SOURCE, DEST, DEFAULT_RULES)
+
+    # The external file was neither rewritten nor recreated.
+    assert (ext / "file.txt").is_file()
+    assert os.lstat(ext / "file.txt").st_ino == ext_inode_before
+    assert (ext / "file.txt").read_text(encoding="utf-8") == ext_content_before

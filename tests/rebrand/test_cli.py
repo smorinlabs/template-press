@@ -214,15 +214,24 @@ def test_mid_apply_oserror_exits_1_with_partial_warning(
     src_target: Path, tmp_path: Path, capsys
 ):
     write_source_config(src_target)
-    # Sorts after README.md etc., so earlier files are rewritten first.
-    readonly = src_target / "zz_readonly.md"
+    # A token-bearing file in a read-only DIRECTORY. safe_write is atomic
+    # (temp file in the parent dir + os.replace), so a read-only *leaf file* is
+    # no longer a fault surface — os.replace swaps the dir entry regardless of
+    # the file's own mode. A non-writable *parent* makes safe_write's temp
+    # creation raise PermissionError (OSError) mid-apply. The dir sorts last
+    # (zz_), so earlier files are rewritten first — proving the partial path.
+    rodir = src_target / "zz_readonly"
+    rodir.mkdir()
+    readonly = rodir / "note.md"
     readonly.write_text("demo_widget survives here\n", encoding="utf-8")
-    readonly.chmod(0o444)
+    rodir.chmod(0o555)
     answers = write_answers(tmp_path)
-    code = main(
-        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
-    )
-    readonly.chmod(0o644)  # let pytest clean the tmp dir
+    try:
+        code = main(
+            ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+        )
+    finally:
+        rodir.chmod(0o755)  # let pytest clean the tmp dir
     assert code == 1
     assert "PARTIALLY rewritten" in capsys.readouterr().err
     assert not (src_target / RECEIPT_REL).exists()
