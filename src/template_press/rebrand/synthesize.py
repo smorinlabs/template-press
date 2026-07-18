@@ -26,20 +26,24 @@ are load-bearing (each independently tested in test_synthesize.py):
 4. **Containment-free vs variants** — no dest value is a substring of any
    source value's separator/case/concat variant, and no such variant is a
    substring of any dest value. Every candidate carries a synthetic prefix
-   that is derived from a fixed seed and then explicitly checked against
-   the ACTUAL source's variant set (regenerated via a deterministic hash
-   chain on collision) before use, plus a sha256-derived suffix; the full
-   candidate (prefix + suffix, or the full email string) is re-checked
-   against the variant set on every attempt, so containment-freedom holds
-   for the real input rather than being merely assumed from prefix choice.
+   whose leading letter AND hex body are both derived from
+   `sha256(seed \\x00 counter)` — the counter is folded into the hash input
+   on every attempt (never re-derived from a fixed literal), so a
+   single-character source value (e.g. `owner="z"`) cannot collide with
+   every producible candidate the way a hardcoded leading character would
+   (see the `test_single_char_*` regression tests). Both retry loops
+   (`_safe_prefix`, `_synth_value`) are bounded by `_MAX_ATTEMPTS` and raise
+   `ValidationError` — loud, not a hang — if a pathological input ever
+   exhausts the budget (e.g. an equality class colliding with a source
+   value that is itself one of the mandatory structural characters of the
+   email shape, like `.` or `@`).
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable
 
-from template_press.rebrand.identity import REQUIRED_FIELDS, Identity
+from template_press.rebrand.identity import REQUIRED_FIELDS, Identity, ValidationError
 
 # Separator/concat forms considered when re-joining split words into a
 # source variant (mirrors the separator set identity.py/matcher.py treat as
@@ -47,11 +51,16 @@ from template_press.rebrand.identity import REQUIRED_FIELDS, Identity
 _JOIN_SEPARATORS: tuple[str, ...] = ("_", "-", ".", " ", "")
 
 _PREFIX_SEED = "template-press:synthesize:prefix"
-_PREFIX_HEX_LEN = 9  # + 1 leading letter = 10 chars
+_PREFIX_HEX_LEN = 9  # + 1 hash-derived leading letter = 10 chars
 _TOKEN_LEN = 24  # well under owner's 39-char cap
 _EMAIL_LOCAL_HEX_LEN = 6  # + prefix
 _EMAIL_DOMAIN_LEN = 10
 _EMAIL_TLD_LEN = 3
+# Bounded retry cap shared by both search loops: fail loud (ValidationError)
+# rather than hang if a pathological input ever exhausts it. In practice a
+# collision is resolved within a handful of attempts (see module docstring
+# point 4); 1000 is a generous margin, not a tuned/expected value.
+_MAX_ATTEMPTS = 1000
 
 
 def synthesize_dest(source: Identity) -> Identity:
@@ -61,7 +70,7 @@ def synthesize_dest(source: Identity) -> Identity:
     for field in REQUIRED_FIELDS:
         classes.setdefault(values[field], []).append(field)
 
-    variants = _source_variants(values.values())
+    variants = _source_variants(list(values.values()))
     prefix = _safe_prefix(variants)
 
     dest_by_value: dict[str, str] = {}
@@ -88,22 +97,27 @@ def _synth_value(
 ) -> str:
     """One dest value for one equality class of source values.
 
-    Retries with a re-hashed digest (deterministic salt chain, not random)
-    until the candidate is both distinct from every dest value already
+    Bounded retry (`_MAX_ATTEMPTS`): the attempt counter is folded into the
+    sha256 input every iteration, so each candidate is a genuinely new,
+    still-deterministic value (never a re-derivation of the same colliding
+    candidate). Accepted only once distinct from every dest value already
     minted (explicit distinctness check, property 2) and containment-free
-    against the source's variant set (property 4).
+    against the source's variant set (property 4). Raises `ValidationError`
+    — never loops forever — if the budget is exhausted.
     """
     is_email = "email" in fields
-    salt = 0
-    while True:
-        digest = hashlib.sha256(f"{value}\x00{salt}".encode()).hexdigest()
+    for counter in range(_MAX_ATTEMPTS):
+        digest = hashlib.sha256(f"{value}\x00{counter}".encode()).hexdigest()
         candidate = (
             _email_form(prefix, digest) if is_email else _token_form(prefix, digest)
         )
         if candidate not in used and not _collides(candidate, variants):
             used.add(candidate)
             return candidate
-        salt += 1
+    raise ValidationError(
+        f"synthesize: could not derive a distinct, containment-free value "
+        f"for field(s) {', '.join(fields)} within {_MAX_ATTEMPTS} attempts"
+    )
 
 
 def _token_form(prefix: str, digest: str) -> str:
@@ -130,17 +144,36 @@ def _safe_prefix(variants: frozenset[str]) -> str:
     """A synthetic prefix verified (not merely assumed) to be
     containment-free against the ACTUAL source's variant set.
 
-    Derived from a fixed seed via sha256 (deterministic); if the first
-    candidate collides with the real source (pathological input), the seed
-    is chained deterministically to the next candidate rather than falling
-    back to anything random/time-based.
+    Both the leading letter and the hex body come from
+    `sha256(_PREFIX_SEED \\x00 counter)`. The counter guarantees a
+    genuinely different candidate every attempt; the letter is chosen FROM
+    THE HASH rather than a hardcoded literal, because a fixed leading
+    character is a universal collision floor for any source value that IS
+    that one character — e.g. a hardcoded `"z"` prefix collides with
+    EVERY candidate whenever a source field's whole value is `"z"`, no
+    matter how the rest of the candidate varies (the bug this function was
+    rewritten to fix). Bounded by `_MAX_ATTEMPTS`; raises `ValidationError`
+    rather than looping forever if a pathological input exhausts it.
     """
-    seed = _PREFIX_SEED
-    while True:
-        candidate = "z" + hashlib.sha256(seed.encode()).hexdigest()[:_PREFIX_HEX_LEN]
+    for counter in range(_MAX_ATTEMPTS):
+        digest = hashlib.sha256(f"{_PREFIX_SEED}\x00{counter}".encode()).digest()
+        candidate = _leading_letter(digest) + digest.hex()[:_PREFIX_HEX_LEN]
         if not _collides(candidate, variants):
             return candidate
-        seed = candidate
+    raise ValidationError(
+        f"synthesize: could not derive a containment-free prefix within "
+        f"{_MAX_ATTEMPTS} attempts"
+    )
+
+
+def _leading_letter(digest: bytes) -> str:
+    """Map a hash byte to a lowercase letter (a-z).
+
+    The identifier-shaped fields (package_name/repo_name/app_name/owner)
+    all require a letter-led value, but the letter must be HASH-derived —
+    see `_safe_prefix`'s docstring for why a fixed constant here is unsafe.
+    """
+    return chr(ord("a") + digest[0] % 26)
 
 
 def _collides(candidate: str, variants: frozenset[str]) -> bool:
@@ -196,7 +229,7 @@ def _variants(value: str) -> set[str]:
     return {f for f in forms if f}
 
 
-def _source_variants(values: Iterable[str]) -> frozenset[str]:
+def _source_variants(values: list[str]) -> frozenset[str]:
     out: set[str] = set()
     for value in values:
         out.update(_variants(value))

@@ -18,15 +18,39 @@ variant.
 from __future__ import annotations
 
 import re
+import signal
+from contextlib import contextmanager
 from dataclasses import replace
 
-from template_press.rebrand.identity import VALIDATORS, Identity
+import pytest
+
+from template_press.rebrand.identity import VALIDATORS, Identity, ValidationError
 from template_press.rebrand.synthesize import synthesize_dest
 
 from .conftest import SOURCE
 
 _WORD_RE = re.compile(r"[A-Za-z0-9]+")
 _SEPARATORS = ("_", "-", ".", " ", "")
+
+
+@contextmanager
+def _bounded(seconds: int = 5):
+    """Fail the test (not hang the suite) if the wrapped block doesn't
+    return within `seconds` — belt-and-suspenders on top of synthesize.py's
+    own `_MAX_ATTEMPTS` bound, using the same SIGALRM technique the
+    adversarial review used to reproduce the original 100%-reproducible
+    hang in `_safe_prefix`."""
+
+    def _on_alarm(signum, frame):
+        raise TimeoutError(f"did not complete within {seconds}s (hang?)")
+
+    previous = signal.signal(signal.SIGALRM, _on_alarm)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def _words(value: str) -> list[str]:
@@ -111,3 +135,51 @@ def test_cross_shape_equality_class_is_valid_for_all_its_fields():
     assert dest.author == dest.email
     VALIDATORS["author"](dest.author)
     VALIDATORS["email"](dest.email)
+
+
+# --- regression: single-character source value used to hang forever -------
+#
+# `_safe_prefix` used to build every candidate as a HARDCODED "z" literal
+# plus a sha256-derived suffix. Any source field whose ENTIRE value was "z"
+# (a valid package_name/repo_name/app_name/owner value — all four allow a
+# bare single lowercase letter) made `_collides` reject EVERY candidate
+# unconditionally, forever: "z" is a substring of any "z...." string
+# regardless of what follows it, so the retry loop's varying suffix never
+# mattered. Verified 100% reproducible via SIGALRM before the fix. The
+# leading letter is now derived from the hash itself (not a fixed literal),
+# so a colliding letter is resolved by simply trying the next attempt.
+
+
+@pytest.mark.parametrize("field", ["owner", "package_name", "app_name", "repo_name"])
+def test_single_char_field_does_not_hang(field):
+    source = replace(SOURCE, **{field: "z"})
+    source.validate()  # fixture sanity: "z" is a valid value for this field
+    with _bounded(5):
+        dest = synthesize_dest(source)
+
+    dest.validate()  # property 3: still valid
+    dest_values = dest.as_dict_prompted()
+    # property 2: "z" appears in exactly this one source field, so its dest
+    # value must still be a singleton (no accidental equality introduced).
+    assert list(dest_values.values()).count(dest_values[field]) == 1
+
+    # property 4: containment-free vs every variant of the source value "z".
+    lowered = dest_values[field].lower()
+    for variant in {v.lower() for v in _variants("z")}:
+        assert variant not in lowered
+        assert lowered not in variant
+
+
+def test_bounded_cap_raises_instead_of_hanging():
+    # Pathological (but constructible) input: email's `local@domain.tld`
+    # shape ALWAYS contains a literal "." by construction. If some OTHER
+    # source value is exactly ".", every producible email candidate
+    # collides with it, forever, under the old unbounded `while True` loop.
+    # The bounded retry now raises a clear, field-naming ValidationError
+    # instead of hanging — defense-in-depth for inputs no amount of
+    # hash-derived-letter cleverness can resolve (the "." is structural,
+    # not a leading-character choice).
+    source = replace(SOURCE, author=".")
+    source.validate()  # fixture sanity: "." is a valid author value
+    with _bounded(5), pytest.raises(ValidationError, match="email"):
+        synthesize_dest(source)
