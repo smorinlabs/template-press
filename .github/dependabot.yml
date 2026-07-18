@@ -1,4 +1,4 @@
-# Dependabot config (ITM-061 pip + ITM-062 actions + ITM-043 npm).
+# Dependabot config (ITM-061 uv + ITM-062 actions + ITM-043 npm).
 # Per ADR-08: grouped updates, 5-day cooldown, template-shaped group names.
 # Schedule day: Monday (decided round 13).
 #
@@ -11,8 +11,11 @@
 
 version: 2
 updates:
-  # ITM-061 - Python (pip) ecosystem.
-  - package-ecosystem: "pip"
+  # ITM-061 - Python (uv) ecosystem. Native uv support (dependabot-core
+  # #10478) updates pyproject.toml AND regenerates uv.lock together, so
+  # `uv sync --locked` in CI stays green. The old "pip" ecosystem only
+  # touched pyproject.toml and left uv.lock stale, failing every dep PR.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
