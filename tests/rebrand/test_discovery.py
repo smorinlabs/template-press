@@ -45,9 +45,11 @@ def test_mismatches_reported_loudly(src_target: Path):
     assert any("package_name" in m and "other_pkg" in m for m in msgs)
 
 
-def test_declared_package_without_package_dir_is_a_mismatch(src_target: Path):
-    import shutil
-
-    shutil.rmtree(src_target / "src")
+def test_declared_package_without_package_dir_is_a_mismatch(
+    src_target: Path, guarded_rmtree
+):
+    # Containment-checked delete (Task 0.5, G1): assert the path is under the
+    # tmp target before rmtree, instead of a raw shutil.rmtree.
+    guarded_rmtree(src_target / "src", src_target)
     msgs = mismatches(SOURCE, discover(src_target))
     assert any("layout" in m for m in msgs)
