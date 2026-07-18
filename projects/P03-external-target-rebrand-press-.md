@@ -41,8 +41,12 @@ Rebuild as standalone press: rebrand → provision, verify-then-mark
       control files get written into it) — add a precondition warn/refuse;
       (3) minor: share one `git ls-files` between build_plan and
       stray_press_dirs.
-- [ ] [P03-M5] Self-publish: version reset 0.1.0, fresh CHANGELOG,
-      release-please bootstrap, PyPI (`template-press` reserved)
+- [x] [P03-M5] Self-publish (2026-07-17): v3.0.0 + v3.1.0 live on PyPI AND
+      TestPyPI via OIDC Trusted Publishing (both publishers configured +
+      verified end-to-end); release-please bootstrapped (manifest 3.1.0),
+      CHANGELOG generated, GitHub releases cut. NB: the planned "version
+      reset to 0.1.0" was superseded — the project kept the 3.x line and
+      self-published there.
 - [ ] [P03-M6] Provision phase: feature modules (detect/add/verify),
       `press status` computed from reality
 
