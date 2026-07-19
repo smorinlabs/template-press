@@ -26,7 +26,7 @@ write lands inside the owned sandbox — NEVER the real target, cwd, or $HOME
 from __future__ import annotations
 
 import os
-import subprocess
+import subprocess  # nosec B404 — sandbox git init/add/commit, all hardened `git -C`
 from dataclasses import dataclass
 from pathlib import Path
 
