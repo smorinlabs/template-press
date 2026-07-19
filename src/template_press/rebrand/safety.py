@@ -118,8 +118,15 @@ class SafeRelPath:
             raise UnsafePathError(f"path must be str-like: {raw!r}")
         if text == "":
             raise UnsafePathError("path must not be empty")
-        if "\\" in text:
-            raise UnsafePathError(f"backslash (Windows/UNC) not allowed: {text!r}")
+        # Normalize Windows-style separators FIRST, then validate the
+        # forward-slash form. The tool's own Path constants (e.g.
+        # ``press/press-receipt.toml``, ``src/demo_widget``) render via
+        # os.fspath with ``\`` on Windows, so ``\`` must be treated as a path
+        # separator — not rejected outright. Every escape still fires on the
+        # normalized text: ``\\server\share`` -> ``//server/share`` (absolute),
+        # ``C:\x`` -> ``C:/x`` (colon), ``..\x`` -> ``../x`` (dotdot),
+        # ``a\.git\b`` -> ``a/.git/b`` (.git).
+        text = text.replace("\\", "/")
         if ":" in text:
             raise UnsafePathError(f"drive/colon not allowed: {text!r}")
         if text.startswith("/"):
