@@ -82,6 +82,66 @@ def test_doctor_flags_symlink_target_embedding_identity(src_target: Path):
     )
 
 
+@requires_symlink
+def test_dangling_symlink_readlink_leak_detected(src_target: Path):
+    """A DANGLING symlink whose readlink target embeds a source token must be
+    flagged. `iter_target_files` filters on `is_file()` (which FOLLOWS links),
+    so DIRECTORY and DANGLING symlinks never reached the doctor's readlink
+    scan — a token-bearing link string in them slipped the gate."""
+    apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+    link = src_target / "dangling_link"
+    os.symlink("nonexistent/demo_widget_backup", link)  # dangling; embeds token
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+    assert any(
+        e.path == "dangling_link"
+        and e.field == "package_name"
+        and e.value == "demo_widget"
+        and e.where == "symlink"
+        for e in leaks
+    )
+
+
+@requires_symlink
+def test_dir_symlink_without_token_is_clean(src_target: Path):
+    """A directory symlink whose link string carries no identity token is not
+    a leak — and the new symlink pass must not double-report symlinks."""
+    apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+    link = src_target / "src_link"
+    os.symlink("src", link)  # points to the src/ dir; link string has no token
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+    assert not any(e.path == "src_link" for e in leaks)
+
+
+@requires_symlink
+def test_symlink_to_file_leak_not_double_reported(src_target: Path):
+    """A symlink-to-file (covered by the main loop) must be reported EXACTLY
+    once — the new dir/dangling pass dedupes against it."""
+    link = src_target / "link.txt"
+    os.symlink("src/demo_widget/cli.py", link)  # target exists -> is_file True
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+    symlink_hits = [
+        e
+        for e in leaks
+        if e.path == "link.txt" and e.where == "symlink" and e.field == "package_name"
+    ]
+    assert len(symlink_hits) == 1
+
+
 def test_unreadable_file_fails_verification(src_target: Path):
     import os
 

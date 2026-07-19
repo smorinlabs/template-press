@@ -12,7 +12,11 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from template_press.rebrand.engine import _is_root_press, iter_target_files
+from template_press.rebrand.engine import (
+    _git_listed,
+    _is_root_press,
+    iter_target_files,
+)
 from template_press.rebrand.identity import Identity, token_occurs
 from template_press.rebrand.rules import Rules
 
@@ -64,6 +68,7 @@ def find_leaks(
     if dest is not None:
         dest_fields = dest.as_dict()
         fields = {k: v for k, v in fields.items() if v != dest_fields[k]}
+    covered_symlinks: set[str] = set()
     for path in iter_target_files(target, rules):
         rel = path.relative_to(target)
         rel_posix = rel.as_posix()
@@ -79,6 +84,7 @@ def find_leaks(
         if path.is_symlink():
             # A symlink's bytes are its target string, not file content — an
             # identity token embedded there would dangle/leak in a pressed fork.
+            covered_symlinks.add(rel_posix)
             link = os.readlink(path)
             for field_name, value in fields.items():
                 if token_occurs(link, field_name, value):
@@ -90,6 +96,27 @@ def find_leaks(
                 value = fields.get(field_name)
                 if value is not None and token_occurs(component, field_name, value):
                     leaks.append(Leak(rel_posix, field_name, value, "path"))
+    # DIRECTORY and DANGLING symlinks never reach the loop above:
+    # `iter_target_files` keeps only `is_file()` paths, and `is_file()` FOLLOWS
+    # the link — so a symlink to a dir (or to nothing) is dropped, and a source
+    # token embedded in its link string would slip the gate. Scan every
+    # git-listed symlink's `readlink` STRING here (never the destination),
+    # deduping the symlink-to-file links the loop already covered.
+    for rel in _git_listed(target):
+        rel_posix = rel.as_posix()
+        if rel_posix in covered_symlinks:
+            continue
+        path = target / rel
+        if not path.is_symlink():
+            continue
+        try:
+            link = os.readlink(path)
+        except OSError:
+            leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
+            continue
+        for field_name, value in fields.items():
+            if token_occurs(link, field_name, value):
+                leaks.append(Leak(rel_posix, field_name, value, "symlink"))
     return leaks
 
 
