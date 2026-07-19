@@ -117,10 +117,12 @@ def test_scan_paths_exempts_regenerated_uv_lock_but_not_bun_lock(
 def test_scan_paths_regenerate_exemption_keyed_on_tool_not_target(
     src_target: Path,
 ):
-    """EMP-01/F5: a target's press-rules.toml ``regenerate = ['bun.lock']`` must
-    NOT scan-exempt bun.lock. The exemption is keyed on the tool's OWN
-    ``DEFAULT_RULES.regenerate`` (only uv.lock), so a target cannot blind the
-    no-leak scan to a lockfile press never regenerates. uv.lock stays exempt.
+    """EMP-01/F5: a target's press-rules.toml ``regenerate`` must NOT be able to
+    scan-exempt a lockfile the tool never regenerates. The exemption requires a
+    lockfile to be in BOTH the target's effective ``regenerate`` list AND the
+    tool's OWN ``DEFAULT_RULES.regenerate`` (only uv.lock). So a target adding
+    ``bun.lock`` cannot blind the no-leak scan to it, while uv.lock — in both
+    sets — stays exempt.
     """
     (src_target / "uv.lock").write_text("version = 1\n", encoding="utf-8")
     (src_target / "bun.lock").write_text(
@@ -129,15 +131,39 @@ def test_scan_paths_regenerate_exemption_keyed_on_tool_not_target(
     control = src_target / "press"
     control.mkdir(exist_ok=True)
     (control / "press-rules.toml").write_text(
-        '[rules]\nregenerate = ["bun.lock"]\n', encoding="utf-8"
+        '[rules]\nregenerate = ["uv.lock", "bun.lock"]\n', encoding="utf-8"
     )
     _git(src_target, "add", "-A")
     _git(src_target, "commit", "-q", "-m", "add lockfiles + target regenerate override")
     rules = load_rules(src_target)
-    assert rules.regenerate == ("bun.lock",)  # target override took effect
+    assert rules.regenerate == ("uv.lock", "bun.lock")  # target override effective
     rels = _rels(scan_paths(src_target, rules))
     assert "bun.lock" in rels  # NOT exempt — tool has no bun.lock regenerator
-    assert "uv.lock" not in rels  # still exempt — tool's own regenerable set
+    assert "uv.lock" not in rels  # exempt — in BOTH the target's list and tool's
+
+
+def test_scan_paths_scans_uv_lock_when_target_disables_regenerate(
+    src_target: Path,
+):
+    """F-a: a target that sets ``regenerate = []`` DISABLES uv.lock regen, so
+    press neither rewrites it (it is in exclude_files) nor regenerates it — a
+    stale source token in uv.lock must therefore be SCANNED, not false-cleaned.
+    The exemption requires uv.lock in BOTH the target's effective regenerate
+    list AND the tool's regenerable set; an empty target list drops it, so
+    keying the exemption on ``DEFAULT_RULES.regenerate`` ALONE was a false clean.
+    """
+    (src_target / "uv.lock").write_text('name = "demo_widget"\n', encoding="utf-8")
+    control = src_target / "press"
+    control.mkdir(exist_ok=True)
+    (control / "press-rules.toml").write_text(
+        "[rules]\nregenerate = []\n", encoding="utf-8"
+    )
+    _git(src_target, "add", "-A")
+    _git(src_target, "commit", "-q", "-m", "disable uv.lock regen; uv.lock leak")
+    rules = load_rules(src_target)
+    assert rules.regenerate == ()  # target disabled regeneration
+    rels = _rels(scan_paths(src_target, rules))
+    assert "uv.lock" in rels  # SCANNED — was false-clean under DEFAULT-only keying
 
 
 def test_scan_paths_excludes_root_control_present_in_copy(

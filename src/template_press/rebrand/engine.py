@@ -270,19 +270,29 @@ def scan_paths(target: Path, rules: Rules) -> list[PathEntry]:
     """``copy_paths`` minus ``ROOT_CONTROL``, regenerable lockfiles, and
     ``verify_ignore`` dirs — the no-leak scan's candidate set.
 
-    Regenerable-lockfile exemption is deliberately keyed on the tool's OWN
-    built-in sets — ``DEFAULT_RULES.regenerate`` AND
-    ``DEFAULT_RULES.exclude_files`` — NOT the target-configurable
-    ``rules.regenerate``/``rules.exclude_files`` (EMP-01/F5: a target's
-    ``press-rules.toml`` must not be able to hide content from the scan, e.g.
-    by declaring ``regenerate = ["bun.lock"]`` for a lockfile press never
-    regenerates). Only a lockfile that the TOOL itself both regenerates and
-    excludes is exempt, because only that one is regenerated fresh after
-    apply. Everything else stays: non-regenerable lockfiles (``bun.lock``,
+    A lockfile is scan-exempt only when it is regenerated FRESH after apply,
+    which requires it to be in BOTH:
+
+    - the TARGET's effective ``rules.regenerate`` — press actually regenerates
+      it for THIS target (so ``regenerate = []`` re-includes uv.lock: press
+      neither rewrites it, since it is in ``exclude_files``, nor regenerates
+      it, so a stale token must be scanned — keying on ``DEFAULT_RULES`` ALONE
+      would FALSE-CLEAN it); AND
+    - the tool's OWN ``DEFAULT_RULES.regenerate`` ∩ ``DEFAULT_RULES.exclude_files``
+      — the tool has a real regenerator for it (EMP-01/F5: a target's
+      ``press-rules.toml`` must not be able to hide content from the scan by
+      declaring ``regenerate = ["bun.lock"]`` for a lockfile press never
+      regenerates).
+
+    Everything else stays: non-regenerable lockfiles (``bun.lock``,
     ``package-lock.json``), a force-added gitignored file, and symlink/
     gitlink entries (type-tagged, for Task 7).
     """
-    exempt_lockfiles = set(DEFAULT_RULES.regenerate) & DEFAULT_RULES.exclude_files
+    exempt_lockfiles = (
+        set(rules.regenerate)
+        & set(DEFAULT_RULES.regenerate)
+        & DEFAULT_RULES.exclude_files
+    )
     out: list[PathEntry] = []
     for entry in copy_paths(target):
         posix = entry.rel.as_posix()
