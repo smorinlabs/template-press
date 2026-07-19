@@ -32,7 +32,12 @@ from template_press.rebrand.engine import (
 from template_press.rebrand.identity import Identity, ValidationError, token_occurs
 from template_press.rebrand.receipt import read_receipt, write_receipt
 from template_press.rebrand.rules import DEFAULT_RULES, Rules, load_rules
-from template_press.rebrand.safety import SafetyError, write_control
+from template_press.rebrand.safety import (
+    SafetyError,
+    git_hardening_args,
+    scrubbed_git_env,
+    write_control,
+)
 
 
 def _fail(msg: str) -> int:
@@ -52,11 +57,24 @@ def check_preconditions(target: Path, force: bool, allow_dirty: bool) -> str | N
             "re-press with --force"
         )
     if not allow_dirty:
+        # A working-tree read on an untrusted target: hardening args
+        # neutralize fsmonitor/hooksPath/ext-transport, but a repo-local
+        # clean/smudge FILTER definition is a documented residual
+        # (git_hardening_args' docstring) that `-c` cannot disable by name —
+        # accepted here, not solved.
         status = subprocess.run(  # noqa: S603 # nosec B603 B607
-            ["git", "-C", str(target), "status", "--porcelain"],  # noqa: S607
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(target),
+                *git_hardening_args(),
+                "status",
+                "--porcelain",
+            ],
             check=True,
             capture_output=True,
             text=True,
+            env=scrubbed_git_env(),
         )
         if status.stdout.strip():
             return "target working tree is dirty; commit/stash or --allow-dirty"

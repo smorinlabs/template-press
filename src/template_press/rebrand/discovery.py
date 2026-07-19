@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from template_press.rebrand.identity import Identity
+from template_press.rebrand.safety import git_hardening_args, scrubbed_git_env
 
 _ORIGIN_RE = re.compile(
     r"^(?:https?://github\.com/|git@github\.com:)"
@@ -35,10 +36,23 @@ class Discovered:
 
 
 def _origin(target: Path) -> tuple[str | None, str | None]:
+    # A config read on an untrusted target (its .git/config is attacker
+    # input) — scrubbed env blocks a poisoned global config from redirecting
+    # this; hardening args are cheap insurance even though this is not a
+    # working-tree read.
     result = subprocess.run(  # noqa: S603 # nosec B603 B607
-        ["git", "-C", str(target), "remote", "get-url", "origin"],  # noqa: S607
+        [  # noqa: S607
+            "git",
+            "-C",
+            str(target),
+            *git_hardening_args(),
+            "remote",
+            "get-url",
+            "origin",
+        ],
         capture_output=True,
         text=True,
+        env=scrubbed_git_env(),
     )
     if result.returncode != 0:
         return None, None

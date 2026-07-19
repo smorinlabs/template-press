@@ -19,7 +19,9 @@ from template_press.rebrand.safety import (
     ContainmentError,
     assert_ancestors_real,
     assert_under_root,
+    git_hardening_args,
     safe_write,
+    scrubbed_git_env,
 )
 
 RENAME_FIELDS: tuple[str, ...] = (
@@ -98,13 +100,18 @@ def _is_excluded(rel: Path, rules: Rules) -> bool:
 def _git_listed(target: Path) -> list[Path]:
     """Relative paths git reports (tracked+untracked), honoring .gitignore.
 
-    Uses `git ls-files --cached --others --exclude-standard`.
+    Uses `git ls-files --cached --others --exclude-standard`. This is a
+    working-tree-scanning read on an untrusted target (a hostile
+    `.git/config` is attacker input), so it is scrubbed-env + hardening-args
+    protected (G5+) exactly like the sandbox's on-target git calls: no
+    identity is needed for a read.
     """
     result = subprocess.run(  # noqa: S603 # nosec B603 B607
         [  # noqa: S607
             "git",
             "-C",
             str(target),
+            *git_hardening_args(),
             "ls-files",
             "-z",
             "--cached",
@@ -116,6 +123,7 @@ def _git_listed(target: Path) -> list[Path]:
         # git emits UTF-8 path bytes; text=True would decode with the locale
         # codepage on Windows (cp1252) and mojibake non-ASCII filenames.
         encoding="utf-8",
+        env=scrubbed_git_env(),
     )
     return [Path(line) for line in result.stdout.split("\0") if line]
 
@@ -190,13 +198,23 @@ def _gitlink_rels(target: Path) -> frozenset[str]:
 
     Reads the index directly (``git ls-files --stage``), so a submodule
     that isn't checked out is still correctly identified — no working-tree
-    directory needs to exist.
+    directory needs to exist. Scrubbed-env + hardening-args protected (G5+):
+    the target's own ``.git/config`` is attacker input.
     """
     result = subprocess.run(  # noqa: S603 # nosec B603 B607
-        ["git", "-C", str(target), "ls-files", "--stage", "-z"],  # noqa: S607
+        [  # noqa: S607
+            "git",
+            "-C",
+            str(target),
+            *git_hardening_args(),
+            "ls-files",
+            "--stage",
+            "-z",
+        ],
         check=True,
         capture_output=True,
         encoding="utf-8",
+        env=scrubbed_git_env(),
     )
     rels: set[str] = set()
     for entry in result.stdout.split("\0"):
