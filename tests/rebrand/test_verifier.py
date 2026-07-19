@@ -21,7 +21,7 @@ from pathlib import Path
 from template_press.rebrand.rules import DEFAULT_RULES
 from template_press.rebrand.verifier import Finding, scan
 
-from .conftest import DEST, SOURCE
+from .conftest import DEST, SOURCE, requires_symlink
 
 FIELDS: tuple[str, ...] = tuple(SOURCE.as_dict().keys())
 NO_SUBSTRING: frozenset[str] = frozenset()
@@ -182,6 +182,7 @@ def test_lstat_guard_failure_on_absent_file_is_unscannable_io(src_target: Path):
     assert hit.col is None
 
 
+@requires_symlink
 def test_dangling_symlink_readlink_leak_is_i2_closure(src_target: Path):
     """I2 closure: a DANGLING symlink whose readlink text embeds a changed
     value must still produce a `where="symlink"` finding — the destination

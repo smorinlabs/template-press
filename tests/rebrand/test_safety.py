@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -32,6 +33,8 @@ from template_press.rebrand.safety import (
     scrubbed_uv_env,
     write_control,
 )
+
+from .conftest import _can_symlink, requires_symlink
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -56,7 +59,6 @@ HOSTILE_RELPATHS = [
     "C:/windows",  # drive
     "C:\\windows",  # drive + backslash
     "\\\\server\\share",  # UNC
-    "a\\b",  # backslash separator
     ".git/config",  # dotgit
     ".git",  # bare dotgit
     "sub/.GIT/x",  # casefold dotgit
@@ -89,6 +91,36 @@ def test_saferelpath_accepts_bare_git_dir_without_dot() -> None:
     assert SafeRelPath("docs/git/usage.md").as_posix() == "docs/git/usage.md"
 
 
+def test_saferelpath_normalizes_windows_separators() -> None:
+    # The tool's own Path constants render with "\" on Windows; a Windows-style
+    # relative path is accepted and normalized to posix (the cross-platform fix).
+    from template_press.rebrand.safety import SafeRelPath
+
+    assert SafeRelPath("press\\x").as_posix() == "press/x"
+    assert (
+        SafeRelPath("press\\press-receipt.toml").as_posix()
+        == "press/press-receipt.toml"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "\\\\server\\share",  # UNC -> //server/share -> absolute
+        "C:\\x",  # drive -> C:/x -> colon
+        "..\\x",  # dotdot -> ../x
+        "a\\.git\\b",  # dotgit -> a/.git/b
+    ],
+)
+def test_saferelpath_backslash_escapes_still_rejected(raw: str) -> None:
+    # Normalizing "\" -> "/" opens NO hole: every backslash-encoded escape
+    # still fails the same downstream check on the normalized form.
+    from template_press.rebrand.safety import SafeRelPath
+
+    with pytest.raises(UnsafePathError):
+        SafeRelPath(raw)
+
+
 # ---------------------------------------------------------------------------
 # G3 — Containment at every I/O sink (no-follow)
 # ---------------------------------------------------------------------------
@@ -100,6 +132,7 @@ def test_safe_write_writes_under_root_creating_parents(tmp_path: Path) -> None:
     assert p.read_text(encoding="utf-8") == "hello"
 
 
+@requires_symlink
 def test_safe_write_refuses_symlinked_ancestor(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
@@ -112,6 +145,7 @@ def test_safe_write_refuses_symlinked_ancestor(tmp_path: Path) -> None:
     assert not (outside / "victim.txt").exists()
 
 
+@requires_symlink
 def test_assert_under_root_rejects_symlink_ancestor_within_root(tmp_path: Path) -> None:
     # Symlink that stays *inside* the root still counts as a symlink component:
     # the lstat-walk must reject it even though parent.resolve() is contained.
@@ -138,6 +172,7 @@ def test_safe_rename_moves_within_root(tmp_path: Path) -> None:
     assert not (root / "src").exists()
 
 
+@requires_symlink
 def test_safe_rename_refuses_symlinked_destination_ancestor(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
@@ -346,7 +381,10 @@ def test_owned_sandbox_creates_0700_child_and_cleans_only_that(tmp_path: Path) -
         saved = sb
         assert sb.is_dir()
         assert sb.name.startswith("press-verify-")
-        assert (sb.stat().st_mode & 0o777) == 0o700
+        if sys.platform != "win32":
+            # POSIX permission bits; os.chmod's mode is a near-no-op on Windows
+            # (16895 & 511 != 448), so assert 0700 only where it is meaningful.
+            assert (sb.stat().st_mode & 0o777) == 0o700
         assert sb.resolve().is_relative_to(Path(tempfile.gettempdir()).resolve())
         (sb / "scratch").write_text("x", encoding="utf-8")
     assert saved is not None and not saved.exists()  # owned child removed
@@ -362,12 +400,15 @@ def test_refuse_unsafe_root_rejects_dangerous_roots(tmp_path: Path) -> None:
         refuse_unsafe_root(Path.cwd())
     with pytest.raises(SafetyError):
         refuse_unsafe_root(Path.cwd().parent)  # ancestor of cwd
-    real = tmp_path / "real"
-    real.mkdir()
-    link = tmp_path / "link"
-    os.symlink(real, link, target_is_directory=True)
-    with pytest.raises(SafetyError):
-        refuse_unsafe_root(link)  # symlinked root
+    if _can_symlink(tmp_path):
+        # symlinked-root branch only — creating the link is unportable
+        # (Windows privilege); the other rejections above run everywhere.
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        os.symlink(real, link, target_is_directory=True)
+        with pytest.raises(SafetyError):
+            refuse_unsafe_root(link)  # symlinked root
     with pytest.raises(SafetyError):
         refuse_unsafe_root(tmp_path / "sb", target=tmp_path)  # not disjoint
 
@@ -379,6 +420,7 @@ def root_anchor() -> str:
 # ---------------------------------------------------------------------------
 # G7 / G8 — scanner input discipline
 # ---------------------------------------------------------------------------
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="mkfifo POSIX-only")
 def test_is_regular_lstat_discipline(tmp_path: Path) -> None:
     reg = tmp_path / "f"
     reg.write_text("x", encoding="utf-8")

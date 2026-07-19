@@ -24,6 +24,8 @@ from pathlib import Path
 
 from template_press.rebrand.verify_cli import verify_command
 
+from .conftest import requires_symlink
+
 # The pressable target's committed FROM identity (discoverable + consistent).
 DEFAULT_IDENTITY: dict[str, str] = {
     "package_name": "demo_widget",
@@ -200,6 +202,7 @@ def test_declared_app_absent_exits_2(tmp_path: Path) -> None:
     assert verify_command(["--target", str(repo)]) == 2
 
 
+@requires_symlink
 def test_control_path_symlink_rejected_exits_2(tmp_path: Path) -> None:
     repo = make_pressable(tmp_path)
     shutil.rmtree(repo / "press")

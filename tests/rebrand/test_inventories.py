@@ -26,6 +26,8 @@ from template_press.rebrand.engine import (
 )
 from template_press.rebrand.rules import DEFAULT_RULES
 
+from .conftest import requires_symlink
+
 
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(  # noqa: S603
@@ -140,6 +142,7 @@ def test_scan_paths_retains_gitlink_entry_type_tagged(src_target: Path, tmp_path
     assert kinds.get("sub") == "gitlink"
 
 
+@requires_symlink
 def test_copy_paths_tags_symlink_kind(src_target: Path):
     link = src_target / "link_to_readme"
     link.symlink_to("README.md")

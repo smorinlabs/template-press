@@ -7,12 +7,53 @@ DEST mirrors the potato identity used by the EMPIRICAL_BUGS.md live matrix.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
 from template_press.rebrand.identity import Identity
+
+
+def _can_symlink(base: Path | None = None) -> bool:
+    """Whether ``os.symlink`` actually works here.
+
+    Probes by creating (and removing) a symlink under ``base`` (a throwaway
+    temp dir when omitted); returns False when the OS refuses. Windows CI
+    runners lack the create-symbolic-link privilege, so ``os.symlink`` raises
+    ``OSError`` there. A runtime probe (not a blanket ``os.name == "nt"``
+    check) so symlink tests still run on a Windows host that DOES grant the
+    privilege, and always on POSIX. Only the test's link CREATION is
+    unportable — the production symlink-safety code is unchanged.
+    """
+    made_tmp = base is None
+    probe_dir = Path(tempfile.mkdtemp()) if made_tmp else base
+    probe = probe_dir / ".symlink-probe"
+    try:
+        os.symlink("symlink-probe-target", probe)
+    except (OSError, NotImplementedError):
+        ok = False
+    else:
+        ok = True
+        try:
+            probe.unlink()
+        except OSError:  # pragma: no cover - best-effort cleanup
+            pass
+    if made_tmp:
+        shutil.rmtree(probe_dir, ignore_errors=True)
+    return ok
+
+
+# Applied to tests that must CREATE a symlink to exercise a guard; skips them
+# where the runner cannot make one (Windows without privilege) while keeping
+# them live on POSIX and privileged Windows.
+requires_symlink = pytest.mark.skipif(
+    not _can_symlink(),
+    reason="symlink creation requires privilege (skipped on Windows CI)",
+)
 
 SOURCE = Identity(
     package_name="demo_widget",

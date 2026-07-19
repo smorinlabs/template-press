@@ -9,7 +9,7 @@ from template_press.rebrand.engine import ApplyReport
 from template_press.rebrand.receipt import RECEIPT_REL, read_receipt, write_receipt
 from template_press.rebrand.safety import ContainmentError
 
-from .conftest import DEST, SOURCE
+from .conftest import DEST, SOURCE, requires_symlink
 
 
 def test_write_and_read_receipt(tmp_path: Path):
@@ -29,6 +29,7 @@ def test_read_receipt_absent(tmp_path: Path):
     assert read_receipt(tmp_path) is None
 
 
+@requires_symlink
 def test_write_receipt_refuses_symlinked_press_dir(tmp_path: Path):
     """D8: write_receipt routes through write_control, so a symlinked press/
     control dir is refused and nothing is written through the link."""

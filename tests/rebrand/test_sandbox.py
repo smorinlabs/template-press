@@ -22,7 +22,7 @@ import pytest
 from template_press.rebrand.safety import ContainmentError
 from template_press.rebrand.sandbox import Sandbox, make_sandbox
 
-from .conftest import make_target
+from .conftest import make_target, requires_symlink
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -53,6 +53,7 @@ def _dest_root(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 # (a) an untracked-but-listed file AND a symlink land in the sandbox as-is
 # ---------------------------------------------------------------------------
+@requires_symlink
 def test_untracked_file_and_symlink_land_as_is(tmp_path: Path) -> None:
     target = make_target(tmp_path)
     # Untracked (never `git add`ed) but non-ignored — copy_paths lists it via
@@ -135,6 +136,7 @@ def test_gitlink_scannable_and_recorded_unavailable(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # (d) a control-path symlink is rejected and NOTHING is written outside
 # ---------------------------------------------------------------------------
+@requires_symlink
 def test_control_path_symlink_rejected_writes_nothing(tmp_path: Path) -> None:
     target = make_target(tmp_path)
     outside = tmp_path / "outside"

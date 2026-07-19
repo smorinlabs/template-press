@@ -150,6 +150,7 @@ def test_cross_shape_equality_class_is_valid_for_all_its_fields():
 # so a colliding letter is resolved by simply trying the next attempt.
 
 
+@pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="SIGALRM POSIX-only")
 @pytest.mark.parametrize("field", ["owner", "package_name", "app_name", "repo_name"])
 def test_single_char_field_does_not_hang(field):
     source = replace(SOURCE, **{field: "z"})
@@ -170,6 +171,7 @@ def test_single_char_field_does_not_hang(field):
         assert lowered not in variant
 
 
+@pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="SIGALRM POSIX-only")
 def test_bounded_cap_raises_instead_of_hanging():
     # Pathological (but constructible) input: email's `local@domain.tld`
     # shape ALWAYS contains a literal "." by construction. If some OTHER

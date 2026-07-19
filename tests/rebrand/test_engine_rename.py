@@ -9,7 +9,7 @@ from template_press.rebrand.engine import apply
 from template_press.rebrand.rules import DEFAULT_RULES
 from template_press.rebrand.safety import ContainmentError
 
-from .conftest import DEST, SOURCE
+from .conftest import DEST, SOURCE, requires_symlink
 
 
 def _git_add(repo: Path) -> None:
@@ -94,6 +94,7 @@ def test_nested_token_bearing_paths_rename_fully(src_target: Path):
     assert ("src/demo_widget", "src/potato_launcher") in report.renamed
 
 
+@requires_symlink
 def test_apply_rewrites_in_repo_relative_symlink_target(src_target: Path):
     """An in-repo relative symlink target embedding identity is retargeted so a
     pressed fork's links don't dangle — only the link STRING changes."""
@@ -108,6 +109,7 @@ def test_apply_rewrites_in_repo_relative_symlink_target(src_target: Path):
     assert not (src_target / "demo_widget" / "thing").exists()
 
 
+@requires_symlink
 def test_apply_leaves_escaping_symlink_target_untouched(src_target: Path):
     """A symlink whose (token-bearing) target escapes the root is NEVER
     rewritten — containment refuses it, the link string is left intact."""
@@ -119,6 +121,7 @@ def test_apply_leaves_escaping_symlink_target_untouched(src_target: Path):
     assert os.readlink(link) == "../../outside/demo_widget"  # unchanged
 
 
+@requires_symlink
 def test_apply_leaves_absolute_symlink_target_untouched(src_target: Path):
     """An absolute symlink target is never rewritten or followed (isabs skip)."""
     link = src_target / "link"
@@ -143,6 +146,7 @@ def test_app_name_upper_renamed(src_target: Path):
     assert not (src_target / "PRESS_GUIDE.md").exists()
 
 
+@requires_symlink
 def test_retarget_refuses_symlinked_ancestor_no_external_write(tmp_path: Path):
     """PoC mirror (C1): a token-bearing symlink whose ANCESTOR dir is (dirty
     state) a symlink to an external tree must NOT be retargeted through that
@@ -163,6 +167,7 @@ def test_retarget_refuses_symlinked_ancestor_no_external_write(tmp_path: Path):
     assert os.readlink(ext / "leaf") == ext_link_before
 
 
+@requires_symlink
 def test_rename_refuses_symlinked_ancestor_no_external_write(tmp_path: Path):
     """Same-class hole (I1) in the rename pass: a token-bearing path whose
     ANCESTOR dir is a symlink to an external tree must NOT be renamed through
@@ -181,6 +186,7 @@ def test_rename_refuses_symlinked_ancestor_no_external_write(tmp_path: Path):
     assert not (ext / "potato_launcher.txt").exists()
 
 
+@requires_symlink
 def test_replace_refuses_symlinked_ancestor_no_external_write(tmp_path: Path):
     """Same-class hole in the CONTENT replace pass: a token-free-named regular
     file whose ANCESTOR dir is a symlink to an external tree, where the external

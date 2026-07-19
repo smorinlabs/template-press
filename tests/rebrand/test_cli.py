@@ -10,7 +10,7 @@ from template_press.rebrand.config import (
 )
 from template_press.rebrand.receipt import RECEIPT_REL
 
-from .conftest import DEST, SOURCE, write_answers_file
+from .conftest import DEST, SOURCE, requires_symlink, write_answers_file
 
 
 def write_source_config(target: Path) -> None:
@@ -264,6 +264,7 @@ def test_failed_lock_regeneration_exits_1_no_receipt(
     assert not (src_target / RECEIPT_REL).exists()
 
 
+@requires_symlink
 def test_regen_refuses_symlinked_lockfile_no_external_write(
     tmp_path: Path, monkeypatch
 ):
@@ -512,6 +513,7 @@ def test_accept_discovery_mismatch_leaves_no_source_config(tmp_path: Path):
     assert not (repo / SOURCE_CONFIG_REL).exists()
 
 
+@requires_symlink
 def test_rebrand_symlinked_control_dir_exits_2_no_write(
     src_target: Path, tmp_path: Path
 ):

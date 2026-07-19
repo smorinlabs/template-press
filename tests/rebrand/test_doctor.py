@@ -6,7 +6,7 @@ from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import apply
 from template_press.rebrand.rules import DEFAULT_RULES
 
-from .conftest import DEST, SOURCE
+from .conftest import DEST, SOURCE, requires_symlink
 
 
 def test_clean_rebrand_has_no_leaks(src_target: Path):
@@ -59,6 +59,7 @@ def test_app_name_upper_path_leak_detected(src_target: Path):
     )
 
 
+@requires_symlink
 def test_doctor_flags_symlink_target_embedding_identity(src_target: Path):
     """A symlink whose os.readlink target embeds a source token is a leak: a
     link target carrying identity would dangle/leak in a pressed fork."""

@@ -15,7 +15,7 @@ from template_press.rebrand.config import (
 from template_press.rebrand.identity import ValidationError
 from template_press.rebrand.safety import ContainmentError
 
-from .conftest import DEST, SOURCE
+from .conftest import DEST, SOURCE, requires_symlink
 
 
 def test_source_config_round_trip(tmp_path: Path):
@@ -66,6 +66,7 @@ def test_assert_control_real_accepts_absent_press_dir(tmp_path: Path):
     assert_control_real(tmp_path)  # no control dir yet — nothing to reject
 
 
+@requires_symlink
 def test_assert_control_real_rejects_symlinked_press(tmp_path: Path):
     decoy = tmp_path / "outside" / "decoy"
     decoy.mkdir(parents=True)
@@ -74,6 +75,7 @@ def test_assert_control_real_rejects_symlinked_press(tmp_path: Path):
         assert_control_real(tmp_path)
 
 
+@requires_symlink
 def test_assert_control_real_rejects_symlinked_control_artifact(tmp_path: Path):
     (tmp_path / "press").mkdir()
     external = tmp_path / "outside" / "evil-source.toml"
@@ -84,6 +86,7 @@ def test_assert_control_real_rejects_symlinked_control_artifact(tmp_path: Path):
         assert_control_real(tmp_path)
 
 
+@requires_symlink
 def test_load_source_config_rejects_symlinked_press(tmp_path: Path):
     decoy = tmp_path / "outside" / "decoy"
     decoy.mkdir(parents=True)
