@@ -188,3 +188,16 @@ def test_ignore_entry_unknown_key_raises_validation_error():
 def test_equal_fields_non_str_raises_validation_error():
     with pytest.raises(ValidationError):
         parse_verify_config({"equal_fields": 42})
+
+
+def test_non_dict_table_int_raises_validation_error():
+    # A scalar top-level [verify] value (e.g. `verify = 42`) must fail closed
+    # with ValidationError, not a raw TypeError from `set(table)`.
+    with pytest.raises(ValidationError, match="must be a table"):
+        parse_verify_config(42)
+
+
+def test_non_dict_table_bool_raises_validation_error():
+    # bool is an int subclass in Python — must still be rejected as non-dict.
+    with pytest.raises(ValidationError, match="must be a table"):
+        parse_verify_config(True)

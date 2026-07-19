@@ -90,6 +90,8 @@ def parse_verify_config(table: dict | None) -> VerifyConfig:
     """
     if table is None:
         table = {}
+    if not isinstance(table, dict):
+        raise ValidationError(f"[verify] must be a table, got {type(table).__name__}")
 
     unknown = set(table) - _TOP_LEVEL_KEYS
     if unknown:
