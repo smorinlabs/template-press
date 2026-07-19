@@ -24,7 +24,7 @@ from template_press.rebrand.engine import (
     rewrite_paths,
     scan_paths,
 )
-from template_press.rebrand.rules import DEFAULT_RULES
+from template_press.rebrand.rules import DEFAULT_RULES, load_rules
 
 from .conftest import requires_symlink
 
@@ -112,6 +112,32 @@ def test_scan_paths_exempts_regenerated_uv_lock_but_not_bun_lock(
     rels = _rels(scan_paths(target, DEFAULT_RULES))
     assert "bun.lock" in rels
     assert "uv.lock" not in rels
+
+
+def test_scan_paths_regenerate_exemption_keyed_on_tool_not_target(
+    src_target: Path,
+):
+    """EMP-01/F5: a target's press-rules.toml ``regenerate = ['bun.lock']`` must
+    NOT scan-exempt bun.lock. The exemption is keyed on the tool's OWN
+    ``DEFAULT_RULES.regenerate`` (only uv.lock), so a target cannot blind the
+    no-leak scan to a lockfile press never regenerates. uv.lock stays exempt.
+    """
+    (src_target / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (src_target / "bun.lock").write_text(
+        '{"lockfileVersion": 0, "name": "demo_widget"}\n', encoding="utf-8"
+    )
+    control = src_target / "press"
+    control.mkdir(exist_ok=True)
+    (control / "press-rules.toml").write_text(
+        '[rules]\nregenerate = ["bun.lock"]\n', encoding="utf-8"
+    )
+    _git(src_target, "add", "-A")
+    _git(src_target, "commit", "-q", "-m", "add lockfiles + target regenerate override")
+    rules = load_rules(src_target)
+    assert rules.regenerate == ("bun.lock",)  # target override took effect
+    rels = _rels(scan_paths(src_target, rules))
+    assert "bun.lock" in rels  # NOT exempt — tool has no bun.lock regenerator
+    assert "uv.lock" not in rels  # still exempt — tool's own regenerable set
 
 
 def test_scan_paths_excludes_root_control_present_in_copy(
