@@ -17,11 +17,28 @@ Tests use small hand-built `Finding` lists plus stub `source_line` /
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import pytest
 
+from template_press.rebrand.engine import apply
 from template_press.rebrand.identity import ValidationError
 from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_map
+from template_press.rebrand.rules import DEFAULT_RULES
+from template_press.rebrand.synthesize import synthesize_dest
 from template_press.rebrand.verifier import Finding
+
+from .conftest import SOURCE
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(repo), *args],  # noqa: S607
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def make_finding(
@@ -87,6 +104,42 @@ def test_build_forward_map_longest_prefix_wins():
     assert fmap("src/potato_launcher/kernel/z.py") == "src/demo_widget/core/z.py"
     # a path under the shorter prefix still resolves via the shorter one
     assert fmap("src/potato_launcher/cli.py") == "src/demo_widget/cli.py"
+
+
+def test_build_forward_map_fixpoint_on_engine_produced_doubly_renamed_path(
+    tmp_path: Path,
+) -> None:
+    # I1 regression: unlike the hand-built shapes above, a REAL engine.apply on
+    # a doubly-token-bearing nested path (``src/demo_widget/demo_widget_cli.py``
+    # — both the package dir AND the file carry the package token) renames
+    # across TWO passes and records the pass-2 pair in INTERMEDIATE
+    # (already-dir-renamed) coordinates. A single reverse longest-prefix swap
+    # maps the sandbox path only to the intermediate chimera
+    # (``src/<synth>/demo_widget_cli.py``), never the true source — so
+    # build_forward_map must iterate the substitution to a FIXPOINT.
+    repo = tmp_path / "target"
+    pkg = repo / "src" / "demo_widget"
+    pkg.mkdir(parents=True)
+    (pkg / "demo_widget_cli.py").write_text(
+        '"""demo_widget cli."""\n', encoding="utf-8"
+    )
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "a@b.c")
+    _git(repo, "config", "user.name", "x")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "init")
+
+    synth = synthesize_dest(SOURCE)
+    report = apply(repo, SOURCE, synth, DEFAULT_RULES)
+
+    # The engine moved the file across two passes; it now lives at the doubly
+    # renamed sandbox path — the exact shape build_forward_map must invert.
+    pressed = f"src/{synth.package_name}/{synth.package_name}_cli.py"
+    assert (repo / pressed).is_file()
+    assert report.renamed  # sanity: renames actually happened
+
+    fmap = build_forward_map(report.renamed)
+    assert fmap(pressed) == "src/demo_widget/demo_widget_cli.py"
 
 
 # --- Ignore dataclass validation --------------------------------------------

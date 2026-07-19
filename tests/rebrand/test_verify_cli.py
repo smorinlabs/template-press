@@ -16,6 +16,7 @@ is satisfied.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -353,3 +354,55 @@ def test_gitlink_submodule_exits_1(tmp_path: Path) -> None:
     _git(repo, "update-index", "--add", "--cacheinfo", f"160000,{sha},vendored")
     _git(repo, "commit", "-q", "-m", "add gitlink")
     assert verify_command(["--target", str(repo)]) == 1
+
+
+# ---------------------------------------------------------------------------
+# I2: a surviving finding must be REPORTED in SOURCE coordinates, never the
+# sandbox synthetic path — and this holds through the forward-map fixpoint for
+# a DOUBLY-renamed path (both the package dir and the file carry the token).
+# ---------------------------------------------------------------------------
+def test_json_report_maps_surviving_path_to_source_coords(
+    tmp_path: Path, capsys
+) -> None:
+    repo = make_pressable(tmp_path)
+    # A binary leak inside the package dir: apply renames src/demo_widget ->
+    # src/<synth> (pass 1) then src/<synth>/demo_widget.bin ->
+    # src/<synth>/<synth>.bin (pass 2) but cannot rewrite the embedded bytes, so
+    # the finding survives at the doubly-renamed SANDBOX path. The report must
+    # translate it back to src/demo_widget/demo_widget.bin.
+    leak = repo / "src" / "demo_widget" / "demo_widget.bin"
+    leak.write_bytes(b"\x00\x01demo_widget\xff\xfe binary blob\x00")
+    _commit(repo)
+
+    assert verify_command(["--target", str(repo), "--json"]) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["verified"] is False
+    paths = [f["path"] for f in out["surviving"]]
+    assert "src/demo_widget/demo_widget.bin" in paths
+    # Every reported path is a SOURCE coordinate — it exists in the real target
+    # (a raw sandbox synth path such as src/<hash>/<hash>.bin would not).
+    for p in paths:
+        assert (repo / p).exists(), f"reported path {p!r} is not a source path"
+
+
+# ---------------------------------------------------------------------------
+# G9 (plan headline): a full verify_command run must leave the REAL target
+# byte-identical — on BOTH the clean (exit 0) and the leak (exit 1) paths. Each
+# reaches the sandbox copy/apply/scan; verify must never write to the target.
+# ---------------------------------------------------------------------------
+def test_verify_never_mutates_real_target_exit_0_and_1(tmp_path: Path) -> None:
+    # exit-0: a clean template (regenerable uv.lock is scan-exempt).
+    clean = make_pressable(tmp_path / "clean")
+    (clean / "uv.lock").write_text('name = "demo_widget"\n', encoding="utf-8")
+    _commit(clean)
+    before_clean = _tree(clean)
+    assert verify_command(["--target", str(clean)]) == 0
+    assert _tree(clean) == before_clean
+
+    # exit-1: a real leftover (owner token in an unregenerable lockfile).
+    leak = make_pressable(tmp_path / "leak")
+    (leak / "bun.lock").write_text('"name": "demolabs"\n', encoding="utf-8")
+    _commit(leak)
+    before_leak = _tree(leak)
+    assert verify_command(["--target", str(leak)]) == 1
+    assert _tree(leak) == before_leak

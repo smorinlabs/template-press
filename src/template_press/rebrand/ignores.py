@@ -80,13 +80,23 @@ def build_forward_map(renamed: list[tuple[str, str]]) -> Callable[[str], str]:
     """Sandbox (pressed) path -> source path, from ``ApplyReport.renamed``.
 
     ``renamed`` is a list of ``(old_prefix, new_prefix)`` SOURCE->DEST renames.
-    The returned callable performs the REVERSE longest-prefix substitution: for
-    a sandbox path ``p`` it finds the ``new_prefix`` that is a path-prefix of
-    ``p`` (longest, by component count, wins) and swaps it back to the paired
-    ``old_prefix``; unmatched paths pass through unchanged.
+    ``engine._apply_renames`` runs MULTIPLE shallowest-prefix passes, so a
+    later-pass pair's ``old_prefix`` is in INTERMEDIATE (already-partly-renamed)
+    coordinates, not source — e.g. ``src/demo_widget/demo_widget_cli.py`` yields
+    ``(src/demo_widget, src/<synth>)`` then
+    ``(src/<synth>/demo_widget_cli.py, src/<synth>/<synth>_cli.py)``.
+
+    The returned callable therefore applies the REVERSE longest-prefix
+    substitution REPEATEDLY until the path stops changing (a fixpoint): each
+    step finds the ``new_prefix`` that is a path-prefix of the current path
+    (longest, by component count, wins) and swaps it back to the paired
+    ``old_prefix``; unmatched paths pass through unchanged. Convergence is
+    guaranteed because synthetic dest components are containment-free vs source
+    variants (no rewrite cycles), so it is bounded to ``len(renamed) + 1`` steps
+    and RAISES if it fails to converge (that would be a bug, never a hang).
     """
 
-    def forward_map(path: str) -> str:
+    def _reverse_once(path: str) -> str:
         best: tuple[int, str, str] | None = None
         for old_prefix, new_prefix in renamed:
             if _is_path_prefix(new_prefix, path):
@@ -97,6 +107,18 @@ def build_forward_map(renamed: list[tuple[str, str]]) -> Callable[[str], str]:
             return path
         _, old_prefix, new_prefix = best
         return old_prefix + path[len(new_prefix) :]
+
+    def forward_map(path: str) -> str:
+        current = path
+        for _ in range(len(renamed) + 1):
+            nxt = _reverse_once(current)
+            if nxt == current:
+                return current
+            current = nxt
+        raise ValidationError(
+            f"forward map did not converge for {path!r} after "
+            f"{len(renamed) + 1} passes (rename map: {renamed!r})"
+        )
 
     return forward_map
 

@@ -339,12 +339,19 @@ def verify_command(argv: list[str] | None = None) -> int:
                 substring_fields=cfg.substring_fields,
                 rules=rules,
             )
+            forward_map = build_forward_map(report.renamed)
             surviving, stale = apply_ignores(
                 findings,
                 list(cfg.ignores),
-                forward_map=build_forward_map(report.renamed),
+                forward_map=forward_map,
                 source_line=_make_source_line(target),
             )
+            # Report/JSON in SOURCE coordinates (Design §3): the sandbox path is
+            # a synthetic press artifact that does not exist in the user's repo.
+            # line/col already index the source via the newline invariant.
+            surviving = [
+                dataclasses.replace(f, path=forward_map(f.path)) for f in surviving
+            ]
             unavailable = sandbox.unavailable_submodules
     except _CONFIG_ERRORS as exc:
         return _fail(f"sandbox verify failed: {exc}")
