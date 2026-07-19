@@ -73,4 +73,5 @@ Rebuild as standalone press: rebrand → provision, verify-then-mark
   drift guard — a configuration declaring keywords that must be completely
   eliminated from the target repo, testable ("is anything still there?").
   The ignore-set half of this requirement shipped as `verify_ignore`
-  (`press/press-rules.toml`); the CI-mode verify command remains to scope.
+  (`press/press-rules.toml`); the CI-mode verify command shipped in
+  P03-M5b (`press verify`, zero-arg CI usage documented).

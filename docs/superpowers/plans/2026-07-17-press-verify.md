@@ -56,7 +56,7 @@ Overriding invariant: **nothing is written, renamed, or deleted outside the inte
 
 **The keystone (round-2):** verify does **not** reuse `_press`. `_press` runs the doctor (whose leaks have no line/span and fire *before* occurrence-ignores can act), writes a receipt (which a control-path symlink can redirect *outside* the sandbox), and regenerates lockfiles (breaks hermeticity). Instead:
 
-```
+```text
 verify: load source -> preflight -> equal-fields WARN -> synth (equality-preserving)
         -> sandbox copy -> apply(sandbox, source, synth, rules)   # hermetic; returns ApplyReport
         -> scan(sandbox, source, synth)                            # own occurrence-level scan

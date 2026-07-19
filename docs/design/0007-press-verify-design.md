@@ -50,7 +50,7 @@ ignore (D4), not a structural blind spot in the pattern itself.
 
 ## 3. The keystone — verify uses `apply()`, never `_press`
 
-```
+```text
 verify: load source -> preflight -> equal-fields WARN -> synth (equality-preserving)
         -> sandbox copy -> apply(sandbox, source, synth, rules)   # hermetic; returns ApplyReport
         -> scan(sandbox, source, synth)                            # own occurrence-level scan
