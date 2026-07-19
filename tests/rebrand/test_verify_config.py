@@ -240,6 +240,30 @@ def test_ignore_field_non_str_raises_validation_error():
         parse_verify_config({"ignore": [{"field": 42, "file": "a", "anchor": "a"}]})
 
 
+def test_ignore_anchor_non_str_raises_validation_error():
+    # A non-string `anchor` would build Ignore(anchor=1); later
+    # `_anchor_matches` does `ignore.anchor in src_path` -> TypeError (outside
+    # _CONFIG_ERRORS) and `press verify` CRASHES instead of exit 2. Fail closed.
+    with pytest.raises(ValidationError, match="anchor"):
+        parse_verify_config(
+            {"ignore": [{"field": "app_name", "file": "a", "anchor": 1}]}
+        )
+
+
+def test_ignore_file_non_str_raises_validation_error():
+    with pytest.raises(ValidationError, match="file"):
+        parse_verify_config(
+            {"ignore": [{"field": "app_name", "file": 2, "anchor": "a"}]}
+        )
+
+
+def test_ignore_field_non_str_list_raises_validation_error():
+    # A list `field` is not None (passes Ignore.__post_init__) but is not a
+    # str — must be rejected at parse time, not carried into matching.
+    with pytest.raises(ValidationError, match="field"):
+        parse_verify_config({"ignore": [{"field": [], "file": "a", "anchor": "a"}]})
+
+
 def test_ignore_correct_types_still_parse():
     # A correctly typed config (bool force, int line/ordinal) still parses.
     config = parse_verify_config(
