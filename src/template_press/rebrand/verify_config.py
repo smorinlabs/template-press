@@ -60,6 +60,26 @@ def _parse_ignore(entry: dict) -> Ignore:
         raise ValidationError(
             f"[verify.ignore] unknown key(s): {', '.join(sorted(unknown))}"
         )
+    # Fail-closed value-type validation. A mistyped `force = "true"` (string)
+    # is truthy in Python, so `not ignore.force` would SILENTLY disable the
+    # staleness check — exactly the drift this module exists to catch. TOML
+    # `true` parses as a Python bool, so legit configs are unaffected.
+    for key in ("field", "value", "file", "anchor", "reason"):
+        if key in entry and not isinstance(entry[key], str):
+            raise ValidationError(
+                f"[verify.ignore] {key} must be a string: {entry[key]!r}"
+            )
+    for key in ("line", "ordinal"):
+        if key in entry and (
+            not isinstance(entry[key], int) or isinstance(entry[key], bool)
+        ):
+            raise ValidationError(
+                f"[verify.ignore] {key} must be an integer: {entry[key]!r}"
+            )
+    if "force" in entry and not isinstance(entry["force"], bool):
+        raise ValidationError(
+            f"[verify.ignore] force must be a boolean: {entry['force']!r}"
+        )
     return Ignore(
         field=entry.get("field"),
         value=entry.get("value"),

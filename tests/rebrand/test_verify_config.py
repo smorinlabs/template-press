@@ -185,6 +185,83 @@ def test_ignore_entry_unknown_key_raises_validation_error():
         )
 
 
+def test_ignore_force_non_bool_string_raises_validation_error():
+    # A mistyped `force = "true"` (string) is truthy in Python and would
+    # SILENTLY disable the staleness check (`not ignore.force`) — fail closed.
+    with pytest.raises(ValidationError, match="force"):
+        parse_verify_config(
+            {
+                "ignore": [
+                    {
+                        "field": "app_name",
+                        "file": "a",
+                        "anchor": "a",
+                        "force": "true",
+                    }
+                ]
+            }
+        )
+
+
+def test_ignore_line_non_int_string_raises_validation_error():
+    with pytest.raises(ValidationError, match="line"):
+        parse_verify_config(
+            {
+                "ignore": [
+                    {
+                        "field": "app_name",
+                        "file": "a",
+                        "anchor": "a",
+                        "line": "3",
+                    }
+                ]
+            }
+        )
+
+
+def test_ignore_ordinal_non_int_raises_validation_error():
+    with pytest.raises(ValidationError, match="ordinal"):
+        parse_verify_config(
+            {
+                "ignore": [
+                    {
+                        "field": "app_name",
+                        "file": "a",
+                        "anchor": "a",
+                        "ordinal": "1",
+                    }
+                ]
+            }
+        )
+
+
+def test_ignore_field_non_str_raises_validation_error():
+    with pytest.raises(ValidationError, match="field"):
+        parse_verify_config({"ignore": [{"field": 42, "file": "a", "anchor": "a"}]})
+
+
+def test_ignore_correct_types_still_parse():
+    # A correctly typed config (bool force, int line/ordinal) still parses.
+    config = parse_verify_config(
+        {
+            "ignore": [
+                {
+                    "field": "app_name",
+                    "value": "press",
+                    "file": "a",
+                    "anchor": "a",
+                    "line": 3,
+                    "ordinal": 1,
+                    "force": True,
+                }
+            ]
+        }
+    )
+    assert config.ignores[0].force is True
+    assert config.ignores[0].line == 3
+    assert config.ignores[0].ordinal == 1
+
+
 def test_equal_fields_non_str_raises_validation_error():
     with pytest.raises(ValidationError):
         parse_verify_config({"equal_fields": 42})
