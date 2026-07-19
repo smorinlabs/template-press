@@ -1,0 +1,284 @@
+"""End-to-end `press verify` — the hermetic sandbox self-press leak check (Task 12).
+
+`verify_command` ties every prior module together: preflight against the REAL
+target (discover/mismatches + a presence check), then — inside an owned,
+torn-down sandbox — a faithful copy, a HERMETIC `engine.apply` toward a
+synthetic equality-preserving identity, a paranoid `verifier.scan`, and
+source-anchored `apply_ignores`. Exit codes: 2 config/env/unverifiable (never
+mutating the real target), 1 a real finding/stale ignore/equal-fields
+collision/unavailable submodule, 0 verified-clean.
+
+All fixtures/decoys live strictly under ``tmp_path``; every git op is routed
+through ``git -C <tmp>`` so the autouse containment guard (tests/conftest.py)
+is satisfied.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+from template_press.rebrand.verify_cli import verify_command
+
+# The pressable target's committed FROM identity (discoverable + consistent).
+DEFAULT_IDENTITY: dict[str, str] = {
+    "package_name": "demo_widget",
+    "repo_name": "demo-widget",
+    "app_name": "press",
+    "author": "Demo Author",
+    "email": "demo@example.com",
+    "owner": "demolabs",
+}
+
+
+def _git(repo: Path, *args: str) -> None:
+    # git binary is hardcoded and the repo path is a test-owned tmp target; the
+    # -C pin keeps the op under tmp_path so the autouse guard is satisfied.
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(repo), *args],  # noqa: S607
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _render_source(identity: dict[str, str]) -> str:
+    lines = ["[identity]"]
+    lines += [f'{k} = "{v}"' for k, v in identity.items()]
+    return "\n".join(lines) + "\n"
+
+
+def make_pressable(
+    tmp_path: Path,
+    *,
+    identity: dict[str, str] | None = None,
+    scripts: bool = True,
+    source_identity: dict[str, str] | None = None,
+) -> Path:
+    """A minimal-but-real pressable target: pyproject with ``[project.scripts]``,
+    a ``src/<pkg>`` package, a README with English-word traps, and a committed
+    ``press/press-source.toml`` FROM identity. Git is init'd with an ``origin``
+    remote (so owner/repo are discoverable) but NOT committed — the caller runs
+    ``_commit`` after adding any decoy files.
+    """
+    ident = {**DEFAULT_IDENTITY, **(identity or {})}
+    repo = tmp_path / "target"
+    pkg = repo / "src" / ident["package_name"]
+    pkg.mkdir(parents=True)
+
+    scripts_block = (
+        f"\n[project.scripts]\n{ident['app_name']} = "
+        f'"{ident["package_name"]}.cli:main"\n'
+        if scripts
+        else ""
+    )
+    (repo / "pyproject.toml").write_text(
+        f'[project]\nname = "{ident["package_name"]}"\nversion = "0.1.0"\n'
+        f'authors = [{{ name = "{ident["author"]}", '
+        f'email = "{ident["email"]}" }}]\n'
+        f'requires-python = ">=3.12"\n{scripts_block}',
+        encoding="utf-8",
+    )
+    (repo / "README.md").write_text(
+        f"# {ident['repo_name']}\n\n"
+        "Compress the archive before express delivery; "
+        "do not let the pressure rise.\n"
+        f"Run `{ident['app_name']} --help`. Repo: "
+        f"https://github.com/{ident['owner']}/{ident['repo_name']}\n"
+        f"Maintained by {ident['author']} <{ident['email']}>.\n",
+        encoding="utf-8",
+    )
+    (pkg / "__init__.py").write_text(
+        f'"""{ident["package_name"]} package."""\n', encoding="utf-8"
+    )
+    (pkg / "cli.py").write_text(
+        f'"""{ident["package_name"]} cli."""\n\n\ndef main() -> int:\n    return 0\n',
+        encoding="utf-8",
+    )
+    (repo / ".gitignore").write_text(".venv/\n__pycache__/\n", encoding="utf-8")
+
+    (repo / "press").mkdir()
+    src_ident = source_identity if source_identity is not None else ident
+    (repo / "press" / "press-source.toml").write_text(
+        _render_source(src_ident), encoding="utf-8"
+    )
+
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    _git(
+        repo,
+        "remote",
+        "add",
+        "origin",
+        f"https://github.com/{ident['owner']}/{ident['repo_name']}.git",
+    )
+    return repo
+
+
+def _commit(repo: Path, message: str = "snapshot") -> None:
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", message)
+
+
+def _tree(repo: Path) -> dict[str, tuple[str, str]]:
+    """A ``{relpath: (kind, hash|linktarget)}`` snapshot of the working tree
+    (``.git`` excluded) — for proving a run wrote NOTHING to the real target."""
+    root = repo.resolve()
+    out: dict[str, tuple[str, str]] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d != ".git"]
+        for name in filenames:
+            path = Path(dirpath) / name
+            rel = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                out[rel] = ("L", os.readlink(path))
+            else:
+                out[rel] = ("F", hashlib.sha256(path.read_bytes()).hexdigest())
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 12.1 — the plan's failing-tests list, verbatim
+# ---------------------------------------------------------------------------
+def test_clean_template_exits_0(tmp_path: Path) -> None:
+    # incl. compress/press English traps in README + a regenerable uv.lock
+    # (exempt from the scan, so its old package_name is NOT a leak).
+    repo = make_pressable(tmp_path)
+    (repo / "uv.lock").write_text('name = "demo_widget"\n', encoding="utf-8")
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 0
+
+
+def test_bun_lock_leak_exits_1(tmp_path: Path) -> None:
+    # bun.lock is a DEFAULT exclude (never rewritten) but NOT regenerable, so it
+    # IS scanned — a surviving package_name is a leak.
+    repo = make_pressable(tmp_path)
+    (repo / "bun.lock").write_text('"name":"demo_widget"\n', encoding="utf-8")
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 1
+
+
+def test_hyphen_token_leak_exits_1(tmp_path: Path) -> None:
+    # package-lock.json is excluded from rewrite but scanned; the hyphen-form
+    # repo_name survives and must be flagged.
+    repo = make_pressable(tmp_path)
+    (repo / "package-lock.json").write_text(
+        '{"name": "demo-widget"}\n', encoding="utf-8"
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 1
+
+
+def test_missing_source_config_exits_2_no_write(tmp_path: Path) -> None:
+    repo = make_pressable(tmp_path)
+    (repo / "press" / "press-source.toml").unlink()
+    _commit(repo)
+    before = _tree(repo)
+    assert verify_command(["--target", str(repo)]) == 2
+    # verify NEVER mutates the real target — exit 2 wrote nothing.
+    assert _tree(repo) == before
+
+
+def test_declared_app_absent_exits_2(tmp_path: Path) -> None:
+    # Drop [project.scripts] so discovery cannot see app_name, and declare a
+    # phantom app_name in the source-config that appears NOWHERE in the target:
+    # undiscoverable AND absent -> presence fails -> 2.
+    repo = make_pressable(tmp_path)
+    pyproject = (repo / "pyproject.toml").read_text(encoding="utf-8")
+    (repo / "pyproject.toml").write_text(
+        pyproject.split("[project.scripts]")[0], encoding="utf-8"
+    )
+    (repo / "press" / "press-source.toml").write_text(
+        _render_source({**DEFAULT_IDENTITY, "app_name": "ghost"}), encoding="utf-8"
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 2
+
+
+def test_control_path_symlink_rejected_exits_2(tmp_path: Path) -> None:
+    repo = make_pressable(tmp_path)
+    shutil.rmtree(repo / "press")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    # A symlinked control dir could redirect a control-file read/write out of
+    # the tree — assert_control_real rejects it at load time -> 2.
+    (repo / "press").symlink_to(outside, target_is_directory=True)
+    assert verify_command(["--target", str(repo)]) == 2
+    # Nothing was written into the external decoy.
+    assert list(outside.iterdir()) == []
+
+
+def test_ignore_suppresses_then_drifts(tmp_path: Path) -> None:
+    repo = make_pressable(tmp_path)
+    # A real leftover: an unregenerable lockfile carrying the old owner token.
+    # owner ("demolabs") is used because — unlike package_name/repo_name, whose
+    # separator-normalized forms collide — no other identity field matches it,
+    # so the leftover yields exactly one finding to suppress.
+    (repo / "bun.lock").write_text('"name": "demolabs"\n', encoding="utf-8")
+    rules = repo / "press" / "press-rules.toml"
+    rules.write_text(
+        "[[verify.ignore]]\n"
+        'file = "bun.lock"\n'
+        'field = "owner"\n'
+        'value = "demolabs"\n'
+        'anchor = "name"\n'
+        'reason = "vendored lockfile, intentional"\n',
+        encoding="utf-8",
+    )
+    _commit(repo)
+    # The ignore suppresses the leftover -> clean.
+    assert verify_command(["--target", str(repo)]) == 0
+
+    # Break the anchor: it no longer matches the source line, so the leftover
+    # resurfaces AND the ignore is stale -> 1.
+    rules.write_text(
+        "[[verify.ignore]]\n"
+        'file = "bun.lock"\n'
+        'field = "owner"\n'
+        'value = "demolabs"\n'
+        'anchor = "does-not-appear-on-that-line"\n'
+        'reason = "broken anchor"\n',
+        encoding="utf-8",
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 1
+
+
+def test_equal_fields_warns_exits_0(tmp_path: Path, capsys) -> None:
+    # package_name == app_name == repo_name (all "widget"): equality is
+    # preserved by synthesis, so a clean press still verifies -> 0 with a WARN.
+    repo = make_pressable(
+        tmp_path,
+        identity={
+            "package_name": "widget",
+            "app_name": "widget",
+            "repo_name": "widget",
+        },
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 0
+    assert "equal" in capsys.readouterr().err.lower()
+
+    # equal_fields = "error" turns the same equality into a hard failure -> 1.
+    (repo / "press" / "press-rules.toml").write_text(
+        '[verify]\nequal_fields = "error"\n', encoding="utf-8"
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 1
+
+
+def test_env_regen_absent_is_2(monkeypatch, tmp_path: Path) -> None:
+    # A tool/env failure during the sandbox press is an env error -> 2 (NOT a
+    # leak's 1): the press could not complete, so verify cannot claim clean.
+    repo = make_pressable(tmp_path)
+    _commit(repo)
+
+    def boom(*_a, **_k):
+        raise OSError("simulated tool/env failure during press")
+
+    monkeypatch.setattr("template_press.rebrand.verify_cli.apply", boom)
+    assert verify_command(["--target", str(repo)]) == 2
