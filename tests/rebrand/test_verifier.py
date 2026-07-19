@@ -214,6 +214,51 @@ def test_dangling_symlink_readlink_leak_is_i2_closure(src_target: Path):
     )
 
 
+def test_scan_binary_empty_needle_returns_empty_no_hang():
+    """`_scan_binary` must not loop forever on an empty needle: `data.find(b"",
+    start)` returns `start`, so an unguarded scan advances zero bytes each
+    iteration. An empty value yields no findings (fast, bounded)."""
+    from template_press.rebrand.verifier import _scan_binary
+
+    assert _scan_binary(b"some binary data", "asset.png", [("app_name", "")]) == []
+
+
+@requires_symlink
+def test_symlink_readlink_oserror_is_unscannable(src_target: Path, monkeypatch):
+    """A transient `os.readlink` failure on a listed `symlink` entry (stale
+    TOCTOU tag / removed between lstat and read) must yield ONE
+    `where="unscannable"` finding, not crash `scan()` — mirroring the
+    `_scan_file` OSError convention (`field="io", value="unreadable"`)."""
+    link = src_target / "link_to_x"
+    os.symlink("nonexistent/demo_widget_backup", link)
+    _git(src_target, "add", "-A")
+    _git(src_target, "commit", "-q", "-m", "add symlink")
+
+    import template_press.rebrand.verifier as verifier_mod
+
+    def _boom(_path, *a, **k):
+        raise OSError("stale symlink")
+
+    monkeypatch.setattr(verifier_mod.os, "readlink", _boom)
+
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "link_to_x"]
+    assert len(hits) == 1
+    hit = hits[0]
+    assert hit.where == "unscannable"
+    assert hit.field == "io"
+    assert hit.value == "unreadable"
+    assert hit.line is None
+    assert hit.col is None
+
+
 def test_finding_dataclass_shape():
     f = Finding(
         path="a",

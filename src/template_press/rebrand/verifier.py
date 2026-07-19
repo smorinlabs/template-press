@@ -119,7 +119,13 @@ def _scan_symlink(
     destination is never opened, so whether it exists (or what kind of node
     it is) is irrelevant to this scan.
     """
-    link = os.readlink(target / rel)
+    try:
+        link = os.readlink(target / rel)
+    except OSError:
+        # `scan_paths` tagged this entry "symlink" from an earlier lstat that
+        # may be stale by now (TOCTOU), or a transient I/O error prevents the
+        # read. Never guess — flag it unscannable, mirroring `_scan_file`.
+        return [Finding(posix, "io", "unreadable", "unscannable", None, None, "")]
     findings: list[Finding] = []
     for f, value in changed:
         substring = f in substring_fields
@@ -160,6 +166,11 @@ def _scan_binary(
     findings: list[Finding] = []
     for f, value in changed:
         needle = value.encode("utf-8")
+        if not needle:
+            # `data.find(b"", start)` returns `start`, so an empty needle would
+            # advance zero bytes per iteration and loop forever. Identity is
+            # validated non-empty upstream; this keeps the invariant local.
+            continue
         start = 0
         while True:
             idx = data.find(needle, start)
