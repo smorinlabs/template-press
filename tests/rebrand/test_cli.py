@@ -1,6 +1,9 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 from template_press.rebrand.cli import main
 from template_press.rebrand.config import (
@@ -210,6 +213,12 @@ def test_identical_identity_press_exits_2(src_target: Path, tmp_path: Path):
     assert code == 2
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="read-only-dir fault injection is POSIX-only (Windows ignores POSIX "
+    "dir perms); the mid-apply OSError->exit-1 path is covered portably by "
+    "test_press_outcome_env_error_on_apply_ioerror",
+)
 def test_mid_apply_oserror_exits_1_with_partial_warning(
     src_target: Path, tmp_path: Path, capsys
 ):
