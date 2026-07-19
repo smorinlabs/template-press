@@ -112,11 +112,11 @@ a surviving finding and suppresses it.
 |-----|------|----------|---------|
 | `field` | string | No* | The identity field name (e.g., `"app_name"`). |
 | `value` | string | No* | The value string. |
-| `file` | string | Yes | File path (relative to the target root) where the finding occurs. If omitted, suppresses the finding in any file. |
-| `anchor` | string | Yes | A search anchor string in the file — the finding is suppressed only if this string is present near it. |
-| `line` | integer | Yes | Line number (1-based) in the original source file — if set, the finding is suppressed only at or near this line. |
-| `ordinal` | integer | Yes | The Nth occurrence of the field/value pair in the file (1-based) — if set, suppresses only that occurrence. |
-| `force` | boolean | Yes (default `false`) | Force suppress even if the ignore is stale (does not match any finding). |
+| `file` | string | **No (required)** | File path (relative to the target root) in **source** coordinates where the finding occurs. It must equal the finding's source path exactly. Omitting it defaults to `""`, which matches no path — the ignore then suppresses nothing, is reported stale, and the run exits `1`. |
+| `anchor` | string | Yes | A substring that must appear in the finding's source line (content findings) or source path (path/binary findings); if omitted (`""`) it matches everything. |
+| `line` | integer | Yes | Line number (1-based) in the original source file — if set, the finding is suppressed only on exactly this line. |
+| `ordinal` | integer | Yes | The **0-based** occurrence index of the field/value pair within its `(file, field, value, line)` group (first occurrence = `0`) — if set, suppresses only that occurrence. |
+| `force` | boolean | Yes (default `false`) | Only exempts a zero-match ignore from the staleness failure — it does **not** force-suppress a finding. A `force` ignore that matches nothing is simply not reported stale. |
 | `reason` | string | Yes | A short note explaining why the ignore exists (for documentation). |
 
 \* Either `field` or `value` (or both) must be present.
