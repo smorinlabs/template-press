@@ -89,3 +89,32 @@ def test_wordlist_has_no_false_positives():
         assert (
             find_occurrences(word, "package_name", "demo_widget", substring=False) == []
         ), word
+
+
+# --- substring mode: Unicode-safe spans + empty guard (D3) ----------------
+
+
+def test_substring_ascii_case_spans_slice_back():
+    text = "the PRESS release for press"
+    spans = find_occurrences(text, "app_name", "press", substring=True)
+    assert spans  # case-insensitive substring finds both PRESS and press
+    for start, end in spans:
+        assert text[start:end].lower() == "press"
+    # first hit is the uppercase PRESS at index 4 — span slices it exactly
+    assert text[spans[0][0] : spans[0][1]] == "PRESS"
+
+
+def test_substring_unicode_case_spans_do_not_drift():
+    # `İ` (U+0130) lowercases to TWO code points (i + combining dot above), so
+    # a naive text.lower()/value.lower() offset drifts and slices the wrong
+    # substring out of the ORIGINAL text. Spans must slice back to the match.
+    text = "İ press"  # "İ press"
+    spans = find_occurrences(text, "app_name", "press", substring=True)
+    assert spans
+    for start, end in spans:
+        assert text[start:end] == "press"
+
+
+def test_substring_empty_value_returns_empty():
+    # An empty needle must return [] — not loop forever on find("", ...).
+    assert find_occurrences("anything at all", "app_name", "", substring=True) == []

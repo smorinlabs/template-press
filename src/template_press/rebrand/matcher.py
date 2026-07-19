@@ -72,17 +72,15 @@ def find_occurrences(
     caught. Non-overlapping, like `identity_pattern`'s `finditer`.
     """
     if substring:
-        spans: list[tuple[int, int]] = []
-        lowered_text = text.lower()
-        lowered_value = value.lower()
-        start = 0
-        while True:
-            idx = lowered_text.find(lowered_value, start)
-            if idx == -1:
-                break
-            end = idx + len(lowered_value)
-            spans.append((idx, end))
-            start = end
-        return spans
+        if not value:
+            # An empty needle matches at every offset — a zero-width find loop
+            # would never advance. Nothing to flag; return no spans.
+            return []
+        # Spans are taken on the ORIGINAL text (not a `.lower()` copy): Unicode
+        # case mappings can change length (e.g. `İ` -> `i` + combining dot), so
+        # lowering both sides and applying the lowered offsets to the original
+        # string drifts the span. `re.IGNORECASE` handles case without a second
+        # string; `finditer` is non-overlapping, matching the boundary branch.
+        return [m.span() for m in re.finditer(re.escape(value), text, re.IGNORECASE)]
     pattern = identity_pattern(field, value)
     return [m.span() for m in pattern.finditer(text)]
