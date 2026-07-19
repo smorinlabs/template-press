@@ -27,12 +27,13 @@ _ORIGIN_RE = re.compile(
 @dataclass(frozen=True)
 class Discovered:
     package_name: str | None
-    app_name: str | None
+    app_name: str | None  # FIRST [project.scripts] key, for display/back-compat
     owner: str | None
     repo_name: str | None
     author: str | None
     email: str | None
     layout: str | None  # "src" | "flat" | None
+    app_names: tuple[str, ...] = ()  # ALL [project.scripts] keys, insertion order
 
 
 def _origin(target: Path) -> tuple[str | None, str | None]:
@@ -62,6 +63,7 @@ def _origin(target: Path) -> tuple[str | None, str | None]:
 
 def discover(target: Path) -> Discovered:
     package_name = app_name = author = email = None
+    app_names: tuple[str, ...] = ()
     pyproject_path = target / "pyproject.toml"
     if pyproject_path.is_file():
         data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
@@ -71,7 +73,8 @@ def discover(target: Path) -> Discovered:
             package_name = raw_name.replace("-", "_")
         scripts = project.get("scripts", {})
         if isinstance(scripts, dict) and scripts:
-            app_name = str(next(iter(scripts)))
+            app_names = tuple(str(k) for k in scripts)
+            app_name = app_names[0]  # first key — display/back-compat
         authors = project.get("authors", [])
         if authors and isinstance(authors[0], dict):
             author = authors[0].get("name")
@@ -91,6 +94,7 @@ def discover(target: Path) -> Discovered:
         author=author,
         email=email,
         layout=layout,
+        app_names=app_names,
     )
 
 
@@ -99,7 +103,6 @@ def mismatches(source: Identity, found: Discovered) -> list[str]:
     out: list[str] = []
     checks: tuple[tuple[str, str | None], ...] = (
         ("package_name", found.package_name),
-        ("app_name", found.app_name),
         ("owner", found.owner),
         ("repo_name", found.repo_name),
         ("author", found.author),
@@ -115,6 +118,14 @@ def mismatches(source: Identity, found: Discovered) -> list[str]:
                 f"{declared[field_name]!r} but target shows "
                 f"{discovered_value!r}"
             )
+    # app_name matches when it is ANY [project.scripts] key (membership),
+    # not just the first (F3/D2) — a target may expose several scripts and
+    # commit a non-first one. Empty app_names -> undiscoverable, unchallenged.
+    if found.app_names and declared["app_name"] not in found.app_names:
+        out.append(
+            f"app_name: source-config says {declared['app_name']!r} but "
+            f"target [project.scripts] exposes {list(found.app_names)!r}"
+        )
     if found.package_name is not None and found.layout is None:
         out.append(
             f"layout: pyproject declares {found.package_name!r} but neither "

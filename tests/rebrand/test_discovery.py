@@ -5,6 +5,22 @@ from template_press.rebrand.discovery import discover, mismatches
 
 from .conftest import SOURCE
 
+# Two scripts, committed app_name ("mytool") is the SECOND key — discovery's
+# app_name (first key) is "othercli". name/authors match the src_target fixture
+# so only app_name is under test.
+MULTI_SCRIPT_PYPROJECT = """\
+[project]
+name = "demo_widget"
+version = "0.1.0"
+description = "Demo widget by Demo Author"
+authors = [{ name = "Demo Author", email = "demo@example.com" }]
+requires-python = ">=3.12"
+
+[project.scripts]
+othercli = "demo_widget.other:main"
+mytool = "demo_widget.cli:main"
+"""
+
 
 def test_discover_src_layout(src_target: Path):
     found = discover(src_target)
@@ -43,6 +59,23 @@ def test_mismatches_reported_loudly(src_target: Path):
     )
     msgs = mismatches(wrong, discover(src_target))
     assert any("package_name" in m and "other_pkg" in m for m in msgs)
+
+
+def test_mismatches_accepts_app_name_from_any_script_key(src_target: Path):
+    """F3/D2: a committed app_name that is ANY [project.scripts] key (not just
+    the first) is a MATCH; an app_name exposed by NO script still mismatches.
+    """
+    (src_target / "pyproject.toml").write_text(MULTI_SCRIPT_PYPROJECT, encoding="utf-8")
+    found = discover(src_target)
+    # Membership: committed app_name is the SECOND script key -> no mismatch.
+    member = SOURCE.__class__(**{**SOURCE.as_dict_prompted(), "app_name": "mytool"})
+    assert not any("app_name" in m for m in mismatches(member, found))
+    # Negative control: an app_name exposed by NO script still mismatches.
+    absent = SOURCE.__class__(**{**SOURCE.as_dict_prompted(), "app_name": "ghostcli"})
+    assert any("app_name" in m for m in mismatches(absent, found))
+    # app_name stays the FIRST key (display/back-compat); app_names is all keys.
+    assert found.app_name == "othercli"
+    assert found.app_names == ("othercli", "mytool")
 
 
 def test_declared_package_without_package_dir_is_a_mismatch(
