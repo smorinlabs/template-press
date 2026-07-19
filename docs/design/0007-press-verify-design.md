@@ -397,8 +397,9 @@ The plan's own self-review is explicit that this was not a formality: a
 second fable+codex adversarial round on the *plan* forced the keystone flip
 in §3, and later, task-level adversarial reviews on the *shipped code* found
 real, demonstrable defects — not style nits — in the D8 symlink-safety
-mechanism. These are the findings that explain the final shape of
-`safety.py`, and documenting them is the most important part of this record.
+mechanism and in verify's own sandbox re-stage logic. These are the findings
+that explain the final shape of `safety.py` and `verify_cli.py`, and
+documenting them is the most important part of this record.
 
 ### 5.1 D8 ancestor-symlink escape (the headline)
 
@@ -479,7 +480,56 @@ dedicated destruction-safety task") because it is a *third* kind of
 write-through vector — an external tool's own I/O, not the engine's direct
 file operations — that the D8 guard alone does not cover.
 
-### 5.3 Exception taxonomy (`PressOutcome`)
+### 5.3 Sandbox re-stage false-clean (`_restage_sandbox`)
+
+After `apply()` presses the sandbox, `verifier.scan` is index-driven, not a
+raw filesystem walk: `scan_paths` builds its candidate set from
+`copy_paths`, which is built from `git ls-files` (§4 D3) — so `scan` only
+ever sees what the sandbox's git **index** currently lists. `apply()`'s
+rename pass moves paths on disk but does not itself touch the sandbox's git
+index, so `_restage_sandbox` exists purely to reconcile the index to the
+pressed working tree — an index sync, explicitly **not** lockfile
+regeneration; verify stays hermetic (D5).
+
+The bug: the first implementation of `_restage_sandbox` ran a plain
+`git add -A`, which **respects `.gitignore`**. Consider a file that was
+gitignored in the source but force-added anyway (`git add -f` — a
+legitimate, if unusual, real pattern for e.g. a build artifact a template
+wants tracked despite a broad ignore rule) whose path carries a rename
+token. `apply()`'s rename pass moves it to a new path that is *still*
+gitignored (renaming doesn't change whether a path matches a `.gitignore`
+pattern). Plain `git add -A` then stages the *old* path's deletion (fine)
+but **refuses** to re-add the new, still-ignored path, because `-A` without
+`-f` honors ignores — so the file drops out of the sandbox's git index
+entirely. `copy_paths`/`scan_paths` never lists it, so `verifier.scan` never
+reads it. For a text file this is a coverage gap; for a **binary** file
+whose bytes literally embed the source value (`apply()` can only rewrite
+text content — binary bytes are never touched, by design), the surviving
+bytes go completely unscanned. Verify exits **0** on a **real** leak: a
+false clean — precisely the failure mode §2 says the paranoid verifier
+posture exists to never produce.
+
+Caught by: the adversarial per-task review constructed a PoC — a gitignored
+directory holding a `git add -f`'d binary whose bytes embed the source
+package name, at a path carrying a rename token — and empirically
+reproduced `verify_command(...) == 0` against a target that, in fact, still
+leaked the source identity.
+
+Fix (commit `3acfcfa`): `_restage_sandbox` now runs `git add -A -f` —
+force-adding ignored files during the re-stage itself, not only during
+`make_sandbox`'s initial copy. This is faithful, not merely permissive:
+`make_sandbox` already copies *only* the `copy_paths` set into the sandbox
+worktree (D3), so there are no extraneous ignored files lying around for
+`-f` to over-add during re-stage — `-A -f` re-stages exactly the pressed
+tree (the sandbox's own copy, force-added ignored members included) and
+stages the renamed-away deletions, nothing more. Locked in by two
+regression tests: `test_gitignored_forceadded_binary_leak_exits_1` (the
+PoC — a gitignored, force-added, leaky binary at a renamed path → 1) and
+`test_nongitignored_binary_leak_exits_1` (an identical, non-gitignored
+control, also → 1 — proving the fix specifically closed the `.gitignore`
+path rather than coincidentally passing for an unrelated reason).
+
+### 5.4 Exception taxonomy (`PressOutcome`)
 
 Real `_press` keeps its existing post-mutation exit-1 semantics unchanged.
 Verify, however, needs a clean three-way split that real `rebrand` never
@@ -516,16 +566,16 @@ part of why it can be trusted:
    test-isolation ban rather than leaving it advisory (G1+), and the
    documented residual that a repo-local clean/smudge filter driver cannot
    be disabled by name via any fixed `-c` flag set (G5++).
-3. **Per-task reviews during implementation** caught the two concrete
-   defects in §5 (the ancestor-symlink escape and the lockfile guard) —
-   these were not anticipated in the same form by the original G1–G9 list;
-   they were found by exercising the *actual shipped code* against the
-   stated threat model, which is why they are hardening findings rather
-   than planned decisions.
+3. **Per-task reviews during implementation** caught the three concrete
+   defects in §5 (the ancestor-symlink escape, the lockfile guard, and the
+   sandbox re-stage false-clean) — these were not anticipated in the same
+   form by the original G1–G9 list; they were found by exercising the
+   *actual shipped code* against the stated threat model, which is why they
+   are hardening findings rather than planned decisions.
 
 None of D1–D8 is a single-pass author's-first-draft decision — each survived
 at least one adversarial round that could veto or reroute it, the keystone
-flip in §3 being the largest example — and the two implementation-time
+flip in §3 being the largest example — and the three implementation-time
 findings in §5 show the review process kept working past the planning
 stage, catching real, PoC-confirmed defects in shipped code rather than only
 theoretical gaps in a plan document.
