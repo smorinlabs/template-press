@@ -315,7 +315,14 @@ def _read_text(path: Path) -> str | None:
 
 def _renamed_rel(rel: Path, pairs: list[tuple[str, str, str]]) -> Path:
     parts = []
-    for component in rel.parts:
+    for i, component in enumerate(rel.parts):
+        if _is_root_press(rel, i):
+            # The protected root control dir literally 'press' is never
+            # renamed (it holds ROOT_CONTROL) — but its DESCENDANTS still are,
+            # so a token-bearing child (press/press_notes.md) renames to
+            # press/potato_notes.md instead of being abandoned.
+            parts.append(component)
+            continue
         new = component
         for f, cur, repl in pairs:
             if f in RENAME_FIELDS:
@@ -347,8 +354,9 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                 zip(rel.parts, new_rel.parts, strict=True)
             ):
                 if old_part != new_part:
-                    if _is_root_press(rel, i):
-                        break
+                    # The root 'press' component never differs (protected in
+                    # _renamed_rel), so the first diff is always a renamable
+                    # component — no root-press guard is needed here.
                     old_prefix = Path(*rel.parts[: i + 1]).as_posix()
                     new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
                     rename_map.setdefault(old_prefix, new_prefix)
@@ -485,8 +493,9 @@ def _rename_pass_once(
             zip(rel.parts, new_rel.parts, strict=True)
         ):
             if old_part != new_part:
-                if _is_root_press(rel, i):
-                    break
+                # The root 'press' component never differs (protected in
+                # _renamed_rel), so the first diff is always a renamable
+                # component — no root-press guard is needed here.
                 old_prefix = Path(*rel.parts[: i + 1]).as_posix()
                 new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
                 rename_map.setdefault(old_prefix, new_prefix)

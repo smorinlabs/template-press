@@ -11,6 +11,7 @@ a false path-leak) because ROOT_CONTROL is keyed on that exact prefix.
 import subprocess
 from pathlib import Path
 
+from template_press.rebrand.doctor import find_leaks
 from template_press.rebrand.engine import apply, iter_target_files
 from template_press.rebrand.rules import DEFAULT_RULES
 
@@ -61,6 +62,38 @@ def test_root_press_dir_not_renamed(src_target: Path):
     assert "potato" in body
     assert "press build" not in body
     assert not (src_target / "potato" / "notes.md").exists()
+
+
+def test_root_press_descendant_renames_root_dir_preserved(src_target: Path):
+    """A token-bearing DESCENDANT under the protected root press/ dir must
+    still rename (press/press_notes.md -> press/potato_notes.md) while the
+    root press/ control dir itself is preserved; no path-leak may survive
+    (F4). Before the fix the rename builder abandoned the whole path at the
+    root `press` component, leaving press/press_notes.md — a path leak.
+    """
+    d = src_target / "press"
+    d.mkdir(exist_ok=True)
+    # A root control file makes press/ this tool's legitimate control dir.
+    (d / "press-source.toml").write_text(
+        '[identity]\npackage_name = "demo_widget"\nowner = "demolabs"\n',
+        encoding="utf-8",
+    )
+    (d / "press_notes.md").write_text("press build notes\n", encoding="utf-8")
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "commit", "-q", "-m", "add press child"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+    assert (src_target / "press" / "potato_notes.md").is_file()
+    assert not (src_target / "press" / "press_notes.md").exists()
+    assert (src_target / "press").is_dir()  # root control dir preserved
+    assert find_leaks(src_target, SOURCE, DEFAULT_RULES, DEST) == []
 
 
 def test_nested_press_dir_still_renames(src_target: Path):
