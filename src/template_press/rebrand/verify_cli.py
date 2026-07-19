@@ -128,6 +128,10 @@ def _target_text_corpus(target: Path, rules: Rules) -> list[str]:
                 continue
         elif entry.kind == "file" and is_regular_lstat(path):
             try:
+                # UTF-8-only by design: a non-UTF-8 (binary) file is skipped
+                # here, which only makes a value HARDER to confirm present —
+                # the presence check fails CLOSED to exit 2 (unverifiable), so
+                # a skipped binary can never cause a false CLEAN.
                 corpus.append(path.read_bytes().decode("utf-8"))
             except (OSError, UnicodeDecodeError):
                 continue
@@ -211,14 +215,26 @@ def _make_source_line(target: Path) -> Callable[[str, int], str | None]:
 
 
 def _restage_sandbox(sandbox: Path) -> None:
-    """``git add -A`` on the OWNED sandbox so ``git ls-files`` reflects the
+    """``git add -A -f`` on the OWNED sandbox so ``git ls-files`` reflects the
     pressed worktree — apply's renames leave the old paths in the index but
     absent from the worktree, which would otherwise scan as false leaks. This
     reconciles the index; it is NOT lockfile regeneration (verify stays
     hermetic). Scrubbed + hardened + synthetic-identity, ``-C`` pinned.
+
+    ``-f`` is REQUIRED, not optional: without it, a plain ``add -A`` respects
+    ``.gitignore``, so after apply renames a force-added-ignored file to a
+    still-ignored path, ``-A`` stages the deletion but REFUSES to re-add the
+    ignored path — the file (e.g. a binary whose bytes embed a source value and
+    apply cannot rewrite) drops out of the sandbox index and ``scan`` never sees
+    the surviving leak → a FALSE CLEAN. Force-adding is correct and faithful
+    here because ``make_sandbox`` copied ONLY the ``copy_paths`` set into the
+    sandbox worktree — there are no extraneous ignored files for ``-f`` to
+    over-add, so ``-A -f`` re-stages exactly the pressed tree (force-added
+    ignored files included) and stages the renamed-away deletions.
     """
+    cmd = ["git", "-C", str(sandbox), *git_hardening_args(), "add", "-A", "-f"]
     subprocess.run(  # noqa: S603 # nosec B603 B607
-        ["git", "-C", str(sandbox), *git_hardening_args(), "add", "-A"],  # noqa: S607
+        cmd,
         check=True,
         capture_output=True,
         env=scrubbed_git_env(extra=_SANDBOX_GIT_IDENTITY),

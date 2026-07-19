@@ -282,3 +282,74 @@ def test_env_regen_absent_is_2(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr("template_press.rebrand.verify_cli.apply", boom)
     assert verify_command(["--target", str(repo)]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Regression: a gitignored + `git add -f`'d BINARY whose bytes embed a source
+# value and whose path carries a rename token must NOT read as clean. Root
+# cause of the fixed bug: a plain `git add -A` re-stage respects .gitignore, so
+# after apply renames the file to a still-ignored path the file dropped out of
+# the sandbox index and scan never saw the surviving bytes (apply cannot
+# rewrite binary) -> FALSE CLEAN. The re-stage now force-adds (`-A -f`).
+# ---------------------------------------------------------------------------
+def _add_leaky_binary(repo: Path, *, gitignore_assets: bool) -> None:
+    """A binary under a token-bearing path whose bytes embed ``demo_widget``."""
+    if gitignore_assets:
+        with (repo / ".gitignore").open("a", encoding="utf-8") as fh:
+            fh.write("assets/\n")
+    (repo / "assets").mkdir(exist_ok=True)
+    (repo / "assets" / "demo_widget.bin").write_bytes(
+        b"\x00\x01demo_widget\xff\xfe binary blob\x00"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "add", "-f", "assets/demo_widget.bin")
+
+
+def test_gitignored_forceadded_binary_leak_exits_1(tmp_path: Path) -> None:
+    # The PoC: `assets/` is gitignored, the binary is force-added. apply renames
+    # assets/demo_widget.bin -> assets/<synth>.bin (still under ignored assets/)
+    # and cannot rewrite the embedded bytes; the force-add re-stage keeps it in
+    # the sandbox index so scan catches the surviving `demo_widget` bytes.
+    repo = make_pressable(tmp_path)
+    _add_leaky_binary(repo, gitignore_assets=True)
+    _git(repo, "commit", "-q", "-m", "force-add ignored leaky binary")
+    assert verify_command(["--target", str(repo)]) == 1
+
+
+def test_nongitignored_binary_leak_exits_1(tmp_path: Path) -> None:
+    # Control for the PoC: the identical binary that is NOT gitignored also -> 1,
+    # so the gitignored test above proves the .gitignore path specifically is
+    # now covered (both reach the scanner, not just the tracked one).
+    repo = make_pressable(tmp_path)
+    _add_leaky_binary(repo, gitignore_assets=False)
+    _git(repo, "commit", "-q", "-m", "add leaky binary")
+    assert verify_command(["--target", str(repo)]) == 1
+
+
+# ---------------------------------------------------------------------------
+# M1 coverage: a target with a real gitlink/submodule -> 1 (a submodule the
+# sandbox could not fully verify is never a silent pass — non-empty
+# `unavailable_submodules` forces exit 1).
+# ---------------------------------------------------------------------------
+def test_gitlink_submodule_exits_1(tmp_path: Path) -> None:
+    repo = make_pressable(tmp_path)
+    # Build a throwaway inner repo and register it as a gitlink in the target's
+    # index (no working-tree checkout needed).
+    inner = tmp_path / "inner"
+    inner.mkdir()
+    _git(inner, "init", "-q", "-b", "main")
+    _git(inner, "config", "user.email", "test@example.com")
+    _git(inner, "config", "user.name", "Test")
+    (inner / "f.txt").write_text("x\n", encoding="utf-8")
+    _git(inner, "add", "-A")
+    _git(inner, "commit", "-q", "-m", "inner init")
+    sha = subprocess.run(  # noqa: S603
+        ["git", "-C", str(inner), "rev-parse", "HEAD"],  # noqa: S607
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _commit(repo)
+    _git(repo, "update-index", "--add", "--cacheinfo", f"160000,{sha},vendored")
+    _git(repo, "commit", "-q", "-m", "add gitlink")
+    assert verify_command(["--target", str(repo)]) == 1
