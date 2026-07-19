@@ -52,7 +52,11 @@ def identity_pattern(field: str, value: str) -> re.Pattern[str]:
     case-SENSITIVE even inside the outer case-insensitive pattern.
     """
     del field  # reserved for future per-field variation; uniform today.
-    core = "[-_. ]?".join(re.escape(t) for t in _SEP.split(value) if t)
+    # ``[-_. ]*`` (zero-OR-MORE), not ``?`` (zero-or-one): a valid source value
+    # with REPEATED separators (``demo__widget``, ``demo--widget``) must match
+    # ITSELF, or the paranoid scanner would miss a real leak of the source
+    # identity. Zero separators still matches the glued camelCase variant.
+    core = "[-_. ]*".join(re.escape(t) for t in _SEP.split(value) if t)
     tail = r"(?:(?![A-Za-z0-9])|(?-i:(?<=[a-z])(?=[A-Z])))"
     return re.compile(rf"(?<![A-Za-z0-9]){core}{tail}", re.IGNORECASE)
 

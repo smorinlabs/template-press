@@ -25,6 +25,14 @@ def test_variants_matched():
         )
 
 
+def test_repeated_separators_match_source_value():
+    # A valid source value with REPEATED separators must match ITSELF: the
+    # token join is zero-or-more separators (`[-_. ]*`), not at-most-one — a
+    # `demo__widget`/`demo--widget` leak of the source identity must be caught.
+    for s in ("demo__widget", "demo--widget", "demo..widget", "demo  widget"):
+        assert find_occurrences(s, "package_name", "demo_widget", substring=False), s
+
+
 def test_glued_only_with_substring():
     assert (
         find_occurrences(
