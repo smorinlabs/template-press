@@ -31,9 +31,12 @@ RENAME_FIELDS: tuple[str, ...] = (
     "app_name_upper",
 )
 
-# A press/ directory is THIS tool's control dir — exempt from rewriting and
-# the no-leak scan — only when it holds one of these files (which legitimately
-# carry SOURCE identity). Any other press/ dir is ordinary target content.
+# Marker files that identify a press/ directory as THIS tool's control dir
+# (one legitimately carries SOURCE identity). These feed ONLY the
+# `stray_press_dirs` warning (via `_control_press_dirs`) — they do NOT drive the
+# rewrite/scan exemption. The exact-artifact exemption is `ROOT_CONTROL` below
+# (Decision D3): only the literal root-level control files are exempt from
+# iteration, never a whole press/ subtree keyed on these markers.
 CONTROL_MARKERS: tuple[str, ...] = (
     "press-source.toml",
     "press-rules.toml",
