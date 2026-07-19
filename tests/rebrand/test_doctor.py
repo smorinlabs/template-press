@@ -142,6 +142,31 @@ def test_symlink_to_file_leak_not_double_reported(src_target: Path):
     assert len(symlink_hits) == 1
 
 
+@requires_symlink
+def test_dangling_symlink_name_embedding_identity_is_path_leak(src_target: Path):
+    """F-e: doctor Pass 2 must scan a dir/dangling symlink's own NAME, not just
+    its readlink target. A dangling symlink whose NAME carries a source token
+    escapes the main loop (`iter_target_files` drops non-`is_file()` paths), so
+    Pass 2 must scan `rel.parts` the way Pass 1 does. The link TARGET here is
+    token-free, so only a name scan can flag it."""
+    apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+    link = src_target / "demo_widget_link"  # NAME carries package_name
+    os.symlink("nonexistent/clean_target", link)  # dangling; target has no token
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+    assert any(
+        e.path == "demo_widget_link"
+        and e.field == "package_name"
+        and e.value == "demo_widget"
+        and e.where == "path"
+        for e in leaks
+    )
+
+
 def test_unreadable_file_fails_verification(src_target: Path):
     import os
 

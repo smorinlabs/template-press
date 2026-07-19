@@ -109,6 +109,18 @@ def find_leaks(
         path = target / rel
         if not path.is_symlink():
             continue
+        # The NAME of a dir/dangling symlink is never scanned by the main loop
+        # (iter_target_files drops non-is_file paths), so scan its path
+        # components here exactly as Pass 1 does — a source token in the link's
+        # OWN name would otherwise slip the gate. (symlink-to-file names are
+        # already covered above via covered_symlinks.)
+        for i, component in enumerate(rel.parts):
+            if _is_root_press(rel, i):
+                continue
+            for field_name in PATH_FIELDS:
+                value = fields.get(field_name)
+                if value is not None and token_occurs(component, field_name, value):
+                    leaks.append(Leak(rel_posix, field_name, value, "path"))
         try:
             link = os.readlink(path)
         except OSError:
