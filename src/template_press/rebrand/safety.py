@@ -42,7 +42,7 @@ import os
 import shutil
 import stat
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
@@ -469,6 +469,22 @@ def refuse_unsafe_root(root: Path, *, target: Path | None = None) -> None:
             )
 
 
+def _on_rmtree_error(
+    func: Callable[..., object], path: str, exc: BaseException
+) -> None:
+    """``shutil.rmtree`` ``onexc`` handler: clear the read-only bit and retry.
+
+    Git marks loose objects under ``.git/objects`` read-only; on Windows
+    ``shutil.rmtree`` cannot unlink a read-only file (WinError 5 /
+    ``PermissionError``) and would otherwise raise out of the sandbox teardown.
+    Clearing the write bit and re-running the failing op (``func``) removes it.
+    Reached ONLY for entries WITHIN the already-guarded owned tree as rmtree
+    walks it, so the owned-path guard in ``_owned_rmtree`` is unaffected.
+    """
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
 def _owned_rmtree(root: Path) -> None:
     """Remove ``root`` only if it is our owned ``press-verify-*`` temp child."""
     if not root.exists():
@@ -476,7 +492,7 @@ def _owned_rmtree(root: Path) -> None:
     root_r = root.resolve()
     tmp_r = Path(tempfile.gettempdir()).resolve()
     if root.name.startswith("press-verify-") and _is_within(root_r, tmp_r):
-        shutil.rmtree(root)
+        shutil.rmtree(root, onexc=_on_rmtree_error)
     else:  # pragma: no cover - defensive
         raise SafetyError(f"refusing to rmtree non-owned path: {root}")
 

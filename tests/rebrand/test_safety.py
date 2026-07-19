@@ -9,6 +9,8 @@ outside the intended root, in production OR in tests. Every decoy lives under
 from __future__ import annotations
 
 import os
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -389,6 +391,77 @@ def test_owned_sandbox_creates_0700_child_and_cleans_only_that(tmp_path: Path) -
         (sb / "scratch").write_text("x", encoding="utf-8")
     assert saved is not None and not saved.exists()  # owned child removed
     assert keep.read_text(encoding="utf-8") == "keep"  # nothing else touched
+
+
+def test_on_rmtree_error_clears_readonly_bit_and_retries(tmp_path: Path) -> None:
+    # Direct unit test of the onexc handler: a read-only file (as git marks its
+    # loose objects) whose failing op is retried after the write bit is cleared.
+    from template_press.rebrand.safety import _on_rmtree_error
+
+    obj = tmp_path / "loose_object"
+    obj.write_text("x", encoding="utf-8")
+    os.chmod(obj, 0o444)  # read-only, exactly like a .git/objects/** entry
+    _on_rmtree_error(os.unlink, os.fspath(obj), PermissionError())
+    assert not obj.exists()  # handler chmodded +w and re-ran os.unlink
+
+
+def test_owned_sandbox_teardown_removes_readonly_git_object(tmp_path: Path) -> None:
+    # Production teardown path: a git loose object is read-only; on Windows
+    # shutil.rmtree cannot unlink a read-only file (WinError 5), so the sandbox
+    # cleanup raised and verify_command mapped it to exit 2. The wired onexc
+    # handler must let the owned teardown remove the whole tree with no error.
+    saved: Path | None = None
+    with owned_sandbox() as sb:
+        saved = sb
+        objs = sb / "self" / ".git" / "objects" / "05"
+        objs.mkdir(parents=True)
+        obj = objs / "cafebabe"
+        obj.write_text("loose object", encoding="utf-8")
+        os.chmod(obj, 0o444)
+    assert saved is not None and not saved.exists()
+
+
+def test_owned_rmtree_recovers_readonly_file_that_blocks_plain_rmtree(
+    monkeypatch,
+) -> None:
+    # Portable emulation of the Windows read-only-file case: make os.unlink
+    # refuse a file whose write bit is clear (as WinError 5 does). Plain
+    # shutil.rmtree then RAISES; _owned_rmtree (onexc-wired) must recover.
+    from template_press.rebrand.safety import _owned_rmtree
+
+    real_unlink = os.unlink
+
+    def readonly_refusing_unlink(target, *args, dir_fd=None, **kwargs):
+        if not (os.lstat(target, dir_fd=dir_fd).st_mode & stat.S_IWRITE):
+            raise PermissionError(5, "Access is denied", os.fspath(target))
+        return real_unlink(target, *args, dir_fd=dir_fd, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", readonly_refusing_unlink)
+
+    def _make_owned_tree() -> Path:
+        root = Path(tempfile.mkdtemp(prefix="press-verify-"))
+        objs = root / "self" / ".git" / "objects" / "05"
+        objs.mkdir(parents=True)
+        obj = objs / "deadbeef"
+        obj.write_text("loose object", encoding="utf-8")
+        os.chmod(obj, 0o444)
+        return root
+
+    # Without the handler, the emulated read-only unlink makes rmtree raise —
+    # the exact Windows failure the fix exists to clear.
+    baseline = _make_owned_tree()
+    baseline_obj = baseline / "self" / ".git" / "objects" / "05" / "deadbeef"
+    try:
+        with pytest.raises(PermissionError):
+            shutil.rmtree(baseline)
+    finally:
+        os.chmod(baseline_obj, 0o644)
+        shutil.rmtree(baseline, ignore_errors=True)
+
+    # With the handler wired in, the owned teardown removes the whole tree.
+    owned = _make_owned_tree()
+    _owned_rmtree(owned)
+    assert not owned.exists()
 
 
 def test_refuse_unsafe_root_rejects_dangerous_roots(tmp_path: Path) -> None:
