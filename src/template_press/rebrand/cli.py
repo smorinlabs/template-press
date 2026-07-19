@@ -36,6 +36,7 @@ from template_press.rebrand.safety import (
     SafetyError,
     git_hardening_args,
     scrubbed_git_env,
+    scrubbed_uv_env,
     write_control,
 )
 
@@ -261,6 +262,7 @@ def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> li
                 cwd=target,
                 capture_output=True,
                 text=True,
+                env=scrubbed_uv_env(),  # G5: no UV_* override can steer the write
             )
             if result.returncode == 0:
                 report.regenerated.append(lockfile)

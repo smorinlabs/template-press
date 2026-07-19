@@ -314,6 +314,48 @@ def test_regen_refuses_symlinked_lockfile_no_external_write(
     assert external.stat().st_ino == external_inode
 
 
+def test_uv_lock_regen_uses_scrubbed_uv_env(tmp_path: Path, monkeypatch) -> None:
+    """G5: `uv lock` regeneration must run with a SCRUBBED UV_* environment.
+
+    A poisoned ``UV_*`` override (cache/index/working-dir) could steer the one
+    external-tool write the press performs off the target. `_regenerate_lockfiles`
+    must pass ``env=scrubbed_uv_env()`` — an explicit env carrying no ``UV_*``.
+    """
+    import subprocess as sp
+
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.engine import ApplyReport
+    from template_press.rebrand.rules import DEFAULT_RULES
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "uv.lock").write_text("demo_widget==0.1.0\n", encoding="utf-8")
+
+    monkeypatch.setenv("UV_CACHE_DIR", "/tmp/evil-cache")  # noqa: S108
+    monkeypatch.setenv("UV_INDEX_URL", "https://evil.example/simple")
+
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:2] == ["uv", "lock"]:
+            captured["env"] = kwargs.get("env")
+            return sp.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+
+    report = ApplyReport()
+    failed = cli_mod._regenerate_lockfiles(target, DEFAULT_RULES, report)
+
+    assert failed == []
+    assert report.regenerated == ["uv.lock"]
+    env = captured["env"]
+    # An explicit env was passed (not the ambient environment) ...
+    assert env is not None
+    # ... and it carries NO UV_* overrides (the poison was scrubbed).
+    assert not any(k.startswith("UV_") for k in env)
+
+
 def test_dry_run_with_accept_discovery_writes_nothing(
     src_target: Path, tmp_path: Path, capsys
 ):
