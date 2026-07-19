@@ -98,9 +98,9 @@ Customize the scan scope by adding a `[verify]` table to the target's
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `extra_fields` | string array | `[]` | Additional identity fields to scan. Valid values: `author`, `email`. (Default scans: `app_name`, `package_name`, `repo_name`, `owner`.) |
+| `extra_fields` | string array | `[]` | Additional identity fields to scan. Accepts any identity field name; fields beyond the default scan are `author`, `email`, `app_name_upper`. (Default scans: `app_name`, `package_name`, `repo_name`, `owner`.) |
 | `substring_fields` | string array | `[]` | Fields to scan using substring matching instead of boundary-safe matching. Must be a subset of the scanned fields. |
-| `equal_fields` | `"warn"` or `"error"` | `"warn"` | Whether two equal source-identity fields trigger a failure. With `"error"`, the press fails if any two field values are identical. |
+| `equal_fields` | `"warn"` or `"error"` | `"warn"` | Whether two equal source-identity fields trigger a failure. With `"error"`, `press verify` fails (exit 1) if any two field values are identical. |
 | `[[verify.ignore]]` | table array | `[]` | Source-anchored ignores — surviving findings to suppress (see below). |
 
 ### Ignore set: `[[verify.ignore]]`
