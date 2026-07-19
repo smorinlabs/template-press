@@ -16,6 +16,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from template_press.rebrand import engine
 from template_press.rebrand.engine import (
     ROOT_CONTROL,
     PathEntry,
@@ -207,6 +208,54 @@ def test_copy_paths_tags_symlink_kind(src_target: Path):
 def test_copy_paths_tags_ordinary_file_kind(src_target: Path):
     kinds = _kinds(copy_paths(src_target))
     assert kinds.get("README.md") == "file"
+
+
+class _FakeCompleted:
+    def __init__(self, stdout: bytes | str):
+        self.stdout = stdout
+        self.returncode = 0
+
+
+def _byte_faithful_run(raw: bytes):
+    """A ``subprocess.run`` stand-in faithful to real byte/text semantics: in
+    text/encoding mode it decodes STRICT and raises ``UnicodeDecodeError`` on
+    an invalid byte (the old bug); in byte mode it returns the raw bytes."""
+
+    def fake_run(cmd, *args, **kwargs):
+        if kwargs.get("encoding") or kwargs.get("text"):
+            return _FakeCompleted(raw.decode(kwargs.get("encoding") or "utf-8"))
+        return _FakeCompleted(raw)
+
+    return fake_run
+
+
+def test_git_listed_decodes_non_utf8_path_bytes_surrogateescape(monkeypatch, tmp_path):
+    """F-d: git emits raw path BYTES; a tracked filename with a non-UTF-8 byte
+    must decode via surrogateescape instead of crashing enumeration with
+    ``UnicodeDecodeError``. macOS/APFS refuses to CREATE such a name, so the raw
+    git output is simulated at the subprocess boundary to exercise the decode.
+    """
+    raw = b"src/demo_widget/bad\xffname.txt\x00README.md\x00"
+    monkeypatch.setattr(engine.subprocess, "run", _byte_faithful_run(raw))
+    rels = engine._git_listed(tmp_path)  # must not raise
+    names = {p.as_posix() for p in rels}
+    assert "README.md" in names
+    assert any(p.name.startswith("bad") and p.name.endswith("name.txt") for p in rels)
+
+
+def test_gitlink_rels_decodes_non_utf8_path_bytes_surrogateescape(
+    monkeypatch, tmp_path
+):
+    """F-d: the staged-list (``ls-files --stage``) call must likewise decode raw
+    path bytes with surrogateescape so a gitlink whose path carries a non-UTF-8
+    byte does not crash enumeration."""
+    raw = (
+        b"160000 " + b"0" * 40 + b" 0\tbad\xffsub\x00"
+        b"100644 " + b"1" * 40 + b" 0\tREADME.md\x00"
+    )
+    monkeypatch.setattr(engine.subprocess, "run", _byte_faithful_run(raw))
+    rels = engine._gitlink_rels(tmp_path)  # must not raise
+    assert any(r.startswith("bad") and r.endswith("sub") for r in rels)
 
 
 def test_rewrite_paths_matches_iter_target_files(src_target: Path):

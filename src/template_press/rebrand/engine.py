@@ -123,12 +123,15 @@ def _git_listed(target: Path) -> list[Path]:
         ],
         check=True,
         capture_output=True,
-        # git emits UTF-8 path bytes; text=True would decode with the locale
-        # codepage on Windows (cp1252) and mojibake non-ASCII filenames.
-        encoding="utf-8",
+        # Capture raw BYTES (no encoding=): a git path is any byte except NUL,
+        # so a non-UTF-8 filename would raise UnicodeDecodeError under a strict
+        # text decode and crash enumeration. Decode UTF-8 with surrogateescape
+        # so arbitrary bytes round-trip to str (and back, via os.fsencode) —
+        # this also avoids the Windows locale-codepage mojibake text=True gives.
         env=scrubbed_git_env(),
     )
-    return [Path(line) for line in result.stdout.split("\0") if line]
+    stdout = result.stdout.decode("utf-8", "surrogateescape")
+    return [Path(line) for line in stdout.split("\0") if line]
 
 
 def _press_dirs(files: list[Path]) -> set[str]:
@@ -216,11 +219,13 @@ def _gitlink_rels(target: Path) -> frozenset[str]:
         ],
         check=True,
         capture_output=True,
-        encoding="utf-8",
+        # Raw bytes + surrogateescape decode (see _git_listed): a gitlink whose
+        # path carries a non-UTF-8 byte must not crash enumeration.
         env=scrubbed_git_env(),
     )
+    stdout = result.stdout.decode("utf-8", "surrogateescape")
     rels: set[str] = set()
-    for entry in result.stdout.split("\0"):
+    for entry in stdout.split("\0"):
         if not entry:
             continue
         meta, _, rel = entry.partition("\t")
