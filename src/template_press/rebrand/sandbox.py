@@ -148,7 +148,11 @@ def make_sandbox(target: Path, dest_root: Path) -> Sandbox:
         "-f",
         "--pathspec-from-file=-",
         "--pathspec-file-nul",
-        stdin="\0".join(added).encode("utf-8"),
+        # ``surrogateescape`` mirrors how ``copy_paths`` decoded the git path
+        # bytes: a non-UTF-8 tracked filename round-trips back to its original
+        # bytes here instead of raising ``UnicodeEncodeError`` (a crash that
+        # would escape the exit-code taxonomy).
+        stdin="\0".join(added).encode("utf-8", "surrogateescape"),
     )
     _run_git(
         sandbox,

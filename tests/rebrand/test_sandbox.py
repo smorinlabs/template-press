@@ -156,6 +156,50 @@ def test_control_path_symlink_rejected_writes_nothing(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# G3 (crash): a tracked path carrying a non-UTF-8 byte (surfaced by copy_paths
+# via surrogateescape) must round-trip through make_sandbox's NUL pathspec
+# stdin without raising UnicodeEncodeError. A non-UTF-8 filename cannot be
+# created on APFS, so copy_paths + the contained writes are stubbed and the git
+# ops captured; the assertion is that the add-list stdin encodes with
+# surrogateescape and decodes back to the ORIGINAL bytes.
+# ---------------------------------------------------------------------------
+def test_non_utf8_pathspec_encodes_without_crashing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import template_press.rebrand.sandbox as sandbox_mod
+    from template_press.rebrand.engine import PathEntry
+
+    target = make_target(tmp_path)
+    dest_root = _dest_root(tmp_path)
+
+    bad_bytes = b"vendored/asset\xe9"
+    bad_rel = Path(bad_bytes.decode("utf-8", "surrogateescape"))
+
+    # A gitlink entry appends its rel to the add-list WITHOUT reading the
+    # (non-creatable) source path; the writes are stubbed so nothing touches disk.
+    monkeypatch.setattr(
+        sandbox_mod, "copy_paths", lambda _t: [PathEntry(rel=bad_rel, kind="gitlink")]
+    )
+    monkeypatch.setattr(sandbox_mod, "safe_mkdir", lambda root, rel: Path(root) / rel)
+    monkeypatch.setattr(sandbox_mod, "safe_write", lambda root, rel, data: None)
+
+    captured: dict[str, bytes | None] = {}
+
+    def fake_run_git(sandbox, env, *args, stdin=None):
+        if args and args[0] == "add":
+            captured["stdin"] = stdin
+
+    monkeypatch.setattr(sandbox_mod, "_run_git", fake_run_git)
+
+    # Before the fix this raises UnicodeEncodeError on the surrogate byte.
+    result = make_sandbox(target, dest_root)
+
+    assert captured.get("stdin") is not None
+    assert bad_bytes in captured["stdin"]  # round-tripped to the original bytes
+    assert bad_rel.as_posix() in result.unavailable_submodules
+
+
+# ---------------------------------------------------------------------------
 # exactly one commit, synthetic identity, real target untouched
 # ---------------------------------------------------------------------------
 def test_commit_synthetic_identity_and_target_untouched(
