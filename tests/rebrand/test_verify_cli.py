@@ -202,6 +202,49 @@ def test_declared_app_absent_exits_2(tmp_path: Path) -> None:
     assert verify_command(["--target", str(repo)]) == 2
 
 
+def test_author_email_only_in_source_config_still_verifies(tmp_path: Path) -> None:
+    # G1 (false reject): author/email appear ONLY in press-source.toml —
+    # undiscoverable from pyproject (no authors table) AND absent from scannable
+    # content. They are NOT in the default verify scan set
+    # (app_name/package_name/repo_name/owner), so preflight must NOT exit 2 for
+    # their absence; the fields it WILL scan are all present -> verify proceeds.
+    repo = make_pressable(tmp_path)
+    pyproject = (repo / "pyproject.toml").read_text(encoding="utf-8")
+    (repo / "pyproject.toml").write_text(
+        "\n".join(ln for ln in pyproject.splitlines() if not ln.startswith("authors ="))
+        + "\n",
+        encoding="utf-8",
+    )
+    readme = (repo / "README.md").read_text(encoding="utf-8")
+    (repo / "README.md").write_text(
+        "\n".join(ln for ln in readme.splitlines() if "Maintained by" not in ln) + "\n",
+        encoding="utf-8",
+    )
+    _commit(repo)
+    # Sanity: author/email are genuinely undiscoverable AND absent from content.
+    assert "Demo Author" not in (repo / "pyproject.toml").read_text(encoding="utf-8")
+    assert "Demo Author" not in (repo / "README.md").read_text(encoding="utf-8")
+    # Before the fix: preflight required presence of EVERY REQUIRED_FIELD (incl.
+    # author/email) -> exit 2. After: only the SCANNED set is required present.
+    assert verify_command(["--target", str(repo)]) == 0
+
+
+def test_missing_scanned_field_still_exits_2(tmp_path: Path) -> None:
+    # G1 guard: a field verify WILL scan (app_name, default scope) that is
+    # undiscoverable AND absent from the target must still -> 2 (the fix must not
+    # weaken the unverifiable classification for genuinely-absent SCANNED fields).
+    repo = make_pressable(tmp_path)
+    pyproject = (repo / "pyproject.toml").read_text(encoding="utf-8")
+    (repo / "pyproject.toml").write_text(
+        pyproject.split("[project.scripts]")[0], encoding="utf-8"
+    )
+    (repo / "press" / "press-source.toml").write_text(
+        _render_source({**DEFAULT_IDENTITY, "app_name": "ghost"}), encoding="utf-8"
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 2
+
+
 @requires_symlink
 def test_control_path_symlink_rejected_exits_2(tmp_path: Path) -> None:
     repo = make_pressable(tmp_path)

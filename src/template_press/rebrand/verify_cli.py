@@ -40,13 +40,13 @@ import os
 import subprocess  # nosec B404 — re-stages the OWNED sandbox git index only
 import sys
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from template_press.rebrand.config import SOURCE_CONFIG_REL, load_source_config
 from template_press.rebrand.discovery import Discovered, discover, mismatches
 from template_press.rebrand.engine import apply, scan_paths
-from template_press.rebrand.identity import REQUIRED_FIELDS, Identity, ValidationError
+from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_map
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.rules import RULES_REL, Rules, load_rules
@@ -142,20 +142,34 @@ def _value_present(field: str, value: str, corpus: list[str]) -> bool:
     return any(find_occurrences(text, field, value, substring=False) for text in corpus)
 
 
-def _preflight(target: Path, source: Identity, rules: Rules) -> list[str]:
-    """Consistency + presence check against the REAL target; problems -> 2."""
+def _preflight(
+    target: Path, source: Identity, rules: Rules, scan_fields: Sequence[str]
+) -> list[str]:
+    """Consistency + presence check against the REAL target; problems -> 2.
+
+    Presence is required only for the fields ``verify`` will actually scan
+    (``scan_fields``, the effective ``[verify]`` scope) — requiring presence for
+    a field verify won't scan (e.g. ``author``/``email`` under the default
+    scope) falsely rejects a target whose identity is consistent for everything
+    that IS scanned. Only discovery-confirmed fields are exempt; the
+    wholly-undiscoverable-AND-absent ``unverifiable`` verdict is scoped to the
+    scanned set. ``mismatches`` (the consistency check) is unchanged — a
+    discoverable field that DISAGREES with the config still fails regardless of
+    scope.
+    """
     found = discover(target)
     problems = list(mismatches(source, found))
     discovered = _discovered_map(found)
     declared = source.as_dict()
-    undiscoverable = [f for f in REQUIRED_FIELDS if discovered[f] is None]
+    # Only scanned fields that discovery can confirm (skip derived forms like
+    # ``app_name_upper`` that are not independently discoverable).
+    scanned = [f for f in scan_fields if f in discovered]
+    undiscoverable = [f for f in scanned if discovered[f] is None]
     if not undiscoverable:
         return problems
     corpus = _target_text_corpus(target, rules)
     absent = [f for f in undiscoverable if not _value_present(f, declared[f], corpus)]
-    if len(undiscoverable) == len(REQUIRED_FIELDS) and len(absent) == len(
-        undiscoverable
-    ):
+    if len(undiscoverable) == len(scanned) and len(absent) == len(undiscoverable):
         problems.append(
             "unverifiable: the declared identity is WHOLLY undiscoverable and "
             "absent from the target — refusing to pass on historical prose"
@@ -299,7 +313,7 @@ def verify_command(argv: list[str] | None = None) -> int:
     try:
         rules = load_rules(target)
         cfg = _load_verify_config(target)
-        problems = _preflight(target, source, rules)
+        problems = _preflight(target, source, rules, cfg.fields)
     except _CONFIG_ERRORS as exc:
         return _fail(f"preflight failed: {exc}")
     if problems:
