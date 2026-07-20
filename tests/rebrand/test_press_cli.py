@@ -43,3 +43,17 @@ def test_version_flag(capsys):
     assert main(["--version"]) == 0
     out = capsys.readouterr().out.strip()
     assert out == f"press {__version__}"
+
+
+def test_verify_help_exits_0(capsys):
+    # argparse --help raises SystemExit(0) instead of returning 0
+    with pytest.raises(SystemExit) as exc:
+        main(["verify", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "verify" in out or "hermetic" in out
+
+
+def test_unknown_verb_bogus_exits_2(capsys):
+    assert main(["bogus"]) == 2
+    assert "unknown" in capsys.readouterr().err.lower()

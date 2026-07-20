@@ -1,5 +1,9 @@
+import os
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 from template_press.rebrand.cli import main
 from template_press.rebrand.config import (
@@ -9,7 +13,7 @@ from template_press.rebrand.config import (
 )
 from template_press.rebrand.receipt import RECEIPT_REL
 
-from .conftest import DEST, SOURCE, write_answers_file
+from .conftest import DEST, SOURCE, requires_symlink, write_answers_file
 
 
 def write_source_config(target: Path) -> None:
@@ -209,19 +213,34 @@ def test_identical_identity_press_exits_2(src_target: Path, tmp_path: Path):
     assert code == 2
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="read-only-dir fault injection is POSIX-only (Windows ignores POSIX "
+    "dir perms); the mid-apply OSError->exit-1 path is covered portably by "
+    "test_press_outcome_env_error_on_apply_ioerror",
+)
 def test_mid_apply_oserror_exits_1_with_partial_warning(
     src_target: Path, tmp_path: Path, capsys
 ):
     write_source_config(src_target)
-    # Sorts after README.md etc., so earlier files are rewritten first.
-    readonly = src_target / "zz_readonly.md"
+    # A token-bearing file in a read-only DIRECTORY. safe_write is atomic
+    # (temp file in the parent dir + os.replace), so a read-only *leaf file* is
+    # no longer a fault surface — os.replace swaps the dir entry regardless of
+    # the file's own mode. A non-writable *parent* makes safe_write's temp
+    # creation raise PermissionError (OSError) mid-apply. The dir sorts last
+    # (zz_), so earlier files are rewritten first — proving the partial path.
+    rodir = src_target / "zz_readonly"
+    rodir.mkdir()
+    readonly = rodir / "note.md"
     readonly.write_text("demo_widget survives here\n", encoding="utf-8")
-    readonly.chmod(0o444)
+    rodir.chmod(0o555)
     answers = write_answers(tmp_path)
-    code = main(
-        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
-    )
-    readonly.chmod(0o644)  # let pytest clean the tmp dir
+    try:
+        code = main(
+            ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+        )
+    finally:
+        rodir.chmod(0o755)  # let pytest clean the tmp dir
     assert code == 1
     assert "PARTIALLY rewritten" in capsys.readouterr().err
     assert not (src_target / RECEIPT_REL).exists()
@@ -252,6 +271,99 @@ def test_failed_lock_regeneration_exits_1_no_receipt(
     assert code == 1
     assert "lockfile regeneration failed" in capsys.readouterr().err
     assert not (src_target / RECEIPT_REL).exists()
+
+
+@requires_symlink
+def test_regen_refuses_symlinked_lockfile_no_external_write(
+    tmp_path: Path, monkeypatch
+):
+    """M1: a symlinked uv.lock must be refused, never written through.
+
+    `uv.lock` -> external file under tmp_path. `_regenerate_lockfiles` must
+    reject it on the leaf is_symlink() check BEFORE ever invoking `uv lock`,
+    so the external file is never touched.
+    """
+    import subprocess as sp
+
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.engine import ApplyReport
+    from template_press.rebrand.rules import DEFAULT_RULES
+
+    target = tmp_path / "target"
+    target.mkdir()
+    external = tmp_path / "external.lock"
+    external_content = "external-untouched==1.0.0\n"
+    external.write_text(external_content, encoding="utf-8")
+    external_inode = external.stat().st_ino
+
+    (target / "uv.lock").symlink_to(external)
+
+    uv_lock_calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:2] == ["uv", "lock"]:
+            uv_lock_calls.append(cmd)
+            # Simulates what a real `uv lock` does: write the relative
+            # lockfile path in cwd. If the symlink guard is bypassed, this
+            # follows the symlink and mutates the external file.
+            (Path(kwargs["cwd"]) / "uv.lock").write_text(
+                "mutated-by-uv-lock\n", encoding="utf-8"
+            )
+            return sp.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+
+    report = ApplyReport()
+    failed = cli_mod._regenerate_lockfiles(target, DEFAULT_RULES, report)
+
+    assert uv_lock_calls == []  # uv lock must never run against a symlink
+    assert failed == ["uv.lock"]
+    assert any("symlink" in s for s in report.skipped)
+    assert external.read_text(encoding="utf-8") == external_content
+    assert external.stat().st_ino == external_inode
+
+
+def test_uv_lock_regen_uses_scrubbed_uv_env(tmp_path: Path, monkeypatch) -> None:
+    """G5: `uv lock` regeneration must run with a SCRUBBED UV_* environment.
+
+    A poisoned ``UV_*`` override (cache/index/working-dir) could steer the one
+    external-tool write the press performs off the target. `_regenerate_lockfiles`
+    must pass ``env=scrubbed_uv_env()`` — an explicit env carrying no ``UV_*``.
+    """
+    import subprocess as sp
+
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.engine import ApplyReport
+    from template_press.rebrand.rules import DEFAULT_RULES
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "uv.lock").write_text("demo_widget==0.1.0\n", encoding="utf-8")
+
+    monkeypatch.setenv("UV_CACHE_DIR", "/tmp/evil-cache")  # noqa: S108
+    monkeypatch.setenv("UV_INDEX_URL", "https://evil.example/simple")
+
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:2] == ["uv", "lock"]:
+            captured["env"] = kwargs.get("env")
+            return sp.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+
+    report = ApplyReport()
+    failed = cli_mod._regenerate_lockfiles(target, DEFAULT_RULES, report)
+
+    assert failed == []
+    assert report.regenerated == ["uv.lock"]
+    env = captured["env"]
+    # An explicit env was passed (not the ambient environment) ...
+    assert env is not None
+    # ... and it carries NO UV_* overrides (the poison was scrubbed).
+    assert not any(k.startswith("UV_") for k in env)
 
 
 def test_dry_run_with_accept_discovery_writes_nothing(
@@ -410,6 +522,23 @@ def test_accept_discovery_mismatch_leaves_no_source_config(tmp_path: Path):
     assert not (repo / SOURCE_CONFIG_REL).exists()
 
 
+@requires_symlink
+def test_rebrand_symlinked_control_dir_exits_2_no_write(
+    src_target: Path, tmp_path: Path
+):
+    """D8: a symlinked press/ control dir is a hard exit-2 precondition error;
+    nothing is written through the link (the external decoy stays empty)."""
+    decoy = tmp_path / "outside" / "decoy"
+    decoy.mkdir(parents=True)
+    os.symlink(decoy, src_target / "press", target_is_directory=True)
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 2
+    assert list(decoy.iterdir()) == []  # nothing written through the symlink
+
+
 def test_accept_discovery_bad_rules_toml_leaves_no_source_config(
     src_target: Path, tmp_path: Path
 ):
@@ -432,3 +561,128 @@ def test_accept_discovery_bad_rules_toml_leaves_no_source_config(
     )
     assert code == 2
     assert not (src_target / SOURCE_CONFIG_REL).exists()
+
+
+def test_press_outcome_env_error_on_regen_failure(tmp_path: Path, monkeypatch):
+    """B5/C-7/C-11: nonzero regen surfaces as PressOutcome.env_error, not a leak."""
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.rules import load_rules
+
+    from .conftest import make_target
+
+    monkeypatch.setattr(cli_mod, "_regenerate_lockfiles", lambda *a, **k: ["uv.lock"])
+
+    direct_target = make_target(tmp_path / "direct", layout="src")
+    write_source_config(direct_target)
+    rules = load_rules(direct_target)
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules)
+    assert outcome.env_error is not None
+    assert outcome.leaked is False
+
+    main_target = make_target(tmp_path / "main", layout="src")
+    write_source_config(main_target)
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(main_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 1
+
+
+def test_press_outcome_env_error_on_missing_tool(tmp_path: Path, monkeypatch):
+    """A missing regen tool (FileNotFoundError) normalizes into env_error."""
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.rules import load_rules
+
+    from .conftest import make_target
+
+    def boom(*_args, **_kwargs):
+        raise FileNotFoundError("uv: command not found")
+
+    monkeypatch.setattr(cli_mod, "_regenerate_lockfiles", boom)
+
+    target = make_target(tmp_path / "direct", layout="src")
+    write_source_config(target)
+    rules = load_rules(target)
+    outcome = cli_mod._press(target, SOURCE, DEST, rules)
+    assert outcome.env_error is not None
+
+
+def test_press_outcome_env_error_on_apply_ioerror(tmp_path: Path, monkeypatch):
+    """A mid-apply OSError means `report` never comes into existence."""
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.rules import load_rules
+
+    from .conftest import make_target
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli_mod, "apply", boom)
+
+    direct_target = make_target(tmp_path / "direct", layout="src")
+    write_source_config(direct_target)
+    rules = load_rules(direct_target)
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules)
+    assert outcome.env_error is not None
+    assert outcome.renamed == []
+
+    main_target = make_target(tmp_path / "main", layout="src")
+    write_source_config(main_target)
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(main_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 1
+
+
+def test_press_outcome_env_error_on_receipt_write_failure(tmp_path: Path, monkeypatch):
+    """A post-verification receipt-write failure is still an env failure."""
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.rules import load_rules
+
+    from .conftest import make_target
+
+    def boom(*_args, **_kwargs):
+        raise OSError("cannot write receipt")
+
+    monkeypatch.setattr(cli_mod, "write_receipt", boom)
+
+    direct_target = make_target(tmp_path / "direct", layout="src")
+    write_source_config(direct_target)
+    rules = load_rules(direct_target)
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules)
+    assert outcome.env_error is not None
+
+    main_target = make_target(tmp_path / "main", layout="src")
+    write_source_config(main_target)
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(main_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 1
+
+
+def test_press_outcome_success_no_env_error(tmp_path: Path):
+    """A clean press yields a PressOutcome with no env_error and no leak."""
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.rules import load_rules
+
+    from .conftest import make_target
+
+    direct_target = make_target(tmp_path / "direct", layout="src")
+    write_source_config(direct_target)
+    rules = load_rules(direct_target)
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules)
+    assert isinstance(outcome, cli_mod.PressOutcome)
+    assert outcome.env_error is None
+    assert outcome.leaked is False
+    assert outcome.renamed  # package dir renamed demo_widget -> potato_launcher
+    assert outcome.regenerated == []  # no uv.lock in the fixture
+
+    main_target = make_target(tmp_path / "main", layout="src")
+    write_source_config(main_target)
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(main_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 0

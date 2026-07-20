@@ -37,6 +37,12 @@ def _add_stray_press(target: Path, leftover: str = "demolabs") -> None:
     )
 
 
+def _add_root_press_notes(target: Path) -> None:
+    d = target / "press"
+    d.mkdir(exist_ok=True)
+    (d / "notes.md").write_text("press build notes\n", encoding="utf-8")
+
+
 def test_control_press_dir_excluded_from_iteration(src_target: Path):
     _add_control_press(src_target)
     assert "press/press-source.toml" not in _rel(
@@ -84,3 +90,12 @@ def test_full_press_rewrites_stray_press_no_false_verified(src_target: Path):
     assert renamed.is_file()
     body = renamed.read_text(encoding="utf-8")
     assert "potatolabs" in body and "demolabs" not in body
+
+
+def test_doctor_no_path_leak_on_root_press(src_target: Path):
+    _add_root_press_notes(src_target)
+    apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+    leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES, dest=DEST)
+    assert not any(
+        leak.where == "path" and leak.path.startswith("press/") for leak in leaks
+    )

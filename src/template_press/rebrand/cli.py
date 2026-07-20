@@ -12,6 +12,7 @@ import argparse
 import subprocess  # nosec B404 — invokes git/uv on user-supplied targets
 import sys
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 from template_press.rebrand.config import (
@@ -31,6 +32,13 @@ from template_press.rebrand.engine import (
 from template_press.rebrand.identity import Identity, ValidationError, token_occurs
 from template_press.rebrand.receipt import read_receipt, write_receipt
 from template_press.rebrand.rules import DEFAULT_RULES, Rules, load_rules
+from template_press.rebrand.safety import (
+    SafetyError,
+    git_hardening_args,
+    scrubbed_git_env,
+    scrubbed_uv_env,
+    write_control,
+)
 
 
 def _fail(msg: str) -> int:
@@ -50,11 +58,24 @@ def check_preconditions(target: Path, force: bool, allow_dirty: bool) -> str | N
             "re-press with --force"
         )
     if not allow_dirty:
+        # A working-tree read on an untrusted target: hardening args
+        # neutralize fsmonitor/hooksPath/ext-transport, but a repo-local
+        # clean/smudge FILTER definition is a documented residual
+        # (git_hardening_args' docstring) that `-c` cannot disable by name —
+        # accepted here, not solved.
         status = subprocess.run(  # noqa: S603 # nosec B603 B607
-            ["git", "-C", str(target), "status", "--porcelain"],  # noqa: S607
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(target),
+                *git_hardening_args(),
+                "status",
+                "--porcelain",
+            ],
             check=True,
             capture_output=True,
             text=True,
+            env=scrubbed_git_env(),
         )
         if status.stdout.strip():
             return "target working tree is dirty; commit/stash or --allow-dirty"
@@ -203,27 +224,18 @@ def main(argv: list[str] | None = None) -> int:
         # behind us, so the deferred source-config write can no longer be
         # followed by a "no writes" exit code.
         if write_pending:
-            path = target / SOURCE_CONFIG_REL
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(render_source_config(source), encoding="utf-8")
+            write_control(target, SOURCE_CONFIG_REL, render_source_config(source))
             print(f"wrote {SOURCE_CONFIG_REL} from discovery")
     except (
         ValidationError,
         tomllib.TOMLDecodeError,
         OSError,
         subprocess.CalledProcessError,
+        SafetyError,
     ) as exc:
         return _fail(str(exc))
-    try:
-        return _press(target, source, dest, rules)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        # Exit 2 means "nothing applied"; a mid-apply failure is not that.
-        print(
-            f"error: {exc} — target may be PARTIALLY rewritten; restore with "
-            f"`git -C {target} checkout . && git clean -fd`",
-            file=sys.stderr,
-        )
-        return 1
+    outcome = _press(target, source, dest, rules)
+    return 1 if (outcome.env_error is not None or outcome.leaked) else 0
 
 
 def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> list[str]:
@@ -235,7 +247,14 @@ def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> li
     """
     failed: list[str] = []
     for lockfile in rules.regenerate:
-        if not (target / lockfile).is_file():
+        lockpath = target / lockfile
+        if lockpath.is_symlink():  # lstat-based, no-follow — check first
+            report.skipped.append(
+                f"regenerate {lockfile} (symlink — refusing to write through)"
+            )
+            failed.append(lockfile)
+            continue
+        if not lockpath.is_file():
             continue
         if lockfile == "uv.lock":
             result = subprocess.run(  # nosec B603 B607
@@ -243,6 +262,7 @@ def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> li
                 cwd=target,
                 capture_output=True,
                 text=True,
+                env=scrubbed_uv_env(),  # G5: no UV_* override can steer the write
             )
             if result.returncode == 0:
                 report.regenerated.append(lockfile)
@@ -255,47 +275,90 @@ def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> li
     return failed
 
 
-def _press(target: Path, source: Identity, dest: Identity, rules: Rules) -> int:
-    report = apply(target, source, dest, rules)
-    failed_locks = _regenerate_lockfiles(target, rules, report)
-    if failed_locks:
+@dataclass
+class PressOutcome:
+    """Structurally distinguishes an env/tool failure from a doctor leak.
+
+    `renamed`/`regenerated` carry `ApplyReport` provenance through to callers
+    even on failure (empty when `apply` itself never completed).
+    """
+
+    leaked: bool
+    renamed: list[tuple[str, str]]
+    regenerated: list[str]
+    env_error: str | None
+
+
+def _press(
+    target: Path, source: Identity, dest: Identity, rules: Rules
+) -> PressOutcome:
+    report = None
+    try:
+        report = apply(target, source, dest, rules)
+        failed_locks = _regenerate_lockfiles(target, rules, report)
+        if failed_locks:
+            print(
+                f"error: lockfile regeneration failed for "
+                f"{', '.join(failed_locks)} — the lockfile still carries the old "
+                f"identity and is exempt from the doctor scan, so this rebrand "
+                f"is INCOMPLETE; no receipt written. Regenerate it, then re-run "
+                f"with --force.",
+                file=sys.stderr,
+            )
+            print(report.render(), file=sys.stderr)
+            return PressOutcome(
+                False,
+                report.renamed,
+                report.regenerated,
+                env_error=f"lockfile regeneration failed for {', '.join(failed_locks)}",
+            )
+        # Verification never honors target-side REWRITE exclusions (EMP-01):
+        # neither extra_exclude_files nor extra_exclude_dirs can hide content
+        # from the doctor. The only sanctioned exemption is the explicit,
+        # committed verify_ignore list — the deliberate ignore set.
+        doctor_rules = Rules(
+            exclude_dirs=DEFAULT_RULES.exclude_dirs | rules.verify_ignore,
+            exclude_files=DEFAULT_RULES.exclude_files,
+            regenerate=rules.regenerate,
+            verify_ignore=rules.verify_ignore,
+        )
+        leaks = find_leaks(target, source, doctor_rules, dest=dest)
+        if leaks:
+            print(render_leak_report(leaks), file=sys.stderr)
+            print(report.render(), file=sys.stderr)
+            return PressOutcome(
+                True, report.renamed, report.regenerated, env_error=None
+            )
+        receipt_path = write_receipt(target, source, dest, report)
+        write_control(target, SOURCE_CONFIG_REL, render_source_config(dest))
+        print(report.render())
+        if report.skipped:
+            print("skipped (review):")
+            for entry in report.skipped:
+                print(f"  {entry}")
+        print(f"verified: no identity leftovers. receipt: {receipt_path}")
+        print(f"updated {SOURCE_CONFIG_REL} to the new identity")
+        return PressOutcome(False, report.renamed, report.regenerated, env_error=None)
+    except (
+        FileNotFoundError,
+        OSError,
+        subprocess.CalledProcessError,
+        SafetyError,
+    ) as exc:
+        # Exit 2 (main's pre-_press gate) means "nothing applied"; a
+        # mid-mutation failure here is not that — target may be PARTIALLY
+        # rewritten.
         print(
-            f"error: lockfile regeneration failed for "
-            f"{', '.join(failed_locks)} — the lockfile still carries the old "
-            f"identity and is exempt from the doctor scan, so this rebrand "
-            f"is INCOMPLETE; no receipt written. Regenerate it, then re-run "
-            f"with --force.",
+            f"error: {exc} — target may be PARTIALLY rewritten; restore with "
+            f"`git -C {target} checkout . && git clean -fd`",
             file=sys.stderr,
         )
-        print(report.render(), file=sys.stderr)
-        return 1
-    # Verification never honors target-side REWRITE exclusions (EMP-01):
-    # neither extra_exclude_files nor extra_exclude_dirs can hide content
-    # from the doctor. The only sanctioned exemption is the explicit,
-    # committed verify_ignore list — the deliberate ignore set.
-    doctor_rules = Rules(
-        exclude_dirs=DEFAULT_RULES.exclude_dirs | rules.verify_ignore,
-        exclude_files=DEFAULT_RULES.exclude_files,
-        regenerate=rules.regenerate,
-        verify_ignore=rules.verify_ignore,
-    )
-    leaks = find_leaks(target, source, doctor_rules, dest=dest)
-    if leaks:
-        print(render_leak_report(leaks), file=sys.stderr)
-        print(report.render(), file=sys.stderr)
-        return 1
-    receipt_path = write_receipt(target, source, dest, report)
-    source_config_path = target / SOURCE_CONFIG_REL
-    source_config_path.parent.mkdir(parents=True, exist_ok=True)
-    source_config_path.write_text(render_source_config(dest), encoding="utf-8")
-    print(report.render())
-    if report.skipped:
-        print("skipped (review):")
-        for entry in report.skipped:
-            print(f"  {entry}")
-    print(f"verified: no identity leftovers. receipt: {receipt_path}")
-    print(f"updated {SOURCE_CONFIG_REL} to the new identity")
-    return 0
+        return PressOutcome(
+            False,
+            report.renamed if report else [],
+            report.regenerated if report else [],
+            env_error=str(exc),
+        )
 
 
 if __name__ == "__main__":

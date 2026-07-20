@@ -8,14 +8,24 @@ no receipt. Port of init_doctor.check_no_identity_leftover, generalized to
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from template_press.rebrand.engine import iter_target_files
+from template_press.rebrand.engine import (
+    _git_listed,
+    _is_root_press,
+    iter_target_files,
+)
 from template_press.rebrand.identity import Identity, token_occurs
 from template_press.rebrand.rules import Rules
 
-PATH_FIELDS: tuple[str, ...] = ("package_name", "repo_name", "app_name")
+PATH_FIELDS: tuple[str, ...] = (
+    "package_name",
+    "repo_name",
+    "app_name",
+    "app_name_upper",
+)
 
 
 @dataclass(frozen=True)
@@ -23,7 +33,7 @@ class Leak:
     path: str
     field: str
     value: str
-    where: str  # "content" | "path" | "unverifiable"
+    where: str  # "content" | "path" | "symlink" | "unverifiable"
 
 
 def _read_for_scan(path: Path) -> str | None:
@@ -58,6 +68,7 @@ def find_leaks(
     if dest is not None:
         dest_fields = dest.as_dict()
         fields = {k: v for k, v in fields.items() if v != dest_fields[k]}
+    covered_symlinks: set[str] = set()
     for path in iter_target_files(target, rules):
         rel = path.relative_to(target)
         rel_posix = rel.as_posix()
@@ -70,11 +81,54 @@ def find_leaks(
             for field_name, value in fields.items():
                 if token_occurs(text, field_name, value):
                     leaks.append(Leak(rel_posix, field_name, value, "content"))
-        for component in rel.parts:
+        if path.is_symlink():
+            # A symlink's bytes are its target string, not file content — an
+            # identity token embedded there would dangle/leak in a pressed fork.
+            covered_symlinks.add(rel_posix)
+            link = os.readlink(path)
+            for field_name, value in fields.items():
+                if token_occurs(link, field_name, value):
+                    leaks.append(Leak(rel_posix, field_name, value, "symlink"))
+        for i, component in enumerate(rel.parts):
+            if _is_root_press(rel, i):
+                continue
             for field_name in PATH_FIELDS:
                 value = fields.get(field_name)
                 if value is not None and token_occurs(component, field_name, value):
                     leaks.append(Leak(rel_posix, field_name, value, "path"))
+    # DIRECTORY and DANGLING symlinks never reach the loop above:
+    # `iter_target_files` keeps only `is_file()` paths, and `is_file()` FOLLOWS
+    # the link — so a symlink to a dir (or to nothing) is dropped, and a source
+    # token embedded in its link string would slip the gate. Scan every
+    # git-listed symlink's `readlink` STRING here (never the destination),
+    # deduping the symlink-to-file links the loop already covered.
+    for rel in _git_listed(target):
+        rel_posix = rel.as_posix()
+        if rel_posix in covered_symlinks:
+            continue
+        path = target / rel
+        if not path.is_symlink():
+            continue
+        # The NAME of a dir/dangling symlink is never scanned by the main loop
+        # (iter_target_files drops non-is_file paths), so scan its path
+        # components here exactly as Pass 1 does — a source token in the link's
+        # OWN name would otherwise slip the gate. (symlink-to-file names are
+        # already covered above via covered_symlinks.)
+        for i, component in enumerate(rel.parts):
+            if _is_root_press(rel, i):
+                continue
+            for field_name in PATH_FIELDS:
+                value = fields.get(field_name)
+                if value is not None and token_occurs(component, field_name, value):
+                    leaks.append(Leak(rel_posix, field_name, value, "path"))
+        try:
+            link = os.readlink(path)
+        except OSError:
+            leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
+            continue
+        for field_name, value in fields.items():
+            if token_occurs(link, field_name, value):
+                leaks.append(Leak(rel_posix, field_name, value, "symlink"))
     return leaks
 
 

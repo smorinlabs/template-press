@@ -13,6 +13,7 @@ from pathlib import Path
 from template_press.rebrand.config import toml_string
 from template_press.rebrand.engine import ApplyReport
 from template_press.rebrand.identity import Identity
+from template_press.rebrand.safety import write_control
 
 RECEIPT_REL = Path("press") / "press-receipt.toml"
 
@@ -33,8 +34,6 @@ def _identity_table(name: str, identity: Identity) -> list[str]:
 def write_receipt(
     target: Path, source: Identity, dest: Identity, report: ApplyReport
 ) -> Path:
-    path = target / RECEIPT_REL
-    path.parent.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).isoformat(timespec="seconds")
     lines = [
         "# press/press-receipt.toml — written by template-press AFTER the no-leak",
@@ -54,5 +53,4 @@ def write_receipt(
         f"regenerated = {len(report.regenerated)}",
         f"skipped = {len(report.skipped)}",
     ]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
+    return write_control(target, RECEIPT_REL, "\n".join(lines) + "\n")

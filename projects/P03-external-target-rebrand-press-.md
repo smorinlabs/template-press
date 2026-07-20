@@ -47,6 +47,9 @@ Rebuild as standalone press: rebrand → provision, verify-then-mark
       CHANGELOG generated, GitHub releases cut. NB: the planned "version
       reset to 0.1.0" was superseded — the project kept the 3.x line and
       self-published there.
+- [x] [P03-M5b] Verify verb registration & docs: wire `press verify` into
+      the CLI dispatcher, document the zero-arg CI usage and full `[verify]`
+      config schema.
 - [ ] [P03-M6] Provision phase: feature modules (detect/add/verify),
       `press status` computed from reality
 
@@ -70,4 +73,5 @@ Rebuild as standalone press: rebrand → provision, verify-then-mark
   drift guard — a configuration declaring keywords that must be completely
   eliminated from the target repo, testable ("is anything still there?").
   The ignore-set half of this requirement shipped as `verify_ignore`
-  (`press/press-rules.toml`); the CI-mode verify command remains to scope.
+  (`press/press-rules.toml`); the CI-mode verify command shipped in
+  P03-M5b (`press verify`, zero-arg CI usage documented).

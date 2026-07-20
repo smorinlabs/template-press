@@ -11,6 +11,7 @@ import sys
 
 from template_press import __version__
 from template_press.rebrand import cli as rebrand_cli
+from template_press.rebrand import verify_cli
 
 _RESERVED = {"provision", "status"}
 
@@ -19,6 +20,7 @@ usage: press <command> [options]
 
 commands:
   rebrand    press an identity onto a target repo (press rebrand --help)
+  verify     check that a template presses cleanly (press verify --help)
   provision  configure a target's features (coming in M6)
   status     report a target's provisioned state (coming in M6)
 """
@@ -35,6 +37,8 @@ def main(argv: list[str] | None = None) -> int:
     verb, rest = args[0], args[1:]
     if verb == "rebrand":
         return rebrand_cli.main(rest)
+    if verb == "verify":
+        return verify_cli.verify_command(rest)
     if verb in _RESERVED:
         print(
             f"error: '{verb}' is part of the Provision phase and is not "

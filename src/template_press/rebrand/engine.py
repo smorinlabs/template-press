@@ -8,23 +8,64 @@ TARGET is the undo button (`git checkout . && git clean -fd`).
 
 from __future__ import annotations
 
+import os
 import subprocess  # nosec B404 — git ls-files enumerates the target
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from template_press.rebrand.identity import Identity, replace_token, token_occurs
-from template_press.rebrand.rules import Rules
+from template_press.rebrand.rules import DEFAULT_RULES, Rules
+from template_press.rebrand.safety import (
+    ContainmentError,
+    assert_ancestors_real,
+    assert_under_root,
+    git_hardening_args,
+    safe_write,
+    scrubbed_git_env,
+)
 
-RENAME_FIELDS: tuple[str, ...] = ("package_name", "repo_name", "app_name")
+RENAME_FIELDS: tuple[str, ...] = (
+    "package_name",
+    "repo_name",
+    "app_name",
+    "app_name_upper",
+)
 
-# A press/ directory is THIS tool's control dir — exempt from rewriting and
-# the no-leak scan — only when it holds one of these files (which legitimately
-# carry SOURCE identity). Any other press/ dir is ordinary target content.
+# Marker files that identify a press/ directory as THIS tool's control dir
+# (one legitimately carries SOURCE identity). These feed ONLY the
+# `stray_press_dirs` warning (via `_control_press_dirs`) — they do NOT drive the
+# rewrite/scan exemption. The exact-artifact exemption is `ROOT_CONTROL` below
+# (Decision D3): only the literal root-level control files are exempt from
+# iteration, never a whole press/ subtree keyed on these markers.
 CONTROL_MARKERS: tuple[str, ...] = (
     "press-source.toml",
     "press-rules.toml",
     "press-receipt.toml",
 )
+
+# Exact-root-artifact exemption (plan Decision D3: exempt an exact artifact,
+# never a location). Only these literal root-level control files are exempt
+# from iteration — never a whole press/ subtree. rel.as_posix() membership.
+ROOT_CONTROL: frozenset[str] = frozenset(
+    {
+        "press/press-source.toml",
+        "press/press-rules.toml",
+        "press/press-receipt.toml",
+        "press/press-answers.toml",
+    }
+)
+
+
+@dataclass(frozen=True)
+class PathEntry:
+    """A ``copy_paths``/``scan_paths`` entry: a relative path plus its kind.
+
+    ``kind`` is ``"file" | "symlink" | "gitlink"``, determined without
+    following links — this is the interface Task 7's scanner consumes.
+    """
+
+    rel: Path
+    kind: str
 
 
 @dataclass
@@ -62,13 +103,18 @@ def _is_excluded(rel: Path, rules: Rules) -> bool:
 def _git_listed(target: Path) -> list[Path]:
     """Relative paths git reports (tracked+untracked), honoring .gitignore.
 
-    Uses `git ls-files --cached --others --exclude-standard`.
+    Uses `git ls-files --cached --others --exclude-standard`. This is a
+    working-tree-scanning read on an untrusted target (a hostile
+    `.git/config` is attacker input), so it is scrubbed-env + hardening-args
+    protected (G5+) exactly like the sandbox's on-target git calls: no
+    identity is needed for a read.
     """
     result = subprocess.run(  # noqa: S603 # nosec B603 B607
         [  # noqa: S607
             "git",
             "-C",
             str(target),
+            *git_hardening_args(),
             "ls-files",
             "-z",
             "--cached",
@@ -77,11 +123,15 @@ def _git_listed(target: Path) -> list[Path]:
         ],
         check=True,
         capture_output=True,
-        # git emits UTF-8 path bytes; text=True would decode with the locale
-        # codepage on Windows (cp1252) and mojibake non-ASCII filenames.
-        encoding="utf-8",
+        # Capture raw BYTES (no encoding=): a git path is any byte except NUL,
+        # so a non-UTF-8 filename would raise UnicodeDecodeError under a strict
+        # text decode and crash enumeration. Decode UTF-8 with surrogateescape
+        # so arbitrary bytes round-trip to str (and back, via os.fsencode) —
+        # this also avoids the Windows locale-codepage mojibake text=True gives.
+        env=scrubbed_git_env(),
     )
-    return [Path(line) for line in result.stdout.split("\0") if line]
+    stdout = result.stdout.decode("utf-8", "surrogateescape")
+    return [Path(line) for line in stdout.split("\0") if line]
 
 
 def _press_dirs(files: list[Path]) -> set[str]:
@@ -109,12 +159,13 @@ def _control_press_dirs(target: Path, files: list[Path]) -> frozenset[str]:
     )
 
 
-def _under_control_press(rel: Path, control: frozenset[str]) -> bool:
-    parts = rel.parts
-    for i in range(len(parts) - 1):
-        if parts[i] == "press" and Path(*parts[: i + 1]).as_posix() in control:
-            return True
-    return False
+def _is_root_press(rel: Path, i: int) -> bool:
+    """Component i of rel is the protected root control dir literally 'press'.
+
+    The root press/ dir holds ROOT_CONTROL; renaming or path-flagging it
+    would break control-file exemption when app_name == 'press'.
+    """
+    return i == 0 and rel.parts[i] == "press"
 
 
 def stray_press_dirs(target: Path) -> list[str]:
@@ -131,22 +182,133 @@ def stray_press_dirs(target: Path) -> list[str]:
 def iter_target_files(target: Path, rules: Rules) -> list[Path]:
     """All non-excluded tracked+untracked files under target, sorted.
 
-    Excludes rules.exclude_files / exclude_dirs and this tool's control
-    press/ dir (content-keyed via CONTROL_MARKERS). A press/ dir without a
-    marker is NOT exempt — it is scanned and rewritten like any content.
+    Excludes rules.exclude_files / exclude_dirs and the exact root control
+    artifacts in ROOT_CONTROL. Everything else under a press/ dir — root or
+    nested — is ordinary content: scanned and rewritten like any file.
     """
     files = _git_listed(target)
-    control = _control_press_dirs(target, files)
     out: list[Path] = []
     for rel in files:
         if _is_excluded(rel, rules):
             continue
-        if _under_control_press(rel, control):
+        if rel.as_posix() in ROOT_CONTROL:
             continue
         path = target / rel
         if path.is_file():
             out.append(path)
     return sorted(out)
+
+
+def _gitlink_rels(target: Path) -> frozenset[str]:
+    """POSIX rel paths of index entries whose mode is a gitlink (160000).
+
+    Reads the index directly (``git ls-files --stage``), so a submodule
+    that isn't checked out is still correctly identified — no working-tree
+    directory needs to exist. Scrubbed-env + hardening-args protected (G5+):
+    the target's own ``.git/config`` is attacker input.
+    """
+    result = subprocess.run(  # noqa: S603 # nosec B603 B607
+        [  # noqa: S607
+            "git",
+            "-C",
+            str(target),
+            *git_hardening_args(),
+            "ls-files",
+            "--stage",
+            "-z",
+        ],
+        check=True,
+        capture_output=True,
+        # Raw bytes + surrogateescape decode (see _git_listed): a gitlink whose
+        # path carries a non-UTF-8 byte must not crash enumeration.
+        env=scrubbed_git_env(),
+    )
+    stdout = result.stdout.decode("utf-8", "surrogateescape")
+    rels: set[str] = set()
+    for entry in stdout.split("\0"):
+        if not entry:
+            continue
+        meta, _, rel = entry.partition("\t")
+        mode = meta.split(" ", 1)[0]
+        if mode == "160000":
+            rels.add(rel)
+    return frozenset(rels)
+
+
+def copy_paths(target: Path) -> list[PathEntry]:
+    """Everything git lists (tracked + non-ignored untracked), minus ``.git``.
+
+    RETAINS symlinks and gitlinks — never filters on ``is_file()``, which
+    would drop a symlink-to-dir/dangling symlink and hide gitlinks. ``kind``
+    is determined without following links: a gitlink is detected via the
+    index mode (``_gitlink_rels``); otherwise an ``lstat``-based
+    ``is_symlink()`` check on the (possibly not-checked-out) path decides
+    "symlink" vs "file". Sorted, deterministic.
+    """
+    gitlinks = _gitlink_rels(target)
+    entries: list[PathEntry] = []
+    for rel in _git_listed(target):
+        if ".git" in rel.parts:
+            continue
+        posix = rel.as_posix()
+        if posix in gitlinks:
+            kind = "gitlink"
+        elif (target / rel).is_symlink():
+            kind = "symlink"
+        else:
+            kind = "file"
+        entries.append(PathEntry(rel, kind))
+    return sorted(entries, key=lambda e: e.rel.as_posix())
+
+
+def rewrite_paths(target: Path, rules: Rules) -> list[Path]:
+    """Files eligible for content/path rewrite — a thin named wrapper.
+
+    ``iter_target_files`` already excludes lockfiles (``exclude_files``),
+    ``exclude_dirs``, and ``ROOT_CONTROL`` (Task 2); kept symmetric with
+    ``copy_paths``/``scan_paths`` rather than reimplemented.
+    """
+    return iter_target_files(target, rules)
+
+
+def scan_paths(target: Path, rules: Rules) -> list[PathEntry]:
+    """``copy_paths`` minus ``ROOT_CONTROL``, regenerable lockfiles, and
+    ``verify_ignore`` dirs — the no-leak scan's candidate set.
+
+    A lockfile is scan-exempt only when it is regenerated FRESH after apply,
+    which requires it to be in BOTH:
+
+    - the TARGET's effective ``rules.regenerate`` — press actually regenerates
+      it for THIS target (so ``regenerate = []`` re-includes uv.lock: press
+      neither rewrites it, since it is in ``exclude_files``, nor regenerates
+      it, so a stale token must be scanned — keying on ``DEFAULT_RULES`` ALONE
+      would FALSE-CLEAN it); AND
+    - the tool's OWN ``DEFAULT_RULES.regenerate`` ∩ ``DEFAULT_RULES.exclude_files``
+      — the tool has a real regenerator for it (EMP-01/F5: a target's
+      ``press-rules.toml`` must not be able to hide content from the scan by
+      declaring ``regenerate = ["bun.lock"]`` for a lockfile press never
+      regenerates).
+
+    Everything else stays: non-regenerable lockfiles (``bun.lock``,
+    ``package-lock.json``), a force-added gitignored file, and symlink/
+    gitlink entries (type-tagged, for Task 7).
+    """
+    exempt_lockfiles = (
+        set(rules.regenerate)
+        & set(DEFAULT_RULES.regenerate)
+        & DEFAULT_RULES.exclude_files
+    )
+    out: list[PathEntry] = []
+    for entry in copy_paths(target):
+        posix = entry.rel.as_posix()
+        if posix in ROOT_CONTROL:
+            continue
+        if posix in exempt_lockfiles:
+            continue
+        if any(part in rules.verify_ignore for part in entry.rel.parts):
+            continue
+        out.append(entry)
+    return out
 
 
 def replacement_pairs(source: Identity, dest: Identity) -> list[tuple[str, str, str]]:
@@ -168,7 +330,14 @@ def _read_text(path: Path) -> str | None:
 
 def _renamed_rel(rel: Path, pairs: list[tuple[str, str, str]]) -> Path:
     parts = []
-    for component in rel.parts:
+    for i, component in enumerate(rel.parts):
+        if _is_root_press(rel, i):
+            # The protected root control dir literally 'press' is never
+            # renamed (it holds ROOT_CONTROL) — but its DESCENDANTS still are,
+            # so a token-bearing child (press/press_notes.md) renames to
+            # press/potato_notes.md instead of being abandoned.
+            parts.append(component)
+            continue
         new = component
         for f, cur, repl in pairs:
             if f in RENAME_FIELDS:
@@ -200,6 +369,9 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                 zip(rel.parts, new_rel.parts, strict=True)
             ):
                 if old_part != new_part:
+                    # The root 'press' component never differs (protected in
+                    # _renamed_rel), so the first diff is always a renamable
+                    # component — no root-press guard is needed here.
                     old_prefix = Path(*rel.parts[: i + 1]).as_posix()
                     new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
                     rename_map.setdefault(old_prefix, new_prefix)
@@ -242,17 +414,73 @@ def _apply_replacements(
         for f, cur, repl in pairs:
             new_text = replace_token(new_text, f, cur, repl)
         if new_text != text:
-            path.write_text(new_text, encoding="utf-8")
+            # Route through safe_write: its assert_under_root closes the
+            # ancestor-symlink hole (a symlinked ancestor would write OUTSIDE
+            # the target), and its atomic temp + os.replace makes the write
+            # hardlink-SAFE (a new inode). refuse_hardlink=False because that
+            # atomicity already protects an external hardlink WITHOUT falsely
+            # refusing a legitimate in-repo hardlinked file. A symlink LEAF
+            # never reaches here — _read_text returns None for it upstream.
+            safe_write(target, rel, new_text, refuse_hardlink=False)
             report.replaced.append(rel)
 
 
+def _retarget_symlinks(
+    target: Path,
+    pairs: list[tuple[str, str, str]],
+    report: ApplyReport,
+) -> None:
+    """Rewrite in-repo RELATIVE symlink targets carrying identity tokens.
+
+    Only the link STRING is rewritten — the pointed-to file is never read,
+    written, or followed. Candidates come from ``_git_listed`` filtered by a
+    no-follow ``is_symlink`` lstat (NOT ``iter_target_files``, which follows
+    links). A symlink is left untouched when its target is absolute, carries
+    no token, or would escape the root after rewriting (containment via the
+    reused ``assert_under_root`` on the resolved sink). The link is recreated
+    with unlink + symlink, guarded by an immediate ``is_symlink`` re-check to
+    refuse a TOCTOU swap.
+    """
+    target_r = target.resolve()
+    for rel in _git_listed(target):
+        path = target / rel
+        if not path.is_symlink():
+            continue
+        link = os.readlink(path)
+        if os.path.isabs(link):
+            continue  # never rewrite or follow an absolute target
+        new_link = link
+        for f, cur, repl in pairs:
+            new_link = replace_token(new_link, f, cur, repl)
+        if new_link == link:
+            continue
+        sink = (path.parent / new_link).resolve()
+        try:
+            assert_under_root(sink, target_r)
+        except ContainmentError:
+            report.skipped.append(f"retarget {rel.as_posix()} (escaping target)")
+            continue
+        if not path.is_symlink():  # TOCTOU: refuse a swapped-in non-symlink
+            report.skipped.append(f"retarget {rel.as_posix()} (no longer a symlink)")
+            continue
+        # Validate the LINK LOCATION's ancestors (not just the sink): a
+        # symlinked ancestor of `path` would land unlink/symlink OUTSIDE the
+        # target. Fail closed (propagate) on a hostile ancestor — never
+        # silently skip a containment violation.
+        assert_ancestors_real(path, target)
+        os.unlink(path)
+        os.symlink(new_link, path)
+        report.replaced.append(rel.as_posix())
+
+
 def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> ApplyReport:
-    """Execute the rebrand: replace pass, then rename pass."""
+    """Execute the rebrand: replace pass, symlink-retarget pass, rename pass."""
     source.validate()
     dest.validate()
     report = ApplyReport()
     pairs = replacement_pairs(source, dest)
     _apply_replacements(target, pairs, rules, report)
+    _retarget_symlinks(target, pairs, report)
     _apply_renames(target, pairs, rules, report)
     return report
 
@@ -280,6 +508,9 @@ def _rename_pass_once(
             zip(rel.parts, new_rel.parts, strict=True)
         ):
             if old_part != new_part:
+                # The root 'press' component never differs (protected in
+                # _renamed_rel), so the first diff is always a renamable
+                # component — no root-press guard is needed here.
                 old_prefix = Path(*rel.parts[: i + 1]).as_posix()
                 new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
                 rename_map.setdefault(old_prefix, new_prefix)
@@ -293,6 +524,12 @@ def _rename_pass_once(
         if dst.exists():
             report.skipped.append(f"rename {old} (destination exists)")
             continue
+        # A symlinked ancestor on either endpoint would move CONTENT through a
+        # symlink out of the target. Tolerates a token-bearing symlink LEAF
+        # (renaming a symlink is legitimate); fails closed (propagates) on a
+        # symlinked ancestor.
+        assert_ancestors_real(src, target)
+        assert_ancestors_real(dst, target)
         dst.parent.mkdir(parents=True, exist_ok=True)
         src.rename(dst)
         report.renamed.append((old, rename_map[old]))

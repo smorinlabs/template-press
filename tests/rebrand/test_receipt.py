@@ -1,11 +1,15 @@
+import os
 import tomllib
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from template_press.rebrand.engine import ApplyReport
 from template_press.rebrand.receipt import RECEIPT_REL, read_receipt, write_receipt
+from template_press.rebrand.safety import ContainmentError
 
-from .conftest import DEST, SOURCE
+from .conftest import DEST, SOURCE, requires_symlink
 
 
 def test_write_and_read_receipt(tmp_path: Path):
@@ -23,6 +27,18 @@ def test_write_and_read_receipt(tmp_path: Path):
 
 def test_read_receipt_absent(tmp_path: Path):
     assert read_receipt(tmp_path) is None
+
+
+@requires_symlink
+def test_write_receipt_refuses_symlinked_press_dir(tmp_path: Path):
+    """D8: write_receipt routes through write_control, so a symlinked press/
+    control dir is refused and nothing is written through the link."""
+    decoy = tmp_path / "outside" / "decoy"
+    decoy.mkdir(parents=True)
+    os.symlink(decoy, tmp_path / "press", target_is_directory=True)
+    with pytest.raises(ContainmentError):
+        write_receipt(tmp_path, SOURCE, DEST, ApplyReport())
+    assert list(decoy.iterdir()) == []  # nothing written through the symlink
 
 
 def test_write_and_read_receipt_escapes_special_chars(tmp_path: Path):
