@@ -123,6 +123,39 @@ def test_png_binary_embedding_matches_where_binary(src_target: Path):
     assert hit.col == fake_png.find(marker)
 
 
+def test_binary_variant_matches_where_binary(src_target: Path):
+    # G2 (false clean): a binary embedding a SEPARATOR/CASE variant of a source
+    # value that NO field's exact byte form matches — camelCase `demoWidget` for
+    # package_name `demo_widget` (repo_name is `demo-widget`, so neither exact
+    # form is present). apply() cannot rewrite binary content, so the variant
+    # survives; the OLD exact-only byte scan missed it -> false clean. The scan
+    # must now be variant-aware (identifier-boundary matcher on the latin-1
+    # bytes), consistent with text.
+    marker = b"demoWidget"
+    fake = b"\x89PNG\r\n\x1a\n\x00\x00" + marker + b"\x00\x01\x02"
+    (src_target / "camel.png").write_bytes(fake)
+    _git(src_target, "add", "-A")
+    _git(src_target, "commit", "-q", "-m", "camelcase variant in binary")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "camel.png"]
+    assert hits, "camelCase variant in a binary must be flagged (was a false clean)"
+    assert all(h.where == "binary" and h.line is None for h in hits)
+    # char span == byte offset (latin-1 is 1:1), so col is the byte offset.
+    assert all(h.col == fake.find(marker) for h in hits)
+    assert any(h.field == "package_name" for h in hits)
+    # The README word-traps (compress/express/pressure) must STILL produce no
+    # content finding — variant awareness must not reopen the word-trap.
+    trap = "Compress the archive before express delivery; do not let the pressure rise."
+    assert not any(f.context == trap for f in findings)
+
+
 def test_unreadable_file_is_unscannable(src_target: Path):
     if os.name == "nt" or os.geteuid() == 0:
         import pytest
@@ -220,7 +253,10 @@ def test_scan_binary_empty_needle_returns_empty_no_hang():
     iteration. An empty value yields no findings (fast, bounded)."""
     from template_press.rebrand.verifier import _scan_binary
 
-    assert _scan_binary(b"some binary data", "asset.png", [("app_name", "")]) == []
+    assert (
+        _scan_binary(b"some binary data", "asset.png", [("app_name", "")], frozenset())
+        == []
+    )
 
 
 @requires_symlink

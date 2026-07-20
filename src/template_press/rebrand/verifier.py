@@ -155,29 +155,52 @@ def _scan_content(
 
 
 def _scan_binary(
-    data: bytes, posix: str, changed: list[tuple[str, str]]
+    data: bytes,
+    posix: str,
+    changed: list[tuple[str, str]],
+    substring_fields: Collection[str],
 ) -> list[Finding]:
-    """Byte-scan a non-UTF-8 file for identity byte sequences.
+    """Byte-scan a non-UTF-8 file for surviving identity — VARIANT-aware.
 
-    Deliberately raw (no identifier-boundary logic, unlike
-    `find_occurrences`): a binary format offers no notion of "word
-    boundary", so every non-overlapping byte-sequence occurrence is flagged.
+    ``apply()`` cannot rewrite binary content, so a separator/case variant of a
+    source value (``demo-widget`` / ``demoWidget`` for ``demo_widget``) survives
+    the press. An exact-only byte scan missed it (a FALSE CLEAN in a binary
+    artifact). The bytes are decoded latin-1 (1:1 byte<->codepoint, always
+    succeeds) and run through the SAME identifier-aware matcher used for text
+    (`find_occurrences`), so separator/case/camelCase variants are caught
+    consistently; because latin-1 is 1:1, a match's char span start IS its byte
+    offset (``col``), with ``line=None``.
+
+    The raw exact-byte occurrences are unioned in as well: a binary offers no
+    notion of "word boundary", so an exact value glued to surrounding
+    letters/digits (which the identifier-boundary matcher deliberately rejects)
+    must still be flagged. Offsets are deduplicated so an exact match that both
+    scans find yields a single ``binary`` finding.
     """
+    latin1 = data.decode("latin-1")
     findings: list[Finding] = []
     for f, value in changed:
         needle = value.encode("utf-8")
         if not needle:
-            # `data.find(b"", start)` returns `start`, so an empty needle would
-            # advance zero bytes per iteration and loop forever. Identity is
-            # validated non-empty upstream; this keeps the invariant local.
+            # An empty value matches at every offset (both the matcher and
+            # `data.find(b"")`), so it is skipped. Identity is validated
+            # non-empty upstream; this keeps the invariant local (and bounded).
             continue
-        start = 0
+        substring = f in substring_fields
+        offsets = {
+            start
+            for start, _end in find_occurrences(latin1, f, value, substring=substring)
+        }
+        pos = 0
         while True:
-            idx = data.find(needle, start)
+            idx = data.find(needle, pos)
             if idx == -1:
                 break
-            findings.append(Finding(posix, f, value, "binary", None, idx, ""))
-            start = idx + len(needle)
+            offsets.add(idx)
+            pos = idx + len(needle)
+        findings.extend(
+            Finding(posix, f, value, "binary", None, idx, "") for idx in sorted(offsets)
+        )
     return findings
 
 
@@ -203,7 +226,7 @@ def _scan_file(
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
-        return _scan_binary(data, posix, changed)
+        return _scan_binary(data, posix, changed, substring_fields)
     return _scan_content(text, posix, changed, substring_fields)
 
 
