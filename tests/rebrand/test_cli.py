@@ -686,3 +686,47 @@ def test_press_outcome_success_no_env_error(tmp_path: Path):
         ["--target", str(main_target), "--config", str(answers), "--allow-dirty"]
     )
     assert code == 0
+
+
+def _identity(**overrides):
+    base = {
+        "package_name": "py_launch_blueprint",
+        "repo_name": "py-launch-blueprint",
+        "app_name": "plbp",
+        "author": "Steve Morin",
+        "email": "steve.morin@gmail.com",
+        "owner": "smorinlabs",
+    }
+    base.update(overrides)
+    from template_press.rebrand.identity import Identity
+
+    return Identity(**base)
+
+
+class TestDisplayNameGate:
+    def test_half_specified_is_a_problem(self):
+        from template_press.rebrand.cli import display_name_problem
+
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(app_name="acme")
+        msg = display_name_problem(src, dst)
+        assert msg is not None and "display_name" in msg
+
+    def test_reverse_direction_is_fine(self):
+        from template_press.rebrand.cli import display_name_problem
+
+        src = _identity()
+        dst = _identity(app_name="acme", display_name="Acme Widget")
+        assert display_name_problem(src, dst) is None
+
+    def test_both_or_neither_is_fine(self):
+        from template_press.rebrand.cli import display_name_problem
+
+        assert display_name_problem(_identity(), _identity(app_name="acme")) is None
+        assert (
+            display_name_problem(
+                _identity(display_name="Py Launch Blueprint"),
+                _identity(display_name="Acme Widget"),
+            )
+            is None
+        )

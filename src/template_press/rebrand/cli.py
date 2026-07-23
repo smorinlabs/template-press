@@ -152,6 +152,24 @@ def _collisions(source: Identity, dest: Identity) -> list[str]:
     return out
 
 
+def display_name_problem(source: Identity, dest: Identity) -> str | None:
+    """Half-specified display identity is refused (codesign sec-06).
+
+    The press knows what to erase but not what to write — proceeding would
+    ship a half-rebrand where every prose mention keeps the old product
+    name. The reverse direction is harmless: nothing to rewrite, and the
+    post-apply source-config write records the new display name.
+    """
+    if source.display_name is not None and dest.display_name is None:
+        return (
+            f"source-config declares display_name "
+            f"({source.display_name!r}) but the answers file does not — "
+            f"add display_name to [answers]; press cannot know the new "
+            f"display name"
+        )
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="press rebrand", description=__doc__)
     parser.add_argument("--target", type=Path, required=True)
@@ -185,6 +203,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.config is None:
             return _fail("--config ANSWERS.toml is required")
         dest = load_answers(args.config)
+
+        display_problem = display_name_problem(source, dest)
+        if display_problem is not None:
+            return _fail(display_problem)
 
         if source == dest:
             return _fail(
