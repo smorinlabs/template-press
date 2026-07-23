@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+
+from template_press.rebrand.identity import ValidationError
 from template_press.rebrand.rules import DEFAULT_RULES, load_rules
 
 
@@ -60,3 +63,90 @@ def test_nested_dir_entries_are_rejected_loudly(tmp_path: Path):
     )
     with pytest.raises(ValidationError, match="single directory"):
         load_rules(tmp_path)
+
+
+def _write_rules(tmp_path, body: str):
+    d = tmp_path / "press"
+    d.mkdir(exist_ok=True)
+    (d / "press-rules.toml").write_text(body, encoding="utf-8")
+    return tmp_path
+
+
+class TestReplaceRules:
+    def test_defaults_empty(self):
+        assert DEFAULT_RULES.replace == ()
+        assert DEFAULT_RULES.substring_rewrite_fields == frozenset()
+        assert DEFAULT_RULES.display_forms == ("spaced", "pascal", "camel")
+
+    def test_parse_full_rule(self, tmp_path):
+        target = _write_rules(
+            tmp_path,
+            '[[replace]]\npattern = "_{app_name}_owned"\n'
+            'files = ["tests/**"]\npaths = false\ncontent = true\n'
+            'reason = "logging ownership guard"\n',
+        )
+        rules = load_rules(target)
+        (rule,) = rules.replace
+        assert rule.pattern == "_{app_name}_owned"
+        assert rule.files == ("tests/**",)
+        assert rule.paths is False and rule.content is True
+        assert rule.reason == "logging ownership guard"
+
+    def test_reason_is_required(self, tmp_path):
+        target = _write_rules(tmp_path, '[[replace]]\npattern = "{app_name}-web"\n')
+        with pytest.raises(ValidationError):
+            load_rules(target)
+
+    def test_pattern_must_reference_a_field(self, tmp_path):
+        target = _write_rules(
+            tmp_path, '[[replace]]\npattern = "plbp-web"\nreason = "r"\n'
+        )
+        with pytest.raises(ValidationError):
+            load_rules(target)
+
+    def test_unknown_placeholder_rejected(self, tmp_path):
+        target = _write_rules(
+            tmp_path, '[[replace]]\npattern = "{appname}-web"\nreason = "r"\n'
+        )
+        with pytest.raises(ValidationError):
+            load_rules(target)
+
+    def test_paths_and_content_not_both_false(self, tmp_path):
+        target = _write_rules(
+            tmp_path,
+            '[[replace]]\npattern = "{app_name}-web"\nreason = "r"\n'
+            "paths = false\ncontent = false\n",
+        )
+        with pytest.raises(ValidationError):
+            load_rules(target)
+
+    def test_unknown_key_rejected(self, tmp_path):
+        target = _write_rules(
+            tmp_path,
+            '[[replace]]\npattern = "{app_name}-web"\nreason = "r"\nglob = "x"\n',
+        )
+        with pytest.raises(ValidationError):
+            load_rules(target)
+
+
+class TestRewriteKnobs:
+    def test_substring_fields_parse_and_validate(self, tmp_path):
+        target = _write_rules(
+            tmp_path, '[rules]\nsubstring_rewrite_fields = ["app_name"]\n'
+        )
+        assert load_rules(target).substring_rewrite_fields == frozenset({"app_name"})
+        target = _write_rules(
+            tmp_path, '[rules]\nsubstring_rewrite_fields = ["nope"]\n'
+        )
+        with pytest.raises(ValidationError):
+            load_rules(target)
+
+    def test_display_forms_subset(self, tmp_path):
+        target = _write_rules(tmp_path, '[rules]\ndisplay_forms = ["spaced"]\n')
+        assert load_rules(target).display_forms == ("spaced",)
+        target = _write_rules(tmp_path, "[rules]\ndisplay_forms = []\n")
+        with pytest.raises(ValidationError):
+            load_rules(target)
+        target = _write_rules(tmp_path, '[rules]\ndisplay_forms = ["kebab"]\n')
+        with pytest.raises(ValidationError):
+            load_rules(target)
