@@ -17,7 +17,12 @@ from template_press.rebrand.engine import (
     _is_root_press,
     iter_target_files,
 )
-from template_press.rebrand.identity import Identity, token_occurs
+from template_press.rebrand.identity import (
+    DISPLAY_FORM_NAMES,
+    Identity,
+    display_forms,
+    token_occurs,
+)
 from template_press.rebrand.rules import Rules
 
 PATH_FIELDS: tuple[str, ...] = (
@@ -55,6 +60,7 @@ def find_leaks(
     source: Identity,
     rules: Rules,
     dest: Identity | None = None,
+    display_form_names: tuple[str, ...] = DISPLAY_FORM_NAMES,
 ) -> list[Leak]:
     """Scan for surviving source-identity tokens.
 
@@ -65,9 +71,19 @@ def find_leaks(
     """
     leaks: list[Leak] = []
     fields = source.as_dict()
+    if "display_name" in fields:
+        # Expand into the exact per-form values so a surviving glued form
+        # (PyLaunchBlueprint) is a leak, not just the spaced original.
+        sf = display_forms(fields.pop("display_name"))
+        for form in display_form_names:
+            fields[f"display_name_{form}"] = sf[form]
     if dest is not None:
         dest_fields = dest.as_dict()
-        fields = {k: v for k, v in fields.items() if v != dest_fields[k]}
+        if "display_name" in dest_fields:
+            df = display_forms(dest_fields.pop("display_name"))
+            for form in display_form_names:
+                dest_fields[f"display_name_{form}"] = df[form]
+        fields = {k: v for k, v in fields.items() if dest_fields.get(k) != v}
     covered_symlinks: set[str] = set()
     for path in iter_target_files(target, rules):
         rel = path.relative_to(target)

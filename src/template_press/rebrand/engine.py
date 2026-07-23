@@ -13,7 +13,13 @@ import subprocess  # nosec B404 — git ls-files enumerates the target
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from template_press.rebrand.identity import Identity, replace_token, token_occurs
+from template_press.rebrand.identity import (
+    DISPLAY_FORM_NAMES,
+    Identity,
+    display_forms,
+    replace_token,
+    token_occurs,
+)
 from template_press.rebrand.rules import DEFAULT_RULES, Rules
 from template_press.rebrand.safety import (
     ContainmentError,
@@ -311,10 +317,31 @@ def scan_paths(target: Path, rules: Rules) -> list[PathEntry]:
     return out
 
 
-def replacement_pairs(source: Identity, dest: Identity) -> list[tuple[str, str, str]]:
-    """(field, current, replacement) triples, longest current first."""
+def replacement_pairs(
+    source: Identity,
+    dest: Identity,
+    display_form_names: tuple[str, ...] = DISPLAY_FORM_NAMES,
+) -> list[tuple[str, str, str]]:
+    """(field, current, replacement) triples, longest current first.
+
+    display_name is expanded into one pair per enabled exact form
+    (display_name_spaced/…_pascal/…_camel) — generic-boundary tags, never in
+    RENAME_FIELDS, so display forms rewrite content but never paths. The
+    `k in dst` guard keeps a half-specified display name (source has it,
+    dest doesn't) out of the pair list entirely — the CLI gates that case.
+    """
     src, dst = source.as_dict(), dest.as_dict()
-    pairs = [(k, src[k], dst[k]) for k in src if src[k] != dst[k]]
+    pairs = [
+        (k, src[k], dst[k])
+        for k in src
+        if k != "display_name" and k in dst and src[k] != dst[k]
+    ]
+    if "display_name" in src and "display_name" in dst:
+        sf = display_forms(src["display_name"])
+        df = display_forms(dst["display_name"])
+        for form in display_form_names:
+            if sf[form] != df[form]:
+                pairs.append((f"display_name_{form}", sf[form], df[form]))
     pairs.sort(key=lambda t: -len(t[1]))
     return pairs
 

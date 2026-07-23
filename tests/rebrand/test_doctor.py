@@ -4,9 +4,23 @@ from pathlib import Path
 
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import apply
+from template_press.rebrand.identity import Identity
 from template_press.rebrand.rules import DEFAULT_RULES
 
 from .conftest import DEST, SOURCE, requires_symlink
+
+
+def _identity(**overrides):
+    base = {
+        "package_name": "py_launch_blueprint",
+        "repo_name": "py-launch-blueprint",
+        "app_name": "plbp",
+        "author": "Steve Morin",
+        "email": "steve.morin@gmail.com",
+        "owner": "smorinlabs",
+    }
+    base.update(overrides)
+    return Identity(**base)
 
 
 def test_clean_rebrand_has_no_leaks(src_target: Path):
@@ -188,3 +202,23 @@ def test_unreadable_file_fails_verification(src_target: Path):
     finally:
         secret.chmod(0o644)
     assert any(e.where == "unverifiable" for e in leaks)
+
+
+class TestDisplayNameLeaks:
+    def test_surviving_pascal_form_is_a_leak(self, src_target: Path):
+        (src_target / "README.md").write_text(
+            "# PyLaunchBlueprint docs\n", encoding="utf-8"
+        )
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(app_name="acme", display_name="Acme Widget")
+        leaks = find_leaks(src_target, src, DEFAULT_RULES, dest=dst)
+        assert any(
+            lk.field == "display_name_pascal" and lk.where == "content" for lk in leaks
+        )
+
+    def test_unchanged_display_name_is_not_a_leak(self, src_target: Path):
+        (src_target / "README.md").write_text("Py Launch Blueprint\n", encoding="utf-8")
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(app_name="acme", display_name="Py Launch Blueprint")
+        leaks = find_leaks(src_target, src, DEFAULT_RULES, dest=dst)
+        assert not any(lk.field.startswith("display_name") for lk in leaks)
