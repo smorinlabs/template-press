@@ -9,10 +9,11 @@ from template_press.rebrand.config import (
     SOURCE_CONFIG_REL,
     assert_control_real,
     load_answers,
+    load_identity_toml,
     load_source_config,
     render_source_config,
 )
-from template_press.rebrand.identity import ValidationError
+from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.safety import ContainmentError
 
 from .conftest import DEST, SOURCE, requires_symlink
@@ -104,3 +105,53 @@ def test_render_source_config_escapes_quotes_in_author(tmp_path: Path):
     (tmp_path / "press").mkdir()
     (tmp_path / SOURCE_CONFIG_REL).write_text(rendered, encoding="utf-8")
     assert load_source_config(tmp_path, override=None) == source
+
+
+def _base_toml(extra: str = "") -> str:
+    return (
+        "[identity]\n"
+        'package_name = "py_launch_blueprint"\n'
+        'repo_name    = "py-launch-blueprint"\n'
+        'app_name     = "plbp"\n'
+        'author       = "Steve Morin"\n'
+        'email        = "steve.morin@gmail.com"\n'
+        'owner        = "smorinlabs"\n' + extra
+    )
+
+
+class TestDisplayNameConfig:
+    def test_load_without_display_name(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(_base_toml(), encoding="utf-8")
+        assert load_identity_toml(p, "identity").display_name is None
+
+    def test_load_with_display_name(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(
+            _base_toml('display_name = "Py Launch Blueprint"\n'), encoding="utf-8"
+        )
+        ident = load_identity_toml(p, "identity")
+        assert ident.display_name == "Py Launch Blueprint"
+
+    def test_render_includes_display_name_only_when_set(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(
+            _base_toml('display_name = "Py Launch Blueprint"\n'), encoding="utf-8"
+        )
+        ident = load_identity_toml(p, "identity")
+        rendered = render_source_config(ident)
+        assert 'display_name = "Py Launch Blueprint"' in rendered
+        p.write_text(_base_toml(), encoding="utf-8")
+        assert "display_name" not in render_source_config(
+            load_identity_toml(p, "identity")
+        )
+
+    def test_render_load_round_trip(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(
+            _base_toml('display_name = "Py Launch Blueprint"\n'), encoding="utf-8"
+        )
+        ident = load_identity_toml(p, "identity")
+        p2 = tmp_path / "round.toml"
+        p2.write_text(render_source_config(ident), encoding="utf-8")
+        assert load_identity_toml(p2, "identity") == ident
