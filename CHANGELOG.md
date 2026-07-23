@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.0](https://github.com/smorinlabs/template-press/compare/v3.1.0...v3.2.0) (2026-07-20)
+
+
+### Features
+
+* **verify:** press verify — hermetic self-press leak check ([#38](https://github.com/smorinlabs/template-press/issues/38)) ([d7e5c9d](https://github.com/smorinlabs/template-press/commit/d7e5c9d08eb894395803e7defbe6c7d179d86440))
+
 ## [3.1.0](https://github.com/smorinlabs/template-press/compare/v3.0.0...v3.1.0) (2026-07-17)
 
 

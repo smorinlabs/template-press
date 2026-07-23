@@ -20,7 +20,7 @@
 [project]
 name = "template_press"
 # ITM-070 — static version (ADR-06 cutover). release-please bumps this.
-version = "3.1.0"
+version = "3.2.0"
 description = "Standalone rebrand utility — press a new identity onto an external target repo"
 readme = "README.md"
 requires-python = ">=3.12"
