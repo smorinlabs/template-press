@@ -13,7 +13,7 @@ from template_press.rebrand.config import (
     load_source_config,
     render_source_config,
 )
-from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.identity import ValidationError
 from template_press.rebrand.safety import ContainmentError
 
 from .conftest import DEST, SOURCE, requires_symlink
