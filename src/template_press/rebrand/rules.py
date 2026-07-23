@@ -7,6 +7,7 @@ A target may extend them via <target>/press/press-rules.toml.
 
 from __future__ import annotations
 
+import fnmatch
 import re
 import tomllib
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from pathlib import Path
 from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
     REQUIRED_FIELDS,
+    Identity,
     ValidationError,
 )
 
@@ -52,6 +54,34 @@ class ReplaceRule:
     files: tuple[str, ...] = ()
     paths: bool = False
     content: bool = True
+
+
+def render_replace_pattern(pattern: str, identity: Identity) -> str:
+    """Substitute {field} placeholders with this identity's values.
+
+    Called twice per rule per press: once with the SOURCE identity (the
+    literal to find) and once with the DESTINATION (the literal to write).
+    """
+    values = identity.as_dict()
+
+    def _sub(m: re.Match[str]) -> str:
+        name = m.group(1)
+        if name not in values:
+            raise ValidationError(
+                f"[[replace]] pattern {pattern!r} references {{{name}}} but "
+                f"this identity does not declare it (display_name is optional "
+                f"— add it to the identity or drop the rule)"
+            )
+        return values[name]
+
+    return _PLACEHOLDER_RE.sub(_sub, pattern)
+
+
+def rule_matches_path(rule: ReplaceRule, posix: str) -> bool:
+    """POSIX rel-path scope check: empty files = every file; else fnmatch."""
+    if not rule.files:
+        return True
+    return any(fnmatch.fnmatch(posix, glob) for glob in rule.files)
 
 
 @dataclass(frozen=True)

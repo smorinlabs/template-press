@@ -2,8 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.identity import ValidationError
-from template_press.rebrand.rules import DEFAULT_RULES, load_rules
+from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.rules import (
+    DEFAULT_RULES,
+    ReplaceRule,
+    load_rules,
+    render_replace_pattern,
+    rule_matches_path,
+)
 
 
 def test_defaults_exclude_state_and_vcs_dirs():
@@ -150,3 +156,50 @@ class TestRewriteKnobs:
         target = _write_rules(tmp_path, '[rules]\ndisplay_forms = ["kebab"]\n')
         with pytest.raises(ValidationError):
             load_rules(target)
+
+
+def _identity(**overrides):
+    base = {
+        "package_name": "py_launch_blueprint",
+        "repo_name": "py-launch-blueprint",
+        "app_name": "plbp",
+        "author": "Steve Morin",
+        "email": "steve.morin@gmail.com",
+        "owner": "smorinlabs",
+    }
+    base.update(overrides)
+    return Identity(**base)
+
+
+class TestRuleRendering:
+    def test_renders_both_sides(self):
+        src = _identity()
+        dst = _identity(app_name="acme")
+        assert render_replace_pattern("_{app_name}_owned", src) == "_plbp_owned"
+        assert render_replace_pattern("_{app_name}_owned", dst) == "_acme_owned"
+
+    def test_app_name_upper_placeholder(self):
+        assert (
+            render_replace_pattern("{app_name_upper}_HOME", _identity()) == "PLBP_HOME"
+        )
+
+    def test_missing_display_name_fails_loud(self):
+        with pytest.raises(ValidationError):
+            render_replace_pattern("{display_name}!", _identity())
+
+    def test_display_name_renders_when_declared(self):
+        ident = _identity(display_name="Py Launch Blueprint")
+        assert (
+            render_replace_pattern("{display_name}!", ident) == "Py Launch Blueprint!"
+        )
+
+
+class TestRuleScoping:
+    def test_empty_files_matches_everything(self):
+        rule = ReplaceRule(pattern="{app_name}", reason="r")
+        assert rule_matches_path(rule, "any/where.py")
+
+    def test_glob_scopes(self):
+        rule = ReplaceRule(pattern="{app_name}", reason="r", files=("tests/**",))
+        assert rule_matches_path(rule, "tests/core/test_logging.py")
+        assert not rule_matches_path(rule, "src/pkg/mod.py")
