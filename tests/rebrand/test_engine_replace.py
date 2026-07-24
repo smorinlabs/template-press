@@ -385,3 +385,51 @@ class TestRuleStaticTextCollisionGuard:
         )
         with pytest.raises(ValidationError):
             build_plan(src_target, _identity(), _identity(app_name="acme"), rules)
+
+    def test_composed_boundary_collision_raises_at_build_plan(self, src_target: Path):
+        """Commit 2 (B's repro): a rule's rendered TO can embed a CHANGING
+        field's SOURCE token at the SEAM between static pattern text and a
+        DIFFERENT placeholder's rendered value — `pattern_static_segments`
+        (static text only) never sees this collision, since neither the
+        leading static "f" nor the trailing static "_Owned" contains "foo"
+        in isolation; only the FULL rendered TO ("foo_Owned") does. The
+        rendered-TO stability check must inspect the whole rendered TO, not
+        just its static segments, to catch this."""
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="f{repo_name}_Owned",
+                    reason="composed-boundary repro (commit 2)",
+                ),
+            )
+        )
+        source = _identity(app_name="foo", repo_name="oldrepo")
+        dest = _identity(app_name="bar", repo_name="oo")
+        with pytest.raises(ValidationError):
+            build_plan(src_target, source, dest, rules)
+
+    def test_boundary_blocked_static_suffix_accepted_and_pinned(self, src_target: Path):
+        """Commit 2 deliberate behavior change: `{app_name}plbp_x` (app_name
+        plbp -> acme) renders TO `acmeplbp_x`. The OLD static-segment guard
+        rejected this — its ISOLATED static segment "plbp_x" boundary-matches
+        the SOURCE app_name value "plbp" (nothing precedes "plbp" within the
+        segment alone). The NEW rendered-TO stability check ACCEPTS it,
+        correctly: in the FULL rendered TO, "plbp" is immediately preceded by
+        "e" (from "acme"), which blocks app_name's LEFT boundary —
+        `replace_token` provably never touches "acmeplbp_x"."""
+        (src_target / "note.txt").write_text("plbpplbp_x\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}plbp_x",
+                    reason="pinned acceptance (commit 2)",
+                ),
+            )
+        )
+        source, dest = _identity(), _identity(app_name="acme")
+        build_plan(src_target, source, dest, rules)  # must not raise
+        apply(src_target, source, dest, rules)
+        text = (src_target / "note.txt").read_text(encoding="utf-8")
+        assert "acmeplbp_x" in text  # the rule's own output, left alone
+        assert "acmeacme_x" not in text  # would mean the token pass re-fired

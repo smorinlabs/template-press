@@ -666,6 +666,89 @@ def test_rule_static_text_colliding_with_changed_token_exits_2_no_writes(
     assert not (src_target / RECEIPT_REL).exists()
 
 
+def test_composed_boundary_collision_exits_2_no_writes(tmp_path: Path):
+    """Commit 2 e2e: `pattern = "f{repo_name}_Owned"` renders TO
+    `"foo_Owned"` (static "f" + repo_name TO "oo") — this literal collides
+    with the CHANGING app_name value "foo" only once the static text and
+    the (different) placeholder's rendered value are composed together, a
+    seam `pattern_static_segments` (static text only) never sees. The
+    rendered-TO stability check must reject this at build-plan time — before
+    any write — never producing a wrong-but-plausible receipt.
+
+    A custom minimal target (not the `src_target` fixture) is built here so
+    its discoverable pyproject/git-origin content actually matches the
+    purpose-built `app_name`/`repo_name` values the composed repro needs —
+    reusing `src_target`'s fixed "press"/"demo-widget" identity would trip
+    the unrelated source-config-mismatch guard first."""
+    source = Identity(
+        package_name="oldrepo",
+        repo_name="oldrepo",
+        app_name="foo",
+        author="Demo Author",
+        email="demo@example.com",
+        owner="demolabs",
+    )
+    repo = tmp_path / "target"
+    pkg = repo / "src" / source.package_name
+    pkg.mkdir(parents=True)
+    (repo / "pyproject.toml").write_text(
+        f'[project]\nname = "{source.package_name}"\nversion = "0.1.0"\n'
+        f'authors = [{{ name = "{source.author}", email = "{source.email}" }}]\n'
+        f'requires-python = ">=3.12"\n\n'
+        f'[project.scripts]\n{source.app_name} = "{source.package_name}.cli:main"\n',
+        encoding="utf-8",
+    )
+    (pkg / "__init__.py").write_text('"""pkg."""\n', encoding="utf-8")
+    for git_args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "test@example.com"],
+        ["config", "user.name", "Test"],
+        [
+            "remote",
+            "add",
+            "origin",
+            f"https://github.com/{source.owner}/{source.repo_name}.git",
+        ],
+    ):
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(repo), *git_args],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+    (repo / "press").mkdir()
+    (repo / SOURCE_CONFIG_REL).write_text(
+        render_source_config(source), encoding="utf-8"
+    )
+    (repo / "press" / "press-rules.toml").write_text(
+        "[[replace]]\n"
+        'pattern = "f{repo_name}_Owned"\n'
+        'reason  = "composed-boundary repro (commit 2)"\n',
+        encoding="utf-8",
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(repo), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(repo), "commit", "-q", "-m", "init"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    dest = Identity(
+        package_name="oo",
+        repo_name="oo",
+        app_name="bar",
+        author="Potato Farmer",
+        email="potato@example.com",
+        owner="potatolabs",
+    )
+    answers = write_answers_file(tmp_path, dest)
+    code = main(["--target", str(repo), "--config", str(answers)])
+    assert code == 2
+    assert not (repo / RECEIPT_REL).exists()
+
+
 def test_partial_rebrand_keeping_author_verifies(src_target: Path, tmp_path: Path):
     """Fable sweep finding: unchanged fields are not leaks."""
     write_source_config(src_target)

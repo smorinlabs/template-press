@@ -9,6 +9,7 @@ to per-run values so any target's identity can be pressed (ARCH-03).
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 
 PYTHON_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -201,6 +202,24 @@ def token_occurs(text: str, field: str, value: str) -> bool:
     if pattern is not None:
         return pattern.search(text) is not None
     return value in text
+
+
+def occurs(
+    text: str, field: str, value: str, substring_fields: Collection[str] = frozenset()
+) -> bool:
+    """Dispatch to plain substring membership for an opted-in field.
+
+    Shared by every OCCURRENCE check across the engine/doctor/rules modules
+    (the engine's own replacement dispatch in ``_apply_replacements``/
+    ``_renamed_rel`` mirrors this same split): when ``substring_fields``
+    promises glued-token coverage for a field, the check must use the same
+    plain-substring posture — the boundary-guarded ``token_occurs`` would
+    miss a glued occurrence (``plbpOwned``) that substring mode is meant to
+    rewrite/catch.
+    """
+    if field in substring_fields:
+        return value in text
+    return token_occurs(text, field, value)
 
 
 def replace_token(text: str, field: str, current: str, replacement: str) -> str:

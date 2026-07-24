@@ -23,7 +23,7 @@ from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
     Identity,
     display_forms,
-    token_occurs,
+    occurs,
 )
 from template_press.rebrand.rules import ReplaceRule, Rules, rule_matches_path
 
@@ -55,22 +55,6 @@ def _read_for_scan(path: Path) -> str | None:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return None  # binary: the rewrite pass cannot alter it either
-
-
-def _occurs(
-    text: str, field_name: str, value: str, substring_fields: Collection[str]
-) -> bool:
-    """Dispatch to plain substring membership for an opted-in field.
-
-    Mirrors the engine's own dispatch (``_apply_replacements``,
-    ``_renamed_rel``): when ``substring_rewrite_fields`` promises glued-token
-    coverage for a field, the doctor's scan must use the same plain-substring
-    posture — the boundary-guarded ``token_occurs`` would miss a glued
-    leftover (``plbpOwned``) that the substring rewrite is meant to close.
-    """
-    if field_name in substring_fields:
-        return value in text
-    return token_occurs(text, field_name, value)
 
 
 def _reverse_renamed_posix(posix: str, renamed: list[tuple[str, str]]) -> str:
@@ -196,7 +180,7 @@ def find_leaks(
             text = None
         if text is not None:
             for field_name, value in fields.items():
-                if _occurs(text, field_name, value, substring_fields):
+                if occurs(text, field_name, value, substring_fields):
                     leaks.append(Leak(rel_posix, field_name, value, "content"))
             for rule, frm, _to in rendered_rules:
                 if (
@@ -211,7 +195,7 @@ def find_leaks(
             covered_symlinks.add(rel_posix)
             link = os.readlink(path)
             for field_name, value in fields.items():
-                if _occurs(link, field_name, value, substring_fields):
+                if occurs(link, field_name, value, substring_fields):
                     leaks.append(Leak(rel_posix, field_name, value, "symlink"))
             # Rule scope for symlink text is the link's TARGET, normalized —
             # mirroring _retarget_symlinks — never the link's own location.
@@ -233,7 +217,7 @@ def find_leaks(
                 continue
             for field_name in path_fields:
                 value = fields.get(field_name)
-                if value is not None and _occurs(
+                if value is not None and occurs(
                     component, field_name, value, substring_fields
                 ):
                     leaks.append(Leak(rel_posix, field_name, value, "path"))
@@ -268,7 +252,7 @@ def find_leaks(
                 continue
             for field_name in path_fields:
                 value = fields.get(field_name)
-                if value is not None and _occurs(
+                if value is not None and occurs(
                     component, field_name, value, substring_fields
                 ):
                     leaks.append(Leak(rel_posix, field_name, value, "path"))
@@ -281,7 +265,7 @@ def find_leaks(
             leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
             continue
         for field_name, value in fields.items():
-            if _occurs(link, field_name, value, substring_fields):
+            if occurs(link, field_name, value, substring_fields):
                 leaks.append(Leak(rel_posix, field_name, value, "symlink"))
         link_target_posix = symlink_target_posix(rel, link)
         for rule, frm, _to in rendered_rules:

@@ -487,6 +487,25 @@ def test_rule_only_leak_via_escaping_symlink_exits_1(tmp_path: Path) -> None:
     assert verify_command(["--target", str(repo)]) == 1
 
 
+# Commit 2: `rendered_replace_rules` is also called against the SYNTHETIC
+# destination inside `verify_command` (not just real `press rebrand`) —
+# a committed rule that trips the new rendered-TO stability check must
+# exit 2 cleanly there too, never an uncaught traceback (ValidationError
+# is in `_CONFIG_ERRORS`).
+def test_rule_rendered_to_stability_check_exits_2_not_traceback(
+    tmp_path: Path,
+) -> None:
+    repo = make_pressable(tmp_path)
+    (repo / "press" / "press-rules.toml").write_text(
+        "[[replace]]\n"
+        'pattern = "press_{app_name}Owned"\n'
+        'reason  = "rendered-TO stability repro (commit 2)"\n',
+        encoding="utf-8",
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 2
+
+
 def test_verify_never_mutates_real_target_exit_0_and_1(tmp_path: Path) -> None:
     # exit-0: a clean template (regenerable uv.lock is scan-exempt).
     clean = make_pressable(tmp_path / "clean")

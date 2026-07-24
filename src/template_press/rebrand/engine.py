@@ -19,6 +19,7 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
     display_forms,
+    occurs,
     replace_token,
     token_occurs,
 )
@@ -26,7 +27,6 @@ from template_press.rebrand.rules import (
     DEFAULT_RULES,
     ReplaceRule,
     Rules,
-    pattern_static_segments,
     render_replace_pattern,
     rule_matches_path,
 )
@@ -464,21 +464,31 @@ def rendered_replace_rules(
     ``_collisions`` preflight) but for rule literals rather than identity
     fields.
 
-    A rule whose STATIC (non-placeholder) text embeds a CHANGING identity
-    field's SOURCE value also raises: ``[[replace]]`` rules run BEFORE the
-    token pass (``_apply_replacements``/``_renamed_rel``), so a rule's
-    rendered output is itself subject to that later pass. Pattern
-    ``"foo_{app_name}Owned"`` with app_name ``foo -> bar`` renders TO
-    ``"foo_barOwned"`` — the static ``"foo_"`` prefix still boundary-matches
-    the OLD app_name value (an underscore is not a boundary-blocking
-    character on that side), so the token pass would re-rewrite it right
-    back out from under the rule, silently corrupting the output to
-    ``"bar_barOwned"``. Checked against every field's SOURCE value using the
-    exact matcher the token pass applies to it (boundary ``token_occurs``,
-    or plain containment for a field in ``substring_rewrite_fields``) —
-    evaluated on each STATIC segment in isolation
-    (``rules.pattern_static_segments``), independent of whether THIS rule's
-    own placeholder(s) reference the colliding field.
+    A rule's rendered TO is checked for STABILITY against the later token
+    pass: ``[[replace]]`` rules run BEFORE the token pass
+    (``_apply_replacements``/``_renamed_rel``), so a rule's rendered output
+    is itself subject to that later pass. The check inspects the FULL
+    rendered TO — not just its static (non-placeholder) segments — because a
+    CHANGING field's SOURCE value can appear at the SEAM between static text
+    and a DIFFERENT placeholder's rendered value: pattern
+    ``"f{repo_name}_Owned"`` with repo_name rendering to ``"oo"`` composes TO
+    ``"foo_Owned"``, which boundary-matches the CHANGING app_name value
+    ``"foo"`` even though neither static segment (``"f"``, ``"_Owned"``)
+    contains it alone. The token pass would then re-rewrite that composed
+    occurrence right back out from under the rule, silently corrupting the
+    output. Checked against every field's SOURCE value using that field's
+    own matcher (boundary ``token_occurs``, or plain containment for a field
+    in ``substring_rewrite_fields``) via the shared ``identity.occurs``
+    dispatch — the same dispatch the doctor's leak scan uses.
+
+    This eliminates every mutation of a rendered TO that lies wholly WITHIN
+    the TO. A match that STRADDLES the boundary between surrounding file
+    content and the inserted TO (e.g. context ``"x"`` + TO ``"bar_data"``
+    forming ``"xbar"``, which matches a changed ``package_name`` ``"xbar"``
+    -> ``"qq"``) is content-dependent and not checkable at plan time — a
+    known, documented limitation (see
+    docs/design/0008-identity-variants-and-replace-rules.md), not a claim of
+    impossibility.
     """
     out: list[tuple[ReplaceRule, str, str]] = []
     pairs = (
@@ -489,20 +499,17 @@ def rendered_replace_rules(
         to = render_replace_pattern(rule.pattern, dest)
         if frm == to:
             continue
-        for segment in pattern_static_segments(rule.pattern):
-            for tag, cur, _repl in pairs:
-                substring = tag in rules.substring_rewrite_fields
-                hit = (cur in segment) if substring else token_occurs(segment, tag, cur)
-                if hit:
-                    raise ValidationError(
-                        f"[[replace]] pattern {rule.pattern!r} has static text "
-                        f"{segment!r} that collides with the CHANGING {tag} "
-                        f"value {cur!r} — the token pass runs AFTER this rule "
-                        f"and would re-rewrite the rule's own rendered output; "
-                        f"use the {{{tag}}} placeholder in the pattern instead "
-                        f"of literal text, or press in two steps via an "
-                        f"intermediate identity"
-                    )
+        for tag, cur, _repl in pairs:
+            if occurs(to, tag, cur, rules.substring_rewrite_fields):
+                raise ValidationError(
+                    f"[[replace]] pattern {rule.pattern!r} renders TO {to!r}, "
+                    f"which still contains the CHANGING {tag} value {cur!r} "
+                    f"— the token pass runs AFTER this rule and would "
+                    f"re-rewrite the rule's own rendered output; use the "
+                    f"{{{tag}}} placeholder in the pattern instead of literal "
+                    f"text, or press in two steps via an intermediate "
+                    f"identity"
+                )
         if rule.paths and any(sep in frm or sep in to for sep in ("/", "\\")):
             raise ValidationError(
                 f"[[replace]] pattern {rule.pattern!r} has paths=true but its "
