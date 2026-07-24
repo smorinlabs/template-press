@@ -723,3 +723,94 @@ class TestDisplayNameGate:
             )
             is None
         )
+
+
+class TestCollisionsCoverDerivedDisplayForms:
+    """F3: `_collisions` compared raw identity values, but replacement uses
+    derived display forms — a destination display name whose derived form
+    embeds a changed source token slipped through. Repro: source app_name
+    "plbp" + source display "Py Launch Blueprint" + dest display "Plbp" ->
+    camel("Plbp") == "plbp", the very (changed) source app_name token."""
+
+    def test_derived_camel_form_embedding_changed_app_name_is_a_collision(self):
+        from template_press.rebrand.cli import _collisions
+
+        source = _identity(display_name="Py Launch Blueprint")
+        dest = _identity(app_name="acme", display_name="Plbp")
+        assert _collisions(source, dest) != []
+
+    def test_end_to_end_main_exits_2(self, tmp_path: Path):
+        target = tmp_path / "plbp-repo"
+        (target / "press").mkdir(parents=True)
+        (target / "press" / "press-source.toml").write_text(
+            "[identity]\n"
+            'package_name = "py_launch_blueprint"\n'
+            'repo_name    = "py-launch-blueprint"\n'
+            'app_name     = "plbp"\n'
+            'author       = "Steve Morin"\n'
+            'email        = "steve.morin@gmail.com"\n'
+            'owner        = "smorinlabs"\n'
+            'display_name = "Py Launch Blueprint"\n',
+            encoding="utf-8",
+        )
+        (target / "pyproject.toml").write_text(
+            "[project]\n"
+            'name = "py-launch-blueprint"\n'
+            'version = "0.1.0"\n'
+            'authors = [{name = "Steve Morin", email = "steve.morin@gmail.com"}]\n'
+            "[project.scripts]\n"
+            'plbp = "py_launch_blueprint.cli:main"\n',
+            encoding="utf-8",
+        )
+        (target / "src" / "py_launch_blueprint").mkdir(parents=True)
+        (target / "src" / "py_launch_blueprint" / "__init__.py").write_text(
+            '"""Py Launch Blueprint."""\n', encoding="utf-8"
+        )
+        subprocess.run(["git", "init", "-q"], cwd=target, check=True)  # noqa: S607
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(target), "config", "user.email", "t@example.com"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(target), "config", "user.name", "t"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(  # noqa: S603
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(target),
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/smorinlabs/py-launch-blueprint.git",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(target), "commit", "-q", "-m", "seed"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        answers = tmp_path / "answers.toml"
+        answers.write_text(
+            "[answers]\n"
+            'package_name = "acme_widget"\n'
+            'repo_name    = "acme-widget"\n'
+            'app_name     = "acme"\n'
+            'author       = "Ada Lovelace"\n'
+            'email        = "ada@example.com"\n'
+            'owner        = "acmelabs"\n'
+            'display_name = "Plbp"\n',
+            encoding="utf-8",
+        )
+        code = main(["--target", str(target), "--config", str(answers)])
+        assert code == 2
