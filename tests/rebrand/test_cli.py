@@ -846,3 +846,63 @@ class TestCollisionsCoverDerivedDisplayForms:
         )
         code = main(["--target", str(target), "--config", str(answers)])
         assert code == 2
+
+
+class TestSubstringAwareCollisionPreflight:
+    """F4: with a field opted into ``[rules] substring_rewrite_fields``, the
+    engine rewrites that field SUBSTRING-wide — so ``_collisions`` must catch
+    a destination value that embeds the source token WITHOUT a word boundary
+    too, not just the boundary-guarded default posture."""
+
+    def test_substring_field_embedded_without_boundary_is_a_collision(self):
+        from template_press.rebrand.cli import _collisions
+
+        source = _identity(app_name="press")
+        dest = _identity(app_name="tool", repo_name="mypress-tools")
+        # Boundary mode: "press" preceded by alnum "y" in "mypress-tools" is
+        # NOT a token match — no collision without substring mode.
+        assert _collisions(source, dest) == []
+        # Substring mode for app_name: the embedded literal IS a collision.
+        assert _collisions(source, dest, substring_fields=frozenset({"app_name"})) != []
+
+    def test_end_to_end_substring_collision_exits_2(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """Repro: pressing app_name press->potato with dest repo_name
+        embedding the old app_name as a glued substring — without the
+        preflight fix, the repo pair writes it and the substring app pass
+        would corrupt it afterward (receipt records the wrong repo name)."""
+        write_source_config(src_target)
+        (src_target / "press" / "press-rules.toml").write_text(
+            '[rules]\nsubstring_rewrite_fields = ["app_name"]\n', encoding="utf-8"
+        )
+        dest = {**DEST.as_dict_prompted(), "repo_name": "mypress-tools"}
+        answers = tmp_path / "substring-collision.toml"
+        answers.write_text(
+            "[answers]\n" + "\n".join(f'{k} = "{v}"' for k, v in dest.items()) + "\n",
+            encoding="utf-8",
+        )
+        code = main(
+            ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+        )
+        assert code == 2
+        err = capsys.readouterr().err
+        assert "repo_name" in err and "app_name" in err
+
+    def test_same_identities_without_substring_mode_no_collision(
+        self, src_target: Path, tmp_path: Path
+    ):
+        """Control: the IDENTICAL destination without substring mode declared
+        is not a collision — the boundary-guarded default posture is
+        unchanged by this fix."""
+        write_source_config(src_target)
+        dest = {**DEST.as_dict_prompted(), "repo_name": "mypress-tools"}
+        answers = tmp_path / "no-substring.toml"
+        answers.write_text(
+            "[answers]\n" + "\n".join(f'{k} = "{v}"' for k, v in dest.items()) + "\n",
+            encoding="utf-8",
+        )
+        code = main(
+            ["--target", str(src_target), "--config", str(answers), "--dry-run"]
+        )
+        assert code == 0

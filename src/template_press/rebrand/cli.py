@@ -156,7 +156,11 @@ def _expand_display_forms(values: dict[str, str]) -> dict[str, str]:
     return expanded
 
 
-def _collisions(source: Identity, dest: Identity) -> list[str]:
+def _collisions(
+    source: Identity,
+    dest: Identity,
+    substring_fields: frozenset[str] = frozenset(),
+) -> list[str]:
     """Destination values that embed a CHANGED source token.
 
     Sequential substitution would re-rewrite such output (old app name
@@ -170,6 +174,15 @@ def _collisions(source: Identity, dest: Identity) -> list[str]:
     per-form values, so a destination display name whose DERIVED form (e.g.
     the camel form of "Plbp" is "plbp") embeds a changed source token is
     caught even though the raw display name never contains it verbatim.
+
+    ``substring_fields`` (Fix F4) — the target's ``[rules]
+    substring_rewrite_fields`` — mirrors what the engine will actually do to
+    a changed field opted into substring mode: it rewrites that field
+    SUBSTRING-wide, with no word-boundary guard, so a destination value that
+    embeds the source token WITHOUT a boundary (e.g. dest repo_name
+    "myfoo-tools" embedding source app_name "foo") is just as much a
+    collision as a boundary-guarded one — checked via plain ``in`` instead of
+    the boundary-guarded ``token_occurs``.
     """
     out: list[str] = []
     src = _expand_display_forms(source.as_dict())
@@ -177,7 +190,12 @@ def _collisions(source: Identity, dest: Identity) -> list[str]:
     changed = {f: v for f, v in src.items() if v != dst.get(f)}
     for dest_field, dest_value in dst.items():
         for src_field, src_value in changed.items():
-            if token_occurs(dest_value, src_field, src_value):
+            hit = (
+                src_value in dest_value
+                if src_field in substring_fields
+                else token_occurs(dest_value, src_field, src_value)
+            )
+            if hit:
                 out.append(
                     f"destination {dest_field}={dest_value!r} contains the "
                     f"source {src_field} token {src_value!r}"
@@ -245,7 +263,15 @@ def main(argv: list[str] | None = None) -> int:
             return _fail(
                 "source and destination identities are identical — nothing to press"
             )
-        collisions = _collisions(source, dest)
+        # Loaded before the collision preflight (Fix F4): substring_rewrite_fields
+        # changes what counts as a collision (a boundary-free embedded token is
+        # only a problem for a field the engine will actually rewrite
+        # substring-wide) — pure reading, no side effect, so moving it earlier
+        # is safe.
+        rules = load_rules(target)
+        collisions = _collisions(
+            source, dest, substring_fields=rules.substring_rewrite_fields
+        )
         if collisions:
             print(
                 "error: destination identity embeds source tokens — a single "
@@ -257,7 +283,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {c}", file=sys.stderr)
             return 2
 
-        rules = load_rules(target)
         plan = build_plan(target, source, dest, rules)
         print(plan.render())
         strays = stray_press_dirs(target)
