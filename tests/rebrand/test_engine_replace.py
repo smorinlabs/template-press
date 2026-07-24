@@ -137,26 +137,40 @@ class TestReplaceRuleContent:
         assert "_acme_owned" in text and "_plbp_owned" not in text
 
     def test_rules_run_before_token_pass(self, src_target: Path):
-        # FROM embeds package_name; if the token pass ran first the rule's
-        # rendered FROM would no longer match.
+        # Discriminating probe: FROM spans TWO fields ("{package_name}/
+        # {app_name}-web"). If the token pass ran first, package_name's
+        # generic boundary (hyphen counts as a boundary either side) would
+        # rewrite "py_launch_blueprint" on its own, leaving "plbp-web"
+        # behind — at which point the rule's rendered FROM no longer
+        # matches the (now-mixed) text and never fires, so app_name's
+        # trailing-hyphen boundary guard (a token boundary, never a rule
+        # boundary) leaves "plbp-web" stranded in the output. Rules-first
+        # (the correct order) replaces the whole compound in one shot, so
+        # "plbp-web" never survives. This makes the two orders produce
+        # visibly different text, unlike a single-field FROM where the
+        # generic boundary alone already matches (see prior version of
+        # this test, which a review found non-discriminating).
         (src_target / "note.md").write_text(
-            "see py_launch_blueprint-extra\n", encoding="utf-8"
+            "image: py_launch_blueprint/plbp-web\n", encoding="utf-8"
         )
         _git_add_all(src_target)
         rules = _rules_with(
             replace=(
-                ReplaceRule(pattern="{package_name}-extra", reason="compound ref"),
+                ReplaceRule(
+                    pattern="{package_name}/{app_name}-web",
+                    reason="compound image ref",
+                ),
             )
         )
         apply(
             src_target,
             _identity(),
-            _identity(package_name="acme_widget"),
+            _identity(package_name="acme_widget", app_name="acme"),
             rules,
         )
-        assert "acme_widget-extra" in (src_target / "note.md").read_text(
-            encoding="utf-8"
-        )
+        text = (src_target / "note.md").read_text(encoding="utf-8")
+        assert "acme_widget/acme-web" in text
+        assert "plbp-web" not in text
 
     def test_files_glob_scopes_rule(self, src_target: Path):
         # fnmatch (rule_matches_path's matcher, Task 6) matches the FULL
