@@ -438,7 +438,15 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                                 "replace", rel.as_posix(), f"rule {frm!r} -> {to!r}"
                             )
                         )
-            hit_fields = [f for f, cur, _ in pairs if token_occurs(text, f, cur)]
+            hit_fields = [
+                f
+                for f, cur, _ in pairs
+                if (
+                    (cur in text)
+                    if f in rules.substring_rewrite_fields
+                    else token_occurs(text, f, cur)
+                )
+            ]
             if hit_fields:
                 plan.items.append(
                     PlanItem("replace", rel.as_posix(), f"fields={hit_fields}")
@@ -500,7 +508,13 @@ def _apply_replacements(
             if rule.content and rule_matches_path(rule, rel):
                 new_text = new_text.replace(frm, to)
         for f, cur, repl in pairs:
-            new_text = replace_token(new_text, f, cur, repl)
+            if f in rules.substring_rewrite_fields:
+                # Opt-in per-field substring mode (codesign sec-02 secondary):
+                # plain replacement, no boundary guard — gated on the target
+                # declaring the token word-disjoint in press-rules.toml.
+                new_text = new_text.replace(cur, repl)
+            else:
+                new_text = replace_token(new_text, f, cur, repl)
         if new_text != text:
             # Route through safe_write: its assert_under_root closes the
             # ancestor-symlink hole (a symlinked ancestor would write OUTSIDE

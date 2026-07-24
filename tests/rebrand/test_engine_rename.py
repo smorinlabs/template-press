@@ -284,3 +284,14 @@ class TestRulePathRenames:
                 [],
                 rendered=[(rules.replace[0], "plbp", "")],
             )
+
+
+class TestSubstringRenames:
+    def test_doc_filename_renamed_with_substring_mode(self, src_target: Path):
+        docs = src_target / "docs"
+        docs.mkdir()
+        (docs / "0001-app-short-name-plbp.md").write_text("x\n", encoding="utf-8")
+        _git_add(src_target)
+        rules = _rules_with(substring_rewrite_fields=frozenset({"app_name"}))
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert (docs / "0001-app-short-name-acme.md").exists()

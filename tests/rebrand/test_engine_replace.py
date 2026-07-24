@@ -211,3 +211,30 @@ class TestReplaceRuleContent:
         )
         apply(src_target, _identity(), _identity(app_name="acme"), rules)
         assert "plbp-web" in (src_target / "a.txt").read_text(encoding="utf-8")
+
+
+class TestSubstringMode:
+    def test_glued_token_rewritten_when_opted_in(self, src_target: Path):
+        (src_target / "Justfile").write_text('tag="plbp-web:dev"\n', encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(substring_rewrite_fields=frozenset({"app_name"}))
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert 'tag="acme-web:dev"' in (src_target / "Justfile").read_text(
+            encoding="utf-8"
+        )
+
+    def test_substring_mode_replaces_inside_words_by_design(self, src_target: Path):
+        # THE documented risk (codesign sec-02): substring mode on a
+        # word-embedded token corrupts prose. plbp is word-disjoint so this
+        # uses a synthetic embedding to pin the behavior as intentional.
+        (src_target / "note.txt").write_text("xplbpy\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(substring_rewrite_fields=frozenset({"app_name"}))
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert (src_target / "note.txt").read_text(encoding="utf-8") == "xacmey\n"
+
+    def test_default_stays_conservative(self, src_target: Path):
+        (src_target / "note.txt").write_text("_plbp_owned\n", encoding="utf-8")
+        _git_add_all(src_target)
+        apply(src_target, _identity(), _identity(app_name="acme"), DEFAULT_RULES)
+        assert "_plbp_owned" in (src_target / "note.txt").read_text(encoding="utf-8")
