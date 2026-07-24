@@ -7,6 +7,7 @@ from template_press.rebrand.rules import (
     DEFAULT_RULES,
     ReplaceRule,
     load_rules,
+    pattern_static_segments,
     render_replace_pattern,
     rule_matches_path,
 )
@@ -213,6 +214,26 @@ class TestRuleRendering:
         assert (
             render_replace_pattern("{display_name}!", ident) == "Py Launch Blueprint!"
         )
+
+
+class TestPatternStaticSegments:
+    """F2: the literal (non-placeholder) text of a rule pattern — used by
+    `engine.rendered_replace_rules` to guard against a rule's own static
+    text colliding with a changing identity token."""
+
+    def test_single_placeholder_splits_before_and_after(self):
+        assert pattern_static_segments("foo_{app_name}Owned") == ["foo_", "Owned"]
+
+    def test_leading_placeholder_yields_empty_leading_segment(self):
+        assert pattern_static_segments("{app_name}-web") == ["", "-web"]
+
+    def test_multiple_placeholders(self):
+        assert pattern_static_segments("{owner}/{repo_name}") == ["", "/", ""]
+
+    def test_no_placeholder_is_a_single_segment(self):
+        # Not a legal committed rule (parsing requires >=1 placeholder), but
+        # the splitter itself must not choke on it.
+        assert pattern_static_segments("plain") == ["plain"]
 
 
 class TestRuleScoping:

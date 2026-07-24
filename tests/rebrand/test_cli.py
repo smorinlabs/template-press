@@ -564,6 +564,42 @@ def test_rule_scope_stable_dir_no_ancestor_rename_still_receipts(
     assert not (docs / "_press_guide.md").exists()
 
 
+def test_rule_static_text_colliding_with_changed_token_exits_2_no_writes(
+    src_target: Path, tmp_path: Path
+):
+    """F2 e2e: `pattern = "press_{app_name}Owned"` renders TO
+    `"press_potatoOwned"` — its static "press_" prefix boundary-matches the
+    SOURCE app_name value ("press", underscore-terminated) exactly like the
+    ordinary token pass would, so the token pass that runs right after the
+    rule pass would re-rewrite the rule's own static text, silently
+    corrupting the output. `rendered_replace_rules` must reject this at
+    build-plan time — before any write — never producing a
+    wrong-but-plausible receipt."""
+    write_source_config(src_target)
+    (src_target / "press" / "press-rules.toml").write_text(
+        "[[replace]]\n"
+        'pattern = "press_{app_name}Owned"\n'
+        'reason  = "static-text collision repro (F2)"\n',
+        encoding="utf-8",
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "commit", "-q", "-m", "add colliding rule"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 2
+    assert not (src_target / RECEIPT_REL).exists()
+
+
 def test_partial_rebrand_keeping_author_verifies(src_target: Path, tmp_path: Path):
     """Fable sweep finding: unchanged fields are not leaks."""
     write_source_config(src_target)

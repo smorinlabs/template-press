@@ -77,6 +77,19 @@ def render_replace_pattern(pattern: str, identity: Identity) -> str:
     return _PLACEHOLDER_RE.sub(_sub, pattern)
 
 
+def pattern_static_segments(pattern: str) -> list[str]:
+    """The literal (non-placeholder) text segments of a ``[[replace]]`` pattern.
+
+    ``_PLACEHOLDER_RE.split`` on a one-group pattern alternates
+    ``[static, placeholder_name, static, placeholder_name, ..., static]`` —
+    the even indices are the STATIC text that survives verbatim regardless
+    of which identity renders the pattern (used by
+    ``engine.rendered_replace_rules`` to guard against a rule's own literal
+    text colliding with a changing identity token).
+    """
+    return _PLACEHOLDER_RE.split(pattern)[0::2]
+
+
 def rule_matches_path(rule: ReplaceRule, posix: str) -> bool:
     """POSIX rel-path scope check: empty files = every file; else fnmatch.
 

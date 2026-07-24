@@ -26,6 +26,7 @@ from template_press.rebrand.rules import (
     DEFAULT_RULES,
     ReplaceRule,
     Rules,
+    pattern_static_segments,
     render_replace_pattern,
     rule_matches_path,
 )
@@ -462,13 +463,46 @@ def rendered_replace_rules(
     time — mirrors the substring self-embedding collision guard (the CLI's
     ``_collisions`` preflight) but for rule literals rather than identity
     fields.
+
+    A rule whose STATIC (non-placeholder) text embeds a CHANGING identity
+    field's SOURCE value also raises: ``[[replace]]`` rules run BEFORE the
+    token pass (``_apply_replacements``/``_renamed_rel``), so a rule's
+    rendered output is itself subject to that later pass. Pattern
+    ``"foo_{app_name}Owned"`` with app_name ``foo -> bar`` renders TO
+    ``"foo_barOwned"`` — the static ``"foo_"`` prefix still boundary-matches
+    the OLD app_name value (an underscore is not a boundary-blocking
+    character on that side), so the token pass would re-rewrite it right
+    back out from under the rule, silently corrupting the output to
+    ``"bar_barOwned"``. Checked against every field's SOURCE value using the
+    exact matcher the token pass applies to it (boundary ``token_occurs``,
+    or plain containment for a field in ``substring_rewrite_fields``) —
+    evaluated on each STATIC segment in isolation
+    (``rules.pattern_static_segments``), independent of whether THIS rule's
+    own placeholder(s) reference the colliding field.
     """
     out: list[tuple[ReplaceRule, str, str]] = []
+    pairs = (
+        replacement_pairs(source, dest, rules.display_forms) if rules.replace else []
+    )
     for rule in rules.replace:
         frm = render_replace_pattern(rule.pattern, source)
         to = render_replace_pattern(rule.pattern, dest)
         if frm == to:
             continue
+        for segment in pattern_static_segments(rule.pattern):
+            for tag, cur, _repl in pairs:
+                substring = tag in rules.substring_rewrite_fields
+                hit = (cur in segment) if substring else token_occurs(segment, tag, cur)
+                if hit:
+                    raise ValidationError(
+                        f"[[replace]] pattern {rule.pattern!r} has static text "
+                        f"{segment!r} that collides with the CHANGING {tag} "
+                        f"value {cur!r} — the token pass runs AFTER this rule "
+                        f"and would re-rewrite the rule's own rendered output; "
+                        f"use the {{{tag}}} placeholder in the pattern instead "
+                        f"of literal text, or press in two steps via an "
+                        f"intermediate identity"
+                    )
         if rule.paths and any(sep in frm or sep in to for sep in ("/", "\\")):
             raise ValidationError(
                 f"[[replace]] pattern {rule.pattern!r} has paths=true but its "

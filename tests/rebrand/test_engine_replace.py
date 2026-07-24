@@ -334,3 +334,54 @@ class TestSubstringMode:
         _git_add_all(src_target)
         apply(src_target, _identity(), _identity(app_name="acme"), DEFAULT_RULES)
         assert "_plbp_owned" in (src_target / "note.txt").read_text(encoding="utf-8")
+
+
+class TestRuleStaticTextCollisionGuard:
+    """F2: a rule's own STATIC (non-placeholder) text can coincidentally
+    equal a CHANGING identity value — `pattern = "plbp_{app_name}Owned"`
+    renders TO `"plbp_acmeOwned"`, and the token pass that runs AFTER the
+    rule pass would then re-match the static "plbp" prefix (boundary-safe:
+    an underscore follows) and rewrite it too, silently corrupting the
+    rule's own output ("acme_acmeOwned"). `rendered_replace_rules` must
+    reject this at build/plan time, before any write."""
+
+    def test_static_prefix_token_matches_changing_field_raises_at_build_plan(
+        self, src_target: Path
+    ):
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(pattern="plbp_{app_name}Owned", reason="ownership guard"),
+            )
+        )
+        with pytest.raises(ValidationError):
+            build_plan(src_target, _identity(), _identity(app_name="acme"), rules)
+
+    def test_benign_static_text_merely_resembling_the_token_renders_fine(
+        self, src_target: Path
+    ):
+        # "plbpx_" contains "plbp" as a plain substring, but the immediately
+        # following "x" blocks the boundary — the token pass's own matcher
+        # would never fire here either, so the rule is safe.
+        (src_target / "note.txt").write_text("plbpx_plbpOwned\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(ReplaceRule(pattern="plbpx_{app_name}Owned", reason="benign"),)
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert "plbpx_acmeOwned" in (src_target / "note.txt").read_text(
+            encoding="utf-8"
+        )
+
+    def test_substring_mode_field_rejects_plain_containment_collision(
+        self, src_target: Path
+    ):
+        # The SAME "plbpx_" static text that is safe under the default
+        # boundary-guarded token pass is a genuine collision once app_name
+        # opts into plain-substring rewriting: "plbp" is a plain substring
+        # of "plbpx_" regardless of the boundary.
+        rules = _rules_with(
+            replace=(ReplaceRule(pattern="plbpx_{app_name}Owned", reason="substring"),),
+            substring_rewrite_fields=frozenset({"app_name"}),
+        )
+        with pytest.raises(ValidationError):
+            build_plan(src_target, _identity(), _identity(app_name="acme"), rules)
