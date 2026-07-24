@@ -362,13 +362,29 @@ def rendered_replace_rules(
     Rendering raises ValidationError when a pattern references a field this
     identity pair doesn't declare (optional display_name) — surfacing at
     plan time, before any write.
+
+    A ``paths = true`` rule whose rendered FROM or TO contains a path
+    separator also raises: the FROM side can never match a single path
+    COMPONENT (the unit `_renamed_rel` operates on), and a TO side that
+    splits into nested parts corrupts the component-wise rename (the strict
+    ``zip`` in the rename-collapse loop crashes or silently mis-renames).
+    Content-only rules are NOT restricted — a content pattern like
+    ``{owner}/{repo_name}`` is legitimate prose.
     """
     out: list[tuple[ReplaceRule, str, str]] = []
     for rule in rules.replace:
         frm = render_replace_pattern(rule.pattern, source)
         to = render_replace_pattern(rule.pattern, dest)
-        if frm != to:
-            out.append((rule, frm, to))
+        if frm == to:
+            continue
+        if rule.paths and ("/" in frm or "/" in to):
+            raise ValidationError(
+                f"[[replace]] pattern {rule.pattern!r} has paths=true but its "
+                f"rendered value contains a path separator ('/'), which can "
+                f"never match (or would corrupt) a single path component: "
+                f"FROM {frm!r} TO {to!r}"
+            )
+        out.append((rule, frm, to))
     return out
 
 
@@ -534,6 +550,7 @@ def _retarget_symlinks(
     target: Path,
     pairs: list[tuple[str, str, str]],
     report: ApplyReport,
+    substring_fields: Collection[str] = frozenset(),
 ) -> None:
     """Rewrite in-repo RELATIVE symlink targets carrying identity tokens.
 
@@ -545,6 +562,11 @@ def _retarget_symlinks(
     reused ``assert_under_root`` on the resolved sink). The link is recreated
     with unlink + symlink, guarded by an immediate ``is_symlink`` re-check to
     refuse a TOCTOU swap.
+
+    Dispatch per field mirrors ``_apply_replacements``: a field in
+    ``substring_fields`` uses plain substring replacement (glued-token
+    coverage, codesign sec-02 secondary); every other field uses the
+    boundary-guarded ``replace_token``.
     """
     target_r = target.resolve()
     for rel in _git_listed(target):
@@ -556,7 +578,10 @@ def _retarget_symlinks(
             continue  # never rewrite or follow an absolute target
         new_link = link
         for f, cur, repl in pairs:
-            new_link = replace_token(new_link, f, cur, repl)
+            if f in substring_fields:
+                new_link = new_link.replace(cur, repl)
+            else:
+                new_link = replace_token(new_link, f, cur, repl)
         if new_link == link:
             continue
         sink = (path.parent / new_link).resolve()
@@ -586,7 +611,13 @@ def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> Apply
     pairs = replacement_pairs(source, dest, rules.display_forms)
     rendered = rendered_replace_rules(rules, source, dest)
     _apply_replacements(target, pairs, rules, report, rendered)
-    _retarget_symlinks(target, pairs, report)
+    # Symlink text must only be rewritten where the rename pass would move
+    # the target — display forms never rename paths (not in RENAME_FIELDS),
+    # so a display pair would rewrite a link's text out from under a
+    # directory that keeps its original name (dangling link). Drop them
+    # before retargeting.
+    symlink_pairs = [p for p in pairs if not p[0].startswith("display_name_")]
+    _retarget_symlinks(target, symlink_pairs, report, rules.substring_rewrite_fields)
     _apply_renames(target, pairs, rules, report, rendered)
     return report
 

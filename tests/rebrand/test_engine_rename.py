@@ -151,6 +151,36 @@ def test_apply_leaves_absolute_symlink_target_untouched(src_target: Path):
     assert os.readlink(link) == "/srv/demo_widget/thing"  # unchanged
 
 
+@requires_symlink
+def test_retarget_symlink_uses_substring_mode_for_opted_in_field(src_target: Path):
+    """A field in substring_rewrite_fields must retarget symlinks via plain
+    substring replace, not the boundary-guarded token pattern — mirroring
+    _apply_replacements' dispatch (Fix 1). "plbpOwned" is glued (no boundary
+    on the right side), so the default boundary match would leave it alone;
+    substring mode must still catch it."""
+    link = src_target / "link"
+    os.symlink("targets/plbpOwned", link)
+    _git_add(src_target)
+    rules = _rules_with(substring_rewrite_fields=frozenset({"app_name"}))
+    apply(src_target, _identity(), _identity(app_name="acme"), rules)
+    assert os.readlink(link) == "targets/acmeOwned"
+
+
+@requires_symlink
+def test_retarget_excludes_display_form_pairs_dangling_link_guard(src_target: Path):
+    """Display-form pairs rewrite symlink TEXT but display forms never rename
+    paths (not in RENAME_FIELDS) — the target directory keeps its original
+    name, so a display pair must not touch the link string either, or the
+    link dangles (Fix 2)."""
+    link = src_target / "link"
+    os.symlink("PyLaunchBlueprint/data", link)
+    _git_add(src_target)
+    src = _identity(display_name="Py Launch Blueprint")
+    dst = _identity(app_name="acme", display_name="Acme Widget")
+    apply(src_target, src, dst, DEFAULT_RULES)
+    assert os.readlink(link) == "PyLaunchBlueprint/data"
+
+
 def test_app_name_upper_renamed(src_target: Path):
     """Uppercased app token in filenames should be renamed."""
     (src_target / "PRESS_GUIDE.md").write_text("# Press Guide\n", encoding="utf-8")

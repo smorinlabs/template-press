@@ -2,8 +2,10 @@ import dataclasses
 import subprocess
 from pathlib import Path
 
-from template_press.rebrand.engine import apply, replacement_pairs
-from template_press.rebrand.identity import Identity
+import pytest
+
+from template_press.rebrand.engine import apply, build_plan, replacement_pairs
+from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 
 from .conftest import DEST, SOURCE
@@ -211,6 +213,42 @@ class TestReplaceRuleContent:
         )
         apply(src_target, _identity(), _identity(app_name="acme"), rules)
         assert "plbp-web" in (src_target / "a.txt").read_text(encoding="utf-8")
+
+
+class TestPathsRuleSeparatorGuard:
+    def test_paths_rule_with_slash_in_rendered_side_raises(self, src_target: Path):
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{author}-dir",
+                    reason="author-scoped dir",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        dest = _identity(author="New/Name")
+        with pytest.raises(ValidationError):
+            build_plan(src_target, _identity(), dest, rules)
+
+    def test_content_only_rule_with_slash_in_rendered_sides_still_applies(
+        self, src_target: Path
+    ):
+        (src_target / "note.md").write_text(
+            "owner: smorinlabs/py-launch-blueprint\n", encoding="utf-8"
+        )
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(ReplaceRule(pattern="{owner}/{repo_name}", reason="repo slug"),)
+        )
+        apply(
+            src_target,
+            _identity(),
+            _identity(owner="acmelabs", repo_name="acme-widget"),
+            rules,
+        )
+        text = (src_target / "note.md").read_text(encoding="utf-8")
+        assert "acmelabs/acme-widget" in text
 
 
 class TestSubstringMode:

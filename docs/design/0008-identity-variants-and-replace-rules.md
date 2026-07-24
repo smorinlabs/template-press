@@ -28,6 +28,11 @@
    `[rules] substring_rewrite_fields = ["app_name"]` switches that field
    to plain substring replacement in content AND path components. Gated on
    the target author declaring the token word-disjoint; never a default.
+   Fields are independently selectable — opting in `app_name` does not
+   cover glued UPPERCASE forms (e.g. `PLBPOwned`); a target with those
+   needs the derived field opted in too, so the recommended pair when
+   uppercase glued forms exist is
+   `substring_rewrite_fields = ["app_name", "app_name_upper"]`.
 4. **Paths ride the shared matcher** (sec-03 ch-03-a). Rules with
    `paths = true` and substring-mode fields flow into the existing
    `_renamed_rel` rename pass — no second matching surface (the dotnet
