@@ -9,6 +9,7 @@ from template_press.rebrand.config import (
     SOURCE_CONFIG_REL,
     assert_control_real,
     load_answers,
+    load_identity_toml,
     load_source_config,
     render_source_config,
 )
@@ -104,3 +105,99 @@ def test_render_source_config_escapes_quotes_in_author(tmp_path: Path):
     (tmp_path / "press").mkdir()
     (tmp_path / SOURCE_CONFIG_REL).write_text(rendered, encoding="utf-8")
     assert load_source_config(tmp_path, override=None) == source
+
+
+def _base_toml(extra: str = "") -> str:
+    return (
+        "[identity]\n"
+        'package_name = "py_launch_blueprint"\n'
+        'repo_name    = "py-launch-blueprint"\n'
+        'app_name     = "plbp"\n'
+        'author       = "Steve Morin"\n'
+        'email        = "steve.morin@gmail.com"\n'
+        'owner        = "smorinlabs"\n' + extra
+    )
+
+
+class TestDisplayNameConfig:
+    def test_load_without_display_name(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(_base_toml(), encoding="utf-8")
+        assert load_identity_toml(p, "identity").display_name is None
+
+    def test_load_with_display_name(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(
+            _base_toml('display_name = "Py Launch Blueprint"\n'), encoding="utf-8"
+        )
+        ident = load_identity_toml(p, "identity")
+        assert ident.display_name == "Py Launch Blueprint"
+
+    def test_render_includes_display_name_only_when_set(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(
+            _base_toml('display_name = "Py Launch Blueprint"\n'), encoding="utf-8"
+        )
+        ident = load_identity_toml(p, "identity")
+        rendered = render_source_config(ident)
+        assert 'display_name = "Py Launch Blueprint"' in rendered
+        p.write_text(_base_toml(), encoding="utf-8")
+        assert "display_name" not in render_source_config(
+            load_identity_toml(p, "identity")
+        )
+
+    def test_render_load_round_trip(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(
+            _base_toml('display_name = "Py Launch Blueprint"\n'), encoding="utf-8"
+        )
+        ident = load_identity_toml(p, "identity")
+        p2 = tmp_path / "round.toml"
+        p2.write_text(render_source_config(ident), encoding="utf-8")
+        assert load_identity_toml(p2, "identity") == ident
+
+
+class TestNonStringIdentityValues:
+    def test_non_string_display_name_raises(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(_base_toml("display_name = 42\n"), encoding="utf-8")
+        with pytest.raises(ValidationError, match="display_name"):
+            load_identity_toml(p, "identity")
+
+    def test_non_string_app_name_raises_not_missing(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(
+            "[identity]\n"
+            'package_name = "py_launch_blueprint"\n'
+            'repo_name    = "py-launch-blueprint"\n'
+            "app_name     = 7\n"
+            'author       = "Steve Morin"\n'
+            'email        = "steve.morin@gmail.com"\n'
+            'owner        = "smorinlabs"\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(ValidationError) as exc_info:
+            load_identity_toml(p, "identity")
+        assert "app_name" in str(exc_info.value)
+        assert "missing" not in str(exc_info.value)
+
+
+class TestUnknownIdentityKeys:
+    """F3: a misspelled optional key (``display_nam``) is silently dropped
+    by the ``{k: v for k, v in section.items() if isinstance(v, str)}``
+    filter today — press proceeds as if display_name were simply absent.
+    Unknown keys must fail loud instead, naming the offender."""
+
+    def test_misspelled_optional_key_raises_naming_it(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(_base_toml('display_nam = "Old Product"\n'), encoding="utf-8")
+        with pytest.raises(ValidationError, match="display_nam"):
+            load_identity_toml(p, "identity")
+
+    def test_all_six_plus_display_name_still_loads(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(
+            _base_toml('display_name = "Py Launch Blueprint"\n'), encoding="utf-8"
+        )
+        ident = load_identity_toml(p, "identity")
+        assert ident.display_name == "Py Launch Blueprint"

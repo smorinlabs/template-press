@@ -5,12 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.cli import main
+from template_press.rebrand.cli import display_name_problem, main
 from template_press.rebrand.config import (
     SOURCE_CONFIG_REL,
     load_source_config,
     render_source_config,
 )
+from template_press.rebrand.identity import Identity
 from template_press.rebrand.receipt import RECEIPT_REL
 
 from .conftest import DEST, SOURCE, requires_symlink, write_answers_file
@@ -429,6 +430,38 @@ def test_embedding_old_app_name_exits_2_with_guidance(
     assert "intermediate identity" in capsys.readouterr().err
 
 
+def test_display_name_ambiguous_replacement_source_exits_2(
+    src_target: Path, tmp_path: Path
+):
+    """F2: source display_name equals source app_name's value ("press") but
+    the two fields map to DIFFERENT destinations — build_plan's
+    replacement_pairs must refuse (ValidationError -> exit 2) rather than
+    silently applying one pair and starving the other."""
+    src = Identity(**{**SOURCE.as_dict_prompted(), "display_name": "press"})
+    (src_target / "press").mkdir(exist_ok=True)
+    (src_target / SOURCE_CONFIG_REL).write_text(
+        render_source_config(src), encoding="utf-8"
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "commit", "-q", "-m", "add source config"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    dest = {**DEST.as_dict_prompted(), "app_name": "tool", "display_name": "Tool Pro"}
+    answers = tmp_path / "ambiguous.toml"
+    answers.write_text(
+        "[answers]\n" + "\n".join(f'{k} = "{v}"' for k, v in dest.items()) + "\n",
+        encoding="utf-8",
+    )
+    code = main(["--target", str(src_target), "--config", str(answers)])
+    assert code == 2
+
+
 def test_extra_exclude_dirs_no_longer_hides_leaks(src_target: Path, tmp_path: Path):
     """Sweep F3: rewrite dir-excludes must not blind the doctor."""
     write_source_config(src_target)
@@ -463,6 +496,108 @@ def test_verify_ignore_is_the_sanctioned_ignore_set(src_target: Path, tmp_path: 
     assert (src_target / RECEIPT_REL).is_file()
     text = (legacy / "old.txt").read_text(encoding="utf-8")
     assert "demo_widget" in text  # deliberately preserved
+
+
+def test_rule_scope_migrated_by_ancestor_rename_exits_1_no_receipt(
+    src_target: Path, tmp_path: Path
+):
+    """F1 e2e: a paths=true [[replace]] rule scoped `files=["press_docs/**"]`
+    guards a filename under a directory the ORDINARY token-rename pass ALSO
+    renames (press_docs/ -> potato_docs/). `_rename_pass_once` collapses
+    each pass to its shallowest differing ancestor, so the directory rename
+    lands on pass 1 and the rule's own `files` scope no longer matches by
+    the time the SAME rule gets to re-evaluate against the file on pass 2 —
+    the rule never fires and the file keeps its stale name (0008's
+    documented rewrite-side scope-migration limitation, not fixed here).
+    The doctor must catch that leftover instead of certifying a false
+    receipt (a receipt/verify contradiction)."""
+    write_source_config(src_target)
+    docs = src_target / "press_docs"
+    docs.mkdir()
+    (docs / "_press_guide.md").write_text("x\n", encoding="utf-8")
+    (src_target / "press" / "press-rules.toml").write_text(
+        "[[replace]]\n"
+        'pattern = "_{app_name}_guide.md"\n'
+        'files   = ["press_docs/**"]\n'
+        "paths   = true\n"
+        "content = false\n"
+        'reason  = "doc filename scoped to its own dir"\n',
+        encoding="utf-8",
+    )
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 1
+    assert not (src_target / RECEIPT_REL).exists()
+    # the exact leftover shape: dir renamed, file inside kept its stale name
+    assert (src_target / "potato_docs" / "_press_guide.md").exists()
+
+
+def test_rule_scope_stable_dir_no_ancestor_rename_still_receipts(
+    src_target: Path, tmp_path: Path
+):
+    """Negative control: the identical rule shape, scoped to a directory
+    that is never itself renamed (no app_name token in its own name), must
+    still press clean end-to-end — `renamed` threading must not manufacture
+    a false positive when there is no ancestor shift to reverse-map."""
+    write_source_config(src_target)
+    docs = src_target / "docs"
+    docs.mkdir()
+    (docs / "_press_guide.md").write_text("x\n", encoding="utf-8")
+    (src_target / "press" / "press-rules.toml").write_text(
+        "[[replace]]\n"
+        'pattern = "_{app_name}_guide.md"\n'
+        'files   = ["docs/**"]\n'
+        "paths   = true\n"
+        "content = false\n"
+        'reason  = "doc filename scoped to a stable dir"\n',
+        encoding="utf-8",
+    )
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 0
+    assert (src_target / RECEIPT_REL).is_file()
+    assert (docs / "_potato_guide.md").exists()
+    assert not (docs / "_press_guide.md").exists()
+
+
+def test_rule_static_text_colliding_with_changed_token_exits_2_no_writes(
+    src_target: Path, tmp_path: Path
+):
+    """F2 e2e: `pattern = "press_{app_name}Owned"` renders TO
+    `"press_potatoOwned"` — its static "press_" prefix boundary-matches the
+    SOURCE app_name value ("press", underscore-terminated) exactly like the
+    ordinary token pass would, so the token pass that runs right after the
+    rule pass would re-rewrite the rule's own static text, silently
+    corrupting the output. `rendered_replace_rules` must reject this at
+    build-plan time — before any write — never producing a
+    wrong-but-plausible receipt."""
+    write_source_config(src_target)
+    (src_target / "press" / "press-rules.toml").write_text(
+        "[[replace]]\n"
+        'pattern = "press_{app_name}Owned"\n'
+        'reason  = "static-text collision repro (F2)"\n',
+        encoding="utf-8",
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "commit", "-q", "-m", "add colliding rule"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 2
+    assert not (src_target / RECEIPT_REL).exists()
 
 
 def test_partial_rebrand_keeping_author_verifies(src_target: Path, tmp_path: Path):
@@ -686,3 +821,190 @@ def test_press_outcome_success_no_env_error(tmp_path: Path):
         ["--target", str(main_target), "--config", str(answers), "--allow-dirty"]
     )
     assert code == 0
+
+
+def _identity(**overrides):
+    base = {
+        "package_name": "py_launch_blueprint",
+        "repo_name": "py-launch-blueprint",
+        "app_name": "plbp",
+        "author": "Steve Morin",
+        "email": "steve.morin@gmail.com",
+        "owner": "smorinlabs",
+    }
+    base.update(overrides)
+    return Identity(**base)
+
+
+class TestDisplayNameGate:
+    def test_half_specified_is_a_problem(self):
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(app_name="acme")
+        msg = display_name_problem(src, dst)
+        assert msg is not None and "display_name" in msg
+
+    def test_reverse_direction_is_fine(self):
+        src = _identity()
+        dst = _identity(app_name="acme", display_name="Acme Widget")
+        assert display_name_problem(src, dst) is None
+
+    def test_both_or_neither_is_fine(self):
+        assert display_name_problem(_identity(), _identity(app_name="acme")) is None
+        assert (
+            display_name_problem(
+                _identity(display_name="Py Launch Blueprint"),
+                _identity(display_name="Acme Widget"),
+            )
+            is None
+        )
+
+
+class TestCollisionsCoverDerivedDisplayForms:
+    """F3: `_collisions` compared raw identity values, but replacement uses
+    derived display forms — a destination display name whose derived form
+    embeds a changed source token slipped through. Repro: source app_name
+    "plbp" + source display "Py Launch Blueprint" + dest display "Plbp" ->
+    camel("Plbp") == "plbp", the very (changed) source app_name token."""
+
+    def test_derived_camel_form_embedding_changed_app_name_is_a_collision(self):
+        from template_press.rebrand.cli import _collisions
+
+        source = _identity(display_name="Py Launch Blueprint")
+        dest = _identity(app_name="acme", display_name="Plbp")
+        assert _collisions(source, dest) != []
+
+    def test_end_to_end_main_exits_2(self, tmp_path: Path):
+        target = tmp_path / "plbp-repo"
+        (target / "press").mkdir(parents=True)
+        (target / "press" / "press-source.toml").write_text(
+            "[identity]\n"
+            'package_name = "py_launch_blueprint"\n'
+            'repo_name    = "py-launch-blueprint"\n'
+            'app_name     = "plbp"\n'
+            'author       = "Steve Morin"\n'
+            'email        = "steve.morin@gmail.com"\n'
+            'owner        = "smorinlabs"\n'
+            'display_name = "Py Launch Blueprint"\n',
+            encoding="utf-8",
+        )
+        (target / "pyproject.toml").write_text(
+            "[project]\n"
+            'name = "py-launch-blueprint"\n'
+            'version = "0.1.0"\n'
+            'authors = [{name = "Steve Morin", email = "steve.morin@gmail.com"}]\n'
+            "[project.scripts]\n"
+            'plbp = "py_launch_blueprint.cli:main"\n',
+            encoding="utf-8",
+        )
+        (target / "src" / "py_launch_blueprint").mkdir(parents=True)
+        (target / "src" / "py_launch_blueprint" / "__init__.py").write_text(
+            '"""Py Launch Blueprint."""\n', encoding="utf-8"
+        )
+        subprocess.run(["git", "init", "-q"], cwd=target, check=True)  # noqa: S607
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(target), "config", "user.email", "t@example.com"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(target), "config", "user.name", "t"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(  # noqa: S603
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(target),
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/smorinlabs/py-launch-blueprint.git",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(target), "commit", "-q", "-m", "seed"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        answers = tmp_path / "answers.toml"
+        answers.write_text(
+            "[answers]\n"
+            'package_name = "acme_widget"\n'
+            'repo_name    = "acme-widget"\n'
+            'app_name     = "acme"\n'
+            'author       = "Ada Lovelace"\n'
+            'email        = "ada@example.com"\n'
+            'owner        = "acmelabs"\n'
+            'display_name = "Plbp"\n',
+            encoding="utf-8",
+        )
+        code = main(["--target", str(target), "--config", str(answers)])
+        assert code == 2
+
+
+class TestSubstringAwareCollisionPreflight:
+    """F4: with a field opted into ``[rules] substring_rewrite_fields``, the
+    engine rewrites that field SUBSTRING-wide — so ``_collisions`` must catch
+    a destination value that embeds the source token WITHOUT a word boundary
+    too, not just the boundary-guarded default posture."""
+
+    def test_substring_field_embedded_without_boundary_is_a_collision(self):
+        from template_press.rebrand.cli import _collisions
+
+        source = _identity(app_name="press")
+        dest = _identity(app_name="tool", repo_name="mypress-tools")
+        # Boundary mode: "press" preceded by alnum "y" in "mypress-tools" is
+        # NOT a token match — no collision without substring mode.
+        assert _collisions(source, dest) == []
+        # Substring mode for app_name: the embedded literal IS a collision.
+        assert _collisions(source, dest, substring_fields=frozenset({"app_name"})) != []
+
+    def test_end_to_end_substring_collision_exits_2(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """Repro: pressing app_name press->potato with dest repo_name
+        embedding the old app_name as a glued substring — without the
+        preflight fix, the repo pair writes it and the substring app pass
+        would corrupt it afterward (receipt records the wrong repo name)."""
+        write_source_config(src_target)
+        (src_target / "press" / "press-rules.toml").write_text(
+            '[rules]\nsubstring_rewrite_fields = ["app_name"]\n', encoding="utf-8"
+        )
+        dest = {**DEST.as_dict_prompted(), "repo_name": "mypress-tools"}
+        answers = tmp_path / "substring-collision.toml"
+        answers.write_text(
+            "[answers]\n" + "\n".join(f'{k} = "{v}"' for k, v in dest.items()) + "\n",
+            encoding="utf-8",
+        )
+        code = main(
+            ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+        )
+        assert code == 2
+        err = capsys.readouterr().err
+        assert "repo_name" in err and "app_name" in err
+
+    def test_same_identities_without_substring_mode_no_collision(
+        self, src_target: Path, tmp_path: Path
+    ):
+        """Control: the IDENTICAL destination without substring mode declared
+        is not a collision — the boundary-guarded default posture is
+        unchanged by this fix."""
+        write_source_config(src_target)
+        dest = {**DEST.as_dict_prompted(), "repo_name": "mypress-tools"}
+        answers = tmp_path / "no-substring.toml"
+        answers.write_text(
+            "[answers]\n" + "\n".join(f'{k} = "{v}"' for k, v in dest.items()) + "\n",
+            encoding="utf-8",
+        )
+        code = main(
+            ["--target", str(src_target), "--config", str(answers), "--dry-run"]
+        )
+        assert code == 0

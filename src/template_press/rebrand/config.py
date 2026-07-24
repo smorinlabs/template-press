@@ -12,7 +12,12 @@ import tomllib
 from pathlib import Path
 
 from template_press.rebrand.engine import ROOT_CONTROL
-from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.identity import (
+    OPTIONAL_FIELDS,
+    REQUIRED_FIELDS,
+    Identity,
+    ValidationError,
+)
 from template_press.rebrand.safety import ContainmentError, assert_under_root
 
 SOURCE_CONFIG_REL = Path("press") / "press-source.toml"
@@ -64,6 +69,22 @@ def load_identity_toml(path: Path, table: str) -> Identity:
     section = data.get(table)
     if not isinstance(section, dict):
         raise ValidationError(f"{path}: missing [{table}] table")
+    # F3: an unknown key (typo'd optional field, e.g. `display_nam`) must
+    # fail loud — the dict-comprehension below silently drops any key it
+    # doesn't recognize, so a typo would otherwise pass through as if the
+    # field were simply absent, and press proceeds none the wiser.
+    known = frozenset(REQUIRED_FIELDS) | frozenset(OPTIONAL_FIELDS)
+    unknown = set(section) - known
+    if unknown:
+        raise ValidationError(
+            f"{path}: [{table}] unknown key(s): {', '.join(sorted(unknown))}"
+        )
+    for key in (*REQUIRED_FIELDS, *OPTIONAL_FIELDS):
+        if key in section and not isinstance(section[key], str):
+            raise ValidationError(
+                f"{path}: [{table}] {key} must be a string, got "
+                f"{type(section[key]).__name__}"
+            )
     identity = Identity.from_mapping(
         {k: v for k, v in section.items() if isinstance(v, str)}
     )

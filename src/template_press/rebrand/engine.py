@@ -10,13 +10,29 @@ from __future__ import annotations
 
 import os
 import subprocess  # nosec B404 — git ls-files enumerates the target
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from template_press.rebrand.identity import Identity, replace_token, token_occurs
-from template_press.rebrand.rules import DEFAULT_RULES, Rules
+from template_press.rebrand.identity import (
+    DISPLAY_FORM_NAMES,
+    Identity,
+    ValidationError,
+    display_forms,
+    replace_token,
+    token_occurs,
+)
+from template_press.rebrand.rules import (
+    DEFAULT_RULES,
+    ReplaceRule,
+    Rules,
+    pattern_static_segments,
+    render_replace_pattern,
+    rule_matches_path,
+)
 from template_press.rebrand.safety import (
     ContainmentError,
+    SafetyError,
     assert_ancestors_real,
     assert_under_root,
     git_hardening_args,
@@ -235,6 +251,38 @@ def _gitlink_rels(target: Path) -> frozenset[str]:
     return frozenset(rels)
 
 
+def _rename_candidates(target: Path, rules: Rules) -> list[Path]:
+    """Rename-pass candidates: every eligible path, symlink LEAVES included.
+
+    Mirrors ``iter_target_files``'s exclusion filtering (``_is_excluded`` +
+    ``ROOT_CONTROL``), but enumerates by no-follow ``is_symlink()`` in
+    addition to ``is_file()`` (Fix F2) — retarget rewrites a symlink's TEXT
+    only, so a directory or dangling symlink whose NAME carries an identity
+    token still needs its own name renamed. ``is_file()`` alone FOLLOWS the
+    link: it reads True for a symlink-to-file (already covered), but False
+    for a symlink-to-dir or a dangling symlink, which then silently drops
+    out of both the rename pass and ``build_plan``'s rename-planning loop —
+    the link's stale NAME survives the press and the doctor's dangling-
+    symlink path scan flags it forever. A gitlink (submodule pointer) is
+    excluded outright: a submodule mount point must never be renamed by
+    this pass.
+    """
+    gitlinks = _gitlink_rels(target)
+    out: list[Path] = []
+    for rel in _git_listed(target):
+        if _is_excluded(rel, rules):
+            continue
+        posix = rel.as_posix()
+        if posix in ROOT_CONTROL:
+            continue
+        if posix in gitlinks:
+            continue
+        path = target / rel
+        if path.is_file() or path.is_symlink():
+            out.append(path)
+    return sorted(out)
+
+
 def copy_paths(target: Path) -> list[PathEntry]:
     """Everything git lists (tracked + non-ignored untracked), minus ``.git``.
 
@@ -311,12 +359,179 @@ def scan_paths(target: Path, rules: Rules) -> list[PathEntry]:
     return out
 
 
-def replacement_pairs(source: Identity, dest: Identity) -> list[tuple[str, str, str]]:
-    """(field, current, replacement) triples, longest current first."""
+def replacement_pairs(
+    source: Identity,
+    dest: Identity,
+    display_form_names: tuple[str, ...] = DISPLAY_FORM_NAMES,
+) -> list[tuple[str, str, str]]:
+    """(field, current, replacement) triples, longest current first.
+
+    display_name is expanded into one pair per enabled exact form
+    (display_name_spaced/…_pascal/…_camel) — generic-boundary tags, never in
+    RENAME_FIELDS, so display forms rewrite content but never paths. The
+    `k in dst` guard keeps a half-specified display name (source has it,
+    dest doesn't) out of the pair list entirely — the CLI gates that case.
+
+    Two entries can legitimately share the same `cur` literal (e.g. a
+    one-word display_name equal to app_name's value) — harmless as long as
+    both map to the SAME `repl`, in which case the duplicate is dropped
+    silently. When they map to DIFFERENT `repl` values the occurrence is
+    genuinely ambiguous — the engine cannot know which identity it
+    represents, and applying one while starving the other (stable sort order
+    picking a "winner") would corrupt the press — so this raises instead.
+
+    WITHIN the display-form family alone, that same-`cur`-different-`repl`
+    shape is NOT an ambiguity: a one-word display name renders identically
+    across forms (source "NumPy": spaced == pascal == "NumPy") while the
+    destination is multi-word ("Acme Widget" vs "AcmeWidget") — one source
+    literal, one field, just two forms that happen to collapse to the same
+    text. Raising here would reject the DEFAULT configuration for any
+    one-word display name. So these are coalesced first, deterministically:
+    keep the FIRST pair per `display_form_names` order (spaced first by
+    default — the verbatim display name wins) and drop the rest silently.
+    This coalescing is scoped to the display_name_* family ONLY — a `cur`
+    shared between a display form and a DIFFERENT field (e.g. app_name) is
+    still routed to the ambiguity guard below.
+    """
     src, dst = source.as_dict(), dest.as_dict()
-    pairs = [(k, src[k], dst[k]) for k in src if src[k] != dst[k]]
-    pairs.sort(key=lambda t: -len(t[1]))
-    return pairs
+    pairs = [
+        (k, src[k], dst[k])
+        for k in src
+        if k != "display_name" and k in dst and src[k] != dst[k]
+    ]
+    if "display_name" in src and "display_name" in dst:
+        sf = display_forms(src["display_name"])
+        df = display_forms(dst["display_name"])
+        for form in display_form_names:
+            if sf[form] != df[form]:
+                pairs.append((f"display_name_{form}", sf[form], df[form]))
+    display_seen: set[str] = set()
+    coalesced: list[tuple[str, str, str]] = []
+    for tag, cur, repl in pairs:
+        if tag.startswith("display_name_"):
+            if cur in display_seen:
+                continue  # same-family duplicate — drop, keep the first form
+            display_seen.add(cur)
+        coalesced.append((tag, cur, repl))
+    pairs = coalesced
+
+    deduped: list[tuple[str, str, str]] = []
+    seen: dict[str, tuple[str, str]] = {}  # cur -> (tag, repl)
+    for tag, cur, repl in pairs:
+        if cur in seen:
+            other_tag, other_repl = seen[cur]
+            if other_repl != repl:
+                raise ValidationError(
+                    f"replacement source {cur!r} is ambiguous: {other_tag!r} "
+                    f"maps it to {other_repl!r} but {tag!r} maps it to "
+                    f"{repl!r} — the engine cannot know which identity an "
+                    f"occurrence of {cur!r} represents; press in two steps via "
+                    f"an intermediate identity, or align the two destination "
+                    f"values"
+                )
+            continue  # same cur, same repl — harmless duplicate, drop it
+        seen[cur] = (tag, repl)
+        deduped.append((tag, cur, repl))
+    deduped.sort(key=lambda t: -len(t[1]))
+    return deduped
+
+
+def rendered_replace_rules(
+    rules: Rules, source: Identity, dest: Identity
+) -> list[tuple[ReplaceRule, str, str]]:
+    """(rule, FROM, TO) with both sides rendered; identical sides dropped.
+
+    Rendering raises ValidationError when a pattern references a field this
+    identity pair doesn't declare (optional display_name) — surfacing at
+    plan time, before any write.
+
+    A ``paths = true`` rule whose rendered FROM or TO contains a path
+    separator (``/`` or ``\\`` — either can split a component on the
+    platforms this tool targets) also raises: the FROM side can never match
+    a single path COMPONENT (the unit `_renamed_rel` operates on), and a TO
+    side that splits into nested parts corrupts the component-wise rename
+    (the strict ``zip`` in the rename-collapse loop crashes or silently
+    mis-renames). Content-only rules are NOT restricted — a content pattern
+    like ``{owner}/{repo_name}`` is legitimate prose.
+
+    A ``paths = true`` rule whose rendered TO still CONTAINS its rendered
+    FROM (Fix F2a) also raises: a rename pass applies the rule via plain
+    ``str.replace`` (no boundary guard), so the rule's own output re-matches
+    on the very next pass (pattern ``"{app_name}x"`` with app_name ``a`` ->
+    ``ax``: FROM ``"ax"`` is a substring of TO ``"axx"``, so ``a.txt`` ->
+    ``ax.txt`` -> ``axx.txt`` -> ... never converges). Caught here at plan
+    time — mirrors the substring self-embedding collision guard (the CLI's
+    ``_collisions`` preflight) but for rule literals rather than identity
+    fields.
+
+    A rule whose STATIC (non-placeholder) text embeds a CHANGING identity
+    field's SOURCE value also raises: ``[[replace]]`` rules run BEFORE the
+    token pass (``_apply_replacements``/``_renamed_rel``), so a rule's
+    rendered output is itself subject to that later pass. Pattern
+    ``"foo_{app_name}Owned"`` with app_name ``foo -> bar`` renders TO
+    ``"foo_barOwned"`` — the static ``"foo_"`` prefix still boundary-matches
+    the OLD app_name value (an underscore is not a boundary-blocking
+    character on that side), so the token pass would re-rewrite it right
+    back out from under the rule, silently corrupting the output to
+    ``"bar_barOwned"``. Checked against every field's SOURCE value using the
+    exact matcher the token pass applies to it (boundary ``token_occurs``,
+    or plain containment for a field in ``substring_rewrite_fields``) —
+    evaluated on each STATIC segment in isolation
+    (``rules.pattern_static_segments``), independent of whether THIS rule's
+    own placeholder(s) reference the colliding field.
+    """
+    out: list[tuple[ReplaceRule, str, str]] = []
+    pairs = (
+        replacement_pairs(source, dest, rules.display_forms) if rules.replace else []
+    )
+    for rule in rules.replace:
+        frm = render_replace_pattern(rule.pattern, source)
+        to = render_replace_pattern(rule.pattern, dest)
+        if frm == to:
+            continue
+        for segment in pattern_static_segments(rule.pattern):
+            for tag, cur, _repl in pairs:
+                substring = tag in rules.substring_rewrite_fields
+                hit = (cur in segment) if substring else token_occurs(segment, tag, cur)
+                if hit:
+                    raise ValidationError(
+                        f"[[replace]] pattern {rule.pattern!r} has static text "
+                        f"{segment!r} that collides with the CHANGING {tag} "
+                        f"value {cur!r} — the token pass runs AFTER this rule "
+                        f"and would re-rewrite the rule's own rendered output; "
+                        f"use the {{{tag}}} placeholder in the pattern instead "
+                        f"of literal text, or press in two steps via an "
+                        f"intermediate identity"
+                    )
+        if rule.paths and any(sep in frm or sep in to for sep in ("/", "\\")):
+            raise ValidationError(
+                f"[[replace]] pattern {rule.pattern!r} has paths=true but its "
+                f"rendered value contains a path separator ('/' or '\\'), "
+                f"which can never match (or would corrupt) a single path "
+                f"component: FROM {frm!r} TO {to!r}"
+            )
+        if rule.paths and frm in to:
+            raise ValidationError(
+                f"[[replace]] pattern {rule.pattern!r} has paths=true but its "
+                f"rendered TO {to!r} still contains its rendered FROM {frm!r} "
+                f"— this rule would re-match its own output on every rename "
+                f"pass and never reach a fixpoint"
+            )
+        out.append((rule, frm, to))
+    return out
+
+
+def symlink_target_posix(rel: Path, link: str) -> str:
+    """Normalize a relative symlink's target to a POSIX rel path.
+
+    Anchored at the symlink's OWN directory (``rel.parent``), matching how a
+    relative link target actually resolves on disk. May return a path that
+    escapes the tree entirely (exactly ``".."`` or starting with ``"../"``)
+    for an escaping symlink — callers decide whether that matters. Shared by
+    ``_retarget_symlinks`` (which rules to apply) and ``doctor.find_leaks``
+    (which rendered-rule FROM literals to scan a link's text for).
+    """
+    return Path(os.path.normpath(os.path.join(rel.parent.as_posix(), link))).as_posix()
 
 
 def _read_text(path: Path) -> str | None:
@@ -328,7 +543,14 @@ def _read_text(path: Path) -> str | None:
         return None  # binary or unreadable — never a rewrite candidate
 
 
-def _renamed_rel(rel: Path, pairs: list[tuple[str, str, str]]) -> Path:
+def _renamed_rel(
+    rel: Path,
+    pairs: list[tuple[str, str, str]],
+    rendered: list[tuple[ReplaceRule, str, str]] | None = None,
+    substring_fields: Collection[str] = frozenset(),
+) -> Path:
+    rendered = rendered or []
+    posix = rel.as_posix()
     parts = []
     for i, component in enumerate(rel.parts):
         if _is_root_press(rel, i):
@@ -339,9 +561,33 @@ def _renamed_rel(rel: Path, pairs: list[tuple[str, str, str]]) -> Path:
             parts.append(component)
             continue
         new = component
+        # [[replace]] rules run BEFORE the token pass here too: a rule's
+        # rendered FROM may embed an identity token (e.g. "{package_name}-extra");
+        # the token pass would rewrite that token out from under the rule.
+        for rule, frm, to in rendered:
+            if rule.paths and rule_matches_path(rule, posix):
+                new = new.replace(frm, to)
         for f, cur, repl in pairs:
             if f in RENAME_FIELDS:
-                new = replace_token(new, f, cur, repl)
+                if f in substring_fields:
+                    new = new.replace(cur, repl)
+                else:
+                    new = replace_token(new, f, cur, repl)
+        if component and not new:
+            # A substitution that empties a path segment would collapse the
+            # path into its parent (cookiecutter #1518's corruption class).
+            raise ValidationError(
+                f"rename would empty a path component of {posix!r} — refusing"
+            )
+        if new in (".", ".."):
+            # A substituted component rendering to exactly "." or ".."
+            # would collapse the path into itself/its parent or escape the
+            # tree entirely — the same corruption class as the empty-
+            # component guard above, just via a different degenerate value.
+            raise ValidationError(
+                f"rename would collapse a path component of {posix!r} to "
+                f"{new!r} — refusing"
+            )
         parts.append(new)
     return Path(*parts)
 
@@ -351,18 +597,40 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
     source.validate()
     dest.validate()
     plan = Plan()
-    pairs = replacement_pairs(source, dest)
+    pairs = replacement_pairs(source, dest, rules.display_forms)
+    rendered = rendered_replace_rules(rules, source, dest)
     rename_map: dict[str, str] = {}
-    for path in iter_target_files(target, rules):
+    # `_rename_candidates` (not `iter_target_files`): rename-plan parity with
+    # `_rename_pass_once` (Fix F2) — a symlink LEAF (dir/dangling) must be a
+    # rename candidate here too, or the plan silently omits it. `_read_text`
+    # still returns None for a symlink, so the content-plan branch below is
+    # unaffected — this only widens what the rename-plan branch below it sees.
+    for path in _rename_candidates(target, rules):
         rel = path.relative_to(target)
         text = _read_text(path)
         if text is not None:
-            hit_fields = [f for f, cur, _ in pairs if token_occurs(text, f, cur)]
+            for rule, frm, to in rendered:
+                if rule.content and rule_matches_path(rule, rel.as_posix()):
+                    if frm in text:
+                        plan.items.append(
+                            PlanItem(
+                                "replace", rel.as_posix(), f"rule {frm!r} -> {to!r}"
+                            )
+                        )
+            hit_fields = [
+                f
+                for f, cur, _ in pairs
+                if (
+                    (cur in text)
+                    if f in rules.substring_rewrite_fields
+                    else token_occurs(text, f, cur)
+                )
+            ]
             if hit_fields:
                 plan.items.append(
                     PlanItem("replace", rel.as_posix(), f"fields={hit_fields}")
                 )
-        new_rel = _renamed_rel(rel, pairs)
+        new_rel = _renamed_rel(rel, pairs, rendered, rules.substring_rewrite_fields)
         if new_rel != rel:
             # collapse to the shallowest differing ancestor (dir rename)
             for i, (old_part, new_part) in enumerate(
@@ -402,6 +670,7 @@ def _apply_replacements(
     pairs: list[tuple[str, str, str]],
     rules: Rules,
     report: ApplyReport,
+    rendered: list[tuple[ReplaceRule, str, str]],
 ) -> None:
     for path in iter_target_files(target, rules):
         rel = path.relative_to(target).as_posix()
@@ -411,8 +680,20 @@ def _apply_replacements(
             report.skipped.append(f"replace {rel} ({kind})")
             continue
         new_text = text
+        # [[replace]] rules run BEFORE the token pass: a rule's rendered
+        # FROM may embed an identity token (e.g. "{package_name}-extra");
+        # the token pass would rewrite that token out from under the rule.
+        for rule, frm, to in rendered:
+            if rule.content and rule_matches_path(rule, rel):
+                new_text = new_text.replace(frm, to)
         for f, cur, repl in pairs:
-            new_text = replace_token(new_text, f, cur, repl)
+            if f in rules.substring_rewrite_fields:
+                # Opt-in per-field substring mode (codesign sec-02 secondary):
+                # plain replacement, no boundary guard — gated on the target
+                # declaring the token word-disjoint in press-rules.toml.
+                new_text = new_text.replace(cur, repl)
+            else:
+                new_text = replace_token(new_text, f, cur, repl)
         if new_text != text:
             # Route through safe_write: its assert_under_root closes the
             # ancestor-symlink hole (a symlinked ancestor would write OUTSIDE
@@ -429,6 +710,8 @@ def _retarget_symlinks(
     target: Path,
     pairs: list[tuple[str, str, str]],
     report: ApplyReport,
+    rendered: list[tuple[ReplaceRule, str, str]] | None = None,
+    substring_fields: Collection[str] = frozenset(),
 ) -> None:
     """Rewrite in-repo RELATIVE symlink targets carrying identity tokens.
 
@@ -440,7 +723,33 @@ def _retarget_symlinks(
     reused ``assert_under_root`` on the resolved sink). The link is recreated
     with unlink + symlink, guarded by an immediate ``is_symlink`` re-check to
     refuse a TOCTOU swap.
+
+    Dispatch per field mirrors ``_apply_replacements``: a field in
+    ``substring_fields`` uses plain substring replacement (glued-token
+    coverage, codesign sec-02 secondary); every other field uses the
+    boundary-guarded ``replace_token``.
+
+    A ``paths = true`` [[replace]] rule (Fix F2) is also applied to the link
+    text, mirroring ``_renamed_rel``/the rename pass exactly: symlink text
+    follows exactly what the rename pass moves, so a rule renaming
+    ``plbp-web/`` -> ``acme-web/`` must retarget ``link -> plbp-web/data``
+    too, or the link keeps pointing at a path the rename pass just moved
+    away from under it. A ``content``-only rule (``paths=False``) must NOT
+    touch link text — mirror-image of the display-pair exclusion below.
+    Rules run BEFORE the field-pair pass (same order as
+    ``_apply_replacements``/``_renamed_rel``).
+
+    A rule's ``files`` scope selects which TARGET paths get renamed — so the
+    scope match here (Fix F3) is against the link's TARGET, normalized to an
+    in-tree rel posix path (``rel.parent`` joined with the un-rewritten link
+    text), NOT the symlink's own location: a rule with ``files=["docs/**"]``
+    must still retarget a root-level link pointing INTO ``docs/``, even
+    though the link itself lives outside that scope. A target that
+    normalizes outside the tree (a relative ``../`` escape) never matches any
+    rule's scope here — the containment guard below (on the fully-rewritten
+    sink) is what actually polices an escaping link.
     """
+    rendered = rendered or []
     target_r = target.resolve()
     for rel in _git_listed(target):
         path = target / rel
@@ -450,8 +759,20 @@ def _retarget_symlinks(
         if os.path.isabs(link):
             continue  # never rewrite or follow an absolute target
         new_link = link
+        target_posix = symlink_target_posix(rel, link)
+        scope_escapes = target_posix == ".." or target_posix.startswith("../")
+        for rule, frm, to in rendered:
+            if (
+                rule.paths
+                and not scope_escapes
+                and rule_matches_path(rule, target_posix)
+            ):
+                new_link = new_link.replace(frm, to)
         for f, cur, repl in pairs:
-            new_link = replace_token(new_link, f, cur, repl)
+            if f in substring_fields:
+                new_link = new_link.replace(cur, repl)
+            else:
+                new_link = replace_token(new_link, f, cur, repl)
         if new_link == link:
             continue
         sink = (path.parent / new_link).resolve()
@@ -478,10 +799,21 @@ def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> Apply
     source.validate()
     dest.validate()
     report = ApplyReport()
-    pairs = replacement_pairs(source, dest)
-    _apply_replacements(target, pairs, rules, report)
-    _retarget_symlinks(target, pairs, report)
-    _apply_renames(target, pairs, rules, report)
+    pairs = replacement_pairs(source, dest, rules.display_forms)
+    rendered = rendered_replace_rules(rules, source, dest)
+    _apply_replacements(target, pairs, rules, report, rendered)
+    # Symlink text must only be rewritten where the rename pass would move
+    # the target — display forms never rename paths (not in RENAME_FIELDS),
+    # so a display pair would rewrite a link's text out from under a
+    # directory that keeps its original name (dangling link). Drop them
+    # before retargeting. `rendered` IS passed through in full (Fix F2): a
+    # paths=true rule (any field) is exactly what moves a path, so retarget
+    # must follow every such rule the same way the rename pass does.
+    symlink_pairs = [p for p in pairs if not p[0].startswith("display_name_")]
+    _retarget_symlinks(
+        target, symlink_pairs, report, rendered, rules.substring_rewrite_fields
+    )
+    _apply_renames(target, pairs, rules, report, rendered)
     return report
 
 
@@ -490,18 +822,23 @@ def _rename_pass_once(
     pairs: list[tuple[str, str, str]],
     rules: Rules,
     report: ApplyReport,
+    rendered: list[tuple[ReplaceRule, str, str]],
 ) -> bool:
     """Run one shallowest-prefix rename pass; return True if any rename ran.
 
-    Rescans `iter_target_files` fresh so each pass sees the previous pass's
+    Rescans `_rename_candidates` fresh so each pass sees the previous pass's
     moves, then collapses each differing path to only its shallowest
     renamed ancestor (one path level per pass) and executes deepest-first
-    to keep parents valid.
+    to keep parents valid. `_rename_candidates` (Fix F2), not
+    `iter_target_files`: retarget rewrites a symlink's TEXT only, so a
+    directory or dangling symlink whose NAME carries an identity token would
+    otherwise never reach this pass at all (`iter_target_files`'s
+    `is_file()` filter follows the link and drops it).
     """
     rename_map: dict[str, str] = {}
-    for path in iter_target_files(target, rules):
+    for path in _rename_candidates(target, rules):
         rel = path.relative_to(target)
-        new_rel = _renamed_rel(rel, pairs)
+        new_rel = _renamed_rel(rel, pairs, rendered, rules.substring_rewrite_fields)
         if new_rel == rel:
             continue
         for i, (old_part, new_part) in enumerate(
@@ -518,11 +855,23 @@ def _rename_pass_once(
     performed = False
     for old in sorted(rename_map, key=lambda p: -len(Path(p).parts)):
         src, dst = target / old, target / rename_map[old]
-        if not src.exists():
+        if not (src.exists() or src.is_symlink()):
+            # `Path.exists()` FOLLOWS symlinks — a DANGLING symlink at src
+            # reads as absent there too (Fix F2): without the `is_symlink()`
+            # fallback, a legitimate dangling-symlink rename candidate would
+            # be skipped as "missing" before ever reaching `src.rename(dst)`.
             report.skipped.append(f"rename {old} (missing)")
             continue
         if dst.exists():
             report.skipped.append(f"rename {old} (destination exists)")
+            continue
+        if dst.is_symlink():
+            # `Path.exists()` FOLLOWS symlinks — a DANGLING symlink at dst
+            # reads as absent there, so without this lstat-based check
+            # POSIX rename() would silently replace the symlink itself
+            # (a destructive in-tree overwrite the destination-occupied
+            # check was meant to prevent).
+            report.skipped.append(f"rename {old} (destination is a symlink)")
             continue
         # A symlinked ancestor on either endpoint would move CONTENT through a
         # symlink out of the target. Tolerates a token-bearing symlink LEAF
@@ -542,6 +891,7 @@ def _apply_renames(
     pairs: list[tuple[str, str, str]],
     rules: Rules,
     report: ApplyReport,
+    rendered: list[tuple[ReplaceRule, str, str]],
 ) -> None:
     """Rename tracked paths whose components carry identity tokens.
 
@@ -552,7 +902,27 @@ def _apply_renames(
     on one pass and its (now-relocated) file renamed on the next, instead of
     colliding mid-move. Bounded to 32 passes (depth bound); stops as soon as
     a pass performs no renames.
+
+    Fix F2b: falling out of this loop with the LAST pass still having
+    performed renames means 32 passes never reached a fixpoint — e.g. a
+    substring-mode identity field pair that re-embeds itself the same way a
+    self-reapplying [[replace]] rule would (fix F2a catches that shape at
+    plan time; this is the belt-and-suspenders catch-all for any other path
+    that drives non-convergence, plan-time or not). Silently returning here
+    would leave the target 32 passes into a destructive, non-terminating
+    rename with no signal anything went wrong. Raises ``SafetyError``
+    (rather than ``ValidationError``): this fires MID-APPLY, after writes
+    have already happened, and the CLI's ``_press`` partial-rewrite error
+    path (which prints the "target may be PARTIALLY rewritten" restore
+    message) only catches ``SafetyError`` — not ``ValidationError``, which
+    would otherwise propagate past ``_press`` as an uncaught traceback.
     """
     for _ in range(32):
-        if not _rename_pass_once(target, pairs, rules, report):
+        if not _rename_pass_once(target, pairs, rules, report, rendered):
             return
+    raise SafetyError(
+        "rename passes did not reach a fixpoint after 32 iterations — a "
+        "path component keeps changing on every pass (a self-reapplying "
+        "[[replace]] rule or substring-mode identity field); the target is "
+        "PARTIALLY rewritten"
+    )

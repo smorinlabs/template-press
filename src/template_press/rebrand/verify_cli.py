@@ -45,7 +45,7 @@ from pathlib import Path
 
 from template_press.rebrand.config import SOURCE_CONFIG_REL, load_source_config
 from template_press.rebrand.discovery import Discovered, discover, mismatches
-from template_press.rebrand.engine import apply, scan_paths
+from template_press.rebrand.engine import apply, rendered_replace_rules, scan_paths
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_map
 from template_press.rebrand.matcher import find_occurrences
@@ -60,7 +60,11 @@ from template_press.rebrand.safety import (
 from template_press.rebrand.sandbox import make_sandbox
 from template_press.rebrand.synthesize import synthesize_dest
 from template_press.rebrand.verifier import Finding, scan
-from template_press.rebrand.verify_config import VerifyConfig, parse_verify_config
+from template_press.rebrand.verify_config import (
+    KNOWN_FIELDS,
+    VerifyConfig,
+    parse_verify_config,
+)
 
 # The re-stage of the sandbox index after apply is authored by a synthetic
 # identity — never the user's git config — mirroring make_sandbox.
@@ -140,6 +144,25 @@ def _target_text_corpus(target: Path, rules: Rules) -> list[str]:
 
 def _value_present(field: str, value: str, corpus: list[str]) -> bool:
     return any(find_occurrences(text, field, value, substring=False) for text in corpus)
+
+
+def _effective_scan_fields(
+    fields: Sequence[str], substring_rewrite_fields: frozenset[str]
+) -> tuple[str, ...]:
+    """Union ``[rules] substring_rewrite_fields`` into the scan's field set.
+
+    A field the sandbox press rewrites substring-wide but that is absent
+    from ``fields`` (e.g. ``app_name_upper``, not in ``DEFAULT_FIELDS``) is
+    never scanned at all — ``scan_substring`` only controls HOW a field
+    already in ``fields`` is matched, not WHETHER it is scanned. Filtered to
+    ``KNOWN_FIELDS`` defensively: ``rules.load_rules`` already rejects any
+    other value at parse time, so this is defense in depth, not a reachable
+    path through normal config loading.
+    """
+    extra = [
+        f for f in substring_rewrite_fields if f in KNOWN_FIELDS and f not in fields
+    ]
+    return (*fields, *extra)
 
 
 def _preflight(
@@ -313,7 +336,24 @@ def verify_command(argv: list[str] | None = None) -> int:
     try:
         rules = load_rules(target)
         cfg = _load_verify_config(target)
-        problems = _preflight(target, source, rules, cfg.fields)
+        scan_fields: tuple[str, ...] = cfg.fields
+        if source.display_name is not None and "display_name" not in scan_fields:
+            # codesign sec-05: a declared display name is scanned as its own
+            # field — the only coverage when its words diverge from the slug.
+            scan_fields = (*scan_fields, "display_name")
+        # A field the SANDBOX PRESS rewrites substring-wide (`[rules]
+        # substring_rewrite_fields`) must be SCANNED at all (Fix F2) — a field
+        # absent from DEFAULT_FIELDS (e.g. app_name_upper) is otherwise never
+        # scanned regardless of substring mode — AND substring-wide (a
+        # containment-skipped symlink target, or any other rewrite the
+        # hermetic apply cannot perform, can leave a glued, boundary-free
+        # occurrence of that field's source value behind; the boundary-only
+        # `[verify] substring_fields` scope alone would never flag it).
+        scan_fields = _effective_scan_fields(
+            scan_fields, rules.substring_rewrite_fields
+        )
+        scan_substring = cfg.substring_fields | rules.substring_rewrite_fields
+        problems = _preflight(target, source, rules, scan_fields)
     except _CONFIG_ERRORS as exc:
         return _fail(f"preflight failed: {exc}")
     if problems:
@@ -336,6 +376,12 @@ def verify_command(argv: list[str] | None = None) -> int:
     unavailable: tuple[str, ...] = ()
     try:
         synth = synthesize_dest(source)
+        # Rendered against (source, synth) — the SYNTHETIC destination verify
+        # actually presses toward — so a rule-only source form that survives
+        # an unrewriteable spot (an escaping symlink target, a stale filename
+        # left by 0008's rewrite-side scope-migration limitation) is scanned
+        # for below (Fix F1), mirroring `doctor.find_leaks`'s `rendered_rules`.
+        rendered_rules = rendered_replace_rules(rules, source, synth)
         with owned_sandbox(target) as dest_root:
             sandbox = make_sandbox(target, dest_root)
             try:
@@ -349,9 +395,16 @@ def verify_command(argv: list[str] | None = None) -> int:
                 sandbox.path,
                 source,
                 synth,
-                fields=cfg.fields,
-                substring_fields=cfg.substring_fields,
+                fields=scan_fields,
+                substring_fields=scan_substring,
                 rules=rules,
+                rendered_rules=rendered_rules,
+                # `report.renamed` (Fix F1) is available right here — thread
+                # it through so a rule-literal scope check can recover a
+                # scanned path/symlink-target's PRE-rename original before
+                # testing `rule.files`, mirroring
+                # `doctor.find_leaks`'s `renamed` parameter exactly (9d9d0c5).
+                renamed=report.renamed,
             )
             forward_map = build_forward_map(report.renamed)
             surviving, stale = apply_ignores(

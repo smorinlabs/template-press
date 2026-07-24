@@ -22,7 +22,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from template_press.rebrand.verify_cli import verify_command
+from template_press.rebrand.verify_cli import _effective_scan_fields, verify_command
 
 from .conftest import requires_symlink
 
@@ -436,6 +436,57 @@ def test_json_report_maps_surviving_path_to_source_coords(
 # byte-identical — on BOTH the clean (exit 0) and the leak (exit 1) paths. Each
 # reaches the sandbox copy/apply/scan; verify must never write to the target.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# F1: the scan must honor [rules] substring_rewrite_fields, not just the
+# (empty-by-default) [verify] substring_fields. A relative symlink whose
+# target text escapes containment is never rewritten by the hermetic press
+# (regardless of substring mode), so a glued (boundary-free) source token in
+# its readlink text survives verbatim. Before the fix, the scan only ran in
+# boundary mode for this field and never flagged the glued token -> false
+# clean (exit 0). After the fix, the scan runs in substring mode too and
+# catches it -> exit 1.
+# ---------------------------------------------------------------------------
+@requires_symlink
+def test_substring_rewrite_field_scanned_via_escaping_symlink_exits_1(
+    tmp_path: Path,
+) -> None:
+    repo = make_pressable(tmp_path)
+    # Escapes containment -> apply's _retarget_symlinks skips it, leaving the
+    # glued "pressowned" token (no word boundary after "press") intact.
+    os.symlink("../../outside/pressowned", repo / "escaping-link")
+    (repo / "press" / "press-rules.toml").write_text(
+        '[rules]\nsubstring_rewrite_fields = ["app_name"]\n', encoding="utf-8"
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 1
+
+
+# ---------------------------------------------------------------------------
+# F1: `verifier.scan` never received rendered `[[replace]]` FROM literals, so
+# a rule-only source form surviving an unrewriteable spot (an escaping
+# symlink target the retarget pass refuses to touch) passed `verify` clean.
+# `pattern = "x{app_name}owned"` renders `xpressowned` — glued with no
+# boundary on EITHER side, so even the paranoid field-based scan can't see
+# "press" inside it; the [[replace]] rule is the ONLY matcher. Before the
+# fix: false clean (exit 0). After the fix: `verify_cli` renders the rules
+# with (source, synth) and threads them into `verifier.scan` -> exit 1.
+# ---------------------------------------------------------------------------
+@requires_symlink
+def test_rule_only_leak_via_escaping_symlink_exits_1(tmp_path: Path) -> None:
+    repo = make_pressable(tmp_path)
+    (repo / "press" / "press-rules.toml").write_text(
+        "[[replace]]\n"
+        'pattern = "x{app_name}owned"\n'
+        "paths   = true\n"
+        "content = false\n"
+        'reason  = "escaping symlink repro (F1)"\n',
+        encoding="utf-8",
+    )
+    os.symlink("../../outside/xpressowned", repo / "escaping-link")
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 1
+
+
 def test_verify_never_mutates_real_target_exit_0_and_1(tmp_path: Path) -> None:
     # exit-0: a clean template (regenerable uv.lock is scan-exempt).
     clean = make_pressable(tmp_path / "clean")
@@ -452,3 +503,56 @@ def test_verify_never_mutates_real_target_exit_0_and_1(tmp_path: Path) -> None:
     before_leak = _tree(leak)
     assert verify_command(["--target", str(leak)]) == 1
     assert _tree(leak) == before_leak
+
+
+# ---------------------------------------------------------------------------
+# F2: `substring_rewrite_fields` was unioned into scan_substring (0ea5c98) but
+# NOT into scan_fields — so a field absent from DEFAULT_FIELDS (e.g.
+# app_name_upper) was never scanned at ALL, substring mode or not. The
+# derived scan_fields must include every substring_rewrite_fields member.
+# ---------------------------------------------------------------------------
+class TestEffectiveScanFieldsUnion:
+    def test_appends_substring_field_absent_from_defaults(self):
+        fields = _effective_scan_fields(
+            ("app_name", "package_name"), frozenset({"app_name_upper"})
+        )
+        assert "app_name_upper" in fields
+
+    def test_no_duplicate_when_already_present(self):
+        fields = _effective_scan_fields(("app_name",), frozenset({"app_name"}))
+        assert fields.count("app_name") == 1
+
+    def test_preserves_original_order_and_appends_at_end(self):
+        fields = _effective_scan_fields(
+            ("app_name", "package_name"), frozenset({"app_name_upper"})
+        )
+        assert fields == ("app_name", "package_name", "app_name_upper")
+
+    def test_defensive_filter_drops_field_outside_known_fields(self):
+        """rules.py already rejects an unknown substring_rewrite_fields member
+        at parse time — this is defense in depth, not reachable via normal
+        config loading."""
+        fields = _effective_scan_fields(("app_name",), frozenset({"not_a_field"}))
+        assert fields == ("app_name",)
+
+
+@requires_symlink
+def test_substring_rewrite_field_absent_from_defaults_scanned_via_escaping_symlink(
+    tmp_path: Path,
+) -> None:
+    """F2 end-to-end, mirroring the 0ea5c98 test shape: `app_name_upper` is
+    NOT in DEFAULT_FIELDS, so before the fix scan_fields never included it —
+    `find_occurrences` was never even called for that field, substring mode
+    or not. An escaping symlink's target text (never rewritten — containment
+    refuses to write outside the tree) carries the glued UPPER token
+    "PRESSOwned" (no lower->UPPER transition after "PRESS", so app_name's own
+    boundary matcher can't catch it either). Before the fix: false clean
+    (exit 0). After the fix: scan_fields includes app_name_upper -> exit 1.
+    """
+    repo = make_pressable(tmp_path)
+    os.symlink("../../outside/PRESSOwned", repo / "escaping-link")
+    (repo / "press" / "press-rules.toml").write_text(
+        '[rules]\nsubstring_rewrite_fields = ["app_name_upper"]\n', encoding="utf-8"
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 1

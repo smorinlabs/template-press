@@ -18,7 +18,9 @@ import os
 import subprocess
 from pathlib import Path
 
-from template_press.rebrand.rules import DEFAULT_RULES
+from template_press.rebrand.engine import apply
+from template_press.rebrand.identity import Identity
+from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 from template_press.rebrand.verifier import Finding, scan
 
 from .conftest import DEST, SOURCE, requires_symlink
@@ -33,6 +35,23 @@ def _git(repo: Path, *args: str) -> None:
         check=True,
         capture_output=True,
     )
+
+
+def _git_add_all(repo: Path) -> None:
+    _git(repo, "add", "-A")
+
+
+def _identity(**overrides):
+    base = {
+        "package_name": "py_launch_blueprint",
+        "repo_name": "py-launch-blueprint",
+        "app_name": "plbp",
+        "author": "Steve Morin",
+        "email": "steve.morin@gmail.com",
+        "owner": "smorinlabs",
+    }
+    base.update(overrides)
+    return Identity(**base)
 
 
 def test_hyphen_filename_found(src_target: Path):
@@ -307,3 +326,256 @@ def test_finding_dataclass_shape():
     )
     assert f.path == "a"
     assert f.where == "content"
+
+
+class TestDisplayNameScan:
+    def test_scan_flags_glued_display_variant(self, src_target: Path):
+        (src_target / "README.md").write_text(
+            "# PyLaunchBlueprint intro\n", encoding="utf-8"
+        )
+        _git_add_all(src_target)
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(app_name="acme", display_name="Acme Widget")
+        findings = scan(
+            src_target,
+            src,
+            dst,
+            fields=("display_name",),
+            substring_fields=NO_SUBSTRING,
+            rules=DEFAULT_RULES,
+        )
+        assert any(f.field == "display_name" and f.where == "content" for f in findings)
+
+    def test_sparse_identity_does_not_crash(self, src_target: Path):
+        _git_add_all(src_target)
+        findings = scan(
+            src_target,
+            _identity(),  # no display_name
+            _identity(app_name="acme"),
+            fields=("app_name", "display_name"),
+            substring_fields=NO_SUBSTRING,
+            rules=DEFAULT_RULES,
+        )
+        assert not any(f.field == "display_name" for f in findings)
+
+
+class TestRenderedRuleFindings:
+    """F1: `scan` must also hunt surviving rendered `[[replace]]` FROM
+    literals — mirroring `doctor.find_leaks`'s `rendered_rules` scan, but
+    emitting occurrence-level `Finding`s (``field="replace_rule",
+    value=frm``) instead of presence-only `Leak`s. Fixture identity: SOURCE
+    app_name="press" (conftest). Note `verifier.scan`'s own field-based
+    matcher (`matcher.identity_pattern`) is deliberately MORE permissive
+    than `identity.token_occurs` (it treats `_`/`-` as boundary-safe, not
+    just alnum) — an underscore-glued form like doctor's `_press_owned` is
+    ALREADY caught by the ordinary field scan here, so the genuinely
+    rule-only-visible shape needs pure alnum glue on both sides:
+    `pattern = "x{app_name}owned"` renders `xpressowned`, which even the
+    paranoid matcher can't see (an `x` immediately precedes `press`,
+    blocking its left boundary)."""
+
+    def test_glued_content_leak_via_rule_only(self, src_target: Path):
+        rule = ReplaceRule(pattern="x{app_name}owned", reason="test")
+        (src_target / "conftest_extra.py").write_text("xpressowned\n", encoding="utf-8")
+        _git_add_all(src_target)
+        findings = scan(
+            src_target,
+            SOURCE,
+            DEST,
+            fields=FIELDS,
+            substring_fields=NO_SUBSTRING,
+            rules=DEFAULT_RULES,
+            rendered_rules=[(rule, "xpressowned", "xpotatoowned")],
+        )
+        hits = [
+            f
+            for f in findings
+            if f.path == "conftest_extra.py" and f.field == "replace_rule"
+        ]
+        assert hits and hits[0].value == "xpressowned" and hits[0].where == "content"
+        assert hits[0].line == 1
+        # The ordinary app_name field scan must NOT have caught it on its
+        # own — proving the hit came from rule-aware scanning.
+        assert not any(
+            f.path == "conftest_extra.py" and f.field == "app_name" for f in findings
+        )
+
+    def test_content_rule_scoped_by_files_glob(self, src_target: Path):
+        rule = ReplaceRule(
+            pattern="x{app_name}owned", reason="test", files=("docs/**",)
+        )
+        (src_target / "conftest_extra.py").write_text("xpressowned\n", encoding="utf-8")
+        _git_add_all(src_target)
+        findings = scan(
+            src_target,
+            SOURCE,
+            DEST,
+            fields=FIELDS,
+            substring_fields=NO_SUBSTRING,
+            rules=DEFAULT_RULES,
+            rendered_rules=[(rule, "xpressowned", "xpotatoowned")],
+        )
+        assert not any(f.field == "replace_rule" for f in findings)
+
+    def test_path_component_leak_via_rule_only(self, src_target: Path):
+        rule = ReplaceRule(
+            pattern="-{app_name}.md", reason="test", paths=True, content=False
+        )
+        (src_target / "0001-press.md").write_text("x\n", encoding="utf-8")
+        _git_add_all(src_target)
+        findings = scan(
+            src_target,
+            SOURCE,
+            DEST,
+            fields=FIELDS,
+            substring_fields=NO_SUBSTRING,
+            rules=DEFAULT_RULES,
+            rendered_rules=[(rule, "-press.md", "-potato.md")],
+        )
+        hits = [
+            f
+            for f in findings
+            if f.path == "0001-press.md" and f.field == "replace_rule"
+        ]
+        assert hits and hits[0].value == "-press.md" and hits[0].where == "filename"
+
+    def test_no_false_positive_after_rule_actually_applied(self, src_target: Path):
+        """Negative control: once the rule's rendered FROM is genuinely
+        gone (a normal rewrite ran), passing rendered_rules must not
+        manufacture a leak — `to` is never itself scanned for."""
+        rule = ReplaceRule(
+            pattern="-{app_name}.md", reason="test", paths=True, content=False
+        )
+        (src_target / "0001-potato.md").write_text("x\n", encoding="utf-8")
+        _git_add_all(src_target)
+        findings = scan(
+            src_target,
+            SOURCE,
+            DEST,
+            fields=FIELDS,
+            substring_fields=NO_SUBSTRING,
+            rules=DEFAULT_RULES,
+            rendered_rules=[(rule, "-press.md", "-potato.md")],
+        )
+        assert not any(f.field == "replace_rule" for f in findings)
+
+    @requires_symlink
+    def test_escaping_symlink_text_leak_via_rule_only(self, src_target: Path):
+        """The exact F1 repro (paths rule `x{app_name}owned`, escaping
+        symlink target `xpressowned`): the retarget pass refuses to rewrite
+        an escaping symlink's target (containment), and the identity
+        variant matcher can't see `press` inside the alnum glue on either
+        side. Only the rule-aware symlink scan, scoped against the link's
+        normalized TARGET path, catches it."""
+        rule = ReplaceRule(
+            pattern="x{app_name}owned", reason="test", paths=True, content=False
+        )
+        link = src_target / "escaping-link"
+        os.symlink("../../outside/xpressowned", link)
+        _git_add_all(src_target)
+        findings = scan(
+            src_target,
+            SOURCE,
+            DEST,
+            fields=FIELDS,
+            substring_fields=NO_SUBSTRING,
+            rules=DEFAULT_RULES,
+            rendered_rules=[(rule, "xpressowned", "xpotatoowned")],
+        )
+        hits = [f for f in findings if f.path == "escaping-link"]
+        assert any(
+            f.field == "replace_rule"
+            and f.value == "xpressowned"
+            and f.where == "symlink"
+            for f in hits
+        )
+        assert not any(f.field == "app_name" for f in hits)
+
+    def test_renamed_threading_recovers_pre_rename_scope(self, src_target: Path):
+        """Mirrors `doctor.TestRuleScopeMigratedByAncestorRename`: a
+        `files`-scoped paths rule guarding a filename under a directory the
+        ORDINARY rename pass ALSO renames leaves a stale name behind
+        (0008's documented rewrite-side scope-migration limitation) — the
+        rule's OWN scope check must still catch it when `renamed` is
+        threaded through, recovering the file's pre-rename path. The index
+        is re-staged after `apply()` (mirroring `verify_cli._restage_
+        sandbox`'s `git add -A -f`) so `scan_paths` reflects only the
+        POST-rename tree — without a re-stage, git's still-cached OLD path
+        would itself literally satisfy the rule's `files` glob and mask
+        whether `renamed` threading is actually doing anything (see the RED
+        test below)."""
+        docs = src_target / "press_docs"
+        docs.mkdir()
+        (docs / "_press_guide.md").write_text("x\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rule = ReplaceRule(
+            pattern="_{app_name}_guide.md",
+            reason="doc filename scoped to its own dir",
+            files=("press_docs/**",),
+            paths=True,
+            content=False,
+        )
+        rules = DEFAULT_RULES.__class__(
+            exclude_dirs=DEFAULT_RULES.exclude_dirs,
+            exclude_files=DEFAULT_RULES.exclude_files,
+            regenerate=DEFAULT_RULES.regenerate,
+            replace=(rule,),
+        )
+        report = apply(src_target, SOURCE, DEST, rules)
+        assert (src_target / "potato_docs" / "_press_guide.md").exists()
+        _git_add_all(src_target)
+        findings = scan(
+            src_target,
+            SOURCE,
+            DEST,
+            fields=FIELDS,
+            substring_fields=NO_SUBSTRING,
+            rules=DEFAULT_RULES,
+            rendered_rules=[(rule, "_press_guide.md", "_potato_guide.md")],
+            renamed=report.renamed,
+        )
+        hits = [
+            f
+            for f in findings
+            if f.path == "potato_docs/_press_guide.md" and f.field == "replace_rule"
+        ]
+        assert (
+            hits
+            and hits[0].value == "_press_guide.md"
+            and hits[0].where == ("filename")
+        )
+
+    def test_renamed_omitted_misses_the_same_leak_red_evidence(self, src_target: Path):
+        """RED: the exact same leftover (index re-staged, so the stale
+        pre-rename path is gone from `scan_paths` too), scanned WITHOUT
+        `renamed` threaded through, is invisible — proving `renamed` is
+        load-bearing, not just harmless plumbing."""
+        docs = src_target / "press_docs"
+        docs.mkdir()
+        (docs / "_press_guide.md").write_text("x\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rule = ReplaceRule(
+            pattern="_{app_name}_guide.md",
+            reason="doc filename scoped to its own dir",
+            files=("press_docs/**",),
+            paths=True,
+            content=False,
+        )
+        rules = DEFAULT_RULES.__class__(
+            exclude_dirs=DEFAULT_RULES.exclude_dirs,
+            exclude_files=DEFAULT_RULES.exclude_files,
+            regenerate=DEFAULT_RULES.regenerate,
+            replace=(rule,),
+        )
+        apply(src_target, SOURCE, DEST, rules)
+        _git_add_all(src_target)
+        findings = scan(
+            src_target,
+            SOURCE,
+            DEST,
+            fields=FIELDS,
+            substring_fields=NO_SUBSTRING,
+            rules=DEFAULT_RULES,
+            rendered_rules=[(rule, "_press_guide.md", "_potato_guide.md")],
+        )
+        assert not any(f.field == "replace_rule" for f in findings)

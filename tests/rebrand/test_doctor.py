@@ -1,12 +1,31 @@
+import dataclasses
 import os
 import subprocess
 from pathlib import Path
 
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import apply
-from template_press.rebrand.rules import DEFAULT_RULES
+from template_press.rebrand.identity import Identity
+from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, Rules
 
 from .conftest import DEST, SOURCE, requires_symlink
+
+
+def _identity(**overrides):
+    base = {
+        "package_name": "py_launch_blueprint",
+        "repo_name": "py-launch-blueprint",
+        "app_name": "plbp",
+        "author": "Steve Morin",
+        "email": "steve.morin@gmail.com",
+        "owner": "smorinlabs",
+    }
+    base.update(overrides)
+    return Identity(**base)
+
+
+def _rules_with(**overrides):
+    return dataclasses.replace(DEFAULT_RULES, **overrides)
 
 
 def test_clean_rebrand_has_no_leaks(src_target: Path):
@@ -188,3 +207,421 @@ def test_unreadable_file_fails_verification(src_target: Path):
     finally:
         secret.chmod(0o644)
     assert any(e.where == "unverifiable" for e in leaks)
+
+
+class TestDisplayNameLeaks:
+    def test_surviving_pascal_form_is_a_leak(self, src_target: Path):
+        (src_target / "README.md").write_text(
+            "# PyLaunchBlueprint docs\n", encoding="utf-8"
+        )
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(app_name="acme", display_name="Acme Widget")
+        leaks = find_leaks(src_target, src, DEFAULT_RULES, dest=dst)
+        assert any(
+            lk.field == "display_name_pascal" and lk.where == "content" for lk in leaks
+        )
+
+    def test_unchanged_display_name_is_not_a_leak(self, src_target: Path):
+        (src_target / "README.md").write_text("Py Launch Blueprint\n", encoding="utf-8")
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(app_name="acme", display_name="Py Launch Blueprint")
+        leaks = find_leaks(src_target, src, DEFAULT_RULES, dest=dst)
+        assert not any(lk.field.startswith("display_name") for lk in leaks)
+
+    def test_surviving_pascal_form_in_path_is_a_leak(self, src_target: Path):
+        """Both path-component loops must scan display-form fields too, not
+        just PATH_FIELDS — a leftover PyLaunchBlueprint/ dir passes the
+        content scan cleanly (no such text) but must still be flagged as a
+        path leak (Fix 2)."""
+        pascal_dir = src_target / "PyLaunchBlueprint"
+        pascal_dir.mkdir()
+        (pascal_dir / "notes.txt").write_text("x\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(app_name="acme", display_name="Acme Widget")
+        leaks = find_leaks(src_target, src, DEFAULT_RULES, dest=dst)
+        assert any(
+            lk.field == "display_name_pascal" and lk.where == "path" for lk in leaks
+        )
+
+    @requires_symlink
+    def test_dangling_symlink_under_display_named_dir_is_a_path_leak(
+        self, src_target: Path
+    ):
+        """F6: the FIRST (regular-file) path-component loop never reaches a
+        DANGLING symlink — `iter_target_files` calls `is_file()`, which
+        FOLLOWS the link and drops it entirely. Only the SECOND (dir/
+        dangling-symlink) path-component loop scans it, and it must cover
+        display-form fields too, not just PATH_FIELDS — a display-named
+        directory holding nothing but a dangling symlink must still be
+        flagged as a display-form path leak."""
+        display_dir = src_target / "PyLaunchBlueprint"
+        display_dir.mkdir()
+        link = display_dir / "link"
+        os.symlink("nonexistent-target", link)
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(app_name="acme", display_name="Acme Widget")
+        leaks = find_leaks(src_target, src, DEFAULT_RULES, dest=dst)
+        assert any(
+            lk.path == "PyLaunchBlueprint/link"
+            and lk.field == "display_name_pascal"
+            and lk.where == "path"
+            for lk in leaks
+        )
+
+
+class TestSubstringAwareLeaks:
+    """Fix 3: when substring_rewrite_fields promises glued-token coverage,
+    find_leaks must scan for it too, or a containment-skipped glued
+    leftover (e.g. a symlink target the retarget pass refused to touch)
+    would earn a receipt despite surviving."""
+
+    def test_glued_content_leak_detected_in_substring_mode(self, src_target: Path):
+        (src_target / "leftover.txt").write_text("plbpOwned\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target, src, DEFAULT_RULES, substring_fields=frozenset({"app_name"})
+        )
+        assert any(
+            lk.path == "leftover.txt"
+            and lk.field == "app_name"
+            and lk.where == "content"
+            for lk in leaks
+        )
+
+    def test_glued_content_not_a_leak_with_default_rules(self, src_target: Path):
+        """Same fixture, no substring_fields: the boundary-guarded
+        token_occurs must NOT flag "plbpOwned" — proving the prior test's
+        hit came from the substring dispatch, not a loosened default."""
+        (src_target / "leftover.txt").write_text("plbpOwned\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(src_target, src, DEFAULT_RULES)
+        assert not any(lk.path == "leftover.txt" for lk in leaks)
+
+    @requires_symlink
+    def test_glued_symlink_text_leak_detected_in_substring_mode(self, src_target: Path):
+        link = src_target / "link"
+        os.symlink("../../outside/plbpOwned", link)
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target, src, DEFAULT_RULES, substring_fields=frozenset({"app_name"})
+        )
+        assert any(
+            lk.path == "link" and lk.field == "app_name" and lk.where == "symlink"
+            for lk in leaks
+        )
+
+
+class TestRenderedRuleLeaks:
+    """F1: a [[replace]] rule can be the ONLY matcher for a boundary-unmatched
+    rendered FROM literal — e.g. `_{app_name}_owned` renders to `_plbp_owned`,
+    whose LEADING underscore blocks app_name's own boundary matcher on the
+    left (identity.token_pattern excludes `_` from the left side for
+    app_name). When the retarget pass skips an escaping symlink (containment
+    refuses to rewrite outside the tree), the rendered rule's FROM literal
+    survives verbatim in the link text — and only a rule-aware scan catches
+    it."""
+
+    def test_glued_content_leak_via_rule_only(self, src_target: Path):
+        rule = ReplaceRule(pattern="_{app_name}_owned", reason="test")
+        (src_target / "conftest.py").write_text("_plbp_owned\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            rendered_rules=[(rule, "_plbp_owned", "_acme_owned")],
+        )
+        assert any(
+            lk.path == "conftest.py"
+            and lk.field == "replace_rule"
+            and lk.value == "_plbp_owned"
+            and lk.where == "content"
+            for lk in leaks
+        )
+        # The plain app_name field scan must NOT have caught it on its own —
+        # proving the hit came from rule-aware scanning, not a preexisting path.
+        assert not any(lk.field == "app_name" for lk in leaks)
+
+    def test_content_rule_scoped_by_files_glob(self, src_target: Path):
+        """A rule scoped to `files` must not flag a FROM literal outside it."""
+        rule = ReplaceRule(
+            pattern="_{app_name}_owned", reason="test", files=("docs/**",)
+        )
+        (src_target / "conftest.py").write_text("_plbp_owned\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            rendered_rules=[(rule, "_plbp_owned", "_acme_owned")],
+        )
+        assert not any(lk.field == "replace_rule" for lk in leaks)
+
+    def test_path_component_leak_via_rule_only(self, src_target: Path):
+        rule = ReplaceRule(
+            pattern="-{app_name}.md", reason="test", paths=True, content=False
+        )
+        (src_target / "0001-plbp.md").write_text("x\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            rendered_rules=[(rule, "-plbp.md", "-acme.md")],
+        )
+        assert any(
+            lk.path == "0001-plbp.md"
+            and lk.field == "replace_rule"
+            and lk.value == "-plbp.md"
+            and lk.where == "path"
+            for lk in leaks
+        )
+
+    @requires_symlink
+    def test_dangling_symlink_name_leak_via_rule_only(self, src_target: Path):
+        """The dir/dangling-symlink pass (Pass 2) must also scan rule FROM
+        literals against path COMPONENTS — mirroring the main loop."""
+        rule = ReplaceRule(
+            pattern="-{app_name}.md", reason="test", paths=True, content=False
+        )
+        os.symlink("nonexistent-target", src_target / "0001-plbp.md")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            rendered_rules=[(rule, "-plbp.md", "-acme.md")],
+        )
+        assert any(
+            lk.path == "0001-plbp.md"
+            and lk.field == "replace_rule"
+            and lk.value == "-plbp.md"
+            and lk.where == "path"
+            for lk in leaks
+        )
+
+    @requires_symlink
+    def test_escaping_symlink_text_leak_via_rule_only(self, src_target: Path):
+        """The exact F1 repro: an escaping symlink's target text carries the
+        rendered FROM literal glued with underscores on both sides — the
+        retarget pass refuses to rewrite it (containment), and the ordinary
+        boundary-guarded app_name scan can't match it either (leading `_`
+        blocks the left boundary). Only the rule-aware symlink scan, scoped
+        against the link's normalized TARGET path, catches it."""
+        rule = ReplaceRule(
+            pattern="_{app_name}_owned", reason="test", paths=True, content=False
+        )
+        link = src_target / "escaping-link"
+        os.symlink("../../outside/_plbp_owned", link)
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            rendered_rules=[(rule, "_plbp_owned", "_acme_owned")],
+        )
+        assert any(
+            lk.path == "escaping-link"
+            and lk.field == "replace_rule"
+            and lk.value == "_plbp_owned"
+            and lk.where == "symlink"
+            for lk in leaks
+        )
+        assert not any(lk.field == "app_name" for lk in leaks)
+
+    def test_no_false_positive_after_rule_actually_applied(self, src_target: Path):
+        """Negative control: once the rule's rendered FROM is genuinely gone
+        (a normal rewrite ran), passing rendered_rules must not manufacture
+        a leak — `to` is never itself scanned for."""
+        rule = ReplaceRule(
+            pattern="-{app_name}.md", reason="test", paths=True, content=False
+        )
+        (src_target / "0001-acme.md").write_text("x\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            rendered_rules=[(rule, "-plbp.md", "-acme.md")],
+        )
+        assert not any(lk.field == "replace_rule" for lk in leaks)
+
+
+class TestRuleScopeMigratedByAncestorRename:
+    """F1: a paths=true [[replace]] rule scoped `files=["plbp_docs/**"]`
+    guards a filename that lives under a directory the ORDINARY token-rename
+    pass ALSO renames (plbp_docs/ -> acme_docs/, boundary-matched on
+    app_name). `_rename_pass_once` collapses each pass to only its
+    shallowest differing ancestor, so pass 1 renames just the directory;
+    pass 2 re-evaluates the rule's `files` scope against the file's now
+    CURRENT path (acme_docs/...), which no longer matches `plbp_docs/**` —
+    the rule never fires and `_plbp_guide.md` keeps its stale name (0008's
+    documented rewrite-side scope-migration limitation — NOT fixed here).
+
+    The doctor's rendered-rule path scan repeated the exact same
+    current-path-only scope check, so the leftover slipped the gate too —
+    that receipt/verify contradiction is what `renamed` threading closes.
+    """
+
+    def _seed(self, src_target: Path) -> tuple[ReplaceRule, Rules]:
+        docs = src_target / "plbp_docs"
+        docs.mkdir()
+        (docs / "_plbp_guide.md").write_text("x\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        rule = ReplaceRule(
+            pattern="_{app_name}_guide.md",
+            reason="doc filename scoped to its own dir",
+            files=["plbp_docs/**"],
+            paths=True,
+            content=False,
+        )
+        rules = _rules_with(replace=(rule,))
+        return rule, rules
+
+    def test_apply_leaves_stale_filename_after_ancestor_renamed_first(
+        self, src_target: Path
+    ):
+        """Establishes the precondition (0008 limitation, unfixed): the dir
+        renames on pass 1, the file's rule-driven rename is missed, and
+        `report.renamed` records the ancestor rename that caused it."""
+        _rule, rules = self._seed(src_target)
+        src = _identity()
+        dst = _identity(app_name="acme")
+        report = apply(src_target, src, dst, rules)
+        assert (src_target / "acme_docs" / "_plbp_guide.md").exists()
+        assert ("plbp_docs", "acme_docs") in report.renamed
+
+    def test_leak_detected_when_renamed_is_threaded_through(self, src_target: Path):
+        rule, rules = self._seed(src_target)
+        src = _identity()
+        dst = _identity(app_name="acme")
+        report = apply(src_target, src, dst, rules)
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            dest=dst,
+            rendered_rules=[(rule, "_plbp_guide.md", "_acme_guide.md")],
+            renamed=report.renamed,
+        )
+        assert any(
+            lk.path == "acme_docs/_plbp_guide.md"
+            and lk.field == "replace_rule"
+            and lk.value == "_plbp_guide.md"
+            and lk.where == "path"
+            for lk in leaks
+        )
+
+    def test_leak_missed_without_renamed_red_evidence(self, src_target: Path):
+        """RED: the exact same leftover, scanned WITHOUT `renamed` threaded
+        through, is invisible — proving `renamed` is load-bearing, not just
+        harmless plumbing."""
+        rule, rules = self._seed(src_target)
+        src = _identity()
+        dst = _identity(app_name="acme")
+        apply(src_target, src, dst, rules)
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            dest=dst,
+            rendered_rules=[(rule, "_plbp_guide.md", "_acme_guide.md")],
+        )
+        assert not any(lk.field == "replace_rule" for lk in leaks)
+
+    def test_fully_applied_scoped_rule_no_ancestor_rename_still_clean(
+        self, src_target: Path
+    ):
+        """Negative control: the SAME rule, scoped to a directory that is
+        NEVER itself renamed (no app_name token in its name), applies fully
+        on pass 1 — no ancestor shift, no leftover, and `renamed` threaded
+        through must not manufacture a false positive."""
+        docs = src_target / "docs"
+        docs.mkdir()
+        (docs / "_plbp_guide.md").write_text("x\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        rule = ReplaceRule(
+            pattern="_{app_name}_guide.md",
+            reason="doc filename scoped to a stable dir",
+            files=["docs/**"],
+            paths=True,
+            content=False,
+        )
+        rules = _rules_with(replace=(rule,))
+        src = _identity()
+        dst = _identity(app_name="acme")
+        report = apply(src_target, src, dst, rules)
+        assert (docs / "_acme_guide.md").exists()
+        assert not (docs / "_plbp_guide.md").exists()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            dest=dst,
+            rendered_rules=[(rule, "_plbp_guide.md", "_acme_guide.md")],
+            renamed=report.renamed,
+        )
+        assert leaks == []
