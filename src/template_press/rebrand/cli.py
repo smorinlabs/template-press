@@ -350,6 +350,7 @@ def _press(
             doctor_rules,
             dest=dest,
             display_form_names=rules.display_forms,
+            substring_fields=rules.substring_rewrite_fields,
         )
         if leaks:
             print(render_leak_report(leaks), file=sys.stderr)

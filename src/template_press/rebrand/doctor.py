@@ -9,6 +9,7 @@ no receipt. Port of init_doctor.check_no_identity_leftover, generalized to
 from __future__ import annotations
 
 import os
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,12 +56,29 @@ def _read_for_scan(path: Path) -> str | None:
         return None  # binary: the rewrite pass cannot alter it either
 
 
+def _occurs(
+    text: str, field_name: str, value: str, substring_fields: Collection[str]
+) -> bool:
+    """Dispatch to plain substring membership for an opted-in field.
+
+    Mirrors the engine's own dispatch (``_apply_replacements``,
+    ``_renamed_rel``): when ``substring_rewrite_fields`` promises glued-token
+    coverage for a field, the doctor's scan must use the same plain-substring
+    posture — the boundary-guarded ``token_occurs`` would miss a glued
+    leftover (``plbpOwned``) that the substring rewrite is meant to close.
+    """
+    if field_name in substring_fields:
+        return value in text
+    return token_occurs(text, field_name, value)
+
+
 def find_leaks(
     target: Path,
     source: Identity,
     rules: Rules,
     dest: Identity | None = None,
     display_form_names: tuple[str, ...] = DISPLAY_FORM_NAMES,
+    substring_fields: Collection[str] = frozenset(),
 ) -> list[Leak]:
     """Scan for surviving source-identity tokens.
 
@@ -84,6 +102,15 @@ def find_leaks(
             for form in display_form_names:
                 dest_fields[f"display_name_{form}"] = df[form]
         fields = {k: v for k, v in fields.items() if dest_fields.get(k) != v}
+    # Path-component scans must cover display-form fields too (Fix 2): the
+    # doctor already expands display_name into its exact forms for the
+    # content/symlink scans above, but a leftover PyLaunchBlueprint/ dir
+    # would otherwise pass the path-component loops below, which iterated
+    # PATH_FIELDS only.
+    path_fields = (
+        *PATH_FIELDS,
+        *(f"display_name_{form}" for form in display_form_names),
+    )
     covered_symlinks: set[str] = set()
     for path in iter_target_files(target, rules):
         rel = path.relative_to(target)
@@ -95,7 +122,7 @@ def find_leaks(
             text = None
         if text is not None:
             for field_name, value in fields.items():
-                if token_occurs(text, field_name, value):
+                if _occurs(text, field_name, value, substring_fields):
                     leaks.append(Leak(rel_posix, field_name, value, "content"))
         if path.is_symlink():
             # A symlink's bytes are its target string, not file content — an
@@ -103,14 +130,16 @@ def find_leaks(
             covered_symlinks.add(rel_posix)
             link = os.readlink(path)
             for field_name, value in fields.items():
-                if token_occurs(link, field_name, value):
+                if _occurs(link, field_name, value, substring_fields):
                     leaks.append(Leak(rel_posix, field_name, value, "symlink"))
         for i, component in enumerate(rel.parts):
             if _is_root_press(rel, i):
                 continue
-            for field_name in PATH_FIELDS:
+            for field_name in path_fields:
                 value = fields.get(field_name)
-                if value is not None and token_occurs(component, field_name, value):
+                if value is not None and _occurs(
+                    component, field_name, value, substring_fields
+                ):
                     leaks.append(Leak(rel_posix, field_name, value, "path"))
     # DIRECTORY and DANGLING symlinks never reach the loop above:
     # `iter_target_files` keeps only `is_file()` paths, and `is_file()` FOLLOWS
@@ -133,9 +162,11 @@ def find_leaks(
         for i, component in enumerate(rel.parts):
             if _is_root_press(rel, i):
                 continue
-            for field_name in PATH_FIELDS:
+            for field_name in path_fields:
                 value = fields.get(field_name)
-                if value is not None and token_occurs(component, field_name, value):
+                if value is not None and _occurs(
+                    component, field_name, value, substring_fields
+                ):
                     leaks.append(Leak(rel_posix, field_name, value, "path"))
         try:
             link = os.readlink(path)
@@ -143,7 +174,7 @@ def find_leaks(
             leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
             continue
         for field_name, value in fields.items():
-            if token_occurs(link, field_name, value):
+            if _occurs(link, field_name, value, substring_fields):
                 leaks.append(Leak(rel_posix, field_name, value, "symlink"))
     return leaks
 

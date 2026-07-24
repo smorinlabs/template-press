@@ -222,3 +222,80 @@ class TestDisplayNameLeaks:
         dst = _identity(app_name="acme", display_name="Py Launch Blueprint")
         leaks = find_leaks(src_target, src, DEFAULT_RULES, dest=dst)
         assert not any(lk.field.startswith("display_name") for lk in leaks)
+
+    def test_surviving_pascal_form_in_path_is_a_leak(self, src_target: Path):
+        """Both path-component loops must scan display-form fields too, not
+        just PATH_FIELDS — a leftover PyLaunchBlueprint/ dir passes the
+        content scan cleanly (no such text) but must still be flagged as a
+        path leak (Fix 2)."""
+        pascal_dir = src_target / "PyLaunchBlueprint"
+        pascal_dir.mkdir()
+        (pascal_dir / "notes.txt").write_text("x\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(app_name="acme", display_name="Acme Widget")
+        leaks = find_leaks(src_target, src, DEFAULT_RULES, dest=dst)
+        assert any(
+            lk.field == "display_name_pascal" and lk.where == "path" for lk in leaks
+        )
+
+
+class TestSubstringAwareLeaks:
+    """Fix 3: when substring_rewrite_fields promises glued-token coverage,
+    find_leaks must scan for it too, or a containment-skipped glued
+    leftover (e.g. a symlink target the retarget pass refused to touch)
+    would earn a receipt despite surviving."""
+
+    def test_glued_content_leak_detected_in_substring_mode(self, src_target: Path):
+        (src_target / "leftover.txt").write_text("plbpOwned\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target, src, DEFAULT_RULES, substring_fields=frozenset({"app_name"})
+        )
+        assert any(
+            lk.path == "leftover.txt"
+            and lk.field == "app_name"
+            and lk.where == "content"
+            for lk in leaks
+        )
+
+    def test_glued_content_not_a_leak_with_default_rules(self, src_target: Path):
+        """Same fixture, no substring_fields: the boundary-guarded
+        token_occurs must NOT flag "plbpOwned" — proving the prior test's
+        hit came from the substring dispatch, not a loosened default."""
+        (src_target / "leftover.txt").write_text("plbpOwned\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(src_target, src, DEFAULT_RULES)
+        assert not any(lk.path == "leftover.txt" for lk in leaks)
+
+    @requires_symlink
+    def test_glued_symlink_text_leak_detected_in_substring_mode(self, src_target: Path):
+        link = src_target / "link"
+        os.symlink("../../outside/plbpOwned", link)
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target, src, DEFAULT_RULES, substring_fields=frozenset({"app_name"})
+        )
+        assert any(
+            lk.path == "link" and lk.field == "app_name" and lk.where == "symlink"
+            for lk in leaks
+        )
