@@ -22,7 +22,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from template_press.rebrand.verify_cli import verify_command
+from template_press.rebrand.verify_cli import _effective_scan_fields, verify_command
 
 from .conftest import requires_symlink
 
@@ -477,3 +477,56 @@ def test_verify_never_mutates_real_target_exit_0_and_1(tmp_path: Path) -> None:
     before_leak = _tree(leak)
     assert verify_command(["--target", str(leak)]) == 1
     assert _tree(leak) == before_leak
+
+
+# ---------------------------------------------------------------------------
+# F2: `substring_rewrite_fields` was unioned into scan_substring (0ea5c98) but
+# NOT into scan_fields — so a field absent from DEFAULT_FIELDS (e.g.
+# app_name_upper) was never scanned at ALL, substring mode or not. The
+# derived scan_fields must include every substring_rewrite_fields member.
+# ---------------------------------------------------------------------------
+class TestEffectiveScanFieldsUnion:
+    def test_appends_substring_field_absent_from_defaults(self):
+        fields = _effective_scan_fields(
+            ("app_name", "package_name"), frozenset({"app_name_upper"})
+        )
+        assert "app_name_upper" in fields
+
+    def test_no_duplicate_when_already_present(self):
+        fields = _effective_scan_fields(("app_name",), frozenset({"app_name"}))
+        assert fields.count("app_name") == 1
+
+    def test_preserves_original_order_and_appends_at_end(self):
+        fields = _effective_scan_fields(
+            ("app_name", "package_name"), frozenset({"app_name_upper"})
+        )
+        assert fields == ("app_name", "package_name", "app_name_upper")
+
+    def test_defensive_filter_drops_field_outside_known_fields(self):
+        """rules.py already rejects an unknown substring_rewrite_fields member
+        at parse time — this is defense in depth, not reachable via normal
+        config loading."""
+        fields = _effective_scan_fields(("app_name",), frozenset({"not_a_field"}))
+        assert fields == ("app_name",)
+
+
+@requires_symlink
+def test_substring_rewrite_field_absent_from_defaults_scanned_via_escaping_symlink(
+    tmp_path: Path,
+) -> None:
+    """F2 end-to-end, mirroring the 0ea5c98 test shape: `app_name_upper` is
+    NOT in DEFAULT_FIELDS, so before the fix scan_fields never included it —
+    `find_occurrences` was never even called for that field, substring mode
+    or not. An escaping symlink's target text (never rewritten — containment
+    refuses to write outside the tree) carries the glued UPPER token
+    "PRESSOwned" (no lower->UPPER transition after "PRESS", so app_name's own
+    boundary matcher can't catch it either). Before the fix: false clean
+    (exit 0). After the fix: scan_fields includes app_name_upper -> exit 1.
+    """
+    repo = make_pressable(tmp_path)
+    os.symlink("../../outside/PRESSOwned", repo / "escaping-link")
+    (repo / "press" / "press-rules.toml").write_text(
+        '[rules]\nsubstring_rewrite_fields = ["app_name_upper"]\n', encoding="utf-8"
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 1

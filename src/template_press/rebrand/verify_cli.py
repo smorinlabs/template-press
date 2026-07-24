@@ -60,7 +60,11 @@ from template_press.rebrand.safety import (
 from template_press.rebrand.sandbox import make_sandbox
 from template_press.rebrand.synthesize import synthesize_dest
 from template_press.rebrand.verifier import Finding, scan
-from template_press.rebrand.verify_config import VerifyConfig, parse_verify_config
+from template_press.rebrand.verify_config import (
+    KNOWN_FIELDS,
+    VerifyConfig,
+    parse_verify_config,
+)
 
 # The re-stage of the sandbox index after apply is authored by a synthetic
 # identity — never the user's git config — mirroring make_sandbox.
@@ -140,6 +144,25 @@ def _target_text_corpus(target: Path, rules: Rules) -> list[str]:
 
 def _value_present(field: str, value: str, corpus: list[str]) -> bool:
     return any(find_occurrences(text, field, value, substring=False) for text in corpus)
+
+
+def _effective_scan_fields(
+    fields: Sequence[str], substring_rewrite_fields: frozenset[str]
+) -> tuple[str, ...]:
+    """Union ``[rules] substring_rewrite_fields`` into the scan's field set.
+
+    A field the sandbox press rewrites substring-wide but that is absent
+    from ``fields`` (e.g. ``app_name_upper``, not in ``DEFAULT_FIELDS``) is
+    never scanned at all — ``scan_substring`` only controls HOW a field
+    already in ``fields`` is matched, not WHETHER it is scanned. Filtered to
+    ``KNOWN_FIELDS`` defensively: ``rules.load_rules`` already rejects any
+    other value at parse time, so this is defense in depth, not a reachable
+    path through normal config loading.
+    """
+    extra = [
+        f for f in substring_rewrite_fields if f in KNOWN_FIELDS and f not in fields
+    ]
+    return (*fields, *extra)
 
 
 def _preflight(
@@ -319,11 +342,16 @@ def verify_command(argv: list[str] | None = None) -> int:
             # field — the only coverage when its words diverge from the slug.
             scan_fields = (*scan_fields, "display_name")
         # A field the SANDBOX PRESS rewrites substring-wide (`[rules]
-        # substring_rewrite_fields`) must be SCANNED substring-wide too — a
-        # containment-skipped symlink target (or any other rewrite the
-        # hermetic apply cannot perform) can leave a glued, boundary-free
+        # substring_rewrite_fields`) must be SCANNED at all (Fix F2) — a field
+        # absent from DEFAULT_FIELDS (e.g. app_name_upper) is otherwise never
+        # scanned regardless of substring mode — AND substring-wide (a
+        # containment-skipped symlink target, or any other rewrite the
+        # hermetic apply cannot perform, can leave a glued, boundary-free
         # occurrence of that field's source value behind; the boundary-only
-        # `[verify] substring_fields` scope alone would never flag it.
+        # `[verify] substring_fields` scope alone would never flag it).
+        scan_fields = _effective_scan_fields(
+            scan_fields, rules.substring_rewrite_fields
+        )
         scan_substring = cfg.substring_fields | rules.substring_rewrite_fields
         problems = _preflight(target, source, rules, scan_fields)
     except _CONFIG_ERRORS as exc:
