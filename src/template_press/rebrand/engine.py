@@ -250,6 +250,38 @@ def _gitlink_rels(target: Path) -> frozenset[str]:
     return frozenset(rels)
 
 
+def _rename_candidates(target: Path, rules: Rules) -> list[Path]:
+    """Rename-pass candidates: every eligible path, symlink LEAVES included.
+
+    Mirrors ``iter_target_files``'s exclusion filtering (``_is_excluded`` +
+    ``ROOT_CONTROL``), but enumerates by no-follow ``is_symlink()`` in
+    addition to ``is_file()`` (Fix F2) — retarget rewrites a symlink's TEXT
+    only, so a directory or dangling symlink whose NAME carries an identity
+    token still needs its own name renamed. ``is_file()`` alone FOLLOWS the
+    link: it reads True for a symlink-to-file (already covered), but False
+    for a symlink-to-dir or a dangling symlink, which then silently drops
+    out of both the rename pass and ``build_plan``'s rename-planning loop —
+    the link's stale NAME survives the press and the doctor's dangling-
+    symlink path scan flags it forever. A gitlink (submodule pointer) is
+    excluded outright: a submodule mount point must never be renamed by
+    this pass.
+    """
+    gitlinks = _gitlink_rels(target)
+    out: list[Path] = []
+    for rel in _git_listed(target):
+        if _is_excluded(rel, rules):
+            continue
+        posix = rel.as_posix()
+        if posix in ROOT_CONTROL:
+            continue
+        if posix in gitlinks:
+            continue
+        path = target / rel
+        if path.is_file() or path.is_symlink():
+            out.append(path)
+    return sorted(out)
+
+
 def copy_paths(target: Path) -> list[PathEntry]:
     """Everything git lists (tracked + non-ignored untracked), minus ``.git``.
 
@@ -534,7 +566,12 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
     pairs = replacement_pairs(source, dest, rules.display_forms)
     rendered = rendered_replace_rules(rules, source, dest)
     rename_map: dict[str, str] = {}
-    for path in iter_target_files(target, rules):
+    # `_rename_candidates` (not `iter_target_files`): rename-plan parity with
+    # `_rename_pass_once` (Fix F2) — a symlink LEAF (dir/dangling) must be a
+    # rename candidate here too, or the plan silently omits it. `_read_text`
+    # still returns None for a symlink, so the content-plan branch below is
+    # unaffected — this only widens what the rename-plan branch below it sees.
+    for path in _rename_candidates(target, rules):
         rel = path.relative_to(target)
         text = _read_text(path)
         if text is not None:
@@ -755,13 +792,17 @@ def _rename_pass_once(
 ) -> bool:
     """Run one shallowest-prefix rename pass; return True if any rename ran.
 
-    Rescans `iter_target_files` fresh so each pass sees the previous pass's
+    Rescans `_rename_candidates` fresh so each pass sees the previous pass's
     moves, then collapses each differing path to only its shallowest
     renamed ancestor (one path level per pass) and executes deepest-first
-    to keep parents valid.
+    to keep parents valid. `_rename_candidates` (Fix F2), not
+    `iter_target_files`: retarget rewrites a symlink's TEXT only, so a
+    directory or dangling symlink whose NAME carries an identity token would
+    otherwise never reach this pass at all (`iter_target_files`'s
+    `is_file()` filter follows the link and drops it).
     """
     rename_map: dict[str, str] = {}
-    for path in iter_target_files(target, rules):
+    for path in _rename_candidates(target, rules):
         rel = path.relative_to(target)
         new_rel = _renamed_rel(rel, pairs, rendered, rules.substring_rewrite_fields)
         if new_rel == rel:
@@ -780,7 +821,11 @@ def _rename_pass_once(
     performed = False
     for old in sorted(rename_map, key=lambda p: -len(Path(p).parts)):
         src, dst = target / old, target / rename_map[old]
-        if not src.exists():
+        if not (src.exists() or src.is_symlink()):
+            # `Path.exists()` FOLLOWS symlinks — a DANGLING symlink at src
+            # reads as absent there too (Fix F2): without the `is_symlink()`
+            # fallback, a legitimate dangling-symlink rename candidate would
+            # be skipped as "missing" before ever reaching `src.rename(dst)`.
             report.skipped.append(f"rename {old} (missing)")
             continue
         if dst.exists():

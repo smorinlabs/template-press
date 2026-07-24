@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.engine import apply, build_plan
+from template_press.rebrand.engine import _rename_candidates, apply, build_plan
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 from template_press.rebrand.safety import ContainmentError, SafetyError
@@ -491,3 +491,124 @@ class TestRetargetSymlinksFollowsPathsRules:
         )
         apply(src_target, _identity(), _identity(app_name="acme"), rules)
         assert os.readlink(link) == "docs/acme-guide.md"
+
+
+class TestRenameSeesSymlinkNames:
+    """F2: retarget rewrites a symlink's TEXT only — the rename pass must
+    ALSO see the symlink's own NAME as a candidate, or a token-bearing
+    directory/dangling symlink's stale name survives every press forever
+    (the doctor's dangling-symlink path scan then flags it permanently:
+    `iter_target_files`'s `is_file()` FOLLOWS the link, so a symlink to a
+    directory or to nothing drops out of both `_rename_pass_once` and
+    `build_plan`'s rename-planning loop before this fix)."""
+
+    @requires_symlink
+    def test_dangling_symlink_name_renamed(self, src_target: Path):
+        link = src_target / "plbp-link"
+        os.symlink("nowhere", link)
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-link",
+                    reason="dangling symlink name token",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        report = apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        new_link = src_target / "acme-link"
+        assert new_link.is_symlink()
+        assert not new_link.exists()  # still dangling — target untouched
+        assert os.readlink(new_link) == "nowhere"
+        assert not link.is_symlink() and not link.exists()
+        assert ("plbp-link", "acme-link") in report.renamed
+
+    @requires_symlink
+    def test_build_plan_lists_the_dangling_symlink_rename(self, src_target: Path):
+        """Plan/apply parity: `build_plan` must see the same candidate
+        `_rename_pass_once` does, or a dry-run silently under-reports what
+        apply() will actually do."""
+        link = src_target / "plbp-link"
+        os.symlink("nowhere", link)
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-link",
+                    reason="dangling symlink name token",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        plan = build_plan(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert any(
+            item.kind == "rename" and item.path == "plbp-link" for item in plan.items
+        )
+
+    @requires_symlink
+    def test_directory_symlink_name_renamed(self, src_target: Path):
+        """Cheap directory-symlink variant: the link's NAME renames, its
+        target string is untouched, and it still resolves through."""
+        real_dir = src_target / "realtarget"
+        real_dir.mkdir()
+        (real_dir / "f.txt").write_text("x\n", encoding="utf-8")
+        link = src_target / "plbp-link"
+        os.symlink("realtarget", link)
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-link",
+                    reason="dir symlink name token",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        new_link = src_target / "acme-link"
+        assert new_link.is_symlink()
+        assert os.readlink(new_link) == "realtarget"  # target string untouched
+        assert (new_link / "f.txt").is_file()  # still resolves through
+        assert not link.is_symlink()
+
+    def test_gitlink_never_a_rename_candidate(self, src_target: Path, tmp_path: Path):
+        """Gitlink exclusion: a submodule pointer must never be renamed by
+        this pass, even when its own path carries an identity token.
+
+        Not independently exercisable end-to-end via `apply()`: a real
+        gitlink is a plain DIRECTORY when checked out (excluded already by
+        the `is_file()`/`is_symlink()` filter — it is neither) and has no
+        working-tree entry at all when not checked out (same exclusion, for
+        the same reason) — a symlinked or regular-file gitlink is not a
+        shape git produces. So this pins `_rename_candidates` directly
+        (belt-and-suspenders defense-in-depth, mirroring `copy_paths`'
+        established gitlink handling) rather than through a rename that
+        could ever actually fire.
+        """
+        inner = tmp_path / "inner"
+        inner.mkdir()
+        _git(inner, "init", "-q", "-b", "main")
+        _git(inner, "config", "user.email", "test@example.com")
+        _git(inner, "config", "user.name", "Test")
+        (inner / "f.txt").write_text("x\n", encoding="utf-8")
+        _git_add(inner)
+        _git(inner, "commit", "-q", "-m", "inner init")
+        sha = subprocess.run(  # noqa: S603
+            ["git", "-C", str(inner), "rev-parse", "HEAD"],  # noqa: S607
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+        ).stdout.strip()
+        _git(
+            src_target, "update-index", "--add", "--cacheinfo", f"160000,{sha},plbp-sub"
+        )
+        _git(src_target, "commit", "-q", "-m", "add gitlink")
+        candidates = {
+            p.relative_to(src_target).as_posix()
+            for p in _rename_candidates(src_target, DEFAULT_RULES)
+        }
+        assert "plbp-sub" not in candidates
