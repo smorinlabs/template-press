@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import os
 import subprocess  # nosec B404 — git ls-files enumerates the target
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
     Identity,
+    ValidationError,
     display_forms,
     replace_token,
     token_occurs,
@@ -379,7 +381,14 @@ def _read_text(path: Path) -> str | None:
         return None  # binary or unreadable — never a rewrite candidate
 
 
-def _renamed_rel(rel: Path, pairs: list[tuple[str, str, str]]) -> Path:
+def _renamed_rel(
+    rel: Path,
+    pairs: list[tuple[str, str, str]],
+    rendered: list[tuple[ReplaceRule, str, str]] | None = None,
+    substring_fields: Collection[str] = frozenset(),
+) -> Path:
+    rendered = rendered or []
+    posix = rel.as_posix()
     parts = []
     for i, component in enumerate(rel.parts):
         if _is_root_press(rel, i):
@@ -390,9 +399,21 @@ def _renamed_rel(rel: Path, pairs: list[tuple[str, str, str]]) -> Path:
             parts.append(component)
             continue
         new = component
+        for rule, frm, to in rendered:
+            if rule.paths and rule_matches_path(rule, posix):
+                new = new.replace(frm, to)
         for f, cur, repl in pairs:
             if f in RENAME_FIELDS:
-                new = replace_token(new, f, cur, repl)
+                if f in substring_fields:
+                    new = new.replace(cur, repl)
+                else:
+                    new = replace_token(new, f, cur, repl)
+        if component and not new:
+            # A substitution that empties a path segment would collapse the
+            # path into its parent (cookiecutter #1518's corruption class).
+            raise ValidationError(
+                f"rename would empty a path component of {posix!r} — refusing"
+            )
         parts.append(new)
     return Path(*parts)
 
@@ -422,7 +443,7 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                 plan.items.append(
                     PlanItem("replace", rel.as_posix(), f"fields={hit_fields}")
                 )
-        new_rel = _renamed_rel(rel, pairs)
+        new_rel = _renamed_rel(rel, pairs, rendered, rules.substring_rewrite_fields)
         if new_rel != rel:
             # collapse to the shallowest differing ancestor (dir rename)
             for i, (old_part, new_part) in enumerate(
@@ -549,7 +570,7 @@ def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> Apply
     rendered = rendered_replace_rules(rules, source, dest)
     _apply_replacements(target, pairs, rules, report, rendered)
     _retarget_symlinks(target, pairs, report)
-    _apply_renames(target, pairs, rules, report)
+    _apply_renames(target, pairs, rules, report, rendered)
     return report
 
 
@@ -558,6 +579,7 @@ def _rename_pass_once(
     pairs: list[tuple[str, str, str]],
     rules: Rules,
     report: ApplyReport,
+    rendered: list[tuple[ReplaceRule, str, str]],
 ) -> bool:
     """Run one shallowest-prefix rename pass; return True if any rename ran.
 
@@ -569,7 +591,7 @@ def _rename_pass_once(
     rename_map: dict[str, str] = {}
     for path in iter_target_files(target, rules):
         rel = path.relative_to(target)
-        new_rel = _renamed_rel(rel, pairs)
+        new_rel = _renamed_rel(rel, pairs, rendered, rules.substring_rewrite_fields)
         if new_rel == rel:
             continue
         for i, (old_part, new_part) in enumerate(
@@ -610,6 +632,7 @@ def _apply_renames(
     pairs: list[tuple[str, str, str]],
     rules: Rules,
     report: ApplyReport,
+    rendered: list[tuple[ReplaceRule, str, str]],
 ) -> None:
     """Rename tracked paths whose components carry identity tokens.
 
@@ -622,5 +645,5 @@ def _apply_renames(
     a pass performs no renames.
     """
     for _ in range(32):
-        if not _rename_pass_once(target, pairs, rules, report):
+        if not _rename_pass_once(target, pairs, rules, report, rendered):
             return

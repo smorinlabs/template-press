@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import shutil
 import subprocess
@@ -6,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from template_press.rebrand.engine import apply
-from template_press.rebrand.rules import DEFAULT_RULES
+from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 from template_press.rebrand.safety import ContainmentError
 
 from .conftest import DEST, SOURCE, requires_symlink
@@ -26,6 +28,23 @@ def _git(repo: Path, *args: str) -> None:
         check=True,
         capture_output=True,
     )
+
+
+def _rules_with(**overrides):
+    return dataclasses.replace(DEFAULT_RULES, **overrides)
+
+
+def _identity(**overrides):
+    base = {
+        "package_name": "py_launch_blueprint",
+        "repo_name": "py-launch-blueprint",
+        "app_name": "plbp",
+        "author": "Steve Morin",
+        "email": "steve.morin@gmail.com",
+        "owner": "smorinlabs",
+    }
+    base.update(overrides)
+    return Identity(**base)
 
 
 def _diverged_symlink_ancestor_repo(tmp_path: Path, leaf: str) -> tuple[Path, Path]:
@@ -207,3 +226,61 @@ def test_replace_refuses_symlinked_ancestor_no_external_write(tmp_path: Path):
     assert (ext / "file.txt").is_file()
     assert os.lstat(ext / "file.txt").st_ino == ext_inode_before
     assert (ext / "file.txt").read_text(encoding="utf-8") == ext_content_before
+
+
+class TestRulePathRenames:
+    def test_paths_rule_renames_doc_filename(self, src_target: Path):
+        docs = src_target / "docs"
+        docs.mkdir()
+        (docs / "0001-plbp-cli-conventions.md").write_text("x\n", encoding="utf-8")
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="-{app_name}-",
+                    reason="doc filename token",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert (docs / "0001-acme-cli-conventions.md").exists()
+        assert not (docs / "0001-plbp-cli-conventions.md").exists()
+
+    def test_paths_false_rule_never_renames(self, src_target: Path):
+        (src_target / "plbp-web.txt").write_text("x\n", encoding="utf-8")
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(ReplaceRule(pattern="{app_name}-web", reason="content only"),)
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert (src_target / "plbp-web.txt").exists()
+
+    def test_empty_component_fails_loud_at_plan_time(self, src_target: Path):
+        (src_target / "plbp").mkdir()
+        (src_target / "plbp" / "keep.txt").write_text("x\n", encoding="utf-8")
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}",
+                    reason="degenerate",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        # A paths rule whose TO renders empty would collapse "plbp/" into its
+        # parent — build a dest whose app_name yields an empty TO is not
+        # constructible (validators forbid empty), so simulate the guard via
+        # a rule that strips the whole component: FROM == component text.
+        # Direct unit check on _renamed_rel:
+        from template_press.rebrand.engine import _renamed_rel
+
+        with pytest.raises(ValidationError):
+            _renamed_rel(
+                Path("plbp/keep.txt"),
+                [],
+                rendered=[(rules.replace[0], "plbp", "")],
+            )
