@@ -344,7 +344,13 @@ def _press(
             regenerate=rules.regenerate,
             verify_ignore=rules.verify_ignore,
         )
-        leaks = find_leaks(target, source, doctor_rules, dest=dest)
+        leaks = find_leaks(
+            target,
+            source,
+            doctor_rules,
+            dest=dest,
+            display_form_names=rules.display_forms,
+        )
         if leaks:
             print(render_leak_report(leaks), file=sys.stderr)
             print(report.render(), file=sys.stderr)

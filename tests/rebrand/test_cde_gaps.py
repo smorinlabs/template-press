@@ -69,7 +69,7 @@ _RULES_MODE_TOML = (
 _SUBSTRING_MODE_TOML = '[rules]\nsubstring_rewrite_fields = ["app_name"]\n'
 
 
-def _build_target(tmp_path: Path, mode: str) -> Path:
+def _build_target(tmp_path: Path, mode: str, extra_rules: str = "") -> Path:
     target = tmp_path / "plbp-repo"
     (target / "press").mkdir(parents=True)
     (target / "docs").mkdir()
@@ -85,6 +85,7 @@ def _build_target(tmp_path: Path, mode: str) -> Path:
         encoding="utf-8",
     )
     rules_toml = _RULES_MODE_TOML if mode == "rules" else _SUBSTRING_MODE_TOML
+    rules_toml = rules_toml + extra_rules
     (target / "press" / "press-rules.toml").write_text(rules_toml, encoding="utf-8")
     (target / "conftest.py").write_text(
         'getattr(h, "_plbp_owned", False)\n', encoding="utf-8"
@@ -188,6 +189,28 @@ class TestCdeGapsEndToEnd:
         assert main(["--target", str(target), "--config", str(answers)]) == 2
         # exit 2 must mean no writes — the tree stays exactly as committed.
         assert _git_status(target) == ""
+
+    def test_display_forms_subset_press_succeeds(self, tmp_path):
+        """[rules] display_forms = ["spaced"] deliberately narrows BOTH the
+        apply rewrite and the post-apply doctor scan to the spaced form: the
+        glued Pascal occurrence ("PyLaunchBlueprint") in README.md is left
+        un-rewritten on purpose, and the doctor must not flag it as a leak —
+        the hermetic `press verify` scanner independently catches glued
+        variants via package_name/repo_name matching, so narrowing the
+        doctor's display scan here cannot hide a real leak from the
+        verification pipeline."""
+        target = _build_target(
+            tmp_path,
+            mode="rules",
+            extra_rules='\n[rules]\ndisplay_forms = ["spaced"]\n',
+        )
+        answers = _answers(tmp_path)
+        code = main(["--target", str(target), "--config", str(answers)])
+        assert code == 0
+        readme = (target / "README.md").read_text(encoding="utf-8")
+        assert "# Acme Widget" in readme
+        assert "PyLaunchBlueprint" in readme
+        assert (target / "press" / "press-receipt.toml").exists()
 
     def test_verify_end_to_end(self, tmp_path):
         """`press verify` on the rules-mode fixture closes every gap
