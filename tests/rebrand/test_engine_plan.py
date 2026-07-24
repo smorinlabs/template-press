@@ -89,3 +89,31 @@ class TestReplaceRulePlan:
         assert any(
             i.kind == "replace" and "_plbp_owned" in i.detail for i in plan.items
         )
+
+
+class TestSubstringPlan:
+    def test_substring_field_hit_detected_via_plain_membership(self, src_target: Path):
+        # "_plbp_owned" is glued on both sides — the boundary-guarded
+        # token_occurs would reject it (underscore is not a boundary char
+        # for app_name), so a plan item here can only come from the
+        # substring branch's `cur in text` check, not the token-pass branch.
+        (src_target / "note.txt").write_text("_plbp_owned\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(substring_rewrite_fields=frozenset({"app_name"}))
+        plan = build_plan(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert any(
+            i.kind == "replace" and i.path == "note.txt" and "app_name" in i.detail
+            for i in plan.items
+        )
+
+    def test_default_rules_do_not_detect_glued_token(self, src_target: Path):
+        # Same fixture, DEFAULT_RULES (empty substring_rewrite_fields): the
+        # ternary must fall through to token_occurs, which sees no boundary
+        # and reports no hit — proving the substring branch, not the token
+        # pass, produced the prior test's hit.
+        (src_target / "note.txt").write_text("_plbp_owned\n", encoding="utf-8")
+        _git_add_all(src_target)
+        plan = build_plan(
+            src_target, _identity(), _identity(app_name="acme"), DEFAULT_RULES
+        )
+        assert not any(i.kind == "replace" and i.path == "note.txt" for i in plan.items)
