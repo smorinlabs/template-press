@@ -346,3 +346,66 @@ class TestSubstringRenames:
         rules = _rules_with(substring_rewrite_fields=frozenset({"app_name"}))
         apply(src_target, _identity(), _identity(app_name="acme"), rules)
         assert (docs / "0001-app-short-name-acme.md").exists()
+
+
+class TestRenameDestinationSymlinkHardening:
+    @requires_symlink
+    def test_rename_skips_dangling_symlink_destination(self, src_target: Path):
+        """F1: `dst.exists()` FOLLOWS symlinks, so a dangling symlink sitting
+        at the rename destination reads as absent and POSIX rename() would
+        silently replace it (in-tree destructive overwrite). The rename must
+        be skipped instead, leaving both the source file and the dangling
+        symlink exactly as they were."""
+        source_file = src_target / "plbp-web.txt"
+        source_file.write_text("original content\n", encoding="utf-8")
+        dangling = src_target / "acme-web.txt"
+        os.symlink("nonexistent-target", dangling)
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-web",
+                    reason="collision with a dangling symlink destination",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        report = apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        # The rename was skipped: source untouched, symlink still dangling.
+        assert source_file.is_file()
+        assert source_file.read_text(encoding="utf-8") == "original content\n"
+        assert dangling.is_symlink()
+        assert not dangling.exists()  # still dangling — never replaced
+        assert os.readlink(dangling) == "nonexistent-target"
+        assert any(
+            "plbp-web.txt" in entry and "symlink" in entry for entry in report.skipped
+        )
+
+
+class TestRetargetSymlinksFollowsPathsRules:
+    @requires_symlink
+    def test_paths_rule_dir_rename_retargets_symlink_text(self, src_target: Path):
+        """F2: a paths=true [[replace]] rule renames plbp-web/ -> acme-web/,
+        but `_retarget_symlinks` previously only saw plain field token pairs
+        — a relative symlink pointing into the renamed dir would keep
+        pointing at the now-gone old path. The rule must retarget the link
+        text too, mirroring exactly what the rename pass moved."""
+        webdir = src_target / "plbp-web"
+        webdir.mkdir()
+        (webdir / "data").write_text("x\n", encoding="utf-8")
+        link = src_target / "link"
+        os.symlink("plbp-web/data", link)
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-web",
+                    reason="dir rename retarget",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert os.readlink(link) == "acme-web/data"

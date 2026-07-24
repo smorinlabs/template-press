@@ -560,6 +560,7 @@ def _retarget_symlinks(
     target: Path,
     pairs: list[tuple[str, str, str]],
     report: ApplyReport,
+    rendered: list[tuple[ReplaceRule, str, str]] | None = None,
     substring_fields: Collection[str] = frozenset(),
 ) -> None:
     """Rewrite in-repo RELATIVE symlink targets carrying identity tokens.
@@ -577,7 +578,20 @@ def _retarget_symlinks(
     ``substring_fields`` uses plain substring replacement (glued-token
     coverage, codesign sec-02 secondary); every other field uses the
     boundary-guarded ``replace_token``.
+
+    A ``paths = true`` [[replace]] rule (Fix F2) is also applied to the link
+    text, mirroring ``_renamed_rel``/the rename pass exactly: symlink text
+    follows exactly what the rename pass moves, so a rule renaming
+    ``plbp-web/`` -> ``acme-web/`` must retarget ``link -> plbp-web/data``
+    too, or the link keeps pointing at a path the rename pass just moved
+    away from under it. A ``content``-only rule (``paths=False``) must NOT
+    touch link text — mirror-image of the display-pair exclusion below.
+    Rules run BEFORE the field-pair pass (same order as
+    ``_apply_replacements``/``_renamed_rel``), scoped by the SYMLINK's own
+    rel posix — consistent with how the rename pass scopes by the renamed
+    file's path.
     """
+    rendered = rendered or []
     target_r = target.resolve()
     for rel in _git_listed(target):
         path = target / rel
@@ -587,6 +601,10 @@ def _retarget_symlinks(
         if os.path.isabs(link):
             continue  # never rewrite or follow an absolute target
         new_link = link
+        posix = rel.as_posix()
+        for rule, frm, to in rendered:
+            if rule.paths and rule_matches_path(rule, posix):
+                new_link = new_link.replace(frm, to)
         for f, cur, repl in pairs:
             if f in substring_fields:
                 new_link = new_link.replace(cur, repl)
@@ -625,9 +643,13 @@ def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> Apply
     # the target — display forms never rename paths (not in RENAME_FIELDS),
     # so a display pair would rewrite a link's text out from under a
     # directory that keeps its original name (dangling link). Drop them
-    # before retargeting.
+    # before retargeting. `rendered` IS passed through in full (Fix F2): a
+    # paths=true rule (any field) is exactly what moves a path, so retarget
+    # must follow every such rule the same way the rename pass does.
     symlink_pairs = [p for p in pairs if not p[0].startswith("display_name_")]
-    _retarget_symlinks(target, symlink_pairs, report, rules.substring_rewrite_fields)
+    _retarget_symlinks(
+        target, symlink_pairs, report, rendered, rules.substring_rewrite_fields
+    )
     _apply_renames(target, pairs, rules, report, rendered)
     return report
 
@@ -671,6 +693,14 @@ def _rename_pass_once(
             continue
         if dst.exists():
             report.skipped.append(f"rename {old} (destination exists)")
+            continue
+        if dst.is_symlink():
+            # `Path.exists()` FOLLOWS symlinks — a DANGLING symlink at dst
+            # reads as absent there, so without this lstat-based check
+            # POSIX rename() would silently replace the symlink itself
+            # (a destructive in-tree overwrite the destination-occupied
+            # check was meant to prevent).
+            report.skipped.append(f"rename {old} (destination is a symlink)")
             continue
         # A symlinked ancestor on either endpoint would move CONTENT through a
         # symlink out of the target. Tolerates a token-bearing symlink LEAF
