@@ -399,6 +399,9 @@ def _renamed_rel(
             parts.append(component)
             continue
         new = component
+        # [[replace]] rules run BEFORE the token pass here too: a rule's
+        # rendered FROM may embed an identity token (e.g. "{package_name}-extra");
+        # the token pass would rewrite that token out from under the rule.
         for rule, frm, to in rendered:
             if rule.paths and rule_matches_path(rule, posix):
                 new = new.replace(frm, to)

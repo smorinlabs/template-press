@@ -5,12 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.cli import main
+from template_press.rebrand.cli import display_name_problem, main
 from template_press.rebrand.config import (
     SOURCE_CONFIG_REL,
     load_source_config,
     render_source_config,
 )
+from template_press.rebrand.identity import Identity
 from template_press.rebrand.receipt import RECEIPT_REL
 
 from .conftest import DEST, SOURCE, requires_symlink, write_answers_file
@@ -698,30 +699,22 @@ def _identity(**overrides):
         "owner": "smorinlabs",
     }
     base.update(overrides)
-    from template_press.rebrand.identity import Identity
-
     return Identity(**base)
 
 
 class TestDisplayNameGate:
     def test_half_specified_is_a_problem(self):
-        from template_press.rebrand.cli import display_name_problem
-
         src = _identity(display_name="Py Launch Blueprint")
         dst = _identity(app_name="acme")
         msg = display_name_problem(src, dst)
         assert msg is not None and "display_name" in msg
 
     def test_reverse_direction_is_fine(self):
-        from template_press.rebrand.cli import display_name_problem
-
         src = _identity()
         dst = _identity(app_name="acme", display_name="Acme Widget")
         assert display_name_problem(src, dst) is None
 
     def test_both_or_neither_is_fine(self):
-        from template_press.rebrand.cli import display_name_problem
-
         assert display_name_problem(_identity(), _identity(app_name="acme")) is None
         assert (
             display_name_problem(

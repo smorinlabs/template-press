@@ -19,9 +19,9 @@ from dataclasses import dataclass
 from template_press.rebrand.identity import REQUIRED_FIELDS, ValidationError
 from template_press.rebrand.ignores import Ignore
 
-# Every identity field `press verify` may scan for: the six REQUIRED_FIELDS
-# plus the derived `app_name_upper` (present in `Identity.as_dict()` but not
-# independently required/validated).
+# Every identity field `press verify` may scan for: the six REQUIRED_FIELDS,
+# the derived `app_name_upper` (present in `Identity.as_dict()` but not
+# independently required/validated), and the optional `display_name`.
 KNOWN_FIELDS: frozenset[str] = frozenset(REQUIRED_FIELDS) | {
     "app_name_upper",
     "display_name",
