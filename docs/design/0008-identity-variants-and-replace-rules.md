@@ -1,8 +1,14 @@
 # 0008 — Identity Variants & Replace Rules (C/D/E gap fixes)
 
-**Status:** accepted (codesign 2026-07-23) · **Informed by:**
-[research 0005](../research/0005-scaffolder-identity-variant-handling.md),
-[research 0004 §5](../research/0004-py-launch-blueprint-conformance-gaps.md)
+- **Status:** Accepted (codesign 2026-07-23)
+- **Type:** Design / decision record
+- **Created:** 2026-07-23
+- **Applies to:** the rebrand engine's identity model and replace-rule
+  mechanism (`src/template_press/rebrand/identity.py`, `engine.py`,
+  `rules.py`, `doctor.py`)
+- **Informed by:**
+  [research 0005](../research/0005-scaffolder-identity-variant-handling.md),
+  [research 0004 §5](../research/0004-py-launch-blueprint-conformance-gaps.md)
 
 ## Decisions
 

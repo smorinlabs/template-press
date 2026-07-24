@@ -561,10 +561,10 @@ class ReplaceRule:
     content: bool = True         # participate in content rewrites
 ```
 
-  - `Rules` gains: `replace: tuple[ReplaceRule, ...] = ()`, `substring_rewrite_fields: frozenset[str] = frozenset()`, `display_forms: tuple[str, ...] = DISPLAY_FORM_NAMES`.
-  - `ALLOWED_PLACEHOLDERS: frozenset[str]` = `frozenset(REQUIRED_FIELDS) | {"app_name_upper", "display_name"}`.
-  - TOML surface in `press/press-rules.toml`: top-level `[[replace]]` array-of-tables; `[rules] substring_rewrite_fields = [...]` (subset of ALLOWED_PLACEHOLDERS); `[rules] display_forms = [...]` (non-empty subset of `DISPLAY_FORM_NAMES`).
-  - Fail-closed validation: unknown `[[replace]]` keys; empty/missing `pattern` or `reason`; a pattern with NO placeholder (from==to would be a committed no-op); an unknown placeholder name; `paths`/`content` both false; wrong types anywhere.
+- `Rules` gains: `replace: tuple[ReplaceRule, ...] = ()`, `substring_rewrite_fields: frozenset[str] = frozenset()`, `display_forms: tuple[str, ...] = DISPLAY_FORM_NAMES`.
+- `ALLOWED_PLACEHOLDERS: frozenset[str]` = `frozenset(REQUIRED_FIELDS) | {"app_name_upper", "display_name"}`.
+- TOML surface in `press/press-rules.toml`: top-level `[[replace]]` array-of-tables; `[rules] substring_rewrite_fields = [...]` (subset of ALLOWED_PLACEHOLDERS); `[rules] display_forms = [...]` (non-empty subset of `DISPLAY_FORM_NAMES`).
+- Fail-closed validation: unknown `[[replace]]` keys; empty/missing `pattern` or `reason`; a pattern with NO placeholder (from==to would be a committed no-op); an unknown placeholder name; `paths`/`content` both false; wrong types anywhere.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1879,4 +1879,3 @@ git commit -m "test(rebrand): end-to-end c/d/e gap fixture; docs(design): 0008 d
 - **Spec coverage:** sec-01 → Tasks 1-4 (field) + 5-8 (rules); sec-02 → Tasks 5, 7 (rules primary), 9 (substring secondary); sec-03 → Task 8 (+ per-rule `paths`/`content` control satisfying the export note); sec-04 → Task 1 forms + Task 5 `display_forms` knob (configurable, per the note); sec-05 → Task 11; sec-06 → Task 4; sec-07 → Tasks 5-6 (`files`/`paths`/`reason`, no `count`). Register §8 TODO (design record) → Task 12.
 - **Type consistency:** `replacement_pairs(source, dest, display_form_names)` (Tasks 3, 7); `_renamed_rel(rel, pairs, rendered, substring_fields)` (Task 8); `rendered_replace_rules(rules, source, dest) -> list[tuple[ReplaceRule, str, str]]` (Tasks 7-8); `find_leaks(..., display_form_names=...)` (Task 3); `ReplaceRule(pattern, reason, files, paths, content)` (Tasks 5-9, 12).
 - **Known deferred (documented, not planned):** `_retarget_symlinks` stays token-only (no rules/substring in symlink strings); `_collisions` does not consider display_name; `[[replace]]` patterns cannot contain literal `{`/`}`.
-```
