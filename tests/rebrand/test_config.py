@@ -155,3 +155,28 @@ class TestDisplayNameConfig:
         p2 = tmp_path / "round.toml"
         p2.write_text(render_source_config(ident), encoding="utf-8")
         assert load_identity_toml(p2, "identity") == ident
+
+
+class TestNonStringIdentityValues:
+    def test_non_string_display_name_raises(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(_base_toml("display_name = 42\n"), encoding="utf-8")
+        with pytest.raises(ValidationError, match="display_name"):
+            load_identity_toml(p, "identity")
+
+    def test_non_string_app_name_raises_not_missing(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(
+            "[identity]\n"
+            'package_name = "py_launch_blueprint"\n'
+            'repo_name    = "py-launch-blueprint"\n'
+            "app_name     = 7\n"
+            'author       = "Steve Morin"\n'
+            'email        = "steve.morin@gmail.com"\n'
+            'owner        = "smorinlabs"\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(ValidationError) as exc_info:
+            load_identity_toml(p, "identity")
+        assert "app_name" in str(exc_info.value)
+        assert "missing" not in str(exc_info.value)
