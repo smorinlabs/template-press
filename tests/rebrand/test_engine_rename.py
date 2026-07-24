@@ -9,7 +9,7 @@ import pytest
 from template_press.rebrand.engine import apply, build_plan
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
-from template_press.rebrand.safety import ContainmentError
+from template_press.rebrand.safety import ContainmentError, SafetyError
 
 from .conftest import DEST, SOURCE, requires_symlink
 
@@ -335,6 +335,58 @@ class TestRulePathRenames:
         dest = _identity(author="..")
         with pytest.raises(ValidationError):
             build_plan(src_target, source, dest, rules)
+
+
+class TestSelfReapplyingPathsRule:
+    """F2(a): a paths=true [[replace]] rule whose rendered TO still
+    contains its rendered FROM re-matches its own output on every rename
+    pass (a.txt -> ax.txt -> axx.txt -> ... for pattern "{app_name}x" with
+    app_name a -> ax) — 32 destructive passes for nothing. Rejected loud at
+    plan time, mirroring the substring self-embedding collision guard."""
+
+    def test_self_reapplying_rule_raises_at_build_plan(self, src_target: Path):
+        (src_target / "a.txt").write_text("x\n", encoding="utf-8")
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}x",
+                    reason="self-reapplying repro (a -> ax)",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        source = _identity(app_name="a")
+        dest = _identity(app_name="ax")
+        with pytest.raises(ValidationError):
+            build_plan(src_target, source, dest, rules)
+
+
+class TestRenameFixpointExhaustion:
+    """F2(b): _apply_renames must fail LOUD, never silently return, when 32
+    passes still haven't reached a fixpoint.
+
+    Fix (a) above rejects every [[replace]]-rule shape that could drive
+    this (rendered FROM in rendered TO, checked at plan time in
+    ``rendered_replace_rules``) — but that guard inspects rule literals
+    ONLY. A plain identity field pair opted into substring rewrite mode
+    (``rules.substring_rewrite_fields``) is applied with the same
+    no-boundary ``str.replace`` and so can re-embed itself exactly like a
+    rule can (app_name "ax" -> "axx": ax.txt -> axx.txt -> axxx.txt -> ...),
+    entirely independent of any [[replace]] rule — this is the
+    independently-constructible exhaustion case fix (a) does not (and
+    cannot, being rule-scoped) cover.
+    """
+
+    def test_substring_field_self_reapply_raises(self, src_target: Path):
+        (src_target / "ax.txt").write_text("x\n", encoding="utf-8")
+        _git_add(src_target)
+        rules = _rules_with(substring_rewrite_fields=frozenset({"app_name"}))
+        source = _identity(app_name="ax")
+        dest = _identity(app_name="axx")
+        with pytest.raises(SafetyError):
+            apply(src_target, source, dest, rules)
 
 
 class TestSubstringRenames:

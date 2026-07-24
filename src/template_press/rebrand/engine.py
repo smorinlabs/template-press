@@ -31,6 +31,7 @@ from template_press.rebrand.rules import (
 )
 from template_press.rebrand.safety import (
     ContainmentError,
+    SafetyError,
     assert_ancestors_real,
     assert_under_root,
     git_hardening_args,
@@ -419,6 +420,16 @@ def rendered_replace_rules(
     (the strict ``zip`` in the rename-collapse loop crashes or silently
     mis-renames). Content-only rules are NOT restricted — a content pattern
     like ``{owner}/{repo_name}`` is legitimate prose.
+
+    A ``paths = true`` rule whose rendered TO still CONTAINS its rendered
+    FROM (Fix F2a) also raises: a rename pass applies the rule via plain
+    ``str.replace`` (no boundary guard), so the rule's own output re-matches
+    on the very next pass (pattern ``"{app_name}x"`` with app_name ``a`` ->
+    ``ax``: FROM ``"ax"`` is a substring of TO ``"axx"``, so ``a.txt`` ->
+    ``ax.txt`` -> ``axx.txt`` -> ... never converges). Caught here at plan
+    time — mirrors the substring self-embedding collision guard (the CLI's
+    ``_collisions`` preflight) but for rule literals rather than identity
+    fields.
     """
     out: list[tuple[ReplaceRule, str, str]] = []
     for rule in rules.replace:
@@ -432,6 +443,13 @@ def rendered_replace_rules(
                 f"rendered value contains a path separator ('/' or '\\'), "
                 f"which can never match (or would corrupt) a single path "
                 f"component: FROM {frm!r} TO {to!r}"
+            )
+        if rule.paths and frm in to:
+            raise ValidationError(
+                f"[[replace]] pattern {rule.pattern!r} has paths=true but its "
+                f"rendered TO {to!r} still contains its rendered FROM {frm!r} "
+                f"— this rule would re-match its own output on every rename "
+                f"pass and never reach a fixpoint"
             )
         out.append((rule, frm, to))
     return out
@@ -805,7 +823,27 @@ def _apply_renames(
     on one pass and its (now-relocated) file renamed on the next, instead of
     colliding mid-move. Bounded to 32 passes (depth bound); stops as soon as
     a pass performs no renames.
+
+    Fix F2b: falling out of this loop with the LAST pass still having
+    performed renames means 32 passes never reached a fixpoint — e.g. a
+    substring-mode identity field pair that re-embeds itself the same way a
+    self-reapplying [[replace]] rule would (fix F2a catches that shape at
+    plan time; this is the belt-and-suspenders catch-all for any other path
+    that drives non-convergence, plan-time or not). Silently returning here
+    would leave the target 32 passes into a destructive, non-terminating
+    rename with no signal anything went wrong. Raises ``SafetyError``
+    (rather than ``ValidationError``): this fires MID-APPLY, after writes
+    have already happened, and the CLI's ``_press`` partial-rewrite error
+    path (which prints the "target may be PARTIALLY rewritten" restore
+    message) only catches ``SafetyError`` — not ``ValidationError``, which
+    would otherwise propagate past ``_press`` as an uncaught traceback.
     """
     for _ in range(32):
         if not _rename_pass_once(target, pairs, rules, report, rendered):
             return
+    raise SafetyError(
+        "rename passes did not reach a fixpoint after 32 iterations — a "
+        "path component keeps changing on every pass (a self-reapplying "
+        "[[replace]] rule or substring-mode identity field); the target is "
+        "PARTIALLY rewritten"
+    )
