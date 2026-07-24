@@ -147,17 +147,18 @@ def _email_form(prefix: str, digest: str) -> str:
 def _synth_display(value: str, variants: frozenset[str], used: set[str]) -> str:
     """Deterministic two-word Title-Case synthetic display name.
 
-    Both words are hash-derived (letter + hex body, like `_safe_prefix`);
-    the candidate is rejected if its spaced OR glued (pascal ≈ camel under
-    the case-insensitive `_collides`) form collides with any source
-    variant, so the display rewrite pass and the paranoid scanner can never
-    confuse synthetic output with surviving source identity.
+    Both words are hash-derived from distinct digest regions using
+    _word_letters to ensure they are alphabetic (not raw hex), making
+    the Title-Case property structural. The candidate is rejected if its
+    spaced OR glued (pascal ≈ camel under the case-insensitive `_collides`)
+    form collides with any source variant, so the display rewrite pass and
+    the paranoid scanner can never confuse synthetic output with surviving
+    source identity.
     """
     for counter in range(_MAX_ATTEMPTS):
         digest = hashlib.sha256(f"display\x00{value}\x00{counter}".encode()).digest()
-        hexes = digest.hex()
-        w1 = _leading_letter(digest) + hexes[1:6]
-        w2 = chr(ord("a") + digest[1] % 26) + hexes[6:11]
+        w1 = _word_letters(digest, 0, 6)
+        w2 = _word_letters(digest, 6, 6)
         candidate = f"{w1.capitalize()} {w2.capitalize()}"
         glued = w1.capitalize() + w2.capitalize()
         if (
@@ -210,6 +211,16 @@ def _leading_letter(digest: bytes) -> str:
     see `_safe_prefix`'s docstring for why a fixed constant here is unsafe.
     """
     return chr(ord("a") + digest[0] % 26)
+
+
+def _word_letters(digest: bytes, start: int, count: int) -> str:
+    """Map `count` digest bytes to lowercase letters (a-z), one per byte.
+
+    Letters-only words keep the synthetic display name prose-shaped and
+    make the Title-Case property structural — a raw-hex suffix could be
+    all digits, and digits are uncased (str.islower() would be False).
+    """
+    return "".join(chr(ord("a") + digest[start + i] % 26) for i in range(count))
 
 
 def _collides(candidate: str, variants: frozenset[str]) -> bool:

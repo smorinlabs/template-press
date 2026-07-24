@@ -213,6 +213,7 @@ class TestSynthDisplayName:
         assert a.display_name == b.display_name
         words = a.display_name.split()
         assert len(words) == 2
+        assert all(w.isalpha() for w in words)
         assert all(w[0].isupper() and w[1:].islower() for w in words)
 
     def test_display_containment_free_vs_source_variants(self):
@@ -226,3 +227,10 @@ class TestSynthDisplayName:
 
     def test_dest_validates(self):
         synthesize_dest(_identity(display_name="Py Launch Blueprint")).validate()
+
+    def test_title_case_holds_for_digit_bearing_names(self):
+        dst = synthesize_dest(_identity(display_name="Some Product 23"))
+        words = dst.display_name.split()
+        assert len(words) == 2
+        assert all(w.isalpha() for w in words)
+        assert all(w[0].isupper() and w[1:].islower() for w in words)
