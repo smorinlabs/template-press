@@ -180,3 +180,24 @@ class TestNonStringIdentityValues:
             load_identity_toml(p, "identity")
         assert "app_name" in str(exc_info.value)
         assert "missing" not in str(exc_info.value)
+
+
+class TestUnknownIdentityKeys:
+    """F3: a misspelled optional key (``display_nam``) is silently dropped
+    by the ``{k: v for k, v in section.items() if isinstance(v, str)}``
+    filter today — press proceeds as if display_name were simply absent.
+    Unknown keys must fail loud instead, naming the offender."""
+
+    def test_misspelled_optional_key_raises_naming_it(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(_base_toml('display_nam = "Old Product"\n'), encoding="utf-8")
+        with pytest.raises(ValidationError, match="display_nam"):
+            load_identity_toml(p, "identity")
+
+    def test_all_six_plus_display_name_still_loads(self, tmp_path):
+        p = tmp_path / "press-source.toml"
+        p.write_text(
+            _base_toml('display_name = "Py Launch Blueprint"\n'), encoding="utf-8"
+        )
+        ident = load_identity_toml(p, "identity")
+        assert ident.display_name == "Py Launch Blueprint"

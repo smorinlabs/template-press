@@ -69,6 +69,16 @@ def load_identity_toml(path: Path, table: str) -> Identity:
     section = data.get(table)
     if not isinstance(section, dict):
         raise ValidationError(f"{path}: missing [{table}] table")
+    # F3: an unknown key (typo'd optional field, e.g. `display_nam`) must
+    # fail loud — the dict-comprehension below silently drops any key it
+    # doesn't recognize, so a typo would otherwise pass through as if the
+    # field were simply absent, and press proceeds none the wiser.
+    known = frozenset(REQUIRED_FIELDS) | frozenset(OPTIONAL_FIELDS)
+    unknown = set(section) - known
+    if unknown:
+        raise ValidationError(
+            f"{path}: [{table}] unknown key(s): {', '.join(sorted(unknown))}"
+        )
     for key in (*REQUIRED_FIELDS, *OPTIONAL_FIELDS):
         if key in section and not isinstance(section[key], str):
             raise ValidationError(
