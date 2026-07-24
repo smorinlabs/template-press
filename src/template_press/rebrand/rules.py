@@ -150,6 +150,14 @@ _RULES_KEYS = frozenset(
     }
 )
 
+# The exact set of ROOT-level tables press-rules.toml legitimately carries —
+# every table some loader in this codebase actually reads from the file:
+# [rules] and [[replace]] here, [verify] in verify_cli.py's
+# _load_verify_config (same file). An unknown root key (e.g. a `[[replace]]`
+# typo like `[[replcae]]`) must fail loud instead of silently loading as zero
+# rules.
+_ROOT_KEYS = frozenset({"rules", "replace", "verify"})
+
 
 def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
     value = table.get(key, default)
@@ -178,19 +186,28 @@ def _parse_replace(entry: object) -> ReplaceRule:
         raise ValidationError(
             f"{RULES_REL}: [[replace]] pattern must be a non-empty string"
         )
-    names = _PLACEHOLDER_RE.findall(pattern)
-    if not names:
+    brace_tokens = re.findall(r"\{[^{}]*\}", pattern)
+    if not brace_tokens:
         raise ValidationError(
             f"{RULES_REL}: [[replace]] pattern {pattern!r} references no identity "
             f"field — a placeholder-free rule renders FROM == TO (a committed "
             f"no-op); use e.g. {{app_name}}"
         )
-    bad = set(names) - ALLOWED_PLACEHOLDERS
-    if bad:
-        raise ValidationError(
-            f"{RULES_REL}: [[replace]] pattern {pattern!r} references unknown "
-            f"field(s): {', '.join(sorted(bad))}"
-        )
+    # Scan every brace-delimited token, not just the ones _PLACEHOLDER_RE
+    # happens to match: a malformed token like {app_name1} or {App_Name}
+    # doesn't match `[a-z_]+` and so was previously invisible to a
+    # names-based check, rendering LITERALLY in the pattern's output as long
+    # as at least one OTHER, valid placeholder existed elsewhere (the
+    # "references no identity field" guard above was satisfied by the valid
+    # one). Reject any brace token whose inner text isn't exactly a known
+    # field — this subsumes the former unknown-name check.
+    for token in brace_tokens:
+        inner = token[1:-1]
+        if not re.fullmatch(r"[a-z_]+", inner) or inner not in ALLOWED_PLACEHOLDERS:
+            raise ValidationError(
+                f"{RULES_REL}: [[replace]] pattern {pattern!r} references an "
+                f"invalid or unknown placeholder {token!r}"
+            )
     reason = entry.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         raise ValidationError(
@@ -234,6 +251,12 @@ def load_rules(target: Path) -> Rules:
     if not override_path.is_file():
         return DEFAULT_RULES
     data = tomllib.loads(override_path.read_text(encoding="utf-8"))
+    unknown_root = set(data) - _ROOT_KEYS
+    if unknown_root:
+        raise ValidationError(
+            f"{RULES_REL}: unknown root-level table(s): "
+            f"{', '.join(sorted(unknown_root))}"
+        )
     table = data.get("rules", {})
     if not isinstance(table, dict):
         raise ValidationError(f"{RULES_REL}: [rules] must be a table")
@@ -251,6 +274,20 @@ def load_rules(target: Path) -> Rules:
         raise ValidationError(
             f"{RULES_REL}: [rules] substring_rewrite_fields unknown field(s): "
             f"{', '.join(sorted(bad_substring))}"
+        )
+    if "display_name" in substring_fields:
+        # A no-op disguised as a valid config: "display_name" IS in
+        # ALLOWED_PLACEHOLDERS (render_replace_pattern can reference it), but
+        # the runtime pair tags substring_rewrite_fields actually dispatches
+        # on are display_name_spaced/pascal/camel, never bare "display_name"
+        # — so this entry would never match anything. Display forms are
+        # exact-by-design (codesign sec-04); use [rules] display_forms to
+        # narrow which forms rewrite instead.
+        raise ValidationError(
+            f"{RULES_REL}: [rules] substring_rewrite_fields must not include "
+            f"'display_name' — it is a no-op (runtime pair tags are "
+            f"display_name_spaced/pascal/camel, never bare 'display_name'); "
+            f"use [rules] display_forms instead"
         )
     display_forms_list = _str_list(table, "display_forms", list(DISPLAY_FORM_NAMES))
     bad_forms = set(display_forms_list) - set(DISPLAY_FORM_NAMES)

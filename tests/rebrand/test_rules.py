@@ -167,6 +167,17 @@ class TestRewriteKnobs:
         with pytest.raises(ValidationError):
             load_rules(target)
 
+    def test_display_name_in_substring_rewrite_fields_is_rejected(self, tmp_path):
+        """F4: substring_rewrite_fields = ["display_name"] validates (it is
+        in ALLOWED_PLACEHOLDERS) but is a complete no-op — runtime pair tags
+        are display_name_spaced/pascal/camel, never bare "display_name".
+        Fail closed at parse time instead of silently doing nothing."""
+        target = _write_rules(
+            tmp_path, '[rules]\nsubstring_rewrite_fields = ["display_name"]\n'
+        )
+        with pytest.raises(ValidationError, match="display_forms"):
+            load_rules(target)
+
 
 def _identity(**overrides):
     base = {
@@ -213,3 +224,29 @@ class TestRuleScoping:
         rule = ReplaceRule(pattern="{app_name}", reason="r", files=("tests/**",))
         assert rule_matches_path(rule, "tests/core/test_logging.py")
         assert not rule_matches_path(rule, "src/pkg/mod.py")
+
+
+class TestFailClosedParserGaps:
+    """F5: the parser's root-level and brace-token fail-opens."""
+
+    def test_unknown_root_key_rejected(self, tmp_path):
+        """(a) An unknown ROOT table (e.g. a `[[replace]]` typo) previously
+        loaded silently as zero rules instead of failing loud."""
+        target = _write_rules(
+            tmp_path, '[[replcae]]\npattern = "{app_name}-web"\nreason = "r"\n'
+        )
+        with pytest.raises(ValidationError, match="replcae"):
+            load_rules(target)
+
+    def test_malformed_brace_token_rejected_even_with_a_valid_placeholder(
+        self, tmp_path
+    ):
+        """(b) A malformed brace token (e.g. `{app_name1}`) previously
+        rendered literally when at least one valid placeholder existed
+        elsewhere in the pattern, instead of failing loud at parse time."""
+        target = _write_rules(
+            tmp_path,
+            '[[replace]]\npattern = "{package_name}/{app_name1}-web"\nreason = "r"\n',
+        )
+        with pytest.raises(ValidationError, match=r"\{app_name1\}"):
+            load_rules(target)
