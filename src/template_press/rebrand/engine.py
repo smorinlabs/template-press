@@ -364,12 +364,13 @@ def rendered_replace_rules(
     plan time, before any write.
 
     A ``paths = true`` rule whose rendered FROM or TO contains a path
-    separator also raises: the FROM side can never match a single path
-    COMPONENT (the unit `_renamed_rel` operates on), and a TO side that
-    splits into nested parts corrupts the component-wise rename (the strict
-    ``zip`` in the rename-collapse loop crashes or silently mis-renames).
-    Content-only rules are NOT restricted — a content pattern like
-    ``{owner}/{repo_name}`` is legitimate prose.
+    separator (``/`` or ``\\`` — either can split a component on the
+    platforms this tool targets) also raises: the FROM side can never match
+    a single path COMPONENT (the unit `_renamed_rel` operates on), and a TO
+    side that splits into nested parts corrupts the component-wise rename
+    (the strict ``zip`` in the rename-collapse loop crashes or silently
+    mis-renames). Content-only rules are NOT restricted — a content pattern
+    like ``{owner}/{repo_name}`` is legitimate prose.
     """
     out: list[tuple[ReplaceRule, str, str]] = []
     for rule in rules.replace:
@@ -377,12 +378,12 @@ def rendered_replace_rules(
         to = render_replace_pattern(rule.pattern, dest)
         if frm == to:
             continue
-        if rule.paths and ("/" in frm or "/" in to):
+        if rule.paths and any(sep in frm or sep in to for sep in ("/", "\\")):
             raise ValidationError(
                 f"[[replace]] pattern {rule.pattern!r} has paths=true but its "
-                f"rendered value contains a path separator ('/'), which can "
-                f"never match (or would corrupt) a single path component: "
-                f"FROM {frm!r} TO {to!r}"
+                f"rendered value contains a path separator ('/' or '\\'), "
+                f"which can never match (or would corrupt) a single path "
+                f"component: FROM {frm!r} TO {to!r}"
             )
         out.append((rule, frm, to))
     return out
@@ -432,6 +433,15 @@ def _renamed_rel(
             # path into its parent (cookiecutter #1518's corruption class).
             raise ValidationError(
                 f"rename would empty a path component of {posix!r} — refusing"
+            )
+        if new in (".", ".."):
+            # A substituted component rendering to exactly "." or ".."
+            # would collapse the path into itself/its parent or escape the
+            # tree entirely — the same corruption class as the empty-
+            # component guard above, just via a different degenerate value.
+            raise ValidationError(
+                f"rename would collapse a path component of {posix!r} to "
+                f"{new!r} — refusing"
             )
         parts.append(new)
     return Path(*parts)

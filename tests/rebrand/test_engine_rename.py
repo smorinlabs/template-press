@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.engine import apply
+from template_press.rebrand.engine import apply, build_plan
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 from template_press.rebrand.safety import ContainmentError
@@ -314,6 +314,27 @@ class TestRulePathRenames:
                 [],
                 rendered=[(rules.replace[0], "plbp", "")],
             )
+
+    def test_dest_component_collapsing_to_dotdot_raises_at_build_plan(
+        self, src_target: Path
+    ):
+        (src_target / "sub").mkdir()
+        (src_target / "sub" / "keep.txt").write_text("x\n", encoding="utf-8")
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{author}",
+                    reason="author-named dir (path-collapse guard)",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        source = _identity(author="sub")
+        dest = _identity(author="..")
+        with pytest.raises(ValidationError):
+            build_plan(src_target, source, dest, rules)
 
 
 class TestSubstringRenames:

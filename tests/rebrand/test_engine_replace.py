@@ -231,6 +231,21 @@ class TestPathsRuleSeparatorGuard:
         with pytest.raises(ValidationError):
             build_plan(src_target, _identity(), dest, rules)
 
+    def test_paths_rule_with_backslash_in_rendered_side_raises(self, src_target: Path):
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{author}-dir",
+                    reason="author-scoped dir",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        dest = _identity(author="New\\Name")
+        with pytest.raises(ValidationError):
+            build_plan(src_target, _identity(), dest, rules)
+
     def test_content_only_rule_with_slash_in_rendered_sides_still_applies(
         self, src_target: Path
     ):
