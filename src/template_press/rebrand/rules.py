@@ -78,10 +78,17 @@ def render_replace_pattern(pattern: str, identity: Identity) -> str:
 
 
 def rule_matches_path(rule: ReplaceRule, posix: str) -> bool:
-    """POSIX rel-path scope check: empty files = every file; else fnmatch."""
+    """POSIX rel-path scope check: empty files = every file; else fnmatch.
+
+    ``fnmatchcase``, not ``fnmatch``: the plain form runs both arguments
+    through ``os.path.normcase``, which case-folds on Windows — a glob would
+    match case-insensitively there and case-sensitively on POSIX. Matching
+    is defined against the POSIX relative path, so it must be deterministic
+    across platforms.
+    """
     if not rule.files:
         return True
-    return any(fnmatch.fnmatch(posix, glob) for glob in rule.files)
+    return any(fnmatch.fnmatchcase(posix, glob) for glob in rule.files)
 
 
 @dataclass(frozen=True)
