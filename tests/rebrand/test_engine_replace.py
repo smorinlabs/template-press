@@ -147,6 +147,25 @@ class TestDuplicateReplacementSources:
         assert matches[0][2] == "tool"
 
 
+class TestOneWordDisplayNameCoalescing:
+    """F1: a one-word display name renders spaced == pascal == the raw
+    value ("NumPy") while a multiword destination gives those forms
+    DIFFERENT replacements ("Acme Widget" vs "AcmeWidget") — the SAME
+    source literal, not two different identities, so this must coalesce
+    (keep spaced, drop pascal) rather than raise."""
+
+    def test_one_word_display_name_does_not_raise(self):
+        src = _identity(display_name="NumPy")
+        dst = _identity(display_name="Acme Widget")
+        pairs = replacement_pairs(src, dst)  # must not raise
+        by_tag = {tag: (cur, repl) for tag, cur, repl in pairs}
+        assert by_tag["display_name_spaced"] == ("NumPy", "Acme Widget")
+        assert by_tag["display_name_camel"] == ("numPy", "acmeWidget")
+        assert "display_name_pascal" not in by_tag
+        matches = [p for p in pairs if p[1] == "NumPy"]
+        assert len(matches) == 1
+
+
 class TestReplaceRuleContent:
     def test_glued_token_rewritten_by_rule(self, src_target: Path):
         (src_target / "conftest.py").write_text(

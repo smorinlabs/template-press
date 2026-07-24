@@ -345,6 +345,19 @@ def replacement_pairs(
     genuinely ambiguous — the engine cannot know which identity it
     represents, and applying one while starving the other (stable sort order
     picking a "winner") would corrupt the press — so this raises instead.
+
+    WITHIN the display-form family alone, that same-`cur`-different-`repl`
+    shape is NOT an ambiguity: a one-word display name renders identically
+    across forms (source "NumPy": spaced == pascal == "NumPy") while the
+    destination is multi-word ("Acme Widget" vs "AcmeWidget") — one source
+    literal, one field, just two forms that happen to collapse to the same
+    text. Raising here would reject the DEFAULT configuration for any
+    one-word display name. So these are coalesced first, deterministically:
+    keep the FIRST pair per `display_form_names` order (spaced first by
+    default — the verbatim display name wins) and drop the rest silently.
+    This coalescing is scoped to the display_name_* family ONLY — a `cur`
+    shared between a display form and a DIFFERENT field (e.g. app_name) is
+    still routed to the ambiguity guard below.
     """
     src, dst = source.as_dict(), dest.as_dict()
     pairs = [
@@ -358,6 +371,16 @@ def replacement_pairs(
         for form in display_form_names:
             if sf[form] != df[form]:
                 pairs.append((f"display_name_{form}", sf[form], df[form]))
+    display_seen: set[str] = set()
+    coalesced: list[tuple[str, str, str]] = []
+    for tag, cur, repl in pairs:
+        if tag.startswith("display_name_"):
+            if cur in display_seen:
+                continue  # same-family duplicate — drop, keep the first form
+            display_seen.add(cur)
+        coalesced.append((tag, cur, repl))
+    pairs = coalesced
+
     deduped: list[tuple[str, str, str]] = []
     seen: dict[str, tuple[str, str]] = {}  # cur -> (tag, repl)
     for tag, cur, repl in pairs:
