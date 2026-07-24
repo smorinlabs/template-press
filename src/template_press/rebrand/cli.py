@@ -27,6 +27,7 @@ from template_press.rebrand.engine import (
     ApplyReport,
     apply,
     build_plan,
+    rendered_replace_rules,
     stray_press_dirs,
 )
 from template_press.rebrand.identity import (
@@ -409,6 +410,7 @@ def _press(
             dest=dest,
             display_form_names=rules.display_forms,
             substring_fields=rules.substring_rewrite_fields,
+            rendered_rules=rendered_replace_rules(rules, source, dest),
         )
         if leaks:
             print(render_leak_report(leaks), file=sys.stderr)

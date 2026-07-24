@@ -17,6 +17,7 @@ from template_press.rebrand.engine import (
     _git_listed,
     _is_root_press,
     iter_target_files,
+    symlink_target_posix,
 )
 from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
@@ -24,7 +25,7 @@ from template_press.rebrand.identity import (
     display_forms,
     token_occurs,
 )
-from template_press.rebrand.rules import Rules
+from template_press.rebrand.rules import ReplaceRule, Rules, rule_matches_path
 
 PATH_FIELDS: tuple[str, ...] = (
     "package_name",
@@ -79,6 +80,7 @@ def find_leaks(
     dest: Identity | None = None,
     display_form_names: tuple[str, ...] = DISPLAY_FORM_NAMES,
     substring_fields: Collection[str] = frozenset(),
+    rendered_rules: list[tuple[ReplaceRule, str, str]] | None = None,
 ) -> list[Leak]:
     """Scan for surviving source-identity tokens.
 
@@ -86,7 +88,21 @@ def find_leaks(
     an unchanged field (same author across a rename) is not a leak — its
     token legitimately remains everywhere. Without ``dest`` all fields are
     scanned (full-rebrand semantics).
+
+    ``rendered_rules`` (rule, FROM, TO) triples from
+    ``engine.rendered_replace_rules`` — when a ``[[replace]]`` rule is the
+    ONLY matcher for a boundary-unmatched rendered form (e.g. an
+    underscore-glued ``_{app_name}_owned``), the ordinary field-based token
+    scan can miss a surviving FROM literal entirely (a containment-skipped
+    symlink retarget, or any other rewrite the engine could not perform).
+    Each rule is scanned scoped by what it was supposed to touch:
+    ``rule.content`` against file CONTENT (glob-scoped via
+    ``rule_matches_path`` against the file's own rel posix), and
+    ``rule.paths`` against PATH COMPONENTS (glob-scoped the same way,
+    mirroring ``_renamed_rel``) and SYMLINK text (scoped against the link
+    TARGET's normalized rel path, mirroring ``_retarget_symlinks``).
     """
+    rendered_rules = rendered_rules or []
     leaks: list[Leak] = []
     fields = source.as_dict()
     if "display_name" in fields:
@@ -124,6 +140,9 @@ def find_leaks(
             for field_name, value in fields.items():
                 if _occurs(text, field_name, value, substring_fields):
                     leaks.append(Leak(rel_posix, field_name, value, "content"))
+            for rule, frm, _to in rendered_rules:
+                if rule.content and rule_matches_path(rule, rel_posix) and frm in text:
+                    leaks.append(Leak(rel_posix, "replace_rule", frm, "content"))
         if path.is_symlink():
             # A symlink's bytes are its target string, not file content — an
             # identity token embedded there would dangle/leak in a pressed fork.
@@ -132,6 +151,21 @@ def find_leaks(
             for field_name, value in fields.items():
                 if _occurs(link, field_name, value, substring_fields):
                     leaks.append(Leak(rel_posix, field_name, value, "symlink"))
+            # Rule scope for symlink text is the link's TARGET, normalized —
+            # mirroring _retarget_symlinks — never the link's own location.
+            link_target_posix = symlink_target_posix(rel, link)
+            for rule, frm, _to in rendered_rules:
+                if (
+                    rule.paths
+                    and rule_matches_path(rule, link_target_posix)
+                    and frm in link
+                ):
+                    leaks.append(Leak(rel_posix, "replace_rule", frm, "symlink"))
+        path_rules = [
+            (rule, frm)
+            for rule, frm, _to in rendered_rules
+            if rule.paths and rule_matches_path(rule, rel_posix)
+        ]
         for i, component in enumerate(rel.parts):
             if _is_root_press(rel, i):
                 continue
@@ -141,6 +175,9 @@ def find_leaks(
                     component, field_name, value, substring_fields
                 ):
                     leaks.append(Leak(rel_posix, field_name, value, "path"))
+            for _rule, frm in path_rules:
+                if frm in component:
+                    leaks.append(Leak(rel_posix, "replace_rule", frm, "path"))
     # DIRECTORY and DANGLING symlinks never reach the loop above:
     # `iter_target_files` keeps only `is_file()` paths, and `is_file()` FOLLOWS
     # the link — so a symlink to a dir (or to nothing) is dropped, and a source
@@ -159,6 +196,11 @@ def find_leaks(
         # components here exactly as Pass 1 does — a source token in the link's
         # OWN name would otherwise slip the gate. (symlink-to-file names are
         # already covered above via covered_symlinks.)
+        path_rules = [
+            (rule, frm)
+            for rule, frm, _to in rendered_rules
+            if rule.paths and rule_matches_path(rule, rel_posix)
+        ]
         for i, component in enumerate(rel.parts):
             if _is_root_press(rel, i):
                 continue
@@ -168,6 +210,9 @@ def find_leaks(
                     component, field_name, value, substring_fields
                 ):
                     leaks.append(Leak(rel_posix, field_name, value, "path"))
+            for _rule, frm in path_rules:
+                if frm in component:
+                    leaks.append(Leak(rel_posix, "replace_rule", frm, "path"))
         try:
             link = os.readlink(path)
         except OSError:
@@ -176,6 +221,14 @@ def find_leaks(
         for field_name, value in fields.items():
             if _occurs(link, field_name, value, substring_fields):
                 leaks.append(Leak(rel_posix, field_name, value, "symlink"))
+        link_target_posix = symlink_target_posix(rel, link)
+        for rule, frm, _to in rendered_rules:
+            if (
+                rule.paths
+                and rule_matches_path(rule, link_target_posix)
+                and frm in link
+            ):
+                leaks.append(Leak(rel_posix, "replace_rule", frm, "symlink"))
     return leaks
 
 

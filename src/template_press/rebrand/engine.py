@@ -414,6 +414,19 @@ def rendered_replace_rules(
     return out
 
 
+def symlink_target_posix(rel: Path, link: str) -> str:
+    """Normalize a relative symlink's target to a POSIX rel path.
+
+    Anchored at the symlink's OWN directory (``rel.parent``), matching how a
+    relative link target actually resolves on disk. May return a path that
+    escapes the tree entirely (exactly ``".."`` or starting with ``"../"``)
+    for an escaping symlink — callers decide whether that matters. Shared by
+    ``_retarget_symlinks`` (which rules to apply) and ``doctor.find_leaks``
+    (which rendered-rule FROM literals to scan a link's text for).
+    """
+    return Path(os.path.normpath(os.path.join(rel.parent.as_posix(), link))).as_posix()
+
+
 def _read_text(path: Path) -> str | None:
     if path.is_symlink():
         return None  # never follow a link: writes must stay inside the target
@@ -634,9 +647,7 @@ def _retarget_symlinks(
         if os.path.isabs(link):
             continue  # never rewrite or follow an absolute target
         new_link = link
-        target_posix = Path(
-            os.path.normpath(os.path.join(rel.parent.as_posix(), link))
-        ).as_posix()
+        target_posix = symlink_target_posix(rel, link)
         scope_escapes = target_posix == ".." or target_posix.startswith("../")
         for rule, frm, to in rendered:
             if (

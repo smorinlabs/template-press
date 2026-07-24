@@ -19,11 +19,14 @@ can close them).
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
 from template_press.rebrand.cli import main
 from template_press.rebrand.verify_cli import verify_command
+
+from .conftest import requires_symlink
 
 
 def _git(target: Path, *args: str) -> None:
@@ -220,3 +223,30 @@ class TestCdeGapsEndToEnd:
         sandbox press — so no source identity survives the paranoid scan."""
         target = _build_target(tmp_path, mode="rules")
         assert verify_command(["--target", str(target)]) == 0
+
+    @requires_symlink
+    def test_escaping_symlink_rule_only_leak_exits_1_no_receipt(self, tmp_path):
+        """F1: a paths=true [[replace]] rule renders `_{app_name}_link_owned`
+        to `_plbp_link_owned` — its LEADING underscore blocks app_name's own
+        boundary matcher on the left, so only the rule itself matches this
+        literal. A tracked symlink whose target escapes containment is never
+        retargeted (the engine refuses to write outside the tree), leaving
+        the rendered FROM literal verbatim in the link text. Before the F1
+        fix the doctor was blind to it (no field-based scan catches an
+        underscore-glued form either) and a receipt was written despite the
+        leftover."""
+        extra_rule = (
+            "\n[[replace]]\n"
+            'pattern = "_{app_name}_link_owned"\n'
+            "paths   = true\n"
+            "content = false\n"
+            'reason  = "escaping symlink repro (F1)"\n'
+        )
+        target = _build_target(tmp_path, mode="rules", extra_rules=extra_rule)
+        os.symlink("../../outside/_plbp_link_owned", target / "escaping-link")
+        _git(target, "add", "-A")
+        _git(target, "commit", "-q", "-m", "add escaping symlink")
+        answers = _answers(tmp_path)
+        code = main(["--target", str(target), "--config", str(answers)])
+        assert code == 1
+        assert not (target / "press" / "press-receipt.toml").exists()

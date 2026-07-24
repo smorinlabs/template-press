@@ -5,7 +5,7 @@ from pathlib import Path
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import apply
 from template_press.rebrand.identity import Identity
-from template_press.rebrand.rules import DEFAULT_RULES
+from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 
 from .conftest import DEST, SOURCE, requires_symlink
 
@@ -329,3 +329,169 @@ class TestSubstringAwareLeaks:
             lk.path == "link" and lk.field == "app_name" and lk.where == "symlink"
             for lk in leaks
         )
+
+
+class TestRenderedRuleLeaks:
+    """F1: a [[replace]] rule can be the ONLY matcher for a boundary-unmatched
+    rendered FROM literal — e.g. `_{app_name}_owned` renders to `_plbp_owned`,
+    whose LEADING underscore blocks app_name's own boundary matcher on the
+    left (identity.token_pattern excludes `_` from the left side for
+    app_name). When the retarget pass skips an escaping symlink (containment
+    refuses to rewrite outside the tree), the rendered rule's FROM literal
+    survives verbatim in the link text — and only a rule-aware scan catches
+    it."""
+
+    def test_glued_content_leak_via_rule_only(self, src_target: Path):
+        rule = ReplaceRule(pattern="_{app_name}_owned", reason="test")
+        (src_target / "conftest.py").write_text("_plbp_owned\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            rendered_rules=[(rule, "_plbp_owned", "_acme_owned")],
+        )
+        assert any(
+            lk.path == "conftest.py"
+            and lk.field == "replace_rule"
+            and lk.value == "_plbp_owned"
+            and lk.where == "content"
+            for lk in leaks
+        )
+        # The plain app_name field scan must NOT have caught it on its own —
+        # proving the hit came from rule-aware scanning, not a preexisting path.
+        assert not any(lk.field == "app_name" for lk in leaks)
+
+    def test_content_rule_scoped_by_files_glob(self, src_target: Path):
+        """A rule scoped to `files` must not flag a FROM literal outside it."""
+        rule = ReplaceRule(
+            pattern="_{app_name}_owned", reason="test", files=("docs/**",)
+        )
+        (src_target / "conftest.py").write_text("_plbp_owned\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            rendered_rules=[(rule, "_plbp_owned", "_acme_owned")],
+        )
+        assert not any(lk.field == "replace_rule" for lk in leaks)
+
+    def test_path_component_leak_via_rule_only(self, src_target: Path):
+        rule = ReplaceRule(
+            pattern="-{app_name}.md", reason="test", paths=True, content=False
+        )
+        (src_target / "0001-plbp.md").write_text("x\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            rendered_rules=[(rule, "-plbp.md", "-acme.md")],
+        )
+        assert any(
+            lk.path == "0001-plbp.md"
+            and lk.field == "replace_rule"
+            and lk.value == "-plbp.md"
+            and lk.where == "path"
+            for lk in leaks
+        )
+
+    @requires_symlink
+    def test_dangling_symlink_name_leak_via_rule_only(self, src_target: Path):
+        """The dir/dangling-symlink pass (Pass 2) must also scan rule FROM
+        literals against path COMPONENTS — mirroring the main loop."""
+        rule = ReplaceRule(
+            pattern="-{app_name}.md", reason="test", paths=True, content=False
+        )
+        os.symlink("nonexistent-target", src_target / "0001-plbp.md")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            rendered_rules=[(rule, "-plbp.md", "-acme.md")],
+        )
+        assert any(
+            lk.path == "0001-plbp.md"
+            and lk.field == "replace_rule"
+            and lk.value == "-plbp.md"
+            and lk.where == "path"
+            for lk in leaks
+        )
+
+    @requires_symlink
+    def test_escaping_symlink_text_leak_via_rule_only(self, src_target: Path):
+        """The exact F1 repro: an escaping symlink's target text carries the
+        rendered FROM literal glued with underscores on both sides — the
+        retarget pass refuses to rewrite it (containment), and the ordinary
+        boundary-guarded app_name scan can't match it either (leading `_`
+        blocks the left boundary). Only the rule-aware symlink scan, scoped
+        against the link's normalized TARGET path, catches it."""
+        rule = ReplaceRule(
+            pattern="_{app_name}_owned", reason="test", paths=True, content=False
+        )
+        link = src_target / "escaping-link"
+        os.symlink("../../outside/_plbp_owned", link)
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            rendered_rules=[(rule, "_plbp_owned", "_acme_owned")],
+        )
+        assert any(
+            lk.path == "escaping-link"
+            and lk.field == "replace_rule"
+            and lk.value == "_plbp_owned"
+            and lk.where == "symlink"
+            for lk in leaks
+        )
+        assert not any(lk.field == "app_name" for lk in leaks)
+
+    def test_no_false_positive_after_rule_actually_applied(self, src_target: Path):
+        """Negative control: once the rule's rendered FROM is genuinely gone
+        (a normal rewrite ran), passing rendered_rules must not manufacture
+        a leak — `to` is never itself scanned for."""
+        rule = ReplaceRule(
+            pattern="-{app_name}.md", reason="test", paths=True, content=False
+        )
+        (src_target / "0001-acme.md").write_text("x\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            rendered_rules=[(rule, "-plbp.md", "-acme.md")],
+        )
+        assert not any(lk.field == "replace_rule" for lk in leaks)
