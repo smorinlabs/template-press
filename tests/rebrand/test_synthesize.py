@@ -29,6 +29,21 @@ from template_press.rebrand.synthesize import synthesize_dest
 
 from .conftest import SOURCE
 
+
+def _identity(**kwargs: str) -> Identity:
+    """Build an identity with sensible defaults matching the brief's spec."""
+    defaults = {
+        "package_name": "py_launch_blueprint",
+        "repo_name": "py-launch-blueprint",
+        "app_name": "plbp",
+        "author": "Steve Morin",
+        "email": "steve.morin@gmail.com",
+        "owner": "smorinlabs",
+    }
+    defaults.update(kwargs)
+    return Identity(**defaults)
+
+
 _WORD_RE = re.compile(r"[A-Za-z0-9]+")
 _SEPARATORS = ("_", "-", ".", " ", "")
 
@@ -185,3 +200,29 @@ def test_bounded_cap_raises_instead_of_hanging():
     source.validate()  # fixture sanity: "." is a valid author value
     with _bounded(5), pytest.raises(ValidationError, match="email"):
         synthesize_dest(source)
+
+
+class TestSynthDisplayName:
+    def test_none_stays_none(self):
+        assert synthesize_dest(_identity()).display_name is None
+
+    def test_deterministic_two_word_title(self):
+        src = _identity(display_name="Py Launch Blueprint")
+        a = synthesize_dest(src)
+        b = synthesize_dest(src)
+        assert a.display_name == b.display_name
+        words = a.display_name.split()
+        assert len(words) == 2
+        assert all(w[0].isupper() and w[1:].islower() for w in words)
+
+    def test_display_containment_free_vs_source_variants(self):
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = synthesize_dest(src)
+        lowered = dst.display_name.lower()
+        glued = lowered.replace(" ", "")
+        for value in src.as_dict().values():
+            v = value.lower().replace("_", "").replace("-", "").replace(" ", "")
+            assert v not in glued and glued not in v
+
+    def test_dest_validates(self):
+        synthesize_dest(_identity(display_name="Py Launch Blueprint")).validate()
