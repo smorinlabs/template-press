@@ -564,6 +564,72 @@ def test_rule_scope_stable_dir_no_ancestor_rename_still_receipts(
     assert not (docs / "_press_guide.md").exists()
 
 
+@requires_symlink
+def test_symlink_to_ignored_existing_rule_target_not_silently_redirected(
+    src_target: Path, tmp_path: Path
+):
+    """Commit 1 e2e (rule-based retarget): `press-guide` and `potato-guide`
+    both already exist on disk but are gitignored — git never lists their
+    content, so the doctor cannot scan either path. A `paths=true`
+    [[replace]] rule renders FROM `press-guide` TO `potato-guide`; without a
+    target-actually-moves gate, `_retarget_symlinks` would rewrite
+    `link -> press-guide` to `link -> potato-guide` — a DIFFERENT,
+    pre-existing file the rename pass never touched — and both the doctor
+    and a naive scan would see nothing wrong (the source token is gone).
+    The fix must leave the link text UNCHANGED; the doctor's ordinary
+    replace_rule/symlink scan then flags the surviving source literal
+    loudly (exit 1), never a silent redirect (exit 0)."""
+    write_source_config(src_target)
+    (src_target / "press" / "press-rules.toml").write_text(
+        "[[replace]]\n"
+        'pattern = "{app_name}-guide"\n'
+        "paths   = true\n"
+        "content = false\n"
+        'reason  = "guide dir rename"\n',
+        encoding="utf-8",
+    )
+    (src_target / ".gitignore").write_text(
+        "press-guide\npotato-guide\n", encoding="utf-8"
+    )
+    (src_target / "press-guide").mkdir()
+    (src_target / "potato-guide").mkdir()
+    os.symlink("press-guide", src_target / "link")
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 1
+    assert not (src_target / RECEIPT_REL).exists()
+    assert os.readlink(src_target / "link") == "press-guide"  # unchanged
+
+
+@requires_symlink
+def test_symlink_to_ignored_existing_pair_target_not_silently_redirected(
+    src_target: Path, tmp_path: Path
+):
+    """Commit 1 scope addition: the identical silent-redirect shape through
+    a plain identity-FIELD pair (no [[replace]] rule involved at all)
+    predates this branch — `link -> press_guide` boundary-matches app_name
+    "press" exactly like any ordinary token (underscore is a separator on
+    its right), so gating only the rule loop and leaving the pair loop
+    unguarded would still silently repoint the link at a pre-existing
+    `potato_guide` the rename pass never touched."""
+    write_source_config(src_target)
+    (src_target / ".gitignore").write_text(
+        "press_guide\npotato_guide\n", encoding="utf-8"
+    )
+    (src_target / "press_guide").mkdir()
+    (src_target / "potato_guide").mkdir()
+    os.symlink("press_guide", src_target / "link")
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 1
+    assert not (src_target / RECEIPT_REL).exists()
+    assert os.readlink(src_target / "link") == "press_guide"  # unchanged
+
+
 def test_rule_static_text_colliding_with_changed_token_exits_2_no_writes(
     src_target: Path, tmp_path: Path
 ):

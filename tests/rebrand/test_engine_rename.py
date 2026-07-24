@@ -493,6 +493,67 @@ class TestRetargetSymlinksFollowsPathsRules:
         assert os.readlink(link) == "docs/acme-guide.md"
 
 
+class TestRetargetOnlyWhenTargetMoves:
+    """Commit 1: `_retarget_symlinks` must only rewrite a symlink's target
+    TEXT when something under that target actually moves — never on
+    candidate MEMBERSHIP alone, since `git ls-files` lists FILES, never
+    directories. `TestRetargetSymlinksFollowsPathsRules`'s existing test
+    points the link at a FILE INSIDE the renamed dir (`plbp-web/data`),
+    which is itself a candidate either way — it cannot distinguish a
+    membership-only check from the prefix-aware one this fix requires. These
+    pin the two shapes a membership-only implementation gets wrong."""
+
+    @requires_symlink
+    def test_symlink_to_tracked_directory_still_retargets(self, src_target: Path):
+        """The link points AT the directory itself (not a file inside it) —
+        the directory is never itself a `_rename_candidates` member (git
+        lists files only), but a file inside it is, so the prefix check
+        (`cand.startswith(target_posix + "/")`) must still recognize the
+        target as movable."""
+        webdir = src_target / "plbp-web"
+        webdir.mkdir()
+        (webdir / "readme.md").write_text("x\n", encoding="utf-8")
+        link = src_target / "link"
+        os.symlink("plbp-web", link)
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-web",
+                    reason="dir rename retarget (dir target, not a file inside it)",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert os.readlink(link) == "acme-web"
+        assert (src_target / "acme-web" / "readme.md").is_file()
+        assert not webdir.exists()
+
+    @requires_symlink
+    def test_dangling_rule_target_still_retargets(self, src_target: Path):
+        """The target never exists anywhere — nothing can break by
+        rebranding the link text, so the dangling fallback
+        (`not (target / target_posix).exists()`) must still retarget it."""
+        link = src_target / "link"
+        os.symlink("plbp-guide", link)  # never exists anywhere in the repo
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-guide",
+                    reason="dangling target still rebrands",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert os.readlink(link) == "acme-guide"
+        assert not (src_target / "acme-guide").exists()  # still dangling
+
+
 class TestRenameSeesSymlinkNames:
     """F2: retarget rewrites a symlink's TEXT only — the rename pass must
     ALSO see the symlink's own NAME as a candidate, or a token-bearing

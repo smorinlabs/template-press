@@ -709,6 +709,7 @@ def _apply_replacements(
 def _retarget_symlinks(
     target: Path,
     pairs: list[tuple[str, str, str]],
+    rules: Rules,
     report: ApplyReport,
     rendered: list[tuple[ReplaceRule, str, str]] | None = None,
     substring_fields: Collection[str] = frozenset(),
@@ -723,6 +724,29 @@ def _retarget_symlinks(
     reused ``assert_under_root`` on the resolved sink). The link is recreated
     with unlink + symlink, guarded by an immediate ``is_symlink`` re-check to
     refuse a TOCTOU swap.
+
+    A link is retargeted ONLY when its (un-rewritten) TARGET is *movable* —
+    something the rename pass will actually do something to. Rewriting the
+    link's text otherwise silently repoints it at a DIFFERENT, unrelated
+    file that happens to already sit at the rendered TO (a gitignored
+    ``bar-guide`` next to a gitignored ``foo-guide``): the doctor never scans
+    ignored content, so this corruption goes undetected and a receipt gets
+    written over it. ``target_posix`` is movable when it (a) IS itself a
+    rename candidate, (b) is a DIRECTORY holding one (git lists FILES only,
+    never directories, so a link to a tracked dir is never itself a
+    candidate — the check must be prefix-aware, not membership-only, or a
+    link to a tracked directory is wrongly refused and left dangling), or
+    (c) doesn't exist at all (dangling — nothing there to break, so
+    rebranding the link text is safe). The candidate set is computed ONCE
+    per call (it shells out to git) since it does not depend on the
+    individual link being examined.
+
+    The same movable gate also applies to the plain identity-field PAIR
+    loop below, not just the rule loop: the identical silent-redirect shape
+    is constructible through an ordinary field pair alone (no [[replace]]
+    rule involved) and predates this branch — fixing only the rule twin
+    while leaving the pair twin unguarded would still permit the exact same
+    corruption via a different mechanism.
 
     Dispatch per field mirrors ``_apply_replacements``: a field in
     ``substring_fields`` uses plain substring replacement (glued-token
@@ -751,6 +775,9 @@ def _retarget_symlinks(
     """
     rendered = rendered or []
     target_r = target.resolve()
+    cands = {
+        p.relative_to(target).as_posix() for p in _rename_candidates(target, rules)
+    }
     for rel in _git_listed(target):
         path = target / rel
         if not path.is_symlink():
@@ -761,18 +788,24 @@ def _retarget_symlinks(
         new_link = link
         target_posix = symlink_target_posix(rel, link)
         scope_escapes = target_posix == ".." or target_posix.startswith("../")
-        for rule, frm, to in rendered:
-            if (
-                rule.paths
-                and not scope_escapes
-                and rule_matches_path(rule, target_posix)
-            ):
-                new_link = new_link.replace(frm, to)
-        for f, cur, repl in pairs:
-            if f in substring_fields:
-                new_link = new_link.replace(cur, repl)
-            else:
-                new_link = replace_token(new_link, f, cur, repl)
+        movable = (
+            target_posix in cands
+            or any(c.startswith(target_posix + "/") for c in cands)
+            or not (target / target_posix).exists()
+        )
+        if movable:
+            for rule, frm, to in rendered:
+                if (
+                    rule.paths
+                    and not scope_escapes
+                    and rule_matches_path(rule, target_posix)
+                ):
+                    new_link = new_link.replace(frm, to)
+            for f, cur, repl in pairs:
+                if f in substring_fields:
+                    new_link = new_link.replace(cur, repl)
+                else:
+                    new_link = replace_token(new_link, f, cur, repl)
         if new_link == link:
             continue
         sink = (path.parent / new_link).resolve()
@@ -811,7 +844,7 @@ def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> Apply
     # must follow every such rule the same way the rename pass does.
     symlink_pairs = [p for p in pairs if not p[0].startswith("display_name_")]
     _retarget_symlinks(
-        target, symlink_pairs, report, rendered, rules.substring_rewrite_fields
+        target, symlink_pairs, rules, report, rendered, rules.substring_rewrite_fields
     )
     _apply_renames(target, pairs, rules, report, rendered)
     return report
