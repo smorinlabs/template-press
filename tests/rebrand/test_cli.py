@@ -430,6 +430,38 @@ def test_embedding_old_app_name_exits_2_with_guidance(
     assert "intermediate identity" in capsys.readouterr().err
 
 
+def test_display_name_ambiguous_replacement_source_exits_2(
+    src_target: Path, tmp_path: Path
+):
+    """F2: source display_name equals source app_name's value ("press") but
+    the two fields map to DIFFERENT destinations — build_plan's
+    replacement_pairs must refuse (ValidationError -> exit 2) rather than
+    silently applying one pair and starving the other."""
+    src = Identity(**{**SOURCE.as_dict_prompted(), "display_name": "press"})
+    (src_target / "press").mkdir(exist_ok=True)
+    (src_target / SOURCE_CONFIG_REL).write_text(
+        render_source_config(src), encoding="utf-8"
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "commit", "-q", "-m", "add source config"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    dest = {**DEST.as_dict_prompted(), "app_name": "tool", "display_name": "Tool Pro"}
+    answers = tmp_path / "ambiguous.toml"
+    answers.write_text(
+        "[answers]\n" + "\n".join(f'{k} = "{v}"' for k, v in dest.items()) + "\n",
+        encoding="utf-8",
+    )
+    code = main(["--target", str(src_target), "--config", str(answers)])
+    assert code == 2
+
+
 def test_extra_exclude_dirs_no_longer_hides_leaks(src_target: Path, tmp_path: Path):
     """Sweep F3: rewrite dir-excludes must not blind the doctor."""
     write_source_config(src_target)

@@ -123,6 +123,30 @@ class TestDisplayPairs:
         assert fields == ["display_name_spaced"]
 
 
+class TestDuplicateReplacementSources:
+    """F2: two pairs sharing the same `cur` literal with DIFFERENT `repl`
+    values are ambiguous — the engine cannot know which identity a matching
+    occurrence represents, and stable sort order would silently apply one
+    while starving the other."""
+
+    def test_same_cur_different_dest_raises(self):
+        # source app_name == source display_name's spaced/camel form ("press");
+        # dest maps app_name -> "tool" but display_name -> "Tool Pro".
+        src = _identity(app_name="press", display_name="press")
+        dst = _identity(app_name="tool", display_name="Tool Pro")
+        with pytest.raises(ValidationError):
+            replacement_pairs(src, dst)
+
+    def test_same_cur_same_dest_dedupes_silently(self):
+        # Both destinations align on "tool" — harmless duplicate, not an error.
+        src = _identity(app_name="press", display_name="press")
+        dst = _identity(app_name="tool", display_name="tool")
+        pairs = replacement_pairs(src, dst)
+        matches = [p for p in pairs if p[1] == "press"]
+        assert len(matches) == 1
+        assert matches[0][2] == "tool"
+
+
 class TestReplaceRuleContent:
     def test_glued_token_rewritten_by_rule(self, src_target: Path):
         (src_target / "conftest.py").write_text(

@@ -337,6 +337,14 @@ def replacement_pairs(
     RENAME_FIELDS, so display forms rewrite content but never paths. The
     `k in dst` guard keeps a half-specified display name (source has it,
     dest doesn't) out of the pair list entirely — the CLI gates that case.
+
+    Two entries can legitimately share the same `cur` literal (e.g. a
+    one-word display_name equal to app_name's value) — harmless as long as
+    both map to the SAME `repl`, in which case the duplicate is dropped
+    silently. When they map to DIFFERENT `repl` values the occurrence is
+    genuinely ambiguous — the engine cannot know which identity it
+    represents, and applying one while starving the other (stable sort order
+    picking a "winner") would corrupt the press — so this raises instead.
     """
     src, dst = source.as_dict(), dest.as_dict()
     pairs = [
@@ -350,8 +358,25 @@ def replacement_pairs(
         for form in display_form_names:
             if sf[form] != df[form]:
                 pairs.append((f"display_name_{form}", sf[form], df[form]))
-    pairs.sort(key=lambda t: -len(t[1]))
-    return pairs
+    deduped: list[tuple[str, str, str]] = []
+    seen: dict[str, tuple[str, str]] = {}  # cur -> (tag, repl)
+    for tag, cur, repl in pairs:
+        if cur in seen:
+            other_tag, other_repl = seen[cur]
+            if other_repl != repl:
+                raise ValidationError(
+                    f"replacement source {cur!r} is ambiguous: {other_tag!r} "
+                    f"maps it to {other_repl!r} but {tag!r} maps it to "
+                    f"{repl!r} — the engine cannot know which identity an "
+                    f"occurrence of {cur!r} represents; press in two steps via "
+                    f"an intermediate identity, or align the two destination "
+                    f"values"
+                )
+            continue  # same cur, same repl — harmless duplicate, drop it
+        seen[cur] = (tag, repl)
+        deduped.append((tag, cur, repl))
+    deduped.sort(key=lambda t: -len(t[1]))
+    return deduped
 
 
 def rendered_replace_rules(
