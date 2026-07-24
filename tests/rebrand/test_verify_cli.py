@@ -461,6 +461,32 @@ def test_substring_rewrite_field_scanned_via_escaping_symlink_exits_1(
     assert verify_command(["--target", str(repo)]) == 1
 
 
+# ---------------------------------------------------------------------------
+# F1: `verifier.scan` never received rendered `[[replace]]` FROM literals, so
+# a rule-only source form surviving an unrewriteable spot (an escaping
+# symlink target the retarget pass refuses to touch) passed `verify` clean.
+# `pattern = "x{app_name}owned"` renders `xpressowned` — glued with no
+# boundary on EITHER side, so even the paranoid field-based scan can't see
+# "press" inside it; the [[replace]] rule is the ONLY matcher. Before the
+# fix: false clean (exit 0). After the fix: `verify_cli` renders the rules
+# with (source, synth) and threads them into `verifier.scan` -> exit 1.
+# ---------------------------------------------------------------------------
+@requires_symlink
+def test_rule_only_leak_via_escaping_symlink_exits_1(tmp_path: Path) -> None:
+    repo = make_pressable(tmp_path)
+    (repo / "press" / "press-rules.toml").write_text(
+        "[[replace]]\n"
+        'pattern = "x{app_name}owned"\n'
+        "paths   = true\n"
+        "content = false\n"
+        'reason  = "escaping symlink repro (F1)"\n',
+        encoding="utf-8",
+    )
+    os.symlink("../../outside/xpressowned", repo / "escaping-link")
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 1
+
+
 def test_verify_never_mutates_real_target_exit_0_and_1(tmp_path: Path) -> None:
     # exit-0: a clean template (regenerable uv.lock is scan-exempt).
     clean = make_pressable(tmp_path / "clean")

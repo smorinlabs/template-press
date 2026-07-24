@@ -36,10 +36,15 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from template_press.rebrand.engine import _is_root_press, scan_paths
+from template_press.rebrand.doctor import _rule_scope_hits
+from template_press.rebrand.engine import (
+    _is_root_press,
+    scan_paths,
+    symlink_target_posix,
+)
 from template_press.rebrand.identity import Identity
 from template_press.rebrand.matcher import find_occurrences
-from template_press.rebrand.rules import Rules
+from template_press.rebrand.rules import ReplaceRule, Rules
 from template_press.rebrand.safety import is_regular_lstat
 
 
@@ -84,11 +89,53 @@ def _changed_fields(
     return [(f, src[f]) for f in fields if f in src and f in dst and src[f] != dst[f]]
 
 
+def _substring_occurrences(text: str, needle: str) -> list[tuple[int, int]]:
+    """Non-overlapping start/end spans of a LITERAL substring.
+
+    A rendered ``[[replace]]`` FROM literal is an exact string (no boundary
+    heuristics — codesign sec-02), unlike an identity field's
+    `find_occurrences`. Mirrors `_scan_binary`'s own needle-find loop; an
+    empty needle would match everywhere (`str.find("", pos) == pos`) so it
+    is guarded out rather than looping forever.
+    """
+    if not needle:
+        return []
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    while True:
+        idx = text.find(needle, pos)
+        if idx == -1:
+            break
+        spans.append((idx, idx + len(needle)))
+        pos = idx + len(needle)
+    return spans
+
+
+def _rule_path_matches(
+    posix: str,
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]],
+    renamed: list[tuple[str, str]],
+    *,
+    paths: bool,
+) -> list[tuple[ReplaceRule, str]]:
+    """``(rule, frm)`` pairs whose scope (``rule.paths``/``rule.content``,
+    plus the pre-rename reverse-mapped ``files`` glob) hits ``posix`` —
+    mirroring `doctor._rule_scope_hits` exactly."""
+    return [
+        (rule, frm)
+        for rule, frm, _to in rendered_rules
+        if (rule.paths if paths else rule.content)
+        and _rule_scope_hits(rule, posix, renamed)
+    ]
+
+
 def _scan_path_components(
     rel: Path,
     posix: str,
     changed: list[tuple[str, str]],
     substring_fields: Collection[str],
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]],
+    renamed: list[tuple[str, str]],
 ) -> list[Finding]:
     """Every path component (all kinds) — a hit on the LAST part is a
     ``filename`` finding, on any earlier part a ``dirname`` finding. The
@@ -96,6 +143,7 @@ def _scan_path_components(
     """
     findings: list[Finding] = []
     last_index = len(rel.parts) - 1
+    path_rules = _rule_path_matches(posix, rendered_rules, renamed, paths=True)
     for i, comp in enumerate(rel.parts):
         if _is_root_press(rel, i):
             continue
@@ -104,6 +152,11 @@ def _scan_path_components(
             substring = f in substring_fields
             for _start, _end in find_occurrences(comp, f, value, substring=substring):
                 findings.append(Finding(posix, f, value, where, None, None, comp))
+        for _rule, frm in path_rules:
+            for _start, _end in _substring_occurrences(comp, frm):
+                findings.append(
+                    Finding(posix, "replace_rule", frm, where, None, None, comp)
+                )
     return findings
 
 
@@ -113,6 +166,8 @@ def _scan_symlink(
     posix: str,
     changed: list[tuple[str, str]],
     substring_fields: Collection[str],
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]],
+    renamed: list[tuple[str, str]],
 ) -> list[Finding]:
     """Scan the symlink's `readlink` STRING only — never the destination.
 
@@ -132,6 +187,17 @@ def _scan_symlink(
         substring = f in substring_fields
         for _start, _end in find_occurrences(link, f, value, substring=substring):
             findings.append(Finding(posix, f, value, "symlink", None, None, link))
+    # Rule scope for symlink text is the link's TARGET, normalized — mirroring
+    # `_retarget_symlinks`/`doctor.find_leaks` — never the link's own location.
+    link_target_posix = symlink_target_posix(rel, link)
+    rule_hits = _rule_path_matches(
+        link_target_posix, rendered_rules, renamed, paths=True
+    )
+    for _rule, frm in rule_hits:
+        for _start, _end in _substring_occurrences(link, frm):
+            findings.append(
+                Finding(posix, "replace_rule", frm, "symlink", None, None, link)
+            )
     return findings
 
 
@@ -140,17 +206,25 @@ def _scan_content(
     posix: str,
     changed: list[tuple[str, str]],
     substring_fields: Collection[str],
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]],
+    renamed: list[tuple[str, str]],
 ) -> list[Finding]:
     """Line-by-line content scan; two matches on one line yield two findings
     with distinct ``col`` (the span start, `find_occurrences` is already
     non-overlapping)."""
     findings: list[Finding] = []
+    content_rules = _rule_path_matches(posix, rendered_rules, renamed, paths=False)
     for lineno, line in enumerate(text.splitlines(), start=1):
         for f, value in changed:
             substring = f in substring_fields
             for start, _end in find_occurrences(line, f, value, substring=substring):
                 findings.append(
                     Finding(posix, f, value, "content", lineno, start, line)
+                )
+        for _rule, frm in content_rules:
+            for start, _end in _substring_occurrences(line, frm):
+                findings.append(
+                    Finding(posix, "replace_rule", frm, "content", lineno, start, line)
                 )
     return findings
 
@@ -211,6 +285,8 @@ def _scan_file(
     posix: str,
     changed: list[tuple[str, str]],
     substring_fields: Collection[str],
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]],
+    renamed: list[tuple[str, str]],
 ) -> list[Finding]:
     path = target / rel
     if not is_regular_lstat(path):
@@ -227,8 +303,14 @@ def _scan_file(
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
+        # `apply()` cannot rewrite binary content via a [[replace]] rule any
+        # more than it can via the token pass, so a rule-literal scan of
+        # binary bytes is not attempted (mirrors `doctor.find_leaks`, which
+        # only rule-scans `_read_for_scan`-returned TEXT).
         return _scan_binary(data, posix, changed, substring_fields)
-    return _scan_content(text, posix, changed, substring_fields)
+    return _scan_content(
+        text, posix, changed, substring_fields, rendered_rules, renamed
+    )
 
 
 def scan(
@@ -239,6 +321,8 @@ def scan(
     fields: Sequence[str],
     substring_fields: Collection[str],
     rules: Rules,
+    rendered_rules: list[tuple[ReplaceRule, str, str]] | None = None,
+    renamed: list[tuple[str, str]] | None = None,
 ) -> list[Finding]:
     """Occurrence-level scan of ``target`` for surviving SOURCE identity.
 
@@ -250,23 +334,60 @@ def scan(
     (`_scan_symlink` — never the destination); a `file` entry additionally
     gets its content or bytes scanned (`_scan_file`).
 
+    ``rendered_rules`` (rule, FROM, TO) triples from
+    ``engine.rendered_replace_rules`` — a rule-only matcher for a
+    boundary-unmatched rendered FROM literal that survives an unrewriteable
+    spot (an escaping symlink target the retarget pass refuses to touch, a
+    stale filename left by 0008's rewrite-side scope-migration limitation)
+    is otherwise invisible to the ordinary field-based scan above. Each
+    rule is scanned scoped by what it was supposed to touch, mirroring
+    ``doctor.find_leaks`` exactly: content rules against file CONTENT
+    (glob-scoped via ``rule_matches_path`` against the file's own rel
+    posix), and paths rules against PATH COMPONENTS (glob-scoped the same
+    way) and SYMLINK text (scoped against the link TARGET's normalized rel
+    path via ``engine.symlink_target_posix``). ``renamed`` (``ApplyReport.
+    renamed`` — available at the verify sandbox's press call site) lets
+    each scope check recover a scanned path/symlink-target's PRE-rename
+    original before testing ``rule.files``, exactly as
+    ``doctor._rule_scope_hits`` does; omitted, this degrades to
+    current-path-only scoping. Findings carry ``field="replace_rule",
+    value=frm``.
+
     Raw findings only — no ignoring, no deduping (Task 8's job). Order is
     stable: `scan_paths` is already sorted by path, and within one path,
     findings are emitted in scan order (path components, then
     symlink/content/binary).
     """
     changed = _changed_fields(source, dest, fields)
+    rendered_rules = rendered_rules or []
+    renamed = renamed or []
     findings: list[Finding] = []
     for entry in scan_paths(target, rules):
         rel = entry.rel
         posix = rel.as_posix()
-        findings.extend(_scan_path_components(rel, posix, changed, substring_fields))
+        findings.extend(
+            _scan_path_components(
+                rel, posix, changed, substring_fields, rendered_rules, renamed
+            )
+        )
         if entry.kind == "gitlink":
             continue
         if entry.kind == "symlink":
             findings.extend(
-                _scan_symlink(target, rel, posix, changed, substring_fields)
+                _scan_symlink(
+                    target,
+                    rel,
+                    posix,
+                    changed,
+                    substring_fields,
+                    rendered_rules,
+                    renamed,
+                )
             )
             continue
-        findings.extend(_scan_file(target, rel, posix, changed, substring_fields))
+        findings.extend(
+            _scan_file(
+                target, rel, posix, changed, substring_fields, rendered_rules, renamed
+            )
+        )
     return findings

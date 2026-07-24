@@ -45,7 +45,7 @@ from pathlib import Path
 
 from template_press.rebrand.config import SOURCE_CONFIG_REL, load_source_config
 from template_press.rebrand.discovery import Discovered, discover, mismatches
-from template_press.rebrand.engine import apply, scan_paths
+from template_press.rebrand.engine import apply, rendered_replace_rules, scan_paths
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_map
 from template_press.rebrand.matcher import find_occurrences
@@ -376,6 +376,12 @@ def verify_command(argv: list[str] | None = None) -> int:
     unavailable: tuple[str, ...] = ()
     try:
         synth = synthesize_dest(source)
+        # Rendered against (source, synth) — the SYNTHETIC destination verify
+        # actually presses toward — so a rule-only source form that survives
+        # an unrewriteable spot (an escaping symlink target, a stale filename
+        # left by 0008's rewrite-side scope-migration limitation) is scanned
+        # for below (Fix F1), mirroring `doctor.find_leaks`'s `rendered_rules`.
+        rendered_rules = rendered_replace_rules(rules, source, synth)
         with owned_sandbox(target) as dest_root:
             sandbox = make_sandbox(target, dest_root)
             try:
@@ -392,6 +398,13 @@ def verify_command(argv: list[str] | None = None) -> int:
                 fields=scan_fields,
                 substring_fields=scan_substring,
                 rules=rules,
+                rendered_rules=rendered_rules,
+                # `report.renamed` (Fix F1) is available right here — thread
+                # it through so a rule-literal scope check can recover a
+                # scanned path/symlink-target's PRE-rename original before
+                # testing `rule.files`, mirroring
+                # `doctor.find_leaks`'s `renamed` parameter exactly (9d9d0c5).
+                renamed=report.renamed,
             )
             forward_map = build_forward_map(report.renamed)
             surviving, stale = apply_ignores(
