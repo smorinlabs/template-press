@@ -57,6 +57,16 @@ def test_load_rules_rejects_non_list_override(tmp_path: Path):
         load_rules(tmp_path)
 
 
+def test_unknown_rules_key_rejected(tmp_path: Path):
+    press = tmp_path / "press"
+    press.mkdir()
+    (press / "press-rules.toml").write_text(
+        '[rules]\nsubstring_rewrite_field = ["app_name"]\n', encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="substring_rewrite_field"):
+        load_rules(tmp_path)
+
+
 def test_nested_dir_entries_are_rejected_loudly(tmp_path: Path):
     import pytest
 

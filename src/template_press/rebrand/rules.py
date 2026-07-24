@@ -136,6 +136,20 @@ DEFAULT_RULES = Rules(
 
 _COMPONENT_KEYS = frozenset({"extra_exclude_dirs", "verify_ignore"})
 
+# The exact set of keys load_rules reads from [rules] — a typo (e.g.
+# substring_rewrite_field, singular) must fail loud instead of silently
+# degrading to defaults.
+_RULES_KEYS = frozenset(
+    {
+        "extra_exclude_dirs",
+        "extra_exclude_files",
+        "regenerate",
+        "verify_ignore",
+        "substring_rewrite_fields",
+        "display_forms",
+    }
+)
+
 
 def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
     value = table.get(key, default)
@@ -223,6 +237,11 @@ def load_rules(target: Path) -> Rules:
     table = data.get("rules", {})
     if not isinstance(table, dict):
         raise ValidationError(f"{RULES_REL}: [rules] must be a table")
+    unknown_keys = set(table) - _RULES_KEYS
+    if unknown_keys:
+        raise ValidationError(
+            f"{RULES_REL}: [rules] unknown key(s): {', '.join(sorted(unknown_keys))}"
+        )
     raw_replace = data.get("replace", [])
     if not isinstance(raw_replace, list):
         raise ValidationError(f"{RULES_REL}: [[replace]] must be an array of tables")
