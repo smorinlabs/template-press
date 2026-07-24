@@ -411,6 +411,7 @@ def _press(
             display_form_names=rules.display_forms,
             substring_fields=rules.substring_rewrite_fields,
             rendered_rules=rendered_replace_rules(rules, source, dest),
+            renamed=report.renamed,
         )
         if leaks:
             print(render_leak_report(leaks), file=sys.stderr)

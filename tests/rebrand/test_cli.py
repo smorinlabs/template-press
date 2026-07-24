@@ -498,6 +498,72 @@ def test_verify_ignore_is_the_sanctioned_ignore_set(src_target: Path, tmp_path: 
     assert "demo_widget" in text  # deliberately preserved
 
 
+def test_rule_scope_migrated_by_ancestor_rename_exits_1_no_receipt(
+    src_target: Path, tmp_path: Path
+):
+    """F1 e2e: a paths=true [[replace]] rule scoped `files=["press_docs/**"]`
+    guards a filename under a directory the ORDINARY token-rename pass ALSO
+    renames (press_docs/ -> potato_docs/). `_rename_pass_once` collapses
+    each pass to its shallowest differing ancestor, so the directory rename
+    lands on pass 1 and the rule's own `files` scope no longer matches by
+    the time the SAME rule gets to re-evaluate against the file on pass 2 —
+    the rule never fires and the file keeps its stale name (0008's
+    documented rewrite-side scope-migration limitation, not fixed here).
+    The doctor must catch that leftover instead of certifying a false
+    receipt (a receipt/verify contradiction)."""
+    write_source_config(src_target)
+    docs = src_target / "press_docs"
+    docs.mkdir()
+    (docs / "_press_guide.md").write_text("x\n", encoding="utf-8")
+    (src_target / "press" / "press-rules.toml").write_text(
+        "[[replace]]\n"
+        'pattern = "_{app_name}_guide.md"\n'
+        'files   = ["press_docs/**"]\n'
+        "paths   = true\n"
+        "content = false\n"
+        'reason  = "doc filename scoped to its own dir"\n',
+        encoding="utf-8",
+    )
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 1
+    assert not (src_target / RECEIPT_REL).exists()
+    # the exact leftover shape: dir renamed, file inside kept its stale name
+    assert (src_target / "potato_docs" / "_press_guide.md").exists()
+
+
+def test_rule_scope_stable_dir_no_ancestor_rename_still_receipts(
+    src_target: Path, tmp_path: Path
+):
+    """Negative control: the identical rule shape, scoped to a directory
+    that is never itself renamed (no app_name token in its own name), must
+    still press clean end-to-end — `renamed` threading must not manufacture
+    a false positive when there is no ancestor shift to reverse-map."""
+    write_source_config(src_target)
+    docs = src_target / "docs"
+    docs.mkdir()
+    (docs / "_press_guide.md").write_text("x\n", encoding="utf-8")
+    (src_target / "press" / "press-rules.toml").write_text(
+        "[[replace]]\n"
+        'pattern = "_{app_name}_guide.md"\n'
+        'files   = ["docs/**"]\n'
+        "paths   = true\n"
+        "content = false\n"
+        'reason  = "doc filename scoped to a stable dir"\n',
+        encoding="utf-8",
+    )
+    answers = write_answers(tmp_path)
+    code = main(
+        ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
+    )
+    assert code == 0
+    assert (src_target / RECEIPT_REL).is_file()
+    assert (docs / "_potato_guide.md").exists()
+    assert not (docs / "_press_guide.md").exists()
+
+
 def test_partial_rebrand_keeping_author_verifies(src_target: Path, tmp_path: Path):
     """Fable sweep finding: unchanged fields are not leaks."""
     write_source_config(src_target)

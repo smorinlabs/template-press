@@ -73,6 +73,52 @@ def _occurs(
     return token_occurs(text, field_name, value)
 
 
+def _reverse_renamed_posix(posix: str, renamed: list[tuple[str, str]]) -> str:
+    """Undo every prefix rename recorded in ``renamed`` (new -> old), longest
+    new-prefix first, applied iteratively until no further substitution
+    fires (Fix F1).
+
+    A rename entry's NEW prefix substitutes back to its OLD prefix when
+    ``posix`` equals it exactly or starts with it plus ``"/"`` — mirroring
+    how ``_rename_pass_once``/``build_plan`` record ``(old_prefix,
+    new_prefix)`` collapsed to the shallowest differing ancestor per pass. A
+    path may have crossed several such ancestors across SEPARATE passes, so
+    this keeps substituting (bounded to ``len(renamed) + 1`` rounds — more
+    than enough for any chain of disjoint renames) rather than doing it once.
+    """
+    ordered = sorted(renamed, key=lambda pair: -len(pair[1]))
+    for _ in range(len(ordered) + 1):
+        for old, new in ordered:
+            if posix == new:
+                posix = old
+                break
+            if posix.startswith(new + "/"):
+                posix = old + posix[len(new) :]
+                break
+        else:
+            break
+    return posix
+
+
+def _rule_scope_hits(
+    rule: ReplaceRule, posix: str, renamed: list[tuple[str, str]]
+) -> bool:
+    """Rule-literal scope match against BOTH the CURRENT path and its
+    PRE-rename original (Fix F1).
+
+    A token-rename pass can move a file's ancestor out from under a
+    ``files`` scope written against the source layout before the SAME
+    [[replace]] rule ever gets a chance to re-evaluate against it (the
+    rewrite-side scope migration is a documented 0008 limitation, left
+    unfixed there) — so scoping the doctor's rule-literal scan against the
+    current path alone would silently certify the missed rename. Over-flags
+    rather than misses: a hit on EITHER path counts.
+    """
+    return rule_matches_path(rule, posix) or rule_matches_path(
+        rule, _reverse_renamed_posix(posix, renamed)
+    )
+
+
 def find_leaks(
     target: Path,
     source: Identity,
@@ -81,6 +127,7 @@ def find_leaks(
     display_form_names: tuple[str, ...] = DISPLAY_FORM_NAMES,
     substring_fields: Collection[str] = frozenset(),
     rendered_rules: list[tuple[ReplaceRule, str, str]] | None = None,
+    renamed: list[tuple[str, str]] | None = None,
 ) -> list[Leak]:
     """Scan for surviving source-identity tokens.
 
@@ -101,8 +148,19 @@ def find_leaks(
     ``rule.paths`` against PATH COMPONENTS (glob-scoped the same way,
     mirroring ``_renamed_rel``) and SYMLINK text (scoped against the link
     TARGET's normalized rel path, mirroring ``_retarget_symlinks``).
+
+    ``renamed`` (Fix F1) — ``ApplyReport.renamed`` (old_prefix, new_prefix)
+    pairs from every rename ``apply()`` actually executed — lets each
+    rule-literal scope check (``_rule_scope_hits``) recover a scanned
+    path/symlink-target's PRE-rename original before testing ``rule.files``:
+    a token-rename pass can move a rule-scoped path's ancestor out from under
+    its own ``files`` glob before that same rule ever gets to re-evaluate
+    against it, leaving a stale FROM literal that a current-path-only scope
+    check would miss entirely (a receipt/verify contradiction). Omitted
+    (``None``/empty), this degrades to the prior current-path-only behavior.
     """
     rendered_rules = rendered_rules or []
+    renamed = renamed or []
     leaks: list[Leak] = []
     fields = source.as_dict()
     if "display_name" in fields:
@@ -141,7 +199,11 @@ def find_leaks(
                 if _occurs(text, field_name, value, substring_fields):
                     leaks.append(Leak(rel_posix, field_name, value, "content"))
             for rule, frm, _to in rendered_rules:
-                if rule.content and rule_matches_path(rule, rel_posix) and frm in text:
+                if (
+                    rule.content
+                    and _rule_scope_hits(rule, rel_posix, renamed)
+                    and frm in text
+                ):
                     leaks.append(Leak(rel_posix, "replace_rule", frm, "content"))
         if path.is_symlink():
             # A symlink's bytes are its target string, not file content — an
@@ -157,14 +219,14 @@ def find_leaks(
             for rule, frm, _to in rendered_rules:
                 if (
                     rule.paths
-                    and rule_matches_path(rule, link_target_posix)
+                    and _rule_scope_hits(rule, link_target_posix, renamed)
                     and frm in link
                 ):
                     leaks.append(Leak(rel_posix, "replace_rule", frm, "symlink"))
         path_rules = [
             (rule, frm)
             for rule, frm, _to in rendered_rules
-            if rule.paths and rule_matches_path(rule, rel_posix)
+            if rule.paths and _rule_scope_hits(rule, rel_posix, renamed)
         ]
         for i, component in enumerate(rel.parts):
             if _is_root_press(rel, i):
@@ -199,7 +261,7 @@ def find_leaks(
         path_rules = [
             (rule, frm)
             for rule, frm, _to in rendered_rules
-            if rule.paths and rule_matches_path(rule, rel_posix)
+            if rule.paths and _rule_scope_hits(rule, rel_posix, renamed)
         ]
         for i, component in enumerate(rel.parts):
             if _is_root_press(rel, i):
@@ -225,7 +287,7 @@ def find_leaks(
         for rule, frm, _to in rendered_rules:
             if (
                 rule.paths
-                and rule_matches_path(rule, link_target_posix)
+                and _rule_scope_hits(rule, link_target_posix, renamed)
                 and frm in link
             ):
                 leaks.append(Leak(rel_posix, "replace_rule", frm, "symlink"))

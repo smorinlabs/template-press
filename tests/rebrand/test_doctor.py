@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import subprocess
 from pathlib import Path
@@ -5,7 +6,7 @@ from pathlib import Path
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import apply
 from template_press.rebrand.identity import Identity
-from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
+from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, Rules
 
 from .conftest import DEST, SOURCE, requires_symlink
 
@@ -21,6 +22,10 @@ def _identity(**overrides):
     }
     base.update(overrides)
     return Identity(**base)
+
+
+def _rules_with(**overrides):
+    return dataclasses.replace(DEFAULT_RULES, **overrides)
 
 
 def test_clean_rebrand_has_no_leaks(src_target: Path):
@@ -495,3 +500,128 @@ class TestRenderedRuleLeaks:
             rendered_rules=[(rule, "-plbp.md", "-acme.md")],
         )
         assert not any(lk.field == "replace_rule" for lk in leaks)
+
+
+class TestRuleScopeMigratedByAncestorRename:
+    """F1: a paths=true [[replace]] rule scoped `files=["plbp_docs/**"]`
+    guards a filename that lives under a directory the ORDINARY token-rename
+    pass ALSO renames (plbp_docs/ -> acme_docs/, boundary-matched on
+    app_name). `_rename_pass_once` collapses each pass to only its
+    shallowest differing ancestor, so pass 1 renames just the directory;
+    pass 2 re-evaluates the rule's `files` scope against the file's now
+    CURRENT path (acme_docs/...), which no longer matches `plbp_docs/**` —
+    the rule never fires and `_plbp_guide.md` keeps its stale name (0008's
+    documented rewrite-side scope-migration limitation — NOT fixed here).
+
+    The doctor's rendered-rule path scan repeated the exact same
+    current-path-only scope check, so the leftover slipped the gate too —
+    that receipt/verify contradiction is what `renamed` threading closes.
+    """
+
+    def _seed(self, src_target: Path) -> tuple[ReplaceRule, Rules]:
+        docs = src_target / "plbp_docs"
+        docs.mkdir()
+        (docs / "_plbp_guide.md").write_text("x\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        rule = ReplaceRule(
+            pattern="_{app_name}_guide.md",
+            reason="doc filename scoped to its own dir",
+            files=["plbp_docs/**"],
+            paths=True,
+            content=False,
+        )
+        rules = _rules_with(replace=(rule,))
+        return rule, rules
+
+    def test_apply_leaves_stale_filename_after_ancestor_renamed_first(
+        self, src_target: Path
+    ):
+        """Establishes the precondition (0008 limitation, unfixed): the dir
+        renames on pass 1, the file's rule-driven rename is missed, and
+        `report.renamed` records the ancestor rename that caused it."""
+        _rule, rules = self._seed(src_target)
+        src = _identity()
+        dst = _identity(app_name="acme")
+        report = apply(src_target, src, dst, rules)
+        assert (src_target / "acme_docs" / "_plbp_guide.md").exists()
+        assert ("plbp_docs", "acme_docs") in report.renamed
+
+    def test_leak_detected_when_renamed_is_threaded_through(self, src_target: Path):
+        rule, rules = self._seed(src_target)
+        src = _identity()
+        dst = _identity(app_name="acme")
+        report = apply(src_target, src, dst, rules)
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            dest=dst,
+            rendered_rules=[(rule, "_plbp_guide.md", "_acme_guide.md")],
+            renamed=report.renamed,
+        )
+        assert any(
+            lk.path == "acme_docs/_plbp_guide.md"
+            and lk.field == "replace_rule"
+            and lk.value == "_plbp_guide.md"
+            and lk.where == "path"
+            for lk in leaks
+        )
+
+    def test_leak_missed_without_renamed_red_evidence(self, src_target: Path):
+        """RED: the exact same leftover, scanned WITHOUT `renamed` threaded
+        through, is invisible — proving `renamed` is load-bearing, not just
+        harmless plumbing."""
+        rule, rules = self._seed(src_target)
+        src = _identity()
+        dst = _identity(app_name="acme")
+        apply(src_target, src, dst, rules)
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            dest=dst,
+            rendered_rules=[(rule, "_plbp_guide.md", "_acme_guide.md")],
+        )
+        assert not any(lk.field == "replace_rule" for lk in leaks)
+
+    def test_fully_applied_scoped_rule_no_ancestor_rename_still_clean(
+        self, src_target: Path
+    ):
+        """Negative control: the SAME rule, scoped to a directory that is
+        NEVER itself renamed (no app_name token in its name), applies fully
+        on pass 1 — no ancestor shift, no leftover, and `renamed` threaded
+        through must not manufacture a false positive."""
+        docs = src_target / "docs"
+        docs.mkdir()
+        (docs / "_plbp_guide.md").write_text("x\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        rule = ReplaceRule(
+            pattern="_{app_name}_guide.md",
+            reason="doc filename scoped to a stable dir",
+            files=["docs/**"],
+            paths=True,
+            content=False,
+        )
+        rules = _rules_with(replace=(rule,))
+        src = _identity()
+        dst = _identity(app_name="acme")
+        report = apply(src_target, src, dst, rules)
+        assert (docs / "_acme_guide.md").exists()
+        assert not (docs / "_plbp_guide.md").exists()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            dest=dst,
+            rendered_rules=[(rule, "_plbp_guide.md", "_acme_guide.md")],
+            renamed=report.renamed,
+        )
+        assert leaks == []
