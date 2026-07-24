@@ -612,9 +612,17 @@ def _retarget_symlinks(
     away from under it. A ``content``-only rule (``paths=False``) must NOT
     touch link text — mirror-image of the display-pair exclusion below.
     Rules run BEFORE the field-pair pass (same order as
-    ``_apply_replacements``/``_renamed_rel``), scoped by the SYMLINK's own
-    rel posix — consistent with how the rename pass scopes by the renamed
-    file's path.
+    ``_apply_replacements``/``_renamed_rel``).
+
+    A rule's ``files`` scope selects which TARGET paths get renamed — so the
+    scope match here (Fix F3) is against the link's TARGET, normalized to an
+    in-tree rel posix path (``rel.parent`` joined with the un-rewritten link
+    text), NOT the symlink's own location: a rule with ``files=["docs/**"]``
+    must still retarget a root-level link pointing INTO ``docs/``, even
+    though the link itself lives outside that scope. A target that
+    normalizes outside the tree (a relative ``../`` escape) never matches any
+    rule's scope here — the containment guard below (on the fully-rewritten
+    sink) is what actually polices an escaping link.
     """
     rendered = rendered or []
     target_r = target.resolve()
@@ -626,9 +634,16 @@ def _retarget_symlinks(
         if os.path.isabs(link):
             continue  # never rewrite or follow an absolute target
         new_link = link
-        posix = rel.as_posix()
+        target_posix = Path(
+            os.path.normpath(os.path.join(rel.parent.as_posix(), link))
+        ).as_posix()
+        scope_escapes = target_posix == ".." or target_posix.startswith("../")
         for rule, frm, to in rendered:
-            if rule.paths and rule_matches_path(rule, posix):
+            if (
+                rule.paths
+                and not scope_escapes
+                and rule_matches_path(rule, target_posix)
+            ):
                 new_link = new_link.replace(frm, to)
         for f, cur, repl in pairs:
             if f in substring_fields:

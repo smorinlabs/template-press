@@ -409,3 +409,33 @@ class TestRetargetSymlinksFollowsPathsRules:
         )
         apply(src_target, _identity(), _identity(app_name="acme"), rules)
         assert os.readlink(link) == "acme-web/data"
+
+    @requires_symlink
+    def test_paths_rule_scope_matches_link_target_not_link_location(
+        self, src_target: Path
+    ):
+        """F3: a `files` scope selects which TARGET paths a paths=true rule
+        renames — `_retarget_symlinks` must match that scope against the
+        symlink's TARGET (what actually got renamed), not the symlink's own
+        location. A root-level link into docs/ must still be retargeted by a
+        files=["docs/**"] rule even though the link itself lives at the
+        repo root (outside that scope)."""
+        docs = src_target / "docs"
+        docs.mkdir()
+        (docs / "plbp-guide.md").write_text("x\n", encoding="utf-8")
+        link = src_target / "guide"
+        os.symlink("docs/plbp-guide.md", link)
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-guide.md",
+                    reason="doc rename retarget",
+                    files=["docs/**"],
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert os.readlink(link) == "docs/acme-guide.md"
