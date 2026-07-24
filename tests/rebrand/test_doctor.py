@@ -243,6 +243,36 @@ class TestDisplayNameLeaks:
             lk.field == "display_name_pascal" and lk.where == "path" for lk in leaks
         )
 
+    @requires_symlink
+    def test_dangling_symlink_under_display_named_dir_is_a_path_leak(
+        self, src_target: Path
+    ):
+        """F6: the FIRST (regular-file) path-component loop never reaches a
+        DANGLING symlink — `iter_target_files` calls `is_file()`, which
+        FOLLOWS the link and drops it entirely. Only the SECOND (dir/
+        dangling-symlink) path-component loop scans it, and it must cover
+        display-form fields too, not just PATH_FIELDS — a display-named
+        directory holding nothing but a dangling symlink must still be
+        flagged as a display-form path leak."""
+        display_dir = src_target / "PyLaunchBlueprint"
+        display_dir.mkdir()
+        link = display_dir / "link"
+        os.symlink("nonexistent-target", link)
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(app_name="acme", display_name="Acme Widget")
+        leaks = find_leaks(src_target, src, DEFAULT_RULES, dest=dst)
+        assert any(
+            lk.path == "PyLaunchBlueprint/link"
+            and lk.field == "display_name_pascal"
+            and lk.where == "path"
+            for lk in leaks
+        )
+
 
 class TestSubstringAwareLeaks:
     """Fix 3: when substring_rewrite_fields promises glued-token coverage,
