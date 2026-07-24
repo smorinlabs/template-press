@@ -4,6 +4,17 @@ Fixture reproduces the py-launch-blueprint leak shapes from
 docs/research/0004 §5 (G3 _plbp_owned / plbp-web, G4 humanized display
 name incl. the glued Pascal variant, G5 -plbp- doc filenames) and asserts
 `press rebrand` exits 0 with every shape rewritten.
+
+G3/G5 are closed by two DISTINCT, non-overlapping mechanisms, and this
+module keeps them in two separate fixture variants (``mode="rules"`` /
+``mode="substring"``) rather than combining both in one press-rules.toml.
+With ``substring_rewrite_fields = ["app_name"]`` ALSO active, its plain
+substring replacement subsumes any single-field ``[[replace]]`` rule
+output byte-for-byte — a broken rule mechanism would be silently masked.
+Each variant below is discriminating on its own: ``mode="rules"`` carries
+NO substring knob (only the rule mechanism can close G3/G5), and
+``mode="substring"`` carries NO ``[[replace]]`` rules (only substring mode
+can close them).
 """
 
 from __future__ import annotations
@@ -33,7 +44,32 @@ def _git_status(target: Path) -> str:
     return result.stdout
 
 
-def _build_target(tmp_path: Path) -> Path:
+# mode="rules" — the codesign's PRIMARY mechanism: three [[replace]] rules,
+# no substring knob. One rule per gap shape, each closing exactly its own
+# shape (no overlap with the others).
+_RULES_MODE_TOML = (
+    "[[replace]]\n"
+    'pattern = "_{app_name}_owned"\n'
+    'reason  = "logging handler ownership guard"\n'
+    "\n"
+    "[[replace]]\n"
+    'pattern = "{app_name}-web"\n'
+    'reason  = "docker image tag"\n'
+    "\n"
+    "[[replace]]\n"
+    'pattern = "-{app_name}.md"\n'
+    "paths   = true\n"
+    "content = false\n"
+    'reason  = "doc filename short-name suffix"\n'
+)
+
+# mode="substring" — the secondary, per-field opt-in: plain substring
+# replacement in content AND path components closes all three shapes at
+# once via the existing token/rename pass. No [[replace]] rules at all.
+_SUBSTRING_MODE_TOML = '[rules]\nsubstring_rewrite_fields = ["app_name"]\n'
+
+
+def _build_target(tmp_path: Path, mode: str) -> Path:
     target = tmp_path / "plbp-repo"
     (target / "press").mkdir(parents=True)
     (target / "docs").mkdir()
@@ -48,13 +84,8 @@ def _build_target(tmp_path: Path) -> Path:
         'display_name = "Py Launch Blueprint"\n',
         encoding="utf-8",
     )
-    (target / "press" / "press-rules.toml").write_text(
-        '[rules]\nsubstring_rewrite_fields = ["app_name"]\n\n'
-        "[[replace]]\n"
-        'pattern = "_{app_name}_owned"\n'
-        'reason  = "logging handler ownership guard"\n',
-        encoding="utf-8",
-    )
+    rules_toml = _RULES_MODE_TOML if mode == "rules" else _SUBSTRING_MODE_TOML
+    (target / "press" / "press-rules.toml").write_text(rules_toml, encoding="utf-8")
     (target / "conftest.py").write_text(
         'getattr(h, "_plbp_owned", False)\n', encoding="utf-8"
     )
@@ -110,25 +141,39 @@ def _answers(tmp_path: Path) -> Path:
     return answers
 
 
+def _assert_gap_shapes_closed(target: Path) -> None:
+    assert "_acme_owned" in (target / "conftest.py").read_text(encoding="utf-8")
+    assert "acme-web:dev" in (target / "Dockerfile").read_text(encoding="utf-8")
+    readme = (target / "README.md").read_text(encoding="utf-8")
+    assert "# Acme Widget" in readme and "AcmeWidget" in readme
+    assert "Py Launch Blueprint" not in readme
+    assert (target / "docs" / "0001-app-short-name-acme.md").exists()
+    source_cfg = (target / "press" / "press-source.toml").read_text(encoding="utf-8")
+    assert 'display_name = "Acme Widget"' in source_cfg
+
+
 class TestCdeGapsEndToEnd:
     def test_all_three_gap_shapes_press_clean(self, tmp_path):
-        target = _build_target(tmp_path)
+        """mode="rules" — the [[replace]] rule mechanism, load-bearing on its
+        own (no substring knob to mask a broken rule application)."""
+        target = _build_target(tmp_path, mode="rules")
         answers = _answers(tmp_path)
         code = main(["--target", str(target), "--config", str(answers)])
         assert code == 0
-        assert "_acme_owned" in (target / "conftest.py").read_text(encoding="utf-8")
-        assert "acme-web:dev" in (target / "Dockerfile").read_text(encoding="utf-8")
-        readme = (target / "README.md").read_text(encoding="utf-8")
-        assert "# Acme Widget" in readme and "AcmeWidget" in readme
-        assert "Py Launch Blueprint" not in readme
-        assert (target / "docs" / "0001-app-short-name-acme.md").exists()
-        source_cfg = (target / "press" / "press-source.toml").read_text(
-            encoding="utf-8"
-        )
-        assert 'display_name = "Acme Widget"' in source_cfg
+        _assert_gap_shapes_closed(target)
+
+    def test_substring_mode_variant_presses_clean(self, tmp_path):
+        """mode="substring" — the per-field substring opt-in, load-bearing on
+        its own (no [[replace]] rules present to mask a broken substring
+        pass)."""
+        target = _build_target(tmp_path, mode="substring")
+        answers = _answers(tmp_path)
+        code = main(["--target", str(target), "--config", str(answers)])
+        assert code == 0
+        _assert_gap_shapes_closed(target)
 
     def test_half_specified_answers_exit_2(self, tmp_path):
-        target = _build_target(tmp_path)
+        target = _build_target(tmp_path, mode="rules")
         answers = tmp_path / "half.toml"
         answers.write_text(
             "[answers]\n"
@@ -145,10 +190,10 @@ class TestCdeGapsEndToEnd:
         assert _git_status(target) == ""
 
     def test_verify_end_to_end(self, tmp_path):
-        """`press verify` on the same fixture closes every gap hermetically:
-        scan_fields auto-appends display_name (the source declares it), the
-        synthetic dest identity gets a synthetic display name, and the
-        [[replace]] + substring rules close the G3/G4/G5 shapes inside the
+        """`press verify` on the rules-mode fixture closes every gap
+        hermetically: scan_fields auto-appends display_name (the source
+        declares it), the synthetic dest identity gets a synthetic display
+        name, and the [[replace]] rules close the G3/G5 shapes inside the
         sandbox press — so no source identity survives the paranoid scan."""
-        target = _build_target(tmp_path)
+        target = _build_target(tmp_path, mode="rules")
         assert verify_command(["--target", str(target)]) == 0
