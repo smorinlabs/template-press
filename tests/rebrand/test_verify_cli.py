@@ -436,6 +436,31 @@ def test_json_report_maps_surviving_path_to_source_coords(
 # byte-identical — on BOTH the clean (exit 0) and the leak (exit 1) paths. Each
 # reaches the sandbox copy/apply/scan; verify must never write to the target.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# F1: the scan must honor [rules] substring_rewrite_fields, not just the
+# (empty-by-default) [verify] substring_fields. A relative symlink whose
+# target text escapes containment is never rewritten by the hermetic press
+# (regardless of substring mode), so a glued (boundary-free) source token in
+# its readlink text survives verbatim. Before the fix, the scan only ran in
+# boundary mode for this field and never flagged the glued token -> false
+# clean (exit 0). After the fix, the scan runs in substring mode too and
+# catches it -> exit 1.
+# ---------------------------------------------------------------------------
+@requires_symlink
+def test_substring_rewrite_field_scanned_via_escaping_symlink_exits_1(
+    tmp_path: Path,
+) -> None:
+    repo = make_pressable(tmp_path)
+    # Escapes containment -> apply's _retarget_symlinks skips it, leaving the
+    # glued "pressowned" token (no word boundary after "press") intact.
+    os.symlink("../../outside/pressowned", repo / "escaping-link")
+    (repo / "press" / "press-rules.toml").write_text(
+        '[rules]\nsubstring_rewrite_fields = ["app_name"]\n', encoding="utf-8"
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 1
+
+
 def test_verify_never_mutates_real_target_exit_0_and_1(tmp_path: Path) -> None:
     # exit-0: a clean template (regenerable uv.lock is scan-exempt).
     clean = make_pressable(tmp_path / "clean")

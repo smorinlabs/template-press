@@ -318,6 +318,13 @@ def verify_command(argv: list[str] | None = None) -> int:
             # codesign sec-05: a declared display name is scanned as its own
             # field — the only coverage when its words diverge from the slug.
             scan_fields = (*scan_fields, "display_name")
+        # A field the SANDBOX PRESS rewrites substring-wide (`[rules]
+        # substring_rewrite_fields`) must be SCANNED substring-wide too — a
+        # containment-skipped symlink target (or any other rewrite the
+        # hermetic apply cannot perform) can leave a glued, boundary-free
+        # occurrence of that field's source value behind; the boundary-only
+        # `[verify] substring_fields` scope alone would never flag it.
+        scan_substring = cfg.substring_fields | rules.substring_rewrite_fields
         problems = _preflight(target, source, rules, scan_fields)
     except _CONFIG_ERRORS as exc:
         return _fail(f"preflight failed: {exc}")
@@ -355,7 +362,7 @@ def verify_command(argv: list[str] | None = None) -> int:
                 source,
                 synth,
                 fields=scan_fields,
-                substring_fields=cfg.substring_fields,
+                substring_fields=scan_substring,
                 rules=rules,
             )
             forward_map = build_forward_map(report.renamed)
