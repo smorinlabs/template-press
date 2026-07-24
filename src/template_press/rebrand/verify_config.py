@@ -22,7 +22,10 @@ from template_press.rebrand.ignores import Ignore
 # Every identity field `press verify` may scan for: the six REQUIRED_FIELDS
 # plus the derived `app_name_upper` (present in `Identity.as_dict()` but not
 # independently required/validated).
-KNOWN_FIELDS: frozenset[str] = frozenset(REQUIRED_FIELDS) | {"app_name_upper"}
+KNOWN_FIELDS: frozenset[str] = frozenset(REQUIRED_FIELDS) | {
+    "app_name_upper",
+    "display_name",
+}
 
 # NOTE: no `app_name_upper` (the matcher is case-insensitive, so scanning
 # `app_name` already covers the uppercased form — including it would

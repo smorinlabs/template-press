@@ -77,10 +77,11 @@ def _changed_fields(
 
     An unchanged field (e.g. an unchanged `author` across a rename) is not a
     leak — its token legitimately remains everywhere — so it is never
-    scanned for.
+    scanned for. Total under the sparse identity dicts: a field absent on
+    either side (optional `display_name`) is simply not scanned.
     """
     src, dst = source.as_dict(), dest.as_dict()
-    return [(f, src[f]) for f in fields if src[f] != dst[f]]
+    return [(f, src[f]) for f in fields if f in src and f in dst and src[f] != dst[f]]
 
 
 def _scan_path_components(

@@ -18,6 +18,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from template_press.rebrand.identity import Identity
 from template_press.rebrand.rules import DEFAULT_RULES
 from template_press.rebrand.verifier import Finding, scan
 
@@ -33,6 +34,23 @@ def _git(repo: Path, *args: str) -> None:
         check=True,
         capture_output=True,
     )
+
+
+def _git_add_all(repo: Path) -> None:
+    _git(repo, "add", "-A")
+
+
+def _identity(**overrides):
+    base = {
+        "package_name": "py_launch_blueprint",
+        "repo_name": "py-launch-blueprint",
+        "app_name": "plbp",
+        "author": "Steve Morin",
+        "email": "steve.morin@gmail.com",
+        "owner": "smorinlabs",
+    }
+    base.update(overrides)
+    return Identity(**base)
 
 
 def test_hyphen_filename_found(src_target: Path):
@@ -307,3 +325,34 @@ def test_finding_dataclass_shape():
     )
     assert f.path == "a"
     assert f.where == "content"
+
+
+class TestDisplayNameScan:
+    def test_scan_flags_glued_display_variant(self, src_target: Path):
+        (src_target / "README.md").write_text(
+            "# PyLaunchBlueprint intro\n", encoding="utf-8"
+        )
+        _git_add_all(src_target)
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(app_name="acme", display_name="Acme Widget")
+        findings = scan(
+            src_target,
+            src,
+            dst,
+            fields=("display_name",),
+            substring_fields=NO_SUBSTRING,
+            rules=DEFAULT_RULES,
+        )
+        assert any(f.field == "display_name" and f.where == "content" for f in findings)
+
+    def test_sparse_identity_does_not_crash(self, src_target: Path):
+        _git_add_all(src_target)
+        findings = scan(
+            src_target,
+            _identity(),  # no display_name
+            _identity(app_name="acme"),
+            fields=("app_name", "display_name"),
+            substring_fields=NO_SUBSTRING,
+            rules=DEFAULT_RULES,
+        )
+        assert not any(f.field == "display_name" for f in findings)

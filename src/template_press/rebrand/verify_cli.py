@@ -313,7 +313,12 @@ def verify_command(argv: list[str] | None = None) -> int:
     try:
         rules = load_rules(target)
         cfg = _load_verify_config(target)
-        problems = _preflight(target, source, rules, cfg.fields)
+        scan_fields: tuple[str, ...] = cfg.fields
+        if source.display_name is not None and "display_name" not in scan_fields:
+            # codesign sec-05: a declared display name is scanned as its own
+            # field — the only coverage when its words diverge from the slug.
+            scan_fields = (*scan_fields, "display_name")
+        problems = _preflight(target, source, rules, scan_fields)
     except _CONFIG_ERRORS as exc:
         return _fail(f"preflight failed: {exc}")
     if problems:
@@ -349,7 +354,7 @@ def verify_command(argv: list[str] | None = None) -> int:
                 sandbox.path,
                 source,
                 synth,
-                fields=cfg.fields,
+                fields=scan_fields,
                 substring_fields=cfg.substring_fields,
                 rules=rules,
             )
