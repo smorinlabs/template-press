@@ -20,7 +20,13 @@ from template_press.rebrand.identity import (
     replace_token,
     token_occurs,
 )
-from template_press.rebrand.rules import DEFAULT_RULES, Rules
+from template_press.rebrand.rules import (
+    DEFAULT_RULES,
+    ReplaceRule,
+    Rules,
+    render_replace_pattern,
+    rule_matches_path,
+)
 from template_press.rebrand.safety import (
     ContainmentError,
     assert_ancestors_real,
@@ -346,6 +352,24 @@ def replacement_pairs(
     return pairs
 
 
+def rendered_replace_rules(
+    rules: Rules, source: Identity, dest: Identity
+) -> list[tuple[ReplaceRule, str, str]]:
+    """(rule, FROM, TO) with both sides rendered; identical sides dropped.
+
+    Rendering raises ValidationError when a pattern references a field this
+    identity pair doesn't declare (optional display_name) — surfacing at
+    plan time, before any write.
+    """
+    out: list[tuple[ReplaceRule, str, str]] = []
+    for rule in rules.replace:
+        frm = render_replace_pattern(rule.pattern, source)
+        to = render_replace_pattern(rule.pattern, dest)
+        if frm != to:
+            out.append((rule, frm, to))
+    return out
+
+
 def _read_text(path: Path) -> str | None:
     if path.is_symlink():
         return None  # never follow a link: writes must stay inside the target
@@ -378,12 +402,21 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
     source.validate()
     dest.validate()
     plan = Plan()
-    pairs = replacement_pairs(source, dest)
+    pairs = replacement_pairs(source, dest, rules.display_forms)
+    rendered = rendered_replace_rules(rules, source, dest)
     rename_map: dict[str, str] = {}
     for path in iter_target_files(target, rules):
         rel = path.relative_to(target)
         text = _read_text(path)
         if text is not None:
+            for rule, frm, to in rendered:
+                if rule.content and rule_matches_path(rule, rel.as_posix()):
+                    if frm in text:
+                        plan.items.append(
+                            PlanItem(
+                                "replace", rel.as_posix(), f"rule {frm!r} -> {to!r}"
+                            )
+                        )
             hit_fields = [f for f, cur, _ in pairs if token_occurs(text, f, cur)]
             if hit_fields:
                 plan.items.append(
@@ -429,6 +462,7 @@ def _apply_replacements(
     pairs: list[tuple[str, str, str]],
     rules: Rules,
     report: ApplyReport,
+    rendered: list[tuple[ReplaceRule, str, str]],
 ) -> None:
     for path in iter_target_files(target, rules):
         rel = path.relative_to(target).as_posix()
@@ -438,6 +472,12 @@ def _apply_replacements(
             report.skipped.append(f"replace {rel} ({kind})")
             continue
         new_text = text
+        # [[replace]] rules run BEFORE the token pass: a rule's rendered
+        # FROM may embed an identity token (e.g. "{package_name}-extra");
+        # the token pass would rewrite that token out from under the rule.
+        for rule, frm, to in rendered:
+            if rule.content and rule_matches_path(rule, rel):
+                new_text = new_text.replace(frm, to)
         for f, cur, repl in pairs:
             new_text = replace_token(new_text, f, cur, repl)
         if new_text != text:
@@ -505,8 +545,9 @@ def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> Apply
     source.validate()
     dest.validate()
     report = ApplyReport()
-    pairs = replacement_pairs(source, dest)
-    _apply_replacements(target, pairs, rules, report)
+    pairs = replacement_pairs(source, dest, rules.display_forms)
+    rendered = rendered_replace_rules(rules, source, dest)
+    _apply_replacements(target, pairs, rules, report, rendered)
     _retarget_symlinks(target, pairs, report)
     _apply_renames(target, pairs, rules, report)
     return report

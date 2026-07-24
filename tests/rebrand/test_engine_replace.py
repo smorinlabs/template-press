@@ -1,10 +1,24 @@
+import dataclasses
+import subprocess
 from pathlib import Path
 
 from template_press.rebrand.engine import apply, replacement_pairs
 from template_press.rebrand.identity import Identity
-from template_press.rebrand.rules import DEFAULT_RULES
+from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 
 from .conftest import DEST, SOURCE
+
+
+def _git_add_all(repo: Path) -> None:
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(repo), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+
+
+def _rules_with(**overrides):
+    return dataclasses.replace(DEFAULT_RULES, **overrides)
 
 
 def _identity(**overrides):
@@ -105,3 +119,81 @@ class TestDisplayPairs:
         pairs = replacement_pairs(src, dst, display_form_names=("spaced",))
         fields = [f for f, _, _ in pairs if f.startswith("display_name")]
         assert fields == ["display_name_spaced"]
+
+
+class TestReplaceRuleContent:
+    def test_glued_token_rewritten_by_rule(self, src_target: Path):
+        (src_target / "conftest.py").write_text(
+            'getattr(h, "_plbp_owned", False)\n', encoding="utf-8"
+        )
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(pattern="_{app_name}_owned", reason="ownership guard"),
+            )
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        text = (src_target / "conftest.py").read_text(encoding="utf-8")
+        assert "_acme_owned" in text and "_plbp_owned" not in text
+
+    def test_rules_run_before_token_pass(self, src_target: Path):
+        # FROM embeds package_name; if the token pass ran first the rule's
+        # rendered FROM would no longer match.
+        (src_target / "note.md").write_text(
+            "see py_launch_blueprint-extra\n", encoding="utf-8"
+        )
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(pattern="{package_name}-extra", reason="compound ref"),
+            )
+        )
+        apply(
+            src_target,
+            _identity(),
+            _identity(package_name="acme_widget"),
+            rules,
+        )
+        assert "acme_widget-extra" in (src_target / "note.md").read_text(
+            encoding="utf-8"
+        )
+
+    def test_files_glob_scopes_rule(self, src_target: Path):
+        # fnmatch (rule_matches_path's matcher, Task 6) matches the FULL
+        # posix rel-path with no path-separator boundary, so a bare "*.txt"
+        # glob is not directory-scoped — it would hit "docs/out_of_scope.txt"
+        # too. Scope via an exact rel-path glob instead, which fnmatch DOES
+        # bound to that literal path.
+        (src_target / "in_scope.txt").write_text("plbp-web\n", encoding="utf-8")
+        sub = src_target / "docs"
+        sub.mkdir()
+        (sub / "out_of_scope.txt").write_text("plbp-web\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-web",
+                    reason="image name",
+                    files=("in_scope.txt",),
+                ),
+            )
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert "acme-web" in (src_target / "in_scope.txt").read_text(encoding="utf-8")
+        assert "plbp-web" in (sub / "out_of_scope.txt").read_text(encoding="utf-8")
+
+    def test_content_false_rule_leaves_content(self, src_target: Path):
+        (src_target / "a.txt").write_text("plbp-web\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-web",
+                    reason="paths only",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert "plbp-web" in (src_target / "a.txt").read_text(encoding="utf-8")
