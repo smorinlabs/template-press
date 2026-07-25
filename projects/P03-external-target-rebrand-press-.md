@@ -50,8 +50,19 @@ Rebuild as standalone press: rebrand → provision, verify-then-mark
 - [x] [P03-M5b] Verify verb registration & docs: wire `press verify` into
       the CLI dispatcher, document the zero-arg CI usage and full `[verify]`
       config schema.
+- [x] [P03-M5c] Conformance-gap closure (2026-07-24, v3.3.0): closed the
+      py-launch-blueprint dogfood gaps G3/G4/G5 (register 0004) — optional
+      `display_name` identity field with a closed, configurable form set;
+      exact `[[replace]]` rules with identity interpolation (files/paths/
+      content/reason args); per-field opt-in substring rewrite mode; path
+      renames riding the shared matchers; doctor/verify scan-symmetry and
+      containment hardening across 12 bot-review cycles (45 threads, every
+      one fixed or refuted in writing). Decisions in design 0008; merged
+      PR #41; released as v3.3.0. Follow-ups tracked as issues #42–#51 —
+      #42 (substitution-set refactor) is a deliberate gate before M6.
 - [ ] [P03-M6] Provision phase: feature modules (detect/add/verify),
-      `press status` computed from reality
+      `press status` computed from reality — gated on issue #42 per the
+      PR #41 three-lens review
 
 ### Open questions
 
