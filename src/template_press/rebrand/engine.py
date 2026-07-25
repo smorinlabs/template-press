@@ -876,8 +876,18 @@ def _retarget_symlinks(
         # target. Fail closed (propagate) on a hostile ancestor — never
         # silently skip a containment violation.
         assert_ancestors_real(path, target)
-        os.unlink(path)
-        os.symlink(new_link, path)
+        # Windows distinguishes file and directory symlinks: a directory link
+        # must be removed with rmdir (unlink raises WinError 5) and recreated
+        # with target_is_directory, or it comes back as a broken file link.
+        # `is_dir()` follows the link, which is exactly the question here (is
+        # the SINK a directory), and must be asked before the link is removed.
+        # POSIX ignores target_is_directory, so one code path serves both.
+        links_to_dir = path.is_dir()
+        if links_to_dir and os.name == "nt":
+            os.rmdir(path)
+        else:
+            os.unlink(path)
+        os.symlink(new_link, path, target_is_directory=links_to_dir)
         report.replaced.append(rel.as_posix())
 
 
