@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.engine import apply, build_plan, replacement_pairs
+from template_press.rebrand.engine import (
+    apply,
+    build_plan,
+    rendered_replace_rules,
+    replacement_pairs,
+)
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 
@@ -433,3 +438,91 @@ class TestRuleStaticTextCollisionGuard:
         text = (src_target / "note.txt").read_text(encoding="utf-8")
         assert "acmeplbp_x" in text  # the rule's own output, left alone
         assert "acmeacme_x" not in text  # would mean the token pass re-fired
+
+
+class TestConflictingRenderedRuleSources:
+    """Commit 3: two rules can render the SAME FROM with DIFFERENT TOs — the
+    first rendered rule silently wins (`_apply_replacements`/`_renamed_rel`
+    apply rules in order, each via plain `str.replace`) and the second never
+    applies. `rendered_replace_rules` must reject this when the two rules'
+    surfaces overlap (both act on content, or both act on paths) — rules on
+    DISJOINT surfaces provably never contend."""
+
+    def test_conflicting_rendered_from_overlapping_surfaces_raises(
+        self, src_target: Path
+    ):
+        # "{app_name}" and "f{package_name}" both render FROM "foo" here,
+        # but to DIFFERENT TOs ("bar" vs "fzz") — both rules are content-only
+        # by default, so their surfaces overlap.
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(pattern="{app_name}", reason="a"),
+                ReplaceRule(pattern="f{package_name}", reason="b"),
+            )
+        )
+        source = _identity(app_name="foo", package_name="oo")
+        dest = _identity(app_name="bar", package_name="zz")
+        with pytest.raises(ValidationError) as exc_info:
+            build_plan(src_target, source, dest, rules)
+        msg = str(exc_info.value)
+        assert "{app_name}" in msg
+        assert "f{package_name}" in msg
+        assert "foo" in msg
+
+    def test_exact_duplicate_rules_dedupe_to_one_application(self, src_target: Path):
+        (src_target / "note.txt").write_text("_plbp_owned\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rule = ReplaceRule(pattern="_{app_name}_owned", reason="ownership guard")
+        duplicate = ReplaceRule(pattern="_{app_name}_owned", reason="ownership guard")
+        rules = _rules_with(replace=(rule, duplicate))
+        source, dest = _identity(), _identity(app_name="acme")
+        rendered = rendered_replace_rules(rules, source, dest)
+        assert len(rendered) == 1
+        apply(src_target, source, dest, rules)
+        assert (src_target / "note.txt").read_text(encoding="utf-8") == "_acme_owned\n"
+
+    def test_files_scope_preserved_when_from_to_coincide(self, src_target: Path):
+        """Dedupe keyed on `(FROM, TO)` alone would collapse these two rules
+        into one, silently dropping whichever `files` scope didn't survive —
+        this must fail against that implementation: both a.txt and b.txt
+        carry a hyphen-joined token ("plbp-owned") that ONLY the rule
+        mechanism rewrites (the plain app_name field pair never boundary-
+        matches a hyphen suffix), so each file's rewrite depends entirely on
+        ITS OWN rule surviving the dedupe."""
+        (src_target / "a.txt").write_text("plbp-owned\n", encoding="utf-8")
+        (src_target / "b.txt").write_text("plbp-owned\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-owned", reason="scope a", files=("a.txt",)
+                ),
+                ReplaceRule(
+                    pattern="{app_name}-owned", reason="scope b", files=("b.txt",)
+                ),
+            )
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert (src_target / "a.txt").read_text(encoding="utf-8") == "acme-owned\n"
+        assert (src_target / "b.txt").read_text(encoding="utf-8") == "acme-owned\n"
+
+    def test_conflicting_rendered_from_disjoint_surfaces_no_error(
+        self, src_target: Path
+    ):
+        # Same shape as the overlapping-surfaces repro, but one rule is
+        # content-only and the other paths-only — they provably never
+        # contend, so this must NOT raise.
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}", reason="a", paths=False, content=True
+                ),
+                ReplaceRule(
+                    pattern="f{package_name}", reason="b", paths=True, content=False
+                ),
+            )
+        )
+        source = _identity(app_name="foo", package_name="oo")
+        dest = _identity(app_name="bar", package_name="zz")
+        rendered = rendered_replace_rules(rules, source, dest)  # must not raise
+        assert len(rendered) == 2

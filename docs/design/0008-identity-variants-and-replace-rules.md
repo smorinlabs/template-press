@@ -72,3 +72,21 @@ out from under it.
   pass); `press verify`'s scanner is the backstop that catches any
   silently-dropped rename. Prefer unscoped or filename-anchored globs for
   paths rules.
+- **Straddling matches (cycle 10):** `rendered_replace_rules`'s rendered-TO
+  stability check (commit `9d347d3`) catches every mutation of a rule's
+  rendered TO that lies wholly WITHIN that TO. A match that STRADDLES the
+  boundary between surrounding file content and the inserted TO (context
+  `"x"` + TO `"bar_data"` forming `"xbar"`, which matches a changed
+  `package_name` `"xbar"` -> `"qq"`) is content-dependent and not checkable
+  at plan time — not a claim of impossibility, just outside what a
+  plan-time check can see.
+- **Symlink retarget's map-driven refactor (cycle 10):** the principled fix
+  for the retarget predicate (`_retarget_symlinks`, commit `a0f0f98`) is to
+  run renames first and retarget links from the actual `(old -> new)` rename
+  map, eliminating the second derivation of "does this rule govern this
+  path" entirely. Deferred: it requires reordering `apply()` and enumerating
+  links from a post-rename tree while git's index still holds pre-rename
+  paths. A further predicate edge no per-link check closes: a rule's `files`
+  scope is evaluated against the FILE posix in `_renamed_rel` but the
+  DIRECTORY posix in retarget, and the two can disagree — evidence that
+  predicate variants will keep leaking until the refactor lands.

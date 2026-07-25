@@ -489,6 +489,23 @@ def rendered_replace_rules(
     known, documented limitation (see
     docs/design/0008-identity-variants-and-replace-rules.md), not a claim of
     impossibility.
+
+    Two DISTINCT rules can render the SAME FROM with DIFFERENT TOs (e.g.
+    ``"{app_name}"`` and ``"f{package_name}"`` both rendering FROM
+    ``"foo"``); every rewrite pass applies rules in order via plain
+    ``str.replace``, so the FIRST one silently wins and the second never
+    applies. This raises when that happens AND the two rules' surfaces
+    overlap (both act on content, or both act on paths) — rules on DISJOINT
+    surfaces (content-only vs paths-only) provably never contend, so
+    rejecting those would be a false rejection.
+
+    Exact duplicates are deduped first, keyed on the WHOLE ``ReplaceRule``
+    — never on ``(FROM, TO)`` alone: the rendered triples drive
+    ``_apply_replacements``, ``_renamed_rel``, AND the doctor/verifier
+    rule-literal scans, so two rules that render identically but differ in
+    ``files``/``paths``/``content`` are NOT redundant — a ``(FROM, TO)``-
+    keyed dedupe would silently drop the second rule's SCOPE from both the
+    rewrite and the scan (a missed rewrite plus a false-clean receipt).
     """
     out: list[tuple[ReplaceRule, str, str]] = []
     pairs = (
@@ -525,7 +542,37 @@ def rendered_replace_rules(
                 f"pass and never reach a fixpoint"
             )
         out.append((rule, frm, to))
-    return out
+
+    deduped: list[tuple[ReplaceRule, str, str]] = []
+    for entry in out:
+        if any(entry[0] == seen[0] for seen in deduped):
+            continue
+        deduped.append(entry)
+
+    by_from: dict[str, list[tuple[ReplaceRule, str, str]]] = {}
+    for entry in deduped:
+        by_from.setdefault(entry[1], []).append(entry)
+    for frm, entries in by_from.items():
+        for i, (rule_a, _frm_a, to_a) in enumerate(entries):
+            for rule_b, _frm_b, to_b in entries[i + 1 :]:
+                if to_a == to_b:
+                    continue
+                overlaps = (rule_a.content and rule_b.content) or (
+                    rule_a.paths and rule_b.paths
+                )
+                if overlaps:
+                    raise ValidationError(
+                        f"[[replace]] patterns {rule_a.pattern!r} and "
+                        f"{rule_b.pattern!r} both render FROM {frm!r} but to "
+                        f"DIFFERENT values ({to_a!r} vs {to_b!r}) on "
+                        f"overlapping surfaces — the first rendered rule "
+                        f"would silently win and the second would never "
+                        f"apply; rename one pattern's rendered form, scope "
+                        f"the rules to disjoint files, or restrict them to "
+                        f"disjoint surfaces (one content-only, one "
+                        f"paths-only)"
+                    )
+    return deduped
 
 
 def symlink_target_posix(rel: Path, link: str) -> str:
