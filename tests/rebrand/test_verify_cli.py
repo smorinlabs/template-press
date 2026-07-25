@@ -245,6 +245,42 @@ def test_missing_scanned_field_still_exits_2(tmp_path: Path) -> None:
     assert verify_command(["--target", str(repo)]) == 2
 
 
+def test_declared_display_name_absent_exits_2_distinct_message(
+    tmp_path: Path, capsys
+) -> None:
+    # display_name has NO discovery entry at all (_discoveed_map has no
+    # display_name key) — it is the only identity field with zero reality
+    # check. A stale/typo'd declaration must fail preflight with a message
+    # distinct from the other undiscoverable-and-absent fields, not sail
+    # through clean.
+    repo = make_pressable(
+        tmp_path,
+        source_identity={**DEFAULT_IDENTITY, "display_name": "Ghost Display Name"},
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 2
+    err = capsys.readouterr().err
+    assert "declared display_name" in err
+    assert "Ghost Display Name" in err
+    assert "not found in target" in err
+
+
+def test_declared_display_name_present_in_variant_form_passes(tmp_path: Path) -> None:
+    # The presence check reuses the paranoid corpus matcher — a spaced
+    # declaration ("Demo Widget") must also match a glued Pascal-case
+    # occurrence in the corpus ("DemoWidget"), not just a literal substring.
+    repo = make_pressable(
+        tmp_path,
+        source_identity={**DEFAULT_IDENTITY, "display_name": "Demo Widget"},
+    )
+    readme = (repo / "README.md").read_text(encoding="utf-8")
+    (repo / "README.md").write_text(
+        readme + "\nSee the DemoWidget docs for more.\n", encoding="utf-8"
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 0
+
+
 @requires_symlink
 def test_control_path_symlink_rejected_exits_2(tmp_path: Path) -> None:
     repo = make_pressable(tmp_path)

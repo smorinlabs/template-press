@@ -188,9 +188,27 @@ def _preflight(
     # ``app_name_upper`` that are not independently discoverable).
     scanned = [f for f in scan_fields if f in discovered]
     undiscoverable = [f for f in scanned if discovered[f] is None]
-    if not undiscoverable:
+    # ``display_name`` has NO discovery entry at all (Fix F1) — it can never
+    # land in ``discovered``/``scanned``/``undiscoverable`` above, so without
+    # this it would sail through preflight with zero reality check: a stale
+    # or typo'd declaration would only surface once a real press has already
+    # half-rewritten the target's prose. When the source declares one and
+    # it's in ``scan_fields``, require its presence directly.
+    check_display_name = (
+        source.display_name is not None and "display_name" in scan_fields
+    )
+    if not undiscoverable and not check_display_name:
         return problems
     corpus = _target_text_corpus(target, rules)
+    if check_display_name and not _value_present(
+        "display_name", source.display_name, corpus
+    ):
+        problems.append(
+            f"declared display_name {source.display_name!r} not found in "
+            "target — stale or mistyped?"
+        )
+    if not undiscoverable:
+        return problems
     absent = [f for f in undiscoverable if not _value_present(f, declared[f], corpus)]
     if len(undiscoverable) == len(scanned) and len(absent) == len(undiscoverable):
         problems.append(
