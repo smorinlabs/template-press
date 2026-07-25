@@ -502,6 +502,77 @@ class TestRenderedRuleLeaks:
         assert not any(lk.field == "replace_rule" for lk in leaks)
 
 
+class TestGitlinkLeaks:
+    """F2: a gitlink (submodule) index entry is invisible to BOTH existing
+    passes — pass 1 enumerates via `iter_target_files` (`Path.is_file()`,
+    False for a submodule mount point with no working-tree materialization),
+    pass 2 via `_git_listed` + `Path.is_symlink()` (also False) — so a
+    gitlink whose NAME carries a source-identity token or a rule-literal
+    survived every doctor run undetected, and a receipt could be written
+    over a tracked, still-identity-named path."""
+
+    def _add_gitlink(self, target: Path, rel: str) -> None:
+        sha = subprocess.run(  # noqa: S603
+            ["git", "-C", str(target), "rev-parse", "HEAD"],  # noqa: S607
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+        ).stdout.strip()
+        subprocess.run(  # noqa: S603
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(target),
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                f"160000,{sha},{rel}",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(target), "commit", "-q", "-m", "add gitlink"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+
+    def test_identity_token_named_gitlink_is_a_path_leak(self, src_target: Path):
+        self._add_gitlink(src_target, "plbp_module")
+        src = _identity()
+        leaks = find_leaks(src_target, src, DEFAULT_RULES)
+        assert any(
+            lk.path == "plbp_module" and lk.field == "app_name" and lk.where == "path"
+            for lk in leaks
+        )
+
+    def test_rule_literal_named_gitlink_is_a_path_leak(self, src_target: Path):
+        rule = ReplaceRule(
+            pattern="-{app_name}.md", reason="test", paths=True, content=False
+        )
+        self._add_gitlink(src_target, "0001-plbp.md")
+        src = _identity()
+        leaks = find_leaks(
+            src_target,
+            src,
+            DEFAULT_RULES,
+            rendered_rules=[(rule, "-plbp.md", "-acme.md")],
+        )
+        assert any(
+            lk.path == "0001-plbp.md"
+            and lk.field == "replace_rule"
+            and lk.value == "-plbp.md"
+            and lk.where == "path"
+            for lk in leaks
+        )
+
+    def test_clean_named_gitlink_is_not_a_leak(self, src_target: Path):
+        self._add_gitlink(src_target, "vendor_lib")
+        src = _identity()
+        leaks = find_leaks(src_target, src, DEFAULT_RULES)
+        assert not any(lk.path == "vendor_lib" for lk in leaks)
+
+
 class TestRuleScopeMigratedByAncestorRename:
     """F1: a paths=true [[replace]] rule scoped `files=["plbp_docs/**"]`
     guards a filename that lives under a directory the ORDINARY token-rename

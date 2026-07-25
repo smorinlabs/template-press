@@ -14,7 +14,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from template_press.rebrand.engine import (
+    ROOT_CONTROL,
     _git_listed,
+    _gitlink_rels,
+    _is_excluded,
     _is_root_press,
     iter_target_files,
     symlink_target_posix,
@@ -142,6 +145,13 @@ def find_leaks(
     against it, leaving a stale FROM literal that a current-path-only scope
     check would miss entirely (a receipt/verify contradiction). Omitted
     (``None``/empty), this degrades to the prior current-path-only behavior.
+
+    A third, GITLINK pass (Fix F2) scans every submodule index entry's PATH
+    COMPONENTS the same way — ``_gitlink_rels`` reads the index directly, so
+    an uninitialized/uncheckoutable submodule is still covered. Neither of
+    the two passes above ever reaches a gitlink: pass 1 filters on
+    ``Path.is_file()`` and pass 2 on ``Path.is_symlink()``, both False for a
+    submodule mount point with no working-tree materialization.
     """
     rendered_rules = rendered_rules or []
     renamed = renamed or []
@@ -275,6 +285,35 @@ def find_leaks(
                 and frm in link
             ):
                 leaks.append(Leak(rel_posix, "replace_rule", frm, "symlink"))
+    # GITLINK (submodule) index entries reach NEITHER pass above (Fix F2):
+    # pass 1 filters on `is_file()` and pass 2 on `is_symlink()`, both False
+    # for a submodule mount point (no working-tree materialization needed —
+    # a gitlink is a pointer, not a checkout). Scan each gitlink's PATH
+    # COMPONENTS only — no content read, no readlink — exactly like the
+    # other two path-component loops, honoring the same exclusion posture
+    # pass 1 uses (`_is_excluded` + `ROOT_CONTROL`; pass 2's unfiltered gap
+    # is a known, separate limitation, not mirrored here).
+    for rel_posix in sorted(_gitlink_rels(target)):
+        rel = Path(rel_posix)
+        if _is_excluded(rel, rules) or rel_posix in ROOT_CONTROL:
+            continue
+        path_rules = [
+            (rule, frm)
+            for rule, frm, _to in rendered_rules
+            if rule.paths and _rule_scope_hits(rule, rel_posix, renamed)
+        ]
+        for i, component in enumerate(rel.parts):
+            if _is_root_press(rel, i):
+                continue
+            for field_name in path_fields:
+                value = fields.get(field_name)
+                if value is not None and occurs(
+                    component, field_name, value, substring_fields
+                ):
+                    leaks.append(Leak(rel_posix, field_name, value, "path"))
+            for _rule, frm in path_rules:
+                if frm in component:
+                    leaks.append(Leak(rel_posix, "replace_rule", frm, "path"))
     return leaks
 
 
