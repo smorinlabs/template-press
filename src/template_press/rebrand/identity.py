@@ -17,6 +17,14 @@ REPO_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 GITHUB_OWNER_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$", re.IGNORECASE)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+# Whole values that are filesystem path traversal segments rather than names.
+# Only the free-form fields (author, display_name) can hold them — every other
+# field's charset already excludes ".". A rule rendering one of these into a
+# path component or a symlink target would repoint the link at its own or its
+# parent directory; rejecting the value is the root-cause fix, and it leaves
+# ordinary dotted names ("Node.js", "J. R. R. Tolkien") untouched.
+_PATH_DOT_SEGMENTS: frozenset[str] = frozenset({".", ".."})
+
 
 class ValidationError(ValueError):
     """Raised when an identity field fails its validator."""
@@ -63,6 +71,8 @@ def validate_author(value: str) -> str:
         raise ValidationError("author must not be empty")
     if any(ord(ch) < 0x20 or ch == "\x7f" for ch in value):
         raise ValidationError(f"author must not contain control characters: {value!r}")
+    if value in _PATH_DOT_SEGMENTS:
+        raise ValidationError(f"author must not be a path dot segment: {value!r}")
     return value
 
 
@@ -88,6 +98,8 @@ def validate_display_name(value: str) -> str:
         raise ValidationError(
             f"display name must not contain control characters: {value!r}"
         )
+    if value in _PATH_DOT_SEGMENTS:
+        raise ValidationError(f"display name must not be a path dot segment: {value!r}")
     return value
 
 

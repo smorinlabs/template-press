@@ -189,15 +189,19 @@ def test_single_char_field_does_not_hang(field):
 @pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="SIGALRM POSIX-only")
 def test_bounded_cap_raises_instead_of_hanging():
     # Pathological (but constructible) input: email's `local@domain.tld`
-    # shape ALWAYS contains a literal "." by construction. If some OTHER
-    # source value is exactly ".", every producible email candidate
+    # shape ALWAYS contains a literal "@" by construction. If some OTHER
+    # source value is exactly "@", every producible email candidate
     # collides with it, forever, under the old unbounded `while True` loop.
     # The bounded retry now raises a clear, field-naming ValidationError
     # instead of hanging — defense-in-depth for inputs no amount of
-    # hash-derived-letter cleverness can resolve (the "." is structural,
+    # hash-derived-letter cleverness can resolve (the "@" is structural,
     # not a leading-character choice).
-    source = replace(SOURCE, author=".")
-    source.validate()  # fixture sanity: "." is a valid author value
+    #
+    # Was "." until dot segments became invalid author values (a rendered
+    # "."/".." in a symlink target repoints the link at its own directory);
+    # "@" reproduces the identical structural collision and is still valid.
+    source = replace(SOURCE, author="@")
+    source.validate()  # fixture sanity: "@" is a valid author value
     with _bounded(5), pytest.raises(ValidationError, match="email"):
         synthesize_dest(source)
 

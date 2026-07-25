@@ -250,3 +250,27 @@ class TestCdeGapsEndToEnd:
         code = main(["--target", str(target), "--config", str(answers)])
         assert code == 1
         assert not (target / "press" / "press-receipt.toml").exists()
+
+
+class TestPathDotSegmentIdentity:
+    """A destination identity whose free-form field is "." or ".." is refused
+    before any write. Rendered by a ``paths = true`` rule it would be written
+    into a symlink target as a dot segment, silently repointing the link at
+    its own or its parent directory with no leak for the doctor to see."""
+
+    def test_dot_segment_author_exits_2_before_writing(self, tmp_path):
+        target = _build_target(tmp_path, mode="rules")
+        answers = tmp_path / "dotted.toml"
+        answers.write_text(
+            "[answers]\n"
+            'package_name = "acme_widget"\n'
+            'repo_name    = "acme-widget"\n'
+            'app_name     = "acme"\n'
+            'author       = ".."\n'
+            'email        = "ada@example.com"\n'
+            'owner        = "acmelabs"\n'
+            'display_name = "Acme Widget"\n',
+            encoding="utf-8",
+        )
+        assert main(["--target", str(target), "--config", str(answers)]) == 2
+        assert _git_status(target) == ""

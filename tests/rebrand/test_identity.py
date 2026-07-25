@@ -10,6 +10,7 @@ from template_press.rebrand.identity import (
     replace_token,
     token_occurs,
     token_pattern,
+    validate_author,
     validate_display_name,
 )
 
@@ -233,3 +234,31 @@ class TestDisplayForms:
     def test_single_word_keeps_inner_casing(self):
         forms = display_forms("NumPy")
         assert forms == {"spaced": "NumPy", "pascal": "NumPy", "camel": "numPy"}
+
+
+class TestPathDotSegments:
+    """A free-form field holding "." or ".." is a path traversal segment, not
+    a name: rendered into a path component or a symlink target by a
+    ``paths = true`` rule it repoints the link at its own (or parent)
+    directory. Rejected at the validator — the root cause — so no rendered
+    replacement can ever be a dot segment (every other field's charset
+    already excludes "."). Ordinary dotted names stay valid."""
+
+    @pytest.mark.parametrize("value", [".", ".."])
+    def test_author_rejects_dot_segments(self, value):
+        with pytest.raises(ValidationError):
+            validate_author(value)
+        with pytest.raises(ValidationError):
+            _identity(author=value).validate()
+
+    @pytest.mark.parametrize("value", [".", ".."])
+    def test_display_name_rejects_dot_segments(self, value):
+        with pytest.raises(ValidationError):
+            validate_display_name(value)
+        with pytest.raises(ValidationError):
+            _identity(display_name=value).validate()
+
+    @pytest.mark.parametrize("value", ["Node.js", "J. R. R. Tolkien", "St. Louis Co."])
+    def test_ordinary_dotted_names_still_valid(self, value):
+        assert validate_author(value) == value
+        assert validate_display_name(value) == value
