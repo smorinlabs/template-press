@@ -69,9 +69,22 @@ out from under it.
 - A `paths = true` rule whose `files` glob is scoped under a directory that
   is itself renamed during the multi-pass rename fixpoint can diverge from
   what `--dry-run` predicted (glob matched against the current path each
-  pass); `press verify`'s scanner is the backstop that catches any
-  silently-dropped rename. Prefer unscoped or filename-anchored globs for
-  paths rules.
+  pass). For a narrow glob (e.g. `files = ["docs/*/data.txt"]`) this is
+  worse than a missed prediction, and there is **no backstop for it**: the
+  rename pass scope-matches the rule against the FILE's own posix
+  (`_renamed_rel`), so a file-scoped hit can rename the containing
+  directory as a side effect — but the retarget pass scope-matches the
+  SAME rule against the link's TARGET/directory posix
+  (`_retarget_symlinks`), which the narrow glob does not match, so a
+  symlink pointing at that directory is left dangling. `doctor.find_leaks`
+  and `press verify`'s scanner both reuse that identical directory/
+  target-posix predicate (`_rule_scope_hits`) to scope their own symlink-text
+  scan, so the same blind spot that let the dangling link through the press
+  also hides it from both scans — a dangling link under a clean receipt
+  AND a clean `verify`, not caught downstream. Prefer UNSCOPED `files`
+  globs for `paths = true` rules, or scope by a stable directory prefix
+  that is never itself renamed, until the map-driven retarget refactor
+  below closes the predicate gap for good.
 - **Straddling matches (cycle 10):** `rendered_replace_rules`'s rendered-TO
   stability check (commit `9d347d3`) catches every mutation of a rule's
   rendered TO that lies wholly WITHIN that TO. A match that STRADDLES the
