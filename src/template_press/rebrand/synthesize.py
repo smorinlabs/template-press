@@ -66,11 +66,15 @@ _MAX_ATTEMPTS = 1000
 def synthesize_dest(source: Identity) -> Identity:
     """Build the deterministic synthetic TO-identity for `source`."""
     values = source.as_dict_prompted()
+    display = values.pop("display_name", None)
     classes: dict[str, list[str]] = {}
     for field in REQUIRED_FIELDS:
         classes.setdefault(values[field], []).append(field)
 
-    variants = _source_variants(list(values.values()))
+    variant_inputs = list(values.values())
+    if display is not None:
+        variant_inputs.append(display)
+    variants = _source_variants(variant_inputs)
     prefix = _safe_prefix(variants)
 
     dest_by_value: dict[str, str] = {}
@@ -79,7 +83,10 @@ def synthesize_dest(source: Identity) -> Identity:
         dest_by_value[value] = _synth_value(value, fields, prefix, used, variants)
 
     dest = Identity(
-        **{field: dest_by_value[values[field]] for field in REQUIRED_FIELDS}
+        **{field: dest_by_value[values[field]] for field in REQUIRED_FIELDS},
+        display_name=(
+            _synth_display(display, variants, used) if display is not None else None
+        ),
     )
     dest.validate()
     return dest
@@ -137,6 +144,36 @@ def _email_form(prefix: str, digest: str) -> str:
     return f"{local}@{domain}.{tld}"
 
 
+def _synth_display(value: str, variants: frozenset[str], used: set[str]) -> str:
+    """Deterministic two-word Title-Case synthetic display name.
+
+    Both words are hash-derived from distinct digest regions using
+    _word_letters to ensure they are alphabetic (not raw hex), making
+    the Title-Case property structural. The candidate is rejected if its
+    spaced OR glued (pascal ≈ camel under the case-insensitive `_collides`)
+    form collides with any source variant, so the display rewrite pass and
+    the paranoid scanner can never confuse synthetic output with surviving
+    source identity.
+    """
+    for counter in range(_MAX_ATTEMPTS):
+        digest = hashlib.sha256(f"display\x00{value}\x00{counter}".encode()).digest()
+        w1 = _word_letters(digest, 0, 6)
+        w2 = _word_letters(digest, 6, 6)
+        candidate = f"{w1.capitalize()} {w2.capitalize()}"
+        glued = w1.capitalize() + w2.capitalize()
+        if (
+            candidate not in used
+            and not _collides(candidate, variants)
+            and not _collides(glued, variants)
+        ):
+            used.add(candidate)
+            return candidate
+    raise ValidationError(
+        f"synthesize: could not derive a containment-free display name within "
+        f"{_MAX_ATTEMPTS} attempts"
+    )
+
+
 # --- containment-free prefix -----------------------------------------------
 
 
@@ -174,6 +211,16 @@ def _leading_letter(digest: bytes) -> str:
     see `_safe_prefix`'s docstring for why a fixed constant here is unsafe.
     """
     return chr(ord("a") + digest[0] % 26)
+
+
+def _word_letters(digest: bytes, start: int, count: int) -> str:
+    """Map `count` digest bytes to lowercase letters (a-z), one per byte.
+
+    Letters-only words keep the synthetic display name prose-shaped and
+    make the Title-Case property structural — a raw-hex suffix could be
+    all digits, and digits are uncased (str.islower() would be False).
+    """
+    return "".join(chr(ord("a") + digest[start + i] % 26) for i in range(count))
 
 
 def _collides(candidate: str, variants: frozenset[str]) -> bool:

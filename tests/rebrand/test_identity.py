@@ -3,11 +3,15 @@
 import pytest
 
 from template_press.rebrand.identity import (
+    DISPLAY_FORM_NAMES,
     Identity,
     ValidationError,
+    display_forms,
     replace_token,
     token_occurs,
     token_pattern,
+    validate_author,
+    validate_display_name,
 )
 
 
@@ -161,3 +165,100 @@ def test_token_pattern_refuses_empty_value():
 def test_replacement_is_literal_not_a_regex_template():
     out = replace_token("by Old Name.", "author", "Old Name", r"C:\Users\1 Bob")
     assert out == r"by C:\Users\1 Bob."
+
+
+# --- display_name field and form derivation (Task 1) ----------------------
+
+
+def _identity(**overrides):
+    base = {
+        "package_name": "py_launch_blueprint",
+        "repo_name": "py-launch-blueprint",
+        "app_name": "plbp",
+        "author": "Steve Morin",
+        "email": "steve.morin@gmail.com",
+        "owner": "smorinlabs",
+    }
+    base.update(overrides)
+    return Identity(**base)
+
+
+class TestDisplayName:
+    def test_validator_accepts_spaced_title(self):
+        assert validate_display_name("Py Launch Blueprint") == "Py Launch Blueprint"
+
+    def test_validator_rejects_empty_and_control_chars(self):
+        with pytest.raises(ValidationError):
+            validate_display_name("   ")
+        with pytest.raises(ValidationError):
+            validate_display_name("Py\x00Launch")
+
+    def test_field_defaults_to_none_and_is_absent_from_dicts(self):
+        ident = _identity()
+        assert ident.display_name is None
+        assert "display_name" not in ident.as_dict()
+        assert "display_name" not in ident.as_dict_prompted()
+
+    def test_field_present_appears_in_dicts_and_validates(self):
+        ident = _identity(display_name="Py Launch Blueprint")
+        assert ident.as_dict()["display_name"] == "Py Launch Blueprint"
+        assert ident.as_dict_prompted()["display_name"] == "Py Launch Blueprint"
+        ident.validate()  # must not raise
+
+    def test_validate_rejects_bad_display_name(self):
+        with pytest.raises(ValidationError):
+            _identity(display_name="\x01").validate()
+
+    def test_from_mapping_optional_display_name(self):
+        data = _identity().as_dict_prompted()
+        assert Identity.from_mapping(data).display_name is None
+        data["display_name"] = "Py Launch Blueprint"
+        assert Identity.from_mapping(data).display_name == "Py Launch Blueprint"
+
+
+class TestDisplayForms:
+    def test_three_forms_from_title_case(self):
+        forms = display_forms("Py Launch Blueprint")
+        assert forms == {
+            "spaced": "Py Launch Blueprint",
+            "pascal": "PyLaunchBlueprint",
+            "camel": "pyLaunchBlueprint",
+        }
+        assert tuple(forms) == DISPLAY_FORM_NAMES
+
+    def test_forms_capitalize_lowercase_words(self):
+        forms = display_forms("acme widget")
+        assert forms["pascal"] == "AcmeWidget"
+        assert forms["camel"] == "acmeWidget"
+
+    def test_single_word_keeps_inner_casing(self):
+        forms = display_forms("NumPy")
+        assert forms == {"spaced": "NumPy", "pascal": "NumPy", "camel": "numPy"}
+
+
+class TestPathDotSegments:
+    """A free-form field holding "." or ".." is a path traversal segment, not
+    a name: rendered into a path component or a symlink target by a
+    ``paths = true`` rule it repoints the link at its own (or parent)
+    directory. Rejected at the validator — the root cause — so no rendered
+    replacement can ever be a dot segment (every other field's charset
+    already excludes "."). Ordinary dotted names stay valid."""
+
+    @pytest.mark.parametrize("value", [".", ".."])
+    def test_author_rejects_dot_segments(self, value):
+        with pytest.raises(ValidationError):
+            validate_author(value)
+        with pytest.raises(ValidationError):
+            _identity(author=value).validate()
+
+    @pytest.mark.parametrize("value", [".", ".."])
+    def test_display_name_rejects_dot_segments(self, value):
+        with pytest.raises(ValidationError):
+            validate_display_name(value)
+        with pytest.raises(ValidationError):
+            _identity(display_name=value).validate()
+
+    @pytest.mark.parametrize("value", ["Node.js", "J. R. R. Tolkien", "St. Louis Co."])
+    def test_ordinary_dotted_names_still_valid(self, value):
+        assert validate_author(value) == value
+        assert validate_display_name(value) == value

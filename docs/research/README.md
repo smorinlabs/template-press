@@ -20,3 +20,4 @@ itself mandate anything — when a conclusion is reached, capture it in a
 | [0002](0002-dev-tooling-wishlist.md) | Test & tooling analysis — dev-tooling wishlist (WL series) | 2026-06 |
 | [0003](0003-init-post-init-analysis.md) | Init & post-init systems — asset report & design exploration | 2026-06 |
 | [0004](0004-py-launch-blueprint-conformance-gaps.md) | py-launch-blueprint conformance gaps — `press verify` dogfood findings | 2026-07 |
+| [0005](0005-scaffolder-identity-variant-handling.md) | Scaffolder identity-variant handling — research for the C/D/E gap fixes | 2026-07 |

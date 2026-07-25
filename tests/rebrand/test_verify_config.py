@@ -302,3 +302,8 @@ def test_non_dict_table_bool_raises_validation_error():
     # bool is an int subclass in Python — must still be rejected as non-dict.
     with pytest.raises(ValidationError, match="must be a table"):
         parse_verify_config(True)
+
+
+def test_display_name_is_a_known_extra_field():
+    cfg = parse_verify_config({"extra_fields": ["display_name"]})
+    assert "display_name" in cfg.fields

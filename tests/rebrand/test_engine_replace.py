@@ -1,9 +1,44 @@
+import dataclasses
+import subprocess
 from pathlib import Path
 
-from template_press.rebrand.engine import apply
-from template_press.rebrand.rules import DEFAULT_RULES
+import pytest
+
+from template_press.rebrand.engine import (
+    apply,
+    build_plan,
+    rendered_replace_rules,
+    replacement_pairs,
+)
+from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 
 from .conftest import DEST, SOURCE
+
+
+def _git_add_all(repo: Path) -> None:
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(repo), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+
+
+def _rules_with(**overrides):
+    return dataclasses.replace(DEFAULT_RULES, **overrides)
+
+
+def _identity(**overrides):
+    base = {
+        "package_name": "py_launch_blueprint",
+        "repo_name": "py-launch-blueprint",
+        "app_name": "plbp",
+        "author": "Steve Morin",
+        "email": "steve.morin@gmail.com",
+        "owner": "smorinlabs",
+    }
+    base.update(overrides)
+    return Identity(**base)
 
 
 def test_apply_rewrites_identity_everywhere(src_target: Path):
@@ -63,3 +98,431 @@ def test_symlink_content_is_never_followed(src_target: Path, tmp_path: Path):
     report = apply(src_target, SOURCE, DEST, DEFAULT_RULES)
     assert outside.read_text(encoding="utf-8") == "demo_widget lives outside\n"
     assert any("link.txt (symlink)" in s for s in report.skipped)
+
+
+class TestDisplayPairs:
+    def test_no_display_no_display_pairs(self):
+        pairs = replacement_pairs(_identity(), _identity(app_name="acme"))
+        assert not any(f.startswith("display_name") for f, _, _ in pairs)
+
+    def test_three_form_pairs_when_both_sides_declare(self):
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(app_name="acme", display_name="Acme Widget")
+        pairs = {f: (c, r) for f, c, r in replacement_pairs(src, dst)}
+        assert pairs["display_name_spaced"] == ("Py Launch Blueprint", "Acme Widget")
+        assert pairs["display_name_pascal"] == ("PyLaunchBlueprint", "AcmeWidget")
+        assert pairs["display_name_camel"] == ("pyLaunchBlueprint", "acmeWidget")
+        assert "display_name" not in pairs
+
+    def test_half_specified_emits_no_display_pairs(self):
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(app_name="acme")  # no display_name
+        pairs = replacement_pairs(src, dst)
+        assert not any(f.startswith("display_name") for f, _, _ in pairs)
+
+    def test_form_subset_is_honored(self):
+        src = _identity(display_name="Py Launch Blueprint")
+        dst = _identity(display_name="Acme Widget")
+        pairs = replacement_pairs(src, dst, display_form_names=("spaced",))
+        fields = [f for f, _, _ in pairs if f.startswith("display_name")]
+        assert fields == ["display_name_spaced"]
+
+
+class TestDuplicateReplacementSources:
+    """F2: two pairs sharing the same `cur` literal with DIFFERENT `repl`
+    values are ambiguous — the engine cannot know which identity a matching
+    occurrence represents, and stable sort order would silently apply one
+    while starving the other."""
+
+    def test_same_cur_different_dest_raises(self):
+        # source app_name == source display_name's spaced/camel form ("press");
+        # dest maps app_name -> "tool" but display_name -> "Tool Pro".
+        src = _identity(app_name="press", display_name="press")
+        dst = _identity(app_name="tool", display_name="Tool Pro")
+        with pytest.raises(ValidationError):
+            replacement_pairs(src, dst)
+
+    def test_same_cur_same_dest_dedupes_silently(self):
+        # Both destinations align on "tool" — harmless duplicate, not an error.
+        src = _identity(app_name="press", display_name="press")
+        dst = _identity(app_name="tool", display_name="tool")
+        pairs = replacement_pairs(src, dst)
+        matches = [p for p in pairs if p[1] == "press"]
+        assert len(matches) == 1
+        assert matches[0][2] == "tool"
+
+
+class TestOneWordDisplayNameCoalescing:
+    """F1: a one-word display name renders spaced == pascal == the raw
+    value ("NumPy") while a multiword destination gives those forms
+    DIFFERENT replacements ("Acme Widget" vs "AcmeWidget") — the SAME
+    source literal, not two different identities, so this must coalesce
+    (keep spaced, drop pascal) rather than raise."""
+
+    def test_one_word_display_name_does_not_raise(self):
+        src = _identity(display_name="NumPy")
+        dst = _identity(display_name="Acme Widget")
+        pairs = replacement_pairs(src, dst)  # must not raise
+        by_tag = {tag: (cur, repl) for tag, cur, repl in pairs}
+        assert by_tag["display_name_spaced"] == ("NumPy", "Acme Widget")
+        assert by_tag["display_name_camel"] == ("numPy", "acmeWidget")
+        assert "display_name_pascal" not in by_tag
+        matches = [p for p in pairs if p[1] == "NumPy"]
+        assert len(matches) == 1
+
+
+class TestReplaceRuleContent:
+    def test_glued_token_rewritten_by_rule(self, src_target: Path):
+        (src_target / "conftest.py").write_text(
+            'getattr(h, "_plbp_owned", False)\n', encoding="utf-8"
+        )
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(pattern="_{app_name}_owned", reason="ownership guard"),
+            )
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        text = (src_target / "conftest.py").read_text(encoding="utf-8")
+        assert "_acme_owned" in text and "_plbp_owned" not in text
+
+    def test_rules_run_before_token_pass(self, src_target: Path):
+        # Discriminating probe: FROM spans TWO fields ("{package_name}/
+        # {app_name}-web"). If the token pass ran first, package_name's
+        # generic boundary (hyphen counts as a boundary either side) would
+        # rewrite "py_launch_blueprint" on its own, leaving "plbp-web"
+        # behind — at which point the rule's rendered FROM no longer
+        # matches the (now-mixed) text and never fires, so app_name's
+        # trailing-hyphen boundary guard (a token boundary, never a rule
+        # boundary) leaves "plbp-web" stranded in the output. Rules-first
+        # (the correct order) replaces the whole compound in one shot, so
+        # "plbp-web" never survives. This makes the two orders produce
+        # visibly different text, unlike a single-field FROM where the
+        # generic boundary alone already matches (see prior version of
+        # this test, which a review found non-discriminating).
+        (src_target / "note.md").write_text(
+            "image: py_launch_blueprint/plbp-web\n", encoding="utf-8"
+        )
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{package_name}/{app_name}-web",
+                    reason="compound image ref",
+                ),
+            )
+        )
+        apply(
+            src_target,
+            _identity(),
+            _identity(package_name="acme_widget", app_name="acme"),
+            rules,
+        )
+        text = (src_target / "note.md").read_text(encoding="utf-8")
+        assert "acme_widget/acme-web" in text
+        assert "plbp-web" not in text
+
+    def test_files_glob_scopes_rule(self, src_target: Path):
+        # fnmatch (rule_matches_path's matcher, Task 6) matches the FULL
+        # posix rel-path with no path-separator boundary, so a bare "*.txt"
+        # glob is not directory-scoped — it would hit "docs/out_of_scope.txt"
+        # too. Scope via an exact rel-path glob instead, which fnmatch DOES
+        # bound to that literal path.
+        (src_target / "in_scope.txt").write_text("plbp-web\n", encoding="utf-8")
+        sub = src_target / "docs"
+        sub.mkdir()
+        (sub / "out_of_scope.txt").write_text("plbp-web\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-web",
+                    reason="image name",
+                    files=("in_scope.txt",),
+                ),
+            )
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert "acme-web" in (src_target / "in_scope.txt").read_text(encoding="utf-8")
+        assert "plbp-web" in (sub / "out_of_scope.txt").read_text(encoding="utf-8")
+
+    def test_content_false_rule_leaves_content(self, src_target: Path):
+        (src_target / "a.txt").write_text("plbp-web\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-web",
+                    reason="paths only",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert "plbp-web" in (src_target / "a.txt").read_text(encoding="utf-8")
+
+
+class TestPathsRuleSeparatorGuard:
+    def test_paths_rule_with_slash_in_rendered_side_raises(self, src_target: Path):
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{author}-dir",
+                    reason="author-scoped dir",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        dest = _identity(author="New/Name")
+        with pytest.raises(ValidationError):
+            build_plan(src_target, _identity(), dest, rules)
+
+    def test_paths_rule_with_backslash_in_rendered_side_raises(self, src_target: Path):
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{author}-dir",
+                    reason="author-scoped dir",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+        dest = _identity(author="New\\Name")
+        with pytest.raises(ValidationError):
+            build_plan(src_target, _identity(), dest, rules)
+
+    def test_content_only_rule_with_slash_in_rendered_sides_still_applies(
+        self, src_target: Path
+    ):
+        (src_target / "note.md").write_text(
+            "owner: smorinlabs/py-launch-blueprint\n", encoding="utf-8"
+        )
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(ReplaceRule(pattern="{owner}/{repo_name}", reason="repo slug"),)
+        )
+        apply(
+            src_target,
+            _identity(),
+            _identity(owner="acmelabs", repo_name="acme-widget"),
+            rules,
+        )
+        text = (src_target / "note.md").read_text(encoding="utf-8")
+        assert "acmelabs/acme-widget" in text
+
+
+class TestSubstringMode:
+    def test_glued_token_rewritten_when_opted_in(self, src_target: Path):
+        (src_target / "Justfile").write_text('tag="plbp-web:dev"\n', encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(substring_rewrite_fields=frozenset({"app_name"}))
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert 'tag="acme-web:dev"' in (src_target / "Justfile").read_text(
+            encoding="utf-8"
+        )
+
+    def test_substring_mode_replaces_inside_words_by_design(self, src_target: Path):
+        # THE documented risk (codesign sec-02): substring mode on a
+        # word-embedded token corrupts prose. plbp is word-disjoint so this
+        # uses a synthetic embedding to pin the behavior as intentional.
+        (src_target / "note.txt").write_text("xplbpy\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(substring_rewrite_fields=frozenset({"app_name"}))
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert (src_target / "note.txt").read_text(encoding="utf-8") == "xacmey\n"
+
+    def test_default_stays_conservative(self, src_target: Path):
+        (src_target / "note.txt").write_text("_plbp_owned\n", encoding="utf-8")
+        _git_add_all(src_target)
+        apply(src_target, _identity(), _identity(app_name="acme"), DEFAULT_RULES)
+        assert "_plbp_owned" in (src_target / "note.txt").read_text(encoding="utf-8")
+
+
+class TestRuleStaticTextCollisionGuard:
+    """F2: a rule's own STATIC (non-placeholder) text can coincidentally
+    equal a CHANGING identity value — `pattern = "plbp_{app_name}Owned"`
+    renders TO `"plbp_acmeOwned"`, and the token pass that runs AFTER the
+    rule pass would then re-match the static "plbp" prefix (boundary-safe:
+    an underscore follows) and rewrite it too, silently corrupting the
+    rule's own output ("acme_acmeOwned"). `rendered_replace_rules` must
+    reject this at build/plan time, before any write."""
+
+    def test_static_prefix_token_matches_changing_field_raises_at_build_plan(
+        self, src_target: Path
+    ):
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(pattern="plbp_{app_name}Owned", reason="ownership guard"),
+            )
+        )
+        with pytest.raises(ValidationError):
+            build_plan(src_target, _identity(), _identity(app_name="acme"), rules)
+
+    def test_benign_static_text_merely_resembling_the_token_renders_fine(
+        self, src_target: Path
+    ):
+        # "plbpx_" contains "plbp" as a plain substring, but the immediately
+        # following "x" blocks the boundary — the token pass's own matcher
+        # would never fire here either, so the rule is safe.
+        (src_target / "note.txt").write_text("plbpx_plbpOwned\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(ReplaceRule(pattern="plbpx_{app_name}Owned", reason="benign"),)
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert "plbpx_acmeOwned" in (src_target / "note.txt").read_text(
+            encoding="utf-8"
+        )
+
+    def test_substring_mode_field_rejects_plain_containment_collision(
+        self, src_target: Path
+    ):
+        # The SAME "plbpx_" static text that is safe under the default
+        # boundary-guarded token pass is a genuine collision once app_name
+        # opts into plain-substring rewriting: "plbp" is a plain substring
+        # of "plbpx_" regardless of the boundary.
+        rules = _rules_with(
+            replace=(ReplaceRule(pattern="plbpx_{app_name}Owned", reason="substring"),),
+            substring_rewrite_fields=frozenset({"app_name"}),
+        )
+        with pytest.raises(ValidationError):
+            build_plan(src_target, _identity(), _identity(app_name="acme"), rules)
+
+    def test_composed_boundary_collision_raises_at_build_plan(self, src_target: Path):
+        """Commit 2 (B's repro): a rule's rendered TO can embed a CHANGING
+        field's SOURCE token at the SEAM between static pattern text and a
+        DIFFERENT placeholder's rendered value — `pattern_static_segments`
+        (static text only) never sees this collision, since neither the
+        leading static "f" nor the trailing static "_Owned" contains "foo"
+        in isolation; only the FULL rendered TO ("foo_Owned") does. The
+        rendered-TO stability check must inspect the whole rendered TO, not
+        just its static segments, to catch this."""
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="f{repo_name}_Owned",
+                    reason="composed-boundary repro (commit 2)",
+                ),
+            )
+        )
+        source = _identity(app_name="foo", repo_name="oldrepo")
+        dest = _identity(app_name="bar", repo_name="oo")
+        with pytest.raises(ValidationError):
+            build_plan(src_target, source, dest, rules)
+
+    def test_boundary_blocked_static_suffix_accepted_and_pinned(self, src_target: Path):
+        """Commit 2 deliberate behavior change: `{app_name}plbp_x` (app_name
+        plbp -> acme) renders TO `acmeplbp_x`. The OLD static-segment guard
+        rejected this — its ISOLATED static segment "plbp_x" boundary-matches
+        the SOURCE app_name value "plbp" (nothing precedes "plbp" within the
+        segment alone). The NEW rendered-TO stability check ACCEPTS it,
+        correctly: in the FULL rendered TO, "plbp" is immediately preceded by
+        "e" (from "acme"), which blocks app_name's LEFT boundary —
+        `replace_token` provably never touches "acmeplbp_x"."""
+        (src_target / "note.txt").write_text("plbpplbp_x\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}plbp_x",
+                    reason="pinned acceptance (commit 2)",
+                ),
+            )
+        )
+        source, dest = _identity(), _identity(app_name="acme")
+        build_plan(src_target, source, dest, rules)  # must not raise
+        apply(src_target, source, dest, rules)
+        text = (src_target / "note.txt").read_text(encoding="utf-8")
+        assert "acmeplbp_x" in text  # the rule's own output, left alone
+        assert "acmeacme_x" not in text  # would mean the token pass re-fired
+
+
+class TestConflictingRenderedRuleSources:
+    """Commit 3: two rules can render the SAME FROM with DIFFERENT TOs — the
+    first rendered rule silently wins (`_apply_replacements`/`_renamed_rel`
+    apply rules in order, each via plain `str.replace`) and the second never
+    applies. `rendered_replace_rules` must reject this when the two rules'
+    surfaces overlap (both act on content, or both act on paths) — rules on
+    DISJOINT surfaces provably never contend."""
+
+    def test_conflicting_rendered_from_overlapping_surfaces_raises(
+        self, src_target: Path
+    ):
+        # "{app_name}" and "f{package_name}" both render FROM "foo" here,
+        # but to DIFFERENT TOs ("bar" vs "fzz") — both rules are content-only
+        # by default, so their surfaces overlap.
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(pattern="{app_name}", reason="a"),
+                ReplaceRule(pattern="f{package_name}", reason="b"),
+            )
+        )
+        source = _identity(app_name="foo", package_name="oo")
+        dest = _identity(app_name="bar", package_name="zz")
+        with pytest.raises(ValidationError) as exc_info:
+            build_plan(src_target, source, dest, rules)
+        msg = str(exc_info.value)
+        assert "{app_name}" in msg
+        assert "f{package_name}" in msg
+        assert "foo" in msg
+
+    def test_exact_duplicate_rules_dedupe_to_one_application(self, src_target: Path):
+        (src_target / "note.txt").write_text("_plbp_owned\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rule = ReplaceRule(pattern="_{app_name}_owned", reason="ownership guard")
+        duplicate = ReplaceRule(pattern="_{app_name}_owned", reason="ownership guard")
+        rules = _rules_with(replace=(rule, duplicate))
+        source, dest = _identity(), _identity(app_name="acme")
+        rendered = rendered_replace_rules(rules, source, dest)
+        assert len(rendered) == 1
+        apply(src_target, source, dest, rules)
+        assert (src_target / "note.txt").read_text(encoding="utf-8") == "_acme_owned\n"
+
+    def test_files_scope_preserved_when_from_to_coincide(self, src_target: Path):
+        """Dedupe keyed on `(FROM, TO)` alone would collapse these two rules
+        into one, silently dropping whichever `files` scope didn't survive —
+        this must fail against that implementation: both a.txt and b.txt
+        carry a hyphen-joined token ("plbp-owned") that ONLY the rule
+        mechanism rewrites (the plain app_name field pair never boundary-
+        matches a hyphen suffix), so each file's rewrite depends entirely on
+        ITS OWN rule surviving the dedupe."""
+        (src_target / "a.txt").write_text("plbp-owned\n", encoding="utf-8")
+        (src_target / "b.txt").write_text("plbp-owned\n", encoding="utf-8")
+        _git_add_all(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-owned", reason="scope a", files=("a.txt",)
+                ),
+                ReplaceRule(
+                    pattern="{app_name}-owned", reason="scope b", files=("b.txt",)
+                ),
+            )
+        )
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert (src_target / "a.txt").read_text(encoding="utf-8") == "acme-owned\n"
+        assert (src_target / "b.txt").read_text(encoding="utf-8") == "acme-owned\n"
+
+    def test_conflicting_rendered_from_disjoint_surfaces_no_error(
+        self, src_target: Path
+    ):
+        # Same shape as the overlapping-surfaces repro, but one rule is
+        # content-only and the other paths-only — they provably never
+        # contend, so this must NOT raise.
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}", reason="a", paths=False, content=True
+                ),
+                ReplaceRule(
+                    pattern="f{package_name}", reason="b", paths=True, content=False
+                ),
+            )
+        )
+        source = _identity(app_name="foo", package_name="oo")
+        dest = _identity(app_name="bar", package_name="zz")
+        rendered = rendered_replace_rules(rules, source, dest)  # must not raise
+        assert len(rendered) == 2

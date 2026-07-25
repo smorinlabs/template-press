@@ -27,9 +27,16 @@ from template_press.rebrand.engine import (
     ApplyReport,
     apply,
     build_plan,
+    rendered_replace_rules,
     stray_press_dirs,
 )
-from template_press.rebrand.identity import Identity, ValidationError, token_occurs
+from template_press.rebrand.identity import (
+    DISPLAY_FORM_NAMES,
+    Identity,
+    ValidationError,
+    display_forms,
+    token_occurs,
+)
 from template_press.rebrand.receipt import read_receipt, write_receipt
 from template_press.rebrand.rules import DEFAULT_RULES, Rules, load_rules
 from template_press.rebrand.safety import (
@@ -130,7 +137,31 @@ def _resolve_source(
     return source, write_pending
 
 
-def _collisions(source: Identity, dest: Identity) -> list[str]:
+def _expand_display_forms(values: dict[str, str]) -> dict[str, str]:
+    """Replace a raw ``display_name`` entry with its per-form expansions.
+
+    Mirrors ``replacement_pairs``' display-form handling (engine.py):
+    runtime pair tags are ``display_name_spaced/pascal/camel``, never bare
+    ``display_name``, so comparing raw dict values alone can miss a derived
+    form that embeds a changed source token. Uses the full
+    ``DISPLAY_FORM_NAMES`` set (not a rules-configured subset) — a subset
+    only narrows what gets REWRITTEN; this preflight stays conservative and
+    checks every form regardless.
+    """
+    if "display_name" not in values:
+        return values
+    expanded = {k: v for k, v in values.items() if k != "display_name"}
+    forms = display_forms(values["display_name"])
+    for form in DISPLAY_FORM_NAMES:
+        expanded[f"display_name_{form}"] = forms[form]
+    return expanded
+
+
+def _collisions(
+    source: Identity,
+    dest: Identity,
+    substring_fields: frozenset[str] = frozenset(),
+) -> list[str]:
     """Destination values that embed a CHANGED source token.
 
     Sequential substitution would re-rewrite such output (old app name
@@ -138,18 +169,57 @@ def _collisions(source: Identity, dest: Identity) -> list[str]:
     would flag correct output as a leak (press → press_two). Refusing up
     front with guidance beats either silent corruption or a permanent
     verification failure.
+
+    Both identities are expanded the same way ``replacement_pairs`` expands
+    them (Fix F3): a raw ``display_name`` entry is replaced by its exact
+    per-form values, so a destination display name whose DERIVED form (e.g.
+    the camel form of "Plbp" is "plbp") embeds a changed source token is
+    caught even though the raw display name never contains it verbatim.
+
+    ``substring_fields`` (Fix F4) — the target's ``[rules]
+    substring_rewrite_fields`` — mirrors what the engine will actually do to
+    a changed field opted into substring mode: it rewrites that field
+    SUBSTRING-wide, with no word-boundary guard, so a destination value that
+    embeds the source token WITHOUT a boundary (e.g. dest repo_name
+    "myfoo-tools" embedding source app_name "foo") is just as much a
+    collision as a boundary-guarded one — checked via plain ``in`` instead of
+    the boundary-guarded ``token_occurs``.
     """
     out: list[str] = []
-    src, dst = source.as_dict(), dest.as_dict()
-    changed = {f: v for f, v in src.items() if v != dst[f]}
+    src = _expand_display_forms(source.as_dict())
+    dst = _expand_display_forms(dest.as_dict())
+    changed = {f: v for f, v in src.items() if v != dst.get(f)}
     for dest_field, dest_value in dst.items():
         for src_field, src_value in changed.items():
-            if token_occurs(dest_value, src_field, src_value):
+            hit = (
+                src_value in dest_value
+                if src_field in substring_fields
+                else token_occurs(dest_value, src_field, src_value)
+            )
+            if hit:
                 out.append(
                     f"destination {dest_field}={dest_value!r} contains the "
                     f"source {src_field} token {src_value!r}"
                 )
     return out
+
+
+def display_name_problem(source: Identity, dest: Identity) -> str | None:
+    """Half-specified display identity is refused (codesign sec-06).
+
+    The press knows what to erase but not what to write — proceeding would
+    ship a half-rebrand where every prose mention keeps the old product
+    name. The reverse direction is harmless: nothing to rewrite, and the
+    post-apply source-config write records the new display name.
+    """
+    if source.display_name is not None and dest.display_name is None:
+        return (
+            f"source-config declares display_name "
+            f"({source.display_name!r}) but the answers file does not — "
+            f"add display_name to [answers]; press cannot know the new "
+            f"display name"
+        )
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -186,11 +256,23 @@ def main(argv: list[str] | None = None) -> int:
             return _fail("--config ANSWERS.toml is required")
         dest = load_answers(args.config)
 
+        display_problem = display_name_problem(source, dest)
+        if display_problem is not None:
+            return _fail(display_problem)
+
         if source == dest:
             return _fail(
                 "source and destination identities are identical — nothing to press"
             )
-        collisions = _collisions(source, dest)
+        # Loaded before the collision preflight (Fix F4): substring_rewrite_fields
+        # changes what counts as a collision (a boundary-free embedded token is
+        # only a problem for a field the engine will actually rewrite
+        # substring-wide) — pure reading, no side effect, so moving it earlier
+        # is safe.
+        rules = load_rules(target)
+        collisions = _collisions(
+            source, dest, substring_fields=rules.substring_rewrite_fields
+        )
         if collisions:
             print(
                 "error: destination identity embeds source tokens — a single "
@@ -202,7 +284,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {c}", file=sys.stderr)
             return 2
 
-        rules = load_rules(target)
         plan = build_plan(target, source, dest, rules)
         print(plan.render())
         strays = stray_press_dirs(target)
@@ -322,7 +403,16 @@ def _press(
             regenerate=rules.regenerate,
             verify_ignore=rules.verify_ignore,
         )
-        leaks = find_leaks(target, source, doctor_rules, dest=dest)
+        leaks = find_leaks(
+            target,
+            source,
+            doctor_rules,
+            dest=dest,
+            display_form_names=rules.display_forms,
+            substring_fields=rules.substring_rewrite_fields,
+            rendered_rules=rendered_replace_rules(rules, source, dest),
+            renamed=report.renamed,
+        )
         if leaks:
             print(render_leak_report(leaks), file=sys.stderr)
             print(report.render(), file=sys.stderr)

@@ -9,12 +9,21 @@ to per-run values so any target's identity can be pressed (ARCH-03).
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 
 PYTHON_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 REPO_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 GITHUB_OWNER_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$", re.IGNORECASE)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# Whole values that are filesystem path traversal segments rather than names.
+# Only the free-form fields (author, display_name) can hold them — every other
+# field's charset already excludes ".". A rule rendering one of these into a
+# path component or a symlink target would repoint the link at its own or its
+# parent directory; rejecting the value is the root-cause fix, and it leaves
+# ordinary dotted names ("Node.js", "J. R. R. Tolkien") untouched.
+_PATH_DOT_SEGMENTS: frozenset[str] = frozenset({".", ".."})
 
 
 class ValidationError(ValueError):
@@ -62,6 +71,8 @@ def validate_author(value: str) -> str:
         raise ValidationError("author must not be empty")
     if any(ord(ch) < 0x20 or ch == "\x7f" for ch in value):
         raise ValidationError(f"author must not contain control characters: {value!r}")
+    if value in _PATH_DOT_SEGMENTS:
+        raise ValidationError(f"author must not be a path dot segment: {value!r}")
     return value
 
 
@@ -77,6 +88,21 @@ def validate_app_name(name: str) -> str:
     return name
 
 
+def validate_display_name(value: str) -> str:
+    # The humanized product name ("Py Launch Blueprint"). Same posture as
+    # author: worldwide charset, but empty/control values are catastrophic
+    # (empty compiles to a match-anywhere pattern; control chars break TOML).
+    if not value.strip():
+        raise ValidationError("display name must not be empty")
+    if any(ord(ch) < 0x20 or ch == "\x7f" for ch in value):
+        raise ValidationError(
+            f"display name must not contain control characters: {value!r}"
+        )
+    if value in _PATH_DOT_SEGMENTS:
+        raise ValidationError(f"display name must not be a path dot segment: {value!r}")
+    return value
+
+
 VALIDATORS = {
     "package_name": validate_package_name,
     "repo_name": validate_repo_name,
@@ -84,6 +110,7 @@ VALIDATORS = {
     "author": validate_author,
     "owner": validate_owner,
     "email": validate_email,
+    "display_name": validate_display_name,
 }
 
 REQUIRED_FIELDS: tuple[str, ...] = (
@@ -94,6 +121,13 @@ REQUIRED_FIELDS: tuple[str, ...] = (
     "email",
     "owner",
 )
+
+# Optional identity fields: absent means the feature is off — existing
+# 6-field press-source.toml files stay valid (codesign sec-01/sec-06).
+OPTIONAL_FIELDS: tuple[str, ...] = ("display_name",)
+
+# The closed set of exact display-name rewrite forms (codesign sec-04).
+DISPLAY_FORM_NAMES: tuple[str, ...] = ("spaced", "pascal", "camel")
 
 
 @dataclass(frozen=True)
@@ -106,13 +140,14 @@ class Identity:
     author: str
     email: str
     owner: str
+    display_name: str | None = None
 
     @property
     def app_name_upper(self) -> str:
         return self.app_name.upper()
 
     def as_dict(self) -> dict[str, str]:
-        return {
+        d = {
             "package_name": self.package_name,
             "repo_name": self.repo_name,
             "app_name": self.app_name,
@@ -121,6 +156,9 @@ class Identity:
             "email": self.email,
             "owner": self.owner,
         }
+        if self.display_name is not None:
+            d["display_name"] = self.display_name
+        return d
 
     def as_dict_prompted(self) -> dict[str, str]:
         d = self.as_dict()
@@ -138,7 +176,11 @@ class Identity:
         missing = [k for k in REQUIRED_FIELDS if k not in data]
         if missing:
             raise ValidationError(f"identity is missing fields: {', '.join(missing)}")
-        return cls(**{k: data[k] for k in REQUIRED_FIELDS})
+        fields = {k: data[k] for k in REQUIRED_FIELDS}
+        for opt in OPTIONAL_FIELDS:
+            if data.get(opt) is not None:
+                fields[opt] = data[opt]
+        return cls(**fields)
 
 
 def token_pattern(field: str, value: str) -> re.Pattern[str] | None:
@@ -174,6 +216,24 @@ def token_occurs(text: str, field: str, value: str) -> bool:
     return value in text
 
 
+def occurs(
+    text: str, field: str, value: str, substring_fields: Collection[str] = frozenset()
+) -> bool:
+    """Dispatch to plain substring membership for an opted-in field.
+
+    Shared by every OCCURRENCE check across the engine/doctor/rules modules
+    (the engine's own replacement dispatch in ``_apply_replacements``/
+    ``_renamed_rel`` mirrors this same split): when ``substring_fields``
+    promises glued-token coverage for a field, the check must use the same
+    plain-substring posture — the boundary-guarded ``token_occurs`` would
+    miss a glued occurrence (``plbpOwned``) that substring mode is meant to
+    rewrite/catch.
+    """
+    if field in substring_fields:
+        return value in text
+    return token_occurs(text, field, value)
+
+
 def replace_token(text: str, field: str, current: str, replacement: str) -> str:
     pattern = token_pattern(field, current)
     if pattern is not None:
@@ -182,3 +242,17 @@ def replace_token(text: str, field: str, current: str, replacement: str) -> str:
         # group reference or crash re.sub).
         return pattern.sub(lambda _: replacement, text)
     return text.replace(current, replacement)
+
+
+def display_forms(value: str) -> dict[str, str]:
+    """The closed set of exact display-name forms, keyed by DISPLAY_FORM_NAMES.
+
+    spaced is the value verbatim; pascal capitalizes each space-separated
+    word's first letter and joins (inner casing preserved: "NumPy" stays
+    "NumPy"); camel is pascal with its first character lowercased. A closed,
+    enumerable set — never an elastic pattern (codesign sec-04).
+    """
+    words = value.split()
+    pascal = "".join(w[:1].upper() + w[1:] for w in words)
+    camel = pascal[:1].lower() + pascal[1:]
+    return {"spaced": value, "pascal": pascal, "camel": camel}
