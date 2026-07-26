@@ -16,9 +16,36 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   **`file` is validated as a contained relative path, not taken as given.** It
   must pass the same predicates P05 D5 requires of reset targets —
   `safety.SafeRelPath` plus a no-follow regular-file check — before anything
-  runs. Without that, `file = "../outside"` paired with `command = ["true"]`
-  satisfies a naive existence check against a pre-existing file the target's
-  git-based scanner cannot see, buying an exemption for a path outside the repo.
+  runs. Concretely: **absolute paths are rejected, `..` traversal is rejected,
+  and containment is decided on the canonicalized path**, not the literal
+  string. Without that, `file = "../outside.lock"` paired with
+  `command = ["true"]` satisfies a naive existence check against a pre-existing
+  file the target's git-based scanner cannot see, buying an exemption for a path
+  outside the repo — and press would then report on a file it does not own.
+
+  **Declared paths are in SOURCE coordinates and must be translated before use.**
+  `apply()` renames identity-bearing directories before regeneration runs, so a
+  declared `packages/demo_widget/bun.lock` no longer exists at that path by the
+  time the command executes — the command produces the file at the renamed
+  location while the postcondition and scan address the old one. Translate every
+  declared path through `ApplyReport.renamed` before the existence check and the
+  scan. (P05 solved the analogous problem for reset by running it first; that is
+  unavailable here, because a regeneration command must run against the final
+  tree.)
+
+  **Execution contract — three properties the generic executor must preserve,
+  all of which `_regenerate_lockfiles` has today and none of which are implied
+  by "run the declared argv":**
+  - **`cwd` is the target root.** Commands like `bun install` resolve relative
+    paths against their working directory; omitting `cwd=target` means invoking
+    press from another checkout can mutate *that* checkout. The output check
+    would fail afterwards, but only after the out-of-target write.
+  - **The environment stays scrubbed.** `cli.py` currently runs `uv lock` with
+    `env=scrubbed_uv_env()`; migrating this repo's own `uv.lock` to a declared
+    command must not silently drop it. An inherited `UV_*` index or config
+    override can steer resolution against attacker-selected inputs.
+  - **No shell.** argv is executed directly, as today — the declared form is a
+    list precisely so there is no shell to inject into.
 
   **A file may not be both a regeneration output and a `[[reset]]` target.**
   P05 D2 already bans reset/replace overlap because the result depends on pass
@@ -94,7 +121,13 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     equivalent object form, rather than silently accepting it as shorthand —
     accepting it would reinstate the filename-to-command mapping D1 removes.
   - Create `press/press-rules.toml` in this repo declaring its own `uv.lock`
-    regeneration, as part of the same change that removes the default.
+    regeneration, as part of the same change that removes the default —
+    preserving the `scrubbed_uv_env()` hardening the hardcoded call has today.
+  - Update `scripts/rebrand_matrix.sh` to carry consent for its own command.
+    Adding the rules file alone does not keep the matrix green: R3 invokes the
+    real self-press with only `--accept-discovery --allow-dirty`, and D1 says a
+    press without consent refuses. Runbooks that document the R3 invocation need
+    the same update.
 
 - **D2 — Resolve every declared command at plan time; missing tool exits 2.**
   Before any write, check each command's executable resolves on PATH. A missing
@@ -124,12 +157,31 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     glued variant behind passes the doctor and is then skipped by verify: a
     false-clean receipt. The evidence must be at least as strong as what it buys.
 
+    **The scan must also cover rendered `[[replace]]` FROM literals, not only
+    identity fields.** Both `doctor.find_leaks` and `verifier.scan` check those
+    literals; a post-command scan that checks only identity occurrences is again
+    weaker than the exemption it buys, so a no-op regenerator leaving a rendered
+    rule literal in an exempt lockfile would pass. Same failure shape as the
+    matcher choice above, one level down.
+
     **Also require the declared output to still exist after the command runs.**
     Scanning alone is insufficient: a command that exits 0 having *deleted* its
     lockfile leaves nothing for `iter_target_files` to return, so the scan finds
     no stale identity and the press reports success over a silently removed
     tracked file. A declared regeneration that does not leave its file behind is
     a failed regeneration.
+
+    **Existence is not enough — re-check the type after the command runs.** The
+    pre-run no-follow check says nothing about what the command left behind: a
+    command exiting 0 having replaced its output with a symlink satisfies a bare
+    existence test, and the scan would then follow it. Re-run the same
+    regular-file no-follow predicate on the output as a postcondition.
+
+    **The undeclared case is not handled here.** A target with `uv.lock` and no
+    declaration produces nothing for this scan to look at, and
+    `iter_target_files` still skips it — that gap is closed by D5's preflight,
+    which refuses the press outright, not by this branch. The two must ship
+    together, which is exactly why D5 moves §6 to the first project.
   - **Hermetic verify** (`verify_cli`): keeps an exemption, but it requires
     **both** conditions — the filename is on press's own exemptible list **and**
     the target actually declared a regeneration for it. The tool-side list caps
@@ -142,6 +194,17 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     `_regenerate_lockfiles` is called only from `cli.py:379` and never from the
     verify path, so the sandbox copy of a lockfile still carries source identity
     and would flag forever without an exemption.
+
+    **That exemption is a gap in coverage, and verify must say so.** Declaring a
+    regeneration does not prove the command rebuilds anything — a target
+    declaring `{ file = "uv.lock", command = ["true"] }` still gets the file
+    exempted in the sandbox, where no command ever runs. Verify therefore cannot
+    certify a regenerated output; only the real press's post-command scan can.
+    So verify's report must **list exempted files as not-verified rather than
+    omitting them**, and its clean result must be understood as "clean over the
+    scanned set". A standalone `press verify` on such a config is silent about
+    that file today, which is precisely the false-clean this decision must not
+    ship.
 
 - **D5 — §6's excluded-file contract preflight lands WITH this project, not
   after it.** Revises P05 D3, which deferred it to "whichever of P04/P05 lands
