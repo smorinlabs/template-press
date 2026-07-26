@@ -48,6 +48,24 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     copy of a lockfile still carries source identity and would flag forever
     without an exemption.
 
+- **D4 — A standalone command that reports whether every external command is
+  findable.** D2 makes the check happen during a press; this makes it runnable
+  on its own, answering "can this machine press this repo at all?" without
+  touching the repo. Read-only, no writes, no sandbox.
+
+  Scope: every external program a press of this target would invoke — each
+  declared regeneration command plus the tools press itself shells out to
+  (`git`, and `uv` where a uv lockfile is declared) — reporting each as found
+  (with its resolved path) or missing. Useful as a CI preflight and as the first
+  thing to run when a press fails on someone else's machine.
+
+  Open: the verb name and whether it stays standalone. `press check-tools` is a
+  working name; `press doctor` would collide with the existing leak-scanner
+  module (`doctor.py`) and should be avoided. M6's planned `press status`
+  ("computed from reality") may be the natural home, in which case this becomes
+  a section of that output rather than its own verb — worth deciding when M6 is
+  scoped rather than now.
+
   Together these preserve EMP-01's actual purpose — a target must not be able to
   blind the scanner to a file that still carries old identity — under a model
   where "does press have a regenerator for this file" has become vacuously true.
