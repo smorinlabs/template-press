@@ -17,12 +17,22 @@ All five open questions settled 2026-07-25 (codesign export
   mechanism even though `exclude_files` predates it.
 - **D2 — Guards: refuse-if-untracked, dry-run preview, receipt record, and an
   overlap ban.** (`ch-01-a`, `ch-01-b`, `ch-01-c`, `ch-01-e`.)
-  - Refuse to reset a file git is not tracking — no tracked copy means no undo
-    path, so blanking is unrecoverable. Fail loud instead.
-  - Preview the before/after — **but only under a verbose flag, and the "before"
-    is capped**. The motivating target is a release history that can run to
-    thousands of lines; the default preview names the file and its size, and
-    verbose shows a bounded excerpt.
+  - Refuse to reset a file git is not tracking **or that has uncommitted
+    changes**. The guard's purpose is an undo path, and `git checkout` restores
+    only the committed content — a tracked file carrying unstaged work has no
+    recoverable copy of that work either. Since `--allow-dirty` exists
+    (`cli.py:233`) this is reachable, not theoretical: refuse a dirty reset
+    target even under that flag.
+  - Preview at two levels, both always present:
+    - **default** — one line per reset target: its path and current size
+      (`reset CHANGELOG.md (1,234 lines → stub)`).
+    - **verbose** — additionally a **capped** excerpt of the current content
+      plus the stub that would replace it. The motivating target is a release
+      history running to thousands of lines, so the excerpt is bounded rather
+      than complete.
+
+    Normal mode is never silent about a reset; only the content excerpt is
+    verbose-gated.
   - Record each reset in `ApplyReport` and the receipt, alongside the existing
     replaced/renamed/regenerated counts. Closes a known gap: the embedded engine
     printed its reset list to stdout and discarded it.
@@ -38,14 +48,38 @@ All five open questions settled 2026-07-25 (codesign export
   standalone item it risks being orphaned once the interesting work is done.
 - **D4 — A failed reset aborts the whole press.** (`ch-03-a`.) Matches press's
   existing posture on a failed lockfile regeneration (error, no receipt) rather
-  than inventing a softer second rule, and avoids a half-applied state that
-  neither the doctor nor an operator can reason about.
+  than inventing a softer second rule.
+
+  **This is not an atomicity guarantee, and must not be implemented or tested as
+  one.** `apply` writes incrementally and has no rollback — its own failure path
+  says "target may be PARTIALLY rewritten; restore with `git checkout . && git
+  clean -fd`" (`cli.py:442`). Aborting stops *further* damage and withholds the
+  success receipt; git remains the undo button. D5 is what actually keeps the
+  destructive phase from starting in a state it cannot finish.
 - **D5 — Validate before mutating: preflight every reset target at plan time.**
   Rather than relying on D4's abort to catch problems mid-run, check up front
   that each declared reset target is resolvable inside the target, git-tracked,
-  and writable — failing at plan time (exit 2, no writes) so the destructive
-  phase starts only when it can complete. Generalizes the tool's existing
-  "exit 2 means nothing was written" contract to the new operation.
+  clean, and writable — failing at plan time (exit 2, no writes) so the
+  destructive phase starts only when it can complete. Generalizes the tool's
+  existing "exit 2 means nothing was written" contract to the new operation.
+
+  **The preflight must apply the same sink predicates the write path applies**,
+  not a weaker readable/writable probe. `safe_write` refuses symlinked ancestors
+  and enforces containment at write time; a preflight that only checks
+  tracked-and-writable would pass a symlink or hardlink sink and then fail during
+  apply — after earlier passes have already mutated the target, which is exactly
+  the half-applied state D4 cannot undo. Reuse the write path's own guards.
+
+  **Ordering: reset runs before the rename pass, against declared (pre-rename)
+  paths.** `apply`'s order today is replace → retarget-symlinks → rename
+  (`engine.py`). Placing reset last, as the embedded engine did, makes a declared
+  path stale whenever the rename pass moves it — and because the prior-art
+  implementation creates the file when absent, a stale path would silently
+  *create* a spurious file rather than fail. The embedded engine never hit this
+  because its only reset target was a root `CHANGELOG.md` that never moves. A
+  target author writes `press-rules.toml` against the repo's current layout, so
+  pre-rename paths are what they mean; resetting first also guarantees the
+  replace pass sees a stub with no identity left to rewrite.
 
   *Scope note:* reset itself never executes anything — it writes a static stub
   (see prior art below); running commands is `regenerate`'s job. The same
