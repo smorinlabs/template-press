@@ -67,10 +67,32 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     paths against their working directory; omitting `cwd=target` means invoking
     press from another checkout can mutate *that* checkout. The output check
     would fail afterwards, but only after the out-of-target write.
-  - **The environment stays scrubbed.** `cli.py` currently runs `uv lock` with
-    `env=scrubbed_uv_env()`; migrating this repo's own `uv.lock` to a declared
-    command must not silently drop it. An inherited `UV_*` index or config
-    override can steer resolution against attacker-selected inputs.
+  - **The environment is deny-by-default (decided 2026-07-26).** Declared
+    commands run under a minimal fixed base (`PATH`, `HOME`, `LANG`, `TMPDIR`)
+    plus only the variables the declaration names:
+
+    ```toml
+    [[regenerate]]
+    file    = "bun.lock"
+    command = ["bun", "install"]
+    env     = ["NODE_ENV"]           # optional; names, never values
+    ```
+
+    `env` lists names — press copies each from the operator's environment at
+    run time; values never live in the config, so a repo cannot smuggle
+    secrets in and the operator's real setting is what flows through. The
+    list is part of the declaration: the plan and dry-run show it beside the
+    argv, and it is folded into the consent hash, so widening it (say, adding
+    `GITHUB_TOKEN`) invalidates standing consent exactly like a changed argv.
+
+    This supersedes the uv-specific scrub as the general mechanism, and
+    subsumes it: inherited `UV_*` overrides simply never arrive.
+    Inherit-minus-blocklist was considered and not taken — today's
+    `scrubbed_uv_env` IS a one-family blocklist, and it aged out the moment
+    the command stopped being fixed; a blocklist's miss is silent, while
+    deny-by-default fails loudly and the fix is one visible declared line.
+    Inherit-everything was rejected for the CI case alone: an Actions
+    runner's `GITHUB_TOKEN` must not be readable by target-declared code.
   - **No shell.** argv is executed directly, as today — the declared form is a
     list precisely so there is no shell to inject into.
 
