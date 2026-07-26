@@ -23,19 +23,22 @@ All five open questions settled 2026-07-25 (codesign export
     recoverable copy of that work either. Since `--allow-dirty` exists
     (`cli.py:233`) this is reachable, not theoretical: refuse a dirty reset
     target even under that flag.
-  - Preview at two levels, both always present:
-    - **default** — one line per reset target: its path and current size
+  - Preview at two levels, both always present, both measured in **lines**:
+    - **default** — one line per reset target: its path and current line count
       (`reset CHANGELOG.md (1,234 lines → stub)`).
-    - **verbose** — additionally a **capped** excerpt of the current content
-      plus the stub that would replace it. The motivating target is a release
-      history running to thousands of lines, so the excerpt is bounded rather
-      than complete.
+    - **verbose** — additionally the first N lines of the current content plus
+      the stub that would replace it, where N is the same unit as the count
+      above. The motivating target is a release history running to thousands of
+      lines, so the excerpt is bounded rather than complete.
 
     Normal mode is never silent about a reset; only the content excerpt is
     verbose-gated.
-  - Record each reset in `ApplyReport` and the receipt, alongside the existing
-    replaced/renamed/regenerated counts. Closes a known gap: the embedded engine
-    printed its reset list to stdout and discarded it.
+  - Record each reset in `ApplyReport` and the receipt, mirroring the existing
+    shapes exactly: `ApplyReport.reset: list[str]` holds the reset paths (as
+    `replaced`/`renamed` already do), and the receipt's `[press.counts]` gains a
+    `reset = <n>` line beside `replaced`/`renamed`/`regenerated`/`skipped`
+    (counts only, as that table already is). Closes a known gap: the embedded
+    engine printed its reset list to stdout and discarded it.
   - Refuse a path that is both a reset target and a `[[replace]]` target — the
     result would depend on pass order. Inherits the embedded engine's own test-
     enforced ban.
@@ -59,27 +62,39 @@ All five open questions settled 2026-07-25 (codesign export
 - **D5 — Validate before mutating: preflight every reset target at plan time.**
   Rather than relying on D4's abort to catch problems mid-run, check up front
   that each declared reset target is resolvable inside the target, git-tracked,
-  clean, and writable — failing at plan time (exit 2, no writes) so the
-  destructive phase starts only when it can complete. Generalizes the tool's
-  existing "exit 2 means nothing was written" contract to the new operation.
+  clean, and passes the write-path guards — failing at plan time (exit 2, no
+  writes). Generalizes the tool's existing "exit 2 means nothing was written"
+  contract to the new operation.
 
-  **The preflight must apply the same sink predicates the write path applies**,
-  not a weaker readable/writable probe. `safe_write` refuses symlinked ancestors
-  and enforces containment at write time; a preflight that only checks
-  tracked-and-writable would pass a symlink or hardlink sink and then fail during
-  apply — after earlier passes have already mutated the target, which is exactly
-  the half-applied state D4 cannot undo. Reuse the write path's own guards.
+  **This rejects known-invalid targets; it is not a completion guarantee.** A
+  preflight cannot promise that later I/O succeeds — a filesystem can change
+  between plan and apply, and D4 already records that `apply` is incremental
+  with no rollback. The pairing is: D5 removes the failure modes that are
+  knowable in advance, D4 bounds the damage from the ones that are not.
 
-  **Ordering: reset runs before the rename pass, against declared (pre-rename)
-  paths.** `apply`'s order today is replace → retarget-symlinks → rename
-  (`engine.py`). Placing reset last, as the embedded engine did, makes a declared
-  path stale whenever the rename pass moves it — and because the prior-art
-  implementation creates the file when absent, a stale path would silently
-  *create* a spurious file rather than fail. The embedded engine never hit this
-  because its only reset target was a root `CHANGELOG.md` that never moves. A
-  target author writes `press-rules.toml` against the repo's current layout, so
-  pre-rename paths are what they mean; resetting first also guarantees the
-  replace pass sees a stub with no identity left to rewrite.
+  **The preflight applies the same predicates the write path applies**, named
+  explicitly so plan-time and apply-time cannot drift:
+  - `safety.assert_under_root` — the target resolves inside the press root.
+  - `safety.assert_ancestors_real` — no symlinked ancestor could redirect the
+    write outside the tree.
+  - `safety.is_regular_lstat` — the sink is a regular file, no-follow; this is
+    what rejects a symlink sink that a bare `os.access` probe would pass.
+  - `safety.safe_write(..., refuse_hardlink=False)` performs the write itself,
+    matching `_apply_replacements`: its atomic temp-plus-rename creates a new
+    inode, so an external hardlink keeps the pre-reset content rather than
+    being blanked through.
+
+  **Ordering: reset runs first, before every other pass.** `apply`'s order today
+  is replace → retarget-symlinks → rename (`engine.py`); reset takes position
+  zero. Two reasons, and only the first is load-bearing: (1) declared paths are
+  written against the repo's current layout, so they must be consumed before the
+  rename pass moves anything — placing reset last, as the embedded engine did,
+  makes a declared path stale, and because the prior-art implementation creates
+  the file when absent, a stale path would silently *create* a spurious file
+  rather than fail (the embedded engine never hit this because its only target
+  was a root `CHANGELOG.md` that never moves); (2) the replace pass then sees a
+  stub with no identity left to rewrite — though D2's overlap ban already makes
+  reset and replace targets disjoint, so this is a consequence, not a reason.
 
   *Scope note:* reset itself never executes anything — it writes a static stub
   (see prior art below); running commands is `regenerate`'s job. The same
