@@ -23,6 +23,19 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   file the target's git-based scanner cannot see, buying an exemption for a path
   outside the repo — and press would then report on a file it does not own.
 
+  **`command` is validated at config load as well: a non-empty list of
+  non-empty strings.** A malformed declaration — `command = []`, a non-string
+  element, an empty `argv[0]` — fails with the intended validation error before
+  planning, rather than surfacing as an incidental exception when D2 resolves
+  `argv[0]` or D4 reports it.
+
+  **Regeneration outputs must be git-tracked and clean at plan time — refused
+  even under `--allow-dirty`.** Same undo-path rationale as P05 D2's dirty-reset
+  refusal: the declared command overwrites the file wholesale, and git restores
+  only committed content, so uncommitted edits to a declared output have no
+  recoverable copy. This extends P05 D5's validate-before-mutate predicates to
+  regeneration outputs.
+
   **Declared paths are in SOURCE coordinates and must be translated before use.**
   `apply()` renames identity-bearing directories before regeneration runs, so a
   declared `packages/demo_widget/bun.lock` no longer exists at that path by the
@@ -54,6 +67,13 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   both gets its stub written and then immediately overwritten, with both
   operations counted successful. Reject the overlap at config-load time.
 
+  **Every regeneration output must also be listed in `exclude_files` — rejected
+  at config load otherwise.** An output that is not excluded is selected by the
+  normal replace pass: `apply()` rewrites and records it, then the regeneration
+  command immediately overwrites that work — a misleading double-success and an
+  order-dependent result, the same hazard the reset/replace overlap ban above
+  exists for.
+
   **This deliberately reverses a documented guarantee, and it is a genuinely new
   trust boundary — not merely a more explicit one.** Today `regenerate` is a list
   of filenames and the only *regeneration* argv press ever runs is a literal
@@ -76,6 +96,13 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   declared commands execute only with explicit operator consent, and that consent
   is keyed to the specific argv — a recorded hash of the declared command, not a
   standing boolean. A changed argv requires a fresh decision.
+
+  Consent is checked at plan time, under the same exit-2-nothing-written
+  contract as D2's executable resolution: a missing or stale hash refuses the
+  press before any rewrite, rename, reset, or deferred `press-source.toml`
+  write — not in the regeneration executor, which runs only after `apply()` has
+  already mutated the tree, where refusal would mean a partial-mutation failure
+  on the common first attempt.
 
   A plain `--allow-target-commands` boolean was considered and rejected because
   it collides with the R3 self-press: `scripts/rebrand_matrix.sh` invokes
@@ -166,6 +193,16 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     rule literal in an exempt lockfile would pass. Same failure shape as the
     matcher choice above, one level down.
 
+    **Both scans feed on the same changed-only inputs the verifier uses.**
+    `verifier.scan` compares source with destination first and scans only
+    identity fields that actually differ (`_changed_fields` — a field identical
+    between the two is skipped by design), and the analogous rule holds for
+    rendered replacement rules whose FROM equals TO. The post-command scan must
+    do the same: feeding it the full source identity turns legitimately
+    retained values — an unchanged owner or author in a correct, freshly
+    regenerated lockfile — into false leaks, failing exactly the partial
+    rebrands the existing doctor and verifier handle.
+
     **Also require the declared output to still exist after the command runs.**
     Scanning alone is insufficient: a command that exits 0 having *deleted* its
     lockfile leaves nothing for `iter_target_files` to return, so the scan finds
@@ -173,11 +210,28 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     tracked file. A declared regeneration that does not leave its file behind is
     a failed regeneration.
 
-    **Existence is not enough — re-check the type after the command runs.** The
-    pre-run no-follow check says nothing about what the command left behind: a
-    command exiting 0 having replaced its output with a symlink satisfies a bare
-    existence test, and the scan would then follow it. Re-run the same
-    regular-file no-follow predicate on the output as a postcondition.
+    **Existence is not enough — re-check type AND containment after the
+    command runs.** The pre-run checks say nothing about what the command left
+    behind: a command exiting 0 having replaced its output with a symlink
+    satisfies a bare existence test, and the scan would then follow it. And the
+    leaf check alone is not enough either — a command that replaces an
+    *ancestor* directory with a symlink to an outside tree leaves
+    `is_regular_lstat(target/dir/output)` passing (it checks only the leaf and
+    follows the symlinked ancestor), so an outside regular file would be
+    accepted and scanned. The postcondition re-runs the full containment set:
+    `assert_under_root`, `assert_ancestors_real`, and the regular-file
+    no-follow predicate.
+
+    **After the LAST declared command finishes, run a final validation pass
+    over every regeneration output — and re-verify P05 reset stubs.**
+    Per-command postconditions are not enough once a target declares multiple
+    regenerations: a later command can delete, replace, or reintroduce source
+    identity into an earlier output — or modify a reset stub — after that
+    output's own postcondition and scan passed, and these files stay excluded
+    from the ordinary doctor and hermetic-verify inventories, so nothing
+    downstream would notice. The final pass repeats the postcondition
+    (existence, type, containment) and the paranoid scan for every declared
+    output, plus stub equality for every reset target.
 
     **The undeclared case is not handled here.** A target with `uv.lock` and no
     declaration produces nothing for this scan to look at, and

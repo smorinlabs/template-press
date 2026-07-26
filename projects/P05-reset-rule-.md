@@ -47,7 +47,12 @@ All five open questions settled 2026-07-25 (codesign export
     the reset each time. Harmless, but a deliberate divergence from prior art —
     revisit if the noise proves annoying.
 - **D3 — §6's contract preflight folds into whichever of P04/P05 lands second.**
-  **SUPERSEDED 2026-07-25 by P04 D5 — it lands with the FIRST of the two.** An
+  **SUPERSEDED 2026-07-25 by P04 D5 — the preflight ships with P04 and P05
+  TOGETHER, as one change with one migration.** ("With the first of the two"
+  was the intermediate ruling; re-verification showed it is not implementable
+  either — `CHANGELOG.md` is a built-in exclusion whose only cure is P05's
+  reset, so a preflight landing with P04 alone would reject this repo's own R3
+  self-press. See P04 D5.) An
   adversarial review showed "second" leaves a live hole in the interval: once
   the `uv.lock` regeneration default is removed, an excluded file with no
   declared neutralization is never rebuilt and never scanned (the doctor gets
