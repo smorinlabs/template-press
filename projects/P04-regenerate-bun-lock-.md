@@ -46,6 +46,20 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   unavailable here, because a regeneration command must run against the final
   tree.)
 
+  **Path-bearing argv is rejected at plan time (decided 2026-07-26).** Only
+  `file` is translated through the rename report — the command's argv is not,
+  so `["bun", "--cwd", "packages/demo_widget", "install"]` goes stale the
+  moment the rename pass moves that directory. Any argv element that names a
+  path in the plan's rename set is a plan-time refusal (exit 2): the tool
+  knows exactly which paths it will rename, so the check is a precise
+  membership test. Auto-rewriting path-looking elements was considered and not
+  taken — a wrong guess silently corrupts the command that then runs against
+  the freshly rewritten tree; refusal fails loudly before anything is written.
+  The consequence for config authors: commands must be written in
+  rename-independent form (run from the target root and let `cwd` carry the
+  location), and a config that cannot be is a loud plan-time error rather than
+  a mid-press failure.
+
   **Execution contract — three properties the generic executor must preserve,
   all of which `_regenerate_lockfiles` has today and none of which are implied
   by "run the declared argv":**
@@ -103,6 +117,22 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   write — not in the regeneration executor, which runs only after `apply()` has
   already mutated the tree, where refusal would mean a partial-mutation failure
   on the common first attempt.
+
+  **In-repo command references are allowed, and consent fingerprints their
+  contents (decided 2026-07-26).** An argv like
+  `["python", "scripts/regenerate.py"]` names mutable code with stable words:
+  the target can change the script while the argv — and its hash — stay
+  identical. So any argv element that resolves to an existing file inside the
+  target (a plain membership test, no guessing which elements are paths) gets
+  its content hash folded into the consent record alongside the argv hash.
+  Editing the referenced script then invalidates standing consent exactly as
+  editing the argv does — scheduled automation stops instead of running
+  substituted code. Refusing in-repo references outright was considered and
+  not taken (a target regenerating via its own helper script is expected to be
+  legitimate); it remains the recorded fallback if fingerprinting proves
+  insufficient in practice. **Known limit, recorded:** the fingerprint covers
+  only files the argv names directly — a fingerprinted script that imports an
+  unfingerprinted helper reintroduces the same exposure one level down.
 
   A plain `--allow-target-commands` boolean was considered and rejected because
   it collides with the R3 self-press: `scripts/rebrand_matrix.sh` invokes
@@ -261,6 +291,16 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     scanned set". A standalone `press verify` on such a config is silent about
     that file today, which is precisely the false-clean this decision must not
     ship.
+
+    **Decided 2026-07-26: exit-code semantics stay; the report carries the
+    coverage.** Verify keeps exit 0 for a clean scan, and the report and
+    receipt gain a machine-readable `exempt` field listing every skipped file
+    and why it was skipped; `docs/source/reference/cli.md`'s definition of
+    exit 0 changes from "fully verified" to "clean over the scanned set,
+    exemptions listed". A third "clean but incomplete" exit code and treating
+    skips as unclean were both considered and not taken — the former redefines
+    an interface existing automation reads, the latter fails every repo with a
+    lockfile forever.
 
 - **D5 — §6's excluded-file contract preflight ships with P04 and P05 TOGETHER.**
   Revised twice. P05 D3 first said "whichever lands second"; that was changed to
