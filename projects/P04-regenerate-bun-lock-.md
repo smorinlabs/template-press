@@ -70,6 +70,14 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   location), and a config that cannot be is a loud plan-time error rather than
   a mid-press failure.
 
+  **Detection is best-effort over recognized shapes, and recorded as such.**
+  An attached-option payload (`--config=packages/demo_widget/config.toml`) or
+  other tool-specific syntax can carry a path the membership test cannot see
+  without guessing argv semantics — the same guesswork this decision rejects.
+  An undetected stale path is not silent corruption: the command fails loudly
+  mid-press and D4's abort withholds the receipt. Enumerating further shapes
+  is an implementation-test concern, not a decision.
+
   **Execution contract — three properties the generic executor must preserve,
   all of which `_regenerate_lockfiles` has today and none of which are implied
   by "run the declared argv":**
@@ -226,6 +234,16 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     would come out non-executable and fail only at launch, after the tree is
     mutated. The replacement pass restores each rewritten file's original
     mode.
+  - **A reference that appears between plan and launch aborts.** If an
+    earlier declared command *creates* `scripts/regenerate.py` and a later
+    command names it, the file was absent at plan time — nothing was
+    fingerprinted, so nothing exists to revalidate, and standing argv-only
+    consent would execute newly minted code. The pre-launch revalidation
+    therefore re-runs the same membership test against the *current* tree:
+    an argv element that now resolves to an in-target file but carries no
+    plan-time fingerprint refuses the launch. Precise — the same test run
+    twice, no path-guessing — and running produced code requires a fresh
+    consent round after the payload exists.
 
   A plain `--allow-target-commands` boolean was considered and rejected because
   it collides with the R3 self-press: `scripts/rebrand_matrix.sh` invokes
@@ -549,5 +567,18 @@ estimate, and the reason the open questions were the real content all along.
 
 Captured as the first of the three because it settles the declared-vs-default
 policy before the destructive operation (P05) has to answer the same question.
+
+**Carried to implementation (final review round; tasks, not decision prose):**
+
+- Reset targets get the same path-component scan as regeneration outputs — an
+  excluded filename that itself carries changed identity
+  (`app_name = "changelog"` → `CHANGELOG.md`) must not survive under a clean
+  receipt (thread 3653398575).
+- Regeneration outputs with `st_nlink > 1` are refused at plan time — an
+  in-place-truncating regenerator would corrupt the external inode, and unlike
+  reset, no `safe_write` new-inode guarantee applies (thread 3653398576).
+- P05's reset write preserves the target's original permission mode —
+  `mkstemp`'s `0600` must not replace a `0644` changelog or strip execute
+  bits (thread 3653398581).
 
 <!-- Promote with `project-refine P04`. -->
