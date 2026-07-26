@@ -47,6 +47,15 @@ All five open questions settled 2026-07-25 (codesign export
     the reset each time. Harmless, but a deliberate divergence from prior art —
     revisit if the noise proves annoying.
 - **D3 — §6's contract preflight folds into whichever of P04/P05 lands second.**
+  **SUPERSEDED 2026-07-25 by P04 D5 — it lands with the FIRST of the two.** An
+  adversarial review showed "second" leaves a live hole in the interval: once
+  the `uv.lock` regeneration default is removed, an excluded file with no
+  declared neutralization is never rebuilt and never scanned (the doctor gets
+  all of `exclude_files` and `iter_target_files` omits them), so source identity
+  survives under a clean receipt — and R3 runs only a real `rebrand`, with no
+  independent check able to catch it. The preflight is that check. Original
+  reasoning below, kept for the record.
+
   (`ch-02-a`.) Roughly twenty lines, reusing that project's fixtures; as a
   standalone item it risks being orphaned once the interesting work is done.
 - **D4 — A failed reset aborts the whole press.** (`ch-03-a`.) Matches press's
