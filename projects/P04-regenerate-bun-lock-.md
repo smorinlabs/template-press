@@ -45,13 +45,32 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   They are not equivalent, and a decision this size should not rest on a
   comparison that collapses under one example.
 
-  **The boundary D1 therefore requires — pick before implementing:** target-
-  declared commands execute only with explicit operator consent, expressed as a
-  flag rather than an interactive prompt so CI remains usable. Without it, press
-  refuses and names the commands it would have run. An executable allowlist was
-  considered and rejected as inconsistent with D1 (it reinstates a tool-side
-  default); a sandbox was considered and judged disproportionate for a tool the
-  operator runs locally against a repo they chose.
+  **The boundary D1 requires: consent scoped to the exact command.** Target-
+  declared commands execute only with explicit operator consent, and that consent
+  is keyed to the specific argv — a recorded hash of the declared command, not a
+  standing boolean. A changed argv requires a fresh decision.
+
+  A plain `--allow-target-commands` boolean was considered and rejected because
+  it collides with the R3 self-press: `scripts/rebrand_matrix.sh` invokes
+  `press rebrand` with only `--accept-discovery --allow-dirty`, and the matrix
+  runs automatically on PRs and on a schedule. A boolean would either break R3
+  or, once added to that script, permanently authorize whatever argv the rules
+  file happens to contain — scheduled automation running unreviewed commands.
+  Command-scoped consent lets R3 carry standing consent for its own known
+  command while a substituted one still stops.
+
+  Two related requirements fall out of that:
+  - `press/press-rules.toml` becomes **executable configuration**, so the
+    rebrand-matrix workflow's path filter must include it. Today
+    (`.github/workflows/rebrand-matrix.yml`) it does not, meaning a change to
+    the command R3 executes would not itself trigger the matrix.
+  - `--force` must NOT double as command consent. It means only "bypass an
+    existing receipt" (`cli.py`), and overloading it would grant execution
+    authority as a side effect of an unrelated flag.
+
+  An executable allowlist was considered and rejected as inconsistent with D1
+  (it reinstates a tool-side default); a sandbox was judged disproportionate for
+  a tool the operator runs locally against a repo they chose.
 
   Two facts that bound the exposure, both worth carrying into the design doc:
   - The plan and dry-run output must display the **exact argv** that would
@@ -123,6 +142,27 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     `_regenerate_lockfiles` is called only from `cli.py:379` and never from the
     verify path, so the sandbox copy of a lockfile still carries source identity
     and would flag forever without an exemption.
+
+- **D5 — §6's excluded-file contract preflight lands WITH this project, not
+  after it.** Revises P05 D3, which deferred it to "whichever of P04/P05 lands
+  second". The deep review showed that leaves a real hole for the interval
+  between them: removing the `uv.lock` default means an excluded file with no
+  declared regeneration is never rebuilt **and** never scanned — the doctor
+  receives all of `DEFAULT_RULES.exclude_files` and `iter_target_files` omits
+  them — so source identity survives under a clean receipt. The R3 harness runs
+  only a real `rebrand` with no independent grep or `press verify`, so it cannot
+  catch that specific missing migration either. §6's fail-loud preflight (exit 2
+  when an excluded file is neither regenerated nor reset nor `verify_ignore`d)
+  is exactly the check that closes it, so it must ship with the first of the two
+  projects rather than the second.
+
+  **Known limitation, accepted:** the receipt records `regenerated = <count>`
+  only, so two presses running different commands for the same output are
+  indistinguishable after the fact. Recording the argv or resolved binary was
+  considered twice and declined both times — the plan and dry-run already show
+  the exact argv at consent time, and D1's command-scoped consent means a
+  substituted command stops rather than running silently. Revisit if forensic
+  reconstruction of a past press is ever needed.
 
 - **D4 — A standalone command that reports whether every external command is
   findable.** D2 makes the check happen during a press; this makes it runnable
