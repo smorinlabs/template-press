@@ -13,6 +13,10 @@ Neutralize bun.lock: excluded from rewrite but never regenerated, so it always l
   arbitrary program. Letting a target declare the command reverses that
   guarantee. This is the cheapest place to settle the policy, before P05 has to
   answer the same question about a destructive operation.
+- Q: **Validate before mutating** (from P05 D5, 2026-07-25): should a press check
+  its regeneration command is available (e.g. `bun` on PATH) at plan time, so a
+  missing tool fails before the rewrite phase rather than after it? Today a
+  failed regeneration is caught only after apply has already run.
 - Q: Scan-exemption keying (EMP-01, design 0007 D3/D5) requires a lockfile to be
   in BOTH the target's `regenerate` AND the tool's own `DEFAULT_RULES.regenerate`
   — deliberately, so a target cannot blind the scanner by declaring a lockfile

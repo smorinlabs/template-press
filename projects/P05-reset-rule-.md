@@ -4,28 +4,104 @@
 
 First destructive op — blank CHANGELOG-style files instead of leaking their history
 
-### Open questions
+### Decisions
 
-- Q: **Built-in default vs purely target-declared?** The register proposes both
-  in different sentences and nothing since settled it. `rules.py`'s own contract
-  says "the tool never carries a target's identity or file list — only generic
-  rules", yet `exclude_files` already hardcodes `CHANGELOG.md`. Under the
-  no-hidden-defaults preference this resolves to declared-only — confirm.
-- Q: **What guards does the engine's first destructive operation need?** Nothing
-  in press today discards content; every op substitutes. Candidates: refuse to
-  reset an untracked file (no git undo path), dry-run preview showing the
-  before/after, a `reset` count in `ApplyReport` + receipt, and capturing the
-  prior content so a before/after diff is inspectable.
-- Q: **§6 — the exclude-file contract preflight.** Fail loud (exit 2, distinct
-  diagnostic) when an `exclude_files` entry exists, still carries identity, and
-  is neither regenerated nor reset nor `verify_ignore`d. Depends on P04 and P05
-  both landing. Own work item, or folded into whichever lands second?
-- Q: **Atomic or best-effort?** The embedded engine made reset fatal inside
-  `apply()` (aborts the press) while regeneration was best-effort (warn and
-  continue). Press currently treats a failed regeneration as a hard failure with
-  no receipt. Which posture does reset take?
-- Q: Can a reset target also be a `[[replace]]` target? The embedded engine's
-  tests forbade the overlap as "order-dependent, confusing" — inherit that ban?
+All five open questions settled 2026-07-25 (codesign export
+`The reset rule — three design decisions`, sections sec-01/sec-02/sec-03).
+
+- **D1 — Declared only; no built-in default.** A target declares every
+  `[[reset]]` entry in its own `press-rules.toml`. The tool ships no default
+  entry for `CHANGELOG.md` or anything else. Follows the standing preference
+  that everything be declared with no hidden defaults, and keeps `rules.py`'s
+  "the tool never carries a target's file list" contract intact for the new
+  mechanism even though `exclude_files` predates it.
+- **D2 — Guards: refuse-if-untracked, dry-run preview, receipt record, and an
+  overlap ban.** (`ch-01-a`, `ch-01-b`, `ch-01-c`, `ch-01-e`.)
+  - Refuse to reset a file git is not tracking **or that has uncommitted
+    changes**. The guard's purpose is an undo path, and `git checkout` restores
+    only the committed content — a tracked file carrying unstaged work has no
+    recoverable copy of that work either. Since `--allow-dirty` exists
+    (`cli.py:233`) this is reachable, not theoretical: refuse a dirty reset
+    target even under that flag.
+  - Preview at two levels, both always present, both measured in **lines**:
+    - **default** — one line per reset target: its path and current line count
+      (`reset CHANGELOG.md (1,234 lines → stub)`).
+    - **verbose** — additionally the first N lines of the current content plus
+      the stub that would replace it, where N is the same unit as the count
+      above. The motivating target is a release history running to thousands of
+      lines, so the excerpt is bounded rather than complete.
+
+    Normal mode is never silent about a reset; only the content excerpt is
+    verbose-gated.
+  - Record each reset in `ApplyReport` and the receipt, mirroring the existing
+    shapes exactly: `ApplyReport.reset: list[str]` holds the reset paths (as
+    `replaced`/`renamed` already do), and the receipt's `[press.counts]` gains a
+    `reset = <n>` line beside `replaced`/`renamed`/`regenerated`/`skipped`
+    (counts only, as that table already is). Closes a known gap: the embedded
+    engine printed its reset list to stdout and discarded it.
+  - Refuse a path that is both a reset target and a `[[replace]]` target — the
+    result would depend on pass order. Inherits the embedded engine's own test-
+    enforced ban.
+  - **Not taken:** idempotent skip-when-already-stubbed (`ch-01-d`). The embedded
+    engine had it; without it a re-press rewrites identical content and reports
+    the reset each time. Harmless, but a deliberate divergence from prior art —
+    revisit if the noise proves annoying.
+- **D3 — §6's contract preflight folds into whichever of P04/P05 lands second.**
+  (`ch-02-a`.) Roughly twenty lines, reusing that project's fixtures; as a
+  standalone item it risks being orphaned once the interesting work is done.
+- **D4 — A failed reset aborts the whole press.** (`ch-03-a`.) Matches press's
+  existing posture on a failed lockfile regeneration (error, no receipt) rather
+  than inventing a softer second rule.
+
+  **This is not an atomicity guarantee, and must not be implemented or tested as
+  one.** `apply` writes incrementally and has no rollback — its own failure path
+  says "target may be PARTIALLY rewritten; restore with `git checkout . && git
+  clean -fd`" (`cli.py:442`). Aborting stops *further* damage and withholds the
+  success receipt; git remains the undo button. D5 is what actually keeps the
+  destructive phase from starting in a state it cannot finish.
+- **D5 — Validate before mutating: preflight every reset target at plan time.**
+  Rather than relying on D4's abort to catch problems mid-run, check up front
+  that each declared reset target is resolvable inside the target, git-tracked,
+  clean, and passes the write-path guards — failing at plan time (exit 2, no
+  writes). Generalizes the tool's existing "exit 2 means nothing was written"
+  contract to the new operation.
+
+  **This rejects known-invalid targets; it is not a completion guarantee.** A
+  preflight cannot promise that later I/O succeeds — a filesystem can change
+  between plan and apply, and D4 already records that `apply` is incremental
+  with no rollback. The pairing is: D5 removes the failure modes that are
+  knowable in advance, D4 bounds the damage from the ones that are not.
+
+  **The preflight applies the same predicates the write path applies**, named
+  explicitly so plan-time and apply-time cannot drift:
+  - `safety.assert_under_root` — the target resolves inside the press root.
+  - `safety.assert_ancestors_real` — no symlinked ancestor could redirect the
+    write outside the tree.
+  - `safety.is_regular_lstat` — the sink is a regular file, no-follow; this is
+    what rejects a symlink sink that a bare `os.access` probe would pass.
+  - `safety.safe_write(..., refuse_hardlink=False)` performs the write itself,
+    matching `_apply_replacements`: its atomic temp-plus-rename creates a new
+    inode, so an external hardlink keeps the pre-reset content rather than
+    being blanked through.
+
+  **Ordering: reset runs first, before every other pass.** `apply`'s order today
+  is replace → retarget-symlinks → rename (`engine.py`); reset takes position
+  zero. Two reasons, and only the first is load-bearing: (1) declared paths are
+  written against the repo's current layout, so they must be consumed before the
+  rename pass moves anything — placing reset last, as the embedded engine did,
+  makes a declared path stale, and because the prior-art implementation creates
+  the file when absent, a stale path would silently *create* a spurious file
+  rather than fail (the embedded engine never hit this because its only target
+  was a root `CHANGELOG.md` that never moves); (2) the replace pass then sees a
+  stub with no identity left to rewrite — though D2's overlap ban already makes
+  reset and replace targets disjoint, so this is a consequence, not a reason.
+
+  *Scope note:* reset itself never executes anything — it writes a static stub
+  (see prior art below); running commands is `regenerate`'s job. The same
+  validate-before-mutate principle applies there and is arguably more valuable:
+  P04 should check its regeneration command is actually available (e.g. `bun`
+  on PATH) before a press begins, instead of discovering it after the rewrite
+  phase has already run.
 
 ### Notes
 
