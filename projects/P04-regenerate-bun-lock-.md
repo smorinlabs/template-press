@@ -13,11 +13,28 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   `{ file = "bun.lock", command = ["bun", "install"] }`. Nothing is inferred
   from a filename, so there is no hidden filename-to-command mapping.
 
+  **`file` is validated as a contained relative path, not taken as given.** It
+  must pass the same predicates P05 D5 requires of reset targets —
+  `safety.SafeRelPath` plus a no-follow regular-file check — before anything
+  runs. Without that, `file = "../outside"` paired with `command = ["true"]`
+  satisfies a naive existence check against a pre-existing file the target's
+  git-based scanner cannot see, buying an exemption for a path outside the repo.
+
+  **A file may not be both a regeneration output and a `[[reset]]` target.**
+  P05 D2 already bans reset/replace overlap because the result depends on pass
+  order; the same hazard exists here and is currently worse, since reset runs
+  first (P05 D5) and regeneration runs after `apply` — so a file declared as
+  both gets its stub written and then immediately overwritten, with both
+  operations counted successful. Reject the overlap at config-load time.
+
   **This deliberately reverses a documented guarantee, and it is a genuinely new
   trust boundary — not merely a more explicit one.** Today `regenerate` is a list
-  of filenames and the only argv press ever runs is a literal `["uv", "lock"]`
-  baked into `cli.py`, so a pressed repo's config cannot make press execute a
-  program of its choosing (design 0007 D3/D5, EMP-01). After D1 it can.
+  of filenames and the only *regeneration* argv press ever runs is a literal
+  `["uv", "lock"]` baked into `cli.py`, so a pressed repo's config cannot make
+  press execute a program of its choosing (design 0007 D3/D5, EMP-01). After D1
+  it can. (Press does invoke `git` unconditionally — `git status` in `cli.py`,
+  `git ls-files` in `engine.py` — but never at a target's direction, which is
+  the distinction that matters here and the reason D4 lists `git` separately.)
 
   An earlier draft of this decision justified that by arguing press already runs
   the target's build tooling, since `uv lock` can execute dependency build
@@ -77,6 +94,16 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     the doctor scan — note it also requires the doctor to look at regenerated
     files at all, which it does not today (`iter_target_files` skips everything
     in `exclude_files`).
+
+    **That scan must use the paranoid matcher (`matcher.find_occurrences`), not
+    the doctor's conservative `identity.occurs`.** This is the decision's most
+    important detail and an earlier draft got it wrong. The exemption being
+    earned here is exemption from *verify*, whose whole reason for existing is a
+    stricter matcher than the doctor's (design 0007) — the doctor misses
+    case/separator-glued forms like `demoWidgetConfig`. Paying for a paranoid
+    exemption with conservative evidence means a no-op regenerator that leaves a
+    glued variant behind passes the doctor and is then skipped by verify: a
+    false-clean receipt. The evidence must be at least as strong as what it buys.
 
     **Also require the declared output to still exist after the command runs.**
     Scanning alone is insufficient: a command that exits 0 having *deleted* its
