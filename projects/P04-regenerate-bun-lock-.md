@@ -120,9 +120,11 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   - Reject the old list-of-strings form with an error that prints the
     equivalent object form, rather than silently accepting it as shorthand —
     accepting it would reinstate the filename-to-command mapping D1 removes.
-  - Create `press/press-rules.toml` in this repo declaring its own `uv.lock`
-    regeneration, as part of the same change that removes the default —
-    preserving the `scrubbed_uv_env()` hardening the hardcoded call has today.
+  - Create `press/press-rules.toml` in this repo declaring **every** excluded
+    file that exists here — `uv.lock` AND `bun.lock` regenerations, plus the
+    `CHANGELOG.md` reset from P05 — as part of the same change that removes the
+    default. An earlier draft named only `uv.lock`; a literal implementation of
+    that would fail D5's own preflight on the other two.
   - Update `scripts/rebrand_matrix.sh` to carry consent for its own command.
     Adding the rules file alone does not keep the matrix green: R3 invokes the
     real self-press with only `--accept-discovery --allow-dirty`, and D1 says a
@@ -206,8 +208,20 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     that file today, which is precisely the false-clean this decision must not
     ship.
 
-- **D5 — §6's excluded-file contract preflight lands WITH this project, not
-  after it.** Revises P05 D3, which deferred it to "whichever of P04/P05 lands
+- **D5 — §6's excluded-file contract preflight ships with P04 and P05 TOGETHER.**
+  Revised twice. P05 D3 first said "whichever lands second"; that was changed to
+  "the first project" after a review showed the interval between them leaves a
+  false-clean hole. Re-verification then showed **"first" is not implementable
+  either**: `CHANGELOG.md` is a built-in exclusion (`rules.py`), it exists in
+  this repo carrying source identity, and P05 deliberately ships no default
+  reset — so a preflight landing with P04 alone would reject this repo's own R3
+  self-press, seeing a tracked excluded file with no regeneration, no reset, and
+  no ignore. §6 needs *both* neutralizing mechanisms to exist before it can pass
+  on a real target, and P04 alone supplies only one of them. The two projects
+  therefore ship as one change, with one migration and one `press-rules.toml`
+  declaring both the regenerations and the CHANGELOG reset.
+
+  ~~lands WITH this project, not after it.~~ Revises P05 D3, which deferred it to "whichever of P04/P05 lands
   second". The deep review showed that leaves a real hole for the interval
   between them: removing the `uv.lock` default means an excluded file with no
   declared regeneration is never rebuilt **and** never scanned — the doctor
