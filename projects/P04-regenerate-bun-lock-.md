@@ -263,6 +263,17 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     (existence, type, containment) and the paranoid scan for every declared
     output, plus stub equality for every reset target.
 
+    **Decided 2026-07-26: a non-UTF-8 output cannot earn the exemption — fail
+    closed.** The exemption is bought with the post-command text scan; a file
+    that scan cannot read is refused as a regeneration output at config load.
+    Such files route through the explicit `verify_ignore` list instead, keeping
+    the coverage gap visible and deliberate rather than an unchecked free pass.
+    This restricts what may be exempt from scanning — not what files a repo may
+    contain or what a command may produce. Practical cost today is zero: every
+    real regeneration target is a text lockfile. Extending a raw-bytes scan to
+    binaries was considered and not taken — it catches ASCII-embedded identity
+    only, partial evidence that can still false-clean.
+
     **The undeclared case is not handled here.** A target with `uv.lock` and no
     declaration produces nothing for this scan to look at, and
     `iter_target_files` still skips it — that gap is closed by D5's preflight,
