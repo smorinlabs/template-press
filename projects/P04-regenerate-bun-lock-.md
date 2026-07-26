@@ -56,6 +56,12 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   shallowest moved directory (`packages/demo_widget`), and an argv naming a
   descendant (`packages/demo_widget/regenerate.py`) goes just as stale, so
   refusal fires when an element equals OR sits beneath any renamed path.
+  Elements are **normalized before comparison** — resolved against the target
+  root, separators unified (`.\tools\regenerate.exe` is path-qualified just
+  like `./tools/regenerate`), `.`/`..` segments collapsed — so spellings like
+  `./packages/demo_widget` or `packages/demo_widget/../demo_widget` cannot
+  slip past the membership test; the same normalization feeds the
+  path-qualified `argv[0]` classification in D2.
   Auto-rewriting path-looking elements was considered and not
   taken — a wrong guess silently corrupts the command that then runs against
   the freshly rewritten tree; refusal fails loudly before anything is written.
@@ -89,6 +95,21 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     argv, and it is folded into the consent hash, so widening it (say, adding
     `GITHUB_TOKEN`) invalidates standing consent exactly like a changed argv.
 
+    `env` is validated at config load like `command`: a list of non-empty,
+    platform-valid variable names — no `=`, no NUL, no non-strings. A
+    declared name absent from the operator's environment is simply omitted
+    from the child env (the declaration is permission, not a requirement),
+    and the dry-run shows which declared names would actually apply.
+
+    **The minimal base is platform-specific.** The Unix base (`PATH`, `HOME`,
+    `LANG`, `TMPDIR`) is wrong on Windows — a first-class platform here —
+    where process loading and tool discovery need `SystemRoot`, `PATHEXT`,
+    `USERPROFILE`, and `TEMP`/`TMP`, while `HOME` and `TMPDIR` may not exist
+    at all. Each platform defines its own base, and D2's plan-time resolution
+    runs under that exact effective environment, so a command cannot pass
+    planning under the operator's env and then fail at launch under the
+    stripped one.
+
     This supersedes the uv-specific scrub as the general mechanism, and
     subsumes it: inherited `UV_*` overrides simply never arrive.
     Inherit-minus-blocklist was considered and not taken — today's
@@ -121,6 +142,14 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   "final" artifact would be silently overwritten by press's own source-config
   persistence, leaving the reported regenerated result different from what
   ends up on disk.
+
+  Reservation alone is not protection, because a consented command can
+  mutate arbitrary files and `ROOT_CONTROL` is omitted from the downstream
+  doctor and verifier inventories. The final validation pass therefore
+  snapshots reserved control files before the first command and revalidates
+  their type, containment, and content after the last one; a mismatch aborts
+  the press — the rules that ran are no longer the rules that were consented
+  to and validated.
 
   **This deliberately reverses a documented guarantee, and it is a genuinely new
   trust boundary — not merely a more explicit one.** Today `regenerate` is a list
@@ -183,6 +212,21 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   each referenced file's fingerprint is revalidated immediately before its
   command launches — a mismatch aborts the press (D4 posture).
 
+  Two boundary conditions of that membership test, decided the same way as
+  everything else here (no-follow, fail closed):
+  - **A symlink is refused as a command reference, wherever it points.**
+    A tracked link to a file outside the target fails the inside-target test
+    while still executing target-controlled bytes; re-pointing the link
+    changes what runs while the argv and the unfollowed reference stay
+    stable. The membership test uses the same no-follow containment
+    discipline as every other path check.
+  - **Rewriting a referenced helper preserves its file mode.** `safe_write`'s
+    atomic temp-plus-rename creates a fresh inode and today never restores
+    the original permission bits (`_atomic_write_bytes`), so a `0755` helper
+    would come out non-executable and fail only at launch, after the tree is
+    mutated. The replacement pass restores each rewritten file's original
+    mode.
+
   A plain `--allow-target-commands` boolean was considered and rejected because
   it collides with the R3 self-press: `scripts/rebrand_matrix.sh` invokes
   `press rebrand` with only `--accept-discovery --allow-dirty`, and the matrix
@@ -236,6 +280,10 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     real self-press with only `--accept-discovery --allow-dirty`, and D1 says a
     press without consent refuses. Runbooks that document the R3 invocation need
     the same update.
+  - Provision the declared commands in CI: `.github/workflows/rebrand-matrix.yml`
+    installs only uv today, and the migrated rules file makes D2's preflight
+    require `bun` — without the pinned bun installer in the workflow, R3
+    exits 2 before pressing on any runner lacking an incidental bun install.
 
 - **D2 — Resolve every declared command at plan time; missing tool exits 2.**
   Before any write, check each command's executable resolves. A missing
@@ -247,7 +295,13 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   relative to the target root, which is the mandatory execution `cwd`, and
   never via PATH; only bare names resolve on PATH. Checking a target-local
   executable from the press caller's directory would exit 2 for a command
-  the real invocation, running with `cwd=target`, would find and run. Consistent
+  the real invocation, running with `cwd=target`, would find and run.
+
+  Resolution is bound to the effective execution environment and then
+  **pinned**: plan-time lookup runs under the same deny-by-default env whose
+  fixed base supplies `PATH`, and the resolved absolute path is what
+  executes — no second runtime PATH lookup exists to diverge from what was
+  planned and consented to. Consistent
   with P05 D5 (validate before mutating) and with the existing "exit 2 means
   nothing was written" contract. Considered and not taken: also recording the
   resolved binary path in the receipt for reproducibility across machines —
@@ -368,7 +422,7 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     declaration produces nothing for this scan to look at, and
     `iter_target_files` still skips it — that gap is closed by D5's preflight,
     which refuses the press outright, not by this branch. The two must ship
-    together, which is exactly why D5 moves §6 to the first project.
+    together, which is exactly why D5 ships §6 with P04 and P05 as one change.
   - **Hermetic verify** (`verify_cli`): keeps an exemption, but it requires
     **both** conditions — the filename is on press's own exemptible list **and**
     the target actually declared a regeneration for it. The tool-side list caps
@@ -434,7 +488,9 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   catch that specific missing migration either. §6's fail-loud preflight (exit 2
   when an excluded file is neither regenerated nor reset nor `verify_ignore`d)
   is exactly the check that closes it, so it must ship with the first of the two
-  projects rather than the second.
+  projects rather than the second. *(This "first project" framing is itself
+  superseded by the final ruling above: the preflight ships with both projects
+  together.)*
 
   **Known limitation, accepted:** the receipt records `regenerated = <count>`
   only, so two presses running different commands for the same output are
