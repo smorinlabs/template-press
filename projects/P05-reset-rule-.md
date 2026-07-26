@@ -97,6 +97,11 @@ All five open questions settled 2026-07-25 (codesign export
     matching `_apply_replacements`: its atomic temp-plus-rename creates a new
     inode, so an external hardlink keeps the pre-reset content rather than
     being blanked through.
+  - The declared stub content itself passes the changed-only paranoid
+    identity and rendered-`[[replace]]`-literal scan (P04 D3's evidence
+    standard): a stub may not restore the identity its reset exists to
+    remove, and equality checks downstream prove only that nothing altered
+    the stub afterwards.
 
   **Ordering: reset runs first, before every other pass.** `apply`'s order today
   is replace → retarget-symlinks → rename (`engine.py`); reset takes position

@@ -51,8 +51,12 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   so `["bun", "--cwd", "packages/demo_widget", "install"]` goes stale the
   moment the rename pass moves that directory. Any argv element that names a
   path in the plan's rename set is a plan-time refusal (exit 2): the tool
-  knows exactly which paths it will rename, so the check is a precise
-  membership test. Auto-rewriting path-looking elements was considered and not
+  knows exactly which paths it will rename, so the check is precise. It is
+  **prefix-aware, not exact-match** — the rename set collapses to the
+  shallowest moved directory (`packages/demo_widget`), and an argv naming a
+  descendant (`packages/demo_widget/regenerate.py`) goes just as stale, so
+  refusal fires when an element equals OR sits beneath any renamed path.
+  Auto-rewriting path-looking elements was considered and not
   taken — a wrong guess silently corrupts the command that then runs against
   the freshly rewritten tree; refusal fails loudly before anything is written.
   The consequence for config authors: commands must be written in
@@ -110,6 +114,14 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   order-dependent result, the same hazard the reset/replace overlap ban above
   exists for.
 
+  **Press-owned control files are reserved.** `ROOT_CONTROL` paths — the
+  receipt and `press/press-source.toml`, which press itself writes *after*
+  regeneration validation has finished — may not be declared as regeneration
+  outputs or reset targets; rejected at config load. Otherwise the validated
+  "final" artifact would be silently overwritten by press's own source-config
+  persistence, leaving the reported regenerated result different from what
+  ends up on disk.
+
   **This deliberately reverses a documented guarantee, and it is a genuinely new
   trust boundary — not merely a more explicit one.** Today `regenerate` is a list
   of filenames and the only *regeneration* argv press ever runs is a literal
@@ -138,7 +150,11 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   press before any rewrite, rename, reset, or deferred `press-source.toml`
   write — not in the regeneration executor, which runs only after `apply()` has
   already mutated the tree, where refusal would mean a partial-mutation failure
-  on the common first attempt.
+  on the common first attempt. Enforcement gates mutation, not visibility:
+  `--dry-run` still renders the full plan — the exact argv, the declared env
+  list, and the consent value a grant would need — and keeps its documented
+  exit-0 contract, so the operator can obtain the token they are being asked
+  to approve. Only a mutating run refuses on missing or stale consent.
 
   **In-repo command references are allowed, and consent fingerprints their
   contents (decided 2026-07-26).** An argv like
@@ -155,6 +171,17 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   insufficient in practice. **Known limit, recorded:** the fingerprint covers
   only files the argv names directly — a fingerprinted script that imports an
   unfingerprinted helper reintroduces the same exposure one level down.
+
+  **The fingerprint covers the bytes that will EXECUTE, not the bytes on disk
+  at plan time.** A referenced helper may itself be rewritten by the replace
+  pass before the executor runs, and the `[[replace]]` rules are
+  target-supplied — hashing the pre-apply file would leave consent standing
+  while a changed rule changes the executed code. Press computes the planned
+  post-apply content of each referenced file at plan time (the replacement
+  pass is deterministic from the plan) and consent covers THAT. And because a
+  preceding declared command can rewrite a file a later command references,
+  each referenced file's fingerprint is revalidated immediately before its
+  command launches — a mismatch aborts the press (D4 posture).
 
   A plain `--allow-target-commands` boolean was considered and rejected because
   it collides with the R3 self-press: `scripts/rebrand_matrix.sh` invokes
@@ -211,9 +238,16 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     the same update.
 
 - **D2 — Resolve every declared command at plan time; missing tool exits 2.**
-  Before any write, check each command's executable resolves on PATH. A missing
+  Before any write, check each command's executable resolves. A missing
   tool becomes a clean refusal with nothing written instead of a failure
-  discovered after the rewrite pass has already mutated the repo. Consistent
+  discovered after the rewrite pass has already mutated the repo.
+
+  Resolution semantics must match execution exactly: a path-qualified
+  `argv[0]` (`"./tools/regenerate"` — anything containing a slash) resolves
+  relative to the target root, which is the mandatory execution `cwd`, and
+  never via PATH; only bare names resolve on PATH. Checking a target-local
+  executable from the press caller's directory would exit 2 for a command
+  the real invocation, running with `cwd=target`, would find and run. Consistent
   with P05 D5 (validate before mutating) and with the existing "exit 2 means
   nothing was written" contract. Considered and not taken: also recording the
   resolved binary path in the receipt for reproducibility across machines —
@@ -255,6 +289,17 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     regenerated lockfile — into false leaks, failing exactly the partial
     rebrands the existing doctor and verifier handle.
 
+    Two path-shaped refinements of the same evidence standard: the paranoid
+    scan covers every component of the **translated output path** as well as
+    its contents — an identity token that doubles as the lockfile's own name
+    (`app_name = "bun"` with output `bun.lock`) survives in the *filename*
+    precisely because the output is excluded from the rename pass. And
+    rendered rules carry file scopes in source coordinates, so scanning a
+    renamed output at its destination must **reverse-map the scope through
+    `ApplyReport.renamed`** — the same reverse-mapped predicate the doctor
+    and verifier already use — or a rule scoped `packages/demo_widget/**`
+    silently stops matching the moved file it was written for.
+
     **Also require the declared output to still exist after the command runs.**
     Scanning alone is insufficient: a command that exits 0 having *deleted* its
     lockfile leaves nothing for `iter_target_files` to return, so the scan finds
@@ -283,11 +328,34 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     from the ordinary doctor and hermetic-verify inventories, so nothing
     downstream would notice. The final pass repeats the postcondition
     (existence, type, containment) and the paranoid scan for every declared
-    output, plus stub equality for every reset target.
+    output. For every reset target it repeats the same full guard set —
+    `assert_under_root`, `assert_ancestors_real`, and the no-follow
+    regular-file check — before comparing content: stub equality alone would
+    follow a symlink a later command planted and accept matching outside
+    content. And because reset paths are consumed in source coordinates
+    before the rename pass (P05 D5) while this check runs after it, reset
+    paths are translated through `ApplyReport.renamed` here exactly as
+    regeneration outputs are — validating the declared source path would
+    report a validly moved stub as missing.
+
+    **A stub must not itself restore old identity.** Stub equality proves
+    only that later commands did not alter the reset result — a declared stub
+    whose content carries a changed source token or a rendered `[[replace]]`
+    FROM literal would "neutralize" the exclusion while deliberately keeping
+    old identity in the tree, invisible to every downstream inventory. Stub
+    content is validated at plan time with the same changed-only paranoid
+    identity and rendered-literal scan the post-command check uses.
 
     **Decided 2026-07-26: a non-UTF-8 output cannot earn the exemption — fail
     closed.** The exemption is bought with the post-command text scan; a file
-    that scan cannot read is refused as a regeneration output at config load.
+    that scan cannot read cannot buy it. The gate applies at both ends:
+    at plan time the tracked pre-state must decode as UTF-8 (outputs are
+    required tracked and clean, so there is a pre-state to check), and as a
+    postcondition the produced output must still decode — a command that
+    exits 0 having emitted undecodable bytes fails the press. The verifier
+    does carry a raw-bytes path (`_scan_binary`) for its own inventory, but
+    parity with it was rejected along with the raw-bytes option: fail-closed
+    means no undecodable output is ever scanned-and-exempted at all.
     Such files route through the explicit `verify_ignore` list instead, keeping
     the coverage gap visible and deliberate rather than an unchecked free pass.
     This restricts what may be exempt from scanning — not what files a repo may
@@ -313,6 +381,14 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     `_regenerate_lockfiles` is called only from `cli.py:379` and never from the
     verify path, so the sandbox copy of a lockfile still carries source identity
     and would flag forever without an exemption.
+
+    **The tool-side list matches by basename at any depth, not by exact
+    root-relative path.** Today's `scan_paths` exemption names only literal
+    root-level artifacts, so a supported nested declaration like
+    `packages/demo_widget/bun.lock` would never be exempted — hermetic verify
+    would flag forever a file the real press regenerates and validates.
+    Basename-on-the-list plus the target's declaration for that exact path
+    keeps the tool-side cap while covering nested outputs.
 
     **That exemption is a gap in coverage, and verify must say so.** Declaring a
     regeneration does not prove the command rebuilds anything — a target
