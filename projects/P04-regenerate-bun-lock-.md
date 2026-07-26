@@ -4,24 +4,53 @@
 
 Neutralize bun.lock: excluded from rewrite but never regenerated, so it always leaks
 
-### Open questions
+### Decisions
 
-- Q: Should regenerate commands be **target-declared** (no hidden defaults, per
-  the stated preference) or stay **tool-hardcoded**? Today `regenerate` is a
-  list of *filenames* and the only argv press ever runs is a literal
-  `["uv", "lock"]` baked into `cli.py` — a target cannot make press execute an
-  arbitrary program. Letting a target declare the command reverses that
-  guarantee. This is the cheapest place to settle the policy, before P05 has to
-  answer the same question about a destructive operation.
-- Q: **Validate before mutating** (from P05 D5, 2026-07-25): should a press check
-  its regeneration command is available (e.g. `bun` on PATH) at plan time, so a
-  missing tool fails before the rewrite phase rather than after it? Today a
-  failed regeneration is caught only after apply has already run.
-- Q: Scan-exemption keying (EMP-01, design 0007 D3/D5) requires a lockfile to be
-  in BOTH the target's `regenerate` AND the tool's own `DEFAULT_RULES.regenerate`
-  — deliberately, so a target cannot blind the scanner by declaring a lockfile
-  press has no regenerator for. Does a fully-declared model preserve that
-  protection, and if so how?
+All three open questions settled 2026-07-25 (walkthrough in chat).
+
+- **D1 — Regeneration commands are fully target-declared.** A target declares
+  both the file and the argv that rebuilds it, e.g.
+  `{ file = "bun.lock", command = ["bun", "install"] }`. Nothing is inferred
+  from a filename, so there is no hidden filename-to-command mapping.
+
+  **This deliberately reverses a documented guarantee** and must be recorded as
+  such rather than discovered later: today `regenerate` is a list of filenames
+  and the only argv press ever runs is a literal `["uv", "lock"]` baked into
+  `cli.py`, so a pressed repo's config cannot make press execute a program of
+  its choosing (design 0007 D3/D5, EMP-01). After D1 it can. The threat model
+  that makes this acceptable: pressing a repo already means running that repo's
+  build tooling — `uv lock` itself executes arbitrary build backends — so the
+  config is not a new trust boundary, only a more explicit one. Whoever
+  implements this should carry that reasoning into the design doc, and D3 below
+  is what keeps the change from also weakening leak detection.
+
+- **D2 — Resolve every declared command at plan time; missing tool exits 2.**
+  Before any write, check each command's executable resolves on PATH. A missing
+  tool becomes a clean refusal with nothing written instead of a failure
+  discovered after the rewrite pass has already mutated the repo. Consistent
+  with P05 D5 (validate before mutating) and with the existing "exit 2 means
+  nothing was written" contract. Considered and not taken: also recording the
+  resolved binary path in the receipt for reproducibility across machines —
+  worth revisiting, but not required for correctness.
+
+- **D3 — Scan-exemption is earned by result, not by declaration.** Two parts,
+  because the two contexts differ:
+  - **Real press** (`cli._press`): after regeneration runs, SCAN what the command
+    produced. A no-op command (`["true"]`) leaves source identity in the file and
+    fails the press. This is newly possible because regeneration happens before
+    the doctor scan — note it also requires the doctor to look at regenerated
+    files at all, which it does not today (`iter_target_files` skips everything
+    in `exclude_files`).
+  - **Hermetic verify** (`verify_cli`): keeps an exemption, keyed on **press's own
+    list of exemptible filenames** rather than on the target's declaration, so a
+    target cannot widen it. Verified 2026-07-25: `_regenerate_lockfiles` is
+    called only from `cli.py:379` and never from the verify path, so the sandbox
+    copy of a lockfile still carries source identity and would flag forever
+    without an exemption.
+
+  Together these preserve EMP-01's actual purpose — a target must not be able to
+  blind the scanner to a file that still carries old identity — under a model
+  where "does press have a regenerator for this file" has become vacuously true.
 
 ### Notes
 
