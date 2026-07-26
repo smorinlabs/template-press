@@ -13,16 +13,38 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   `{ file = "bun.lock", command = ["bun", "install"] }`. Nothing is inferred
   from a filename, so there is no hidden filename-to-command mapping.
 
-  **This deliberately reverses a documented guarantee** and must be recorded as
-  such rather than discovered later: today `regenerate` is a list of filenames
-  and the only argv press ever runs is a literal `["uv", "lock"]` baked into
-  `cli.py`, so a pressed repo's config cannot make press execute a program of
-  its choosing (design 0007 D3/D5, EMP-01). After D1 it can. The threat model
-  that makes this acceptable: pressing a repo already means running that repo's
-  build tooling — `uv lock` itself executes arbitrary build backends — so the
-  config is not a new trust boundary, only a more explicit one. Whoever
-  implements this should carry that reasoning into the design doc, and D3 below
-  is what keeps the change from also weakening leak detection.
+  **This deliberately reverses a documented guarantee, and it is a genuinely new
+  trust boundary — not merely a more explicit one.** Today `regenerate` is a list
+  of filenames and the only argv press ever runs is a literal `["uv", "lock"]`
+  baked into `cli.py`, so a pressed repo's config cannot make press execute a
+  program of its choosing (design 0007 D3/D5, EMP-01). After D1 it can.
+
+  An earlier draft of this decision justified that by arguing press already runs
+  the target's build tooling, since `uv lock` can execute dependency build
+  backends. **That argument does not hold** and is recorded here so it is not
+  reached for again: executing a dependency's build hook during resolution
+  requires a malicious dependency and is indirect; executing
+  `command = ["/bin/sh", "-c", "…"]` from a config file is direct and trivial.
+  They are not equivalent, and a decision this size should not rest on a
+  comparison that collapses under one example.
+
+  **The boundary D1 therefore requires — pick before implementing:** target-
+  declared commands execute only with explicit operator consent, expressed as a
+  flag rather than an interactive prompt so CI remains usable. Without it, press
+  refuses and names the commands it would have run. An executable allowlist was
+  considered and rejected as inconsistent with D1 (it reinstates a tool-side
+  default); a sandbox was considered and judged disproportionate for a tool the
+  operator runs locally against a repo they chose.
+
+  Two facts that bound the exposure, both worth carrying into the design doc:
+  - The plan and dry-run output must display the **exact argv** that would
+    execute, so consent is informed rather than nominal.
+  - The CI drift-guard path does not execute anything: `press verify` never
+    regenerates (verified 2026-07-25 — `_regenerate_lockfiles` is called only
+    from `cli.py:379`), so the usage most likely to run against an untrusted
+    repo never reaches a target-declared command.
+
+  D3 below is what keeps this change from also weakening leak detection.
 
   **Migration is a required part of this decision, not an afterthought.** The
   `regenerate` key changes from a list of filenames to a list of objects, so
@@ -77,8 +99,10 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
 
 - **D4 — A standalone command that reports whether every external command is
   findable.** D2 makes the check happen during a press; this makes it runnable
-  on its own, answering "can this machine press this repo at all?" without
-  touching the repo. Read-only, no writes, no sandbox.
+  on its own, answering "can this machine press this repo at all?" It **reads
+  the target's config** — it has to, since that is where the declared commands
+  live — but writes nothing, mutates nothing, builds no sandbox, and executes
+  none of the commands it reports on.
 
   Scope: **the `argv[0]` of every declared regeneration command**, plus the
   tools press itself invokes unconditionally (`git`) — reporting each as found
