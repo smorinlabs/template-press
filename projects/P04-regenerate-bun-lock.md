@@ -715,7 +715,7 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       bun.lock regenerations, CHANGELOG reset); pinned bun installer and a
       `press-rules.toml` path filter in `.github/workflows/rebrand-matrix.yml`;
       update runbooks
-- [ ] [P04-T16] On a `--force` re-press, invalidate the prior receipt after
+- [x] [P04-T16] On a `--force` re-press, invalidate the prior receipt after
       the plan gates pass and before the first mutation — with a failing
       test for the failed-forced-re-press case first; a failed forced
       re-press must not leave the old receipt advertising a verified press

@@ -26,6 +26,23 @@ def read_receipt(target: Path) -> str | None:
     return path.read_text(encoding="utf-8")
 
 
+def invalidate_receipt(target: Path) -> bool:
+    """Remove the prior receipt, if any; True when one was removed.
+
+    A forced re-press consumes its predecessor's receipt after the plan
+    gates pass and BEFORE the first mutation (P04-T16): a failed forced
+    re-press must not leave the old receipt advertising a verified press.
+    No-follow — a symlinked press dir or receipt is left alone (the press
+    refuses such a layout at write time anyway).
+    """
+    press_dir = target / RECEIPT_REL.parent
+    path = target / RECEIPT_REL
+    if press_dir.is_symlink() or path.is_symlink() or not path.is_file():
+        return False
+    path.unlink()
+    return True
+
+
 def _identity_table(name: str, identity: Identity) -> list[str]:
     lines = [f"[press.{name}]"]
     lines += [f"{k} = {toml_string(v)}" for k, v in identity.as_dict_prompted().items()]

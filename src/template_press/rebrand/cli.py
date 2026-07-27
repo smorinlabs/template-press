@@ -36,7 +36,12 @@ from template_press.rebrand.identity import (
     display_forms,
     token_occurs,
 )
-from template_press.rebrand.receipt import read_receipt, write_receipt
+from template_press.rebrand.receipt import (
+    RECEIPT_REL,
+    invalidate_receipt,
+    read_receipt,
+    write_receipt,
+)
 from template_press.rebrand.regen import (
     RegenerationPlan,
     execute_regenerations,
@@ -351,6 +356,10 @@ def main(argv: list[str] | None = None) -> int:
         # LAST gate before apply: every exit-2 path (rules/plan included) is
         # behind us, so the deferred source-config write can no longer be
         # followed by a "no writes" exit code.
+        if args.force and invalidate_receipt(target):
+            # Before the first mutation (P04-T16): a failed forced re-press
+            # must not leave the old receipt advertising a verified press.
+            print(f"prior receipt invalidated ({RECEIPT_REL})")
         if write_pending:
             write_control(target, SOURCE_CONFIG_REL, render_source_config(source))
             print(f"wrote {SOURCE_CONFIG_REL} from discovery")

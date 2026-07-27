@@ -24,7 +24,7 @@ In a development checkout, run it through uv: `uv run press rebrand …`
 | `--source-config PATH` | Override the target's committed `press/press-source.toml` (the **source** identity). |
 | `--accept-discovery` | When the target has no source-config, write one from discovery and proceed. |
 | `--dry-run` | Print the plan and exit without touching the target. |
-| `--force` | Re-press a target that already has a receipt. |
+| `--force` | Re-press a target that already has a receipt. The prior receipt is removed once the plan gates pass, before the first write — a failed forced re-press cannot leave a stale receipt advertising a verified press. |
 | `--allow-dirty` | Allow a target whose working tree is not clean. |
 
 ### Exit codes
