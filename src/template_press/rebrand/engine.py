@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess  # nosec B404 — git ls-files enumerates the target
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -103,6 +103,11 @@ class PlanItem:
 @dataclass
 class Plan:
     items: list[PlanItem] = field(default_factory=list)
+    # The shallowest-prefix rename map (source → destination POSIX rel
+    # paths) this plan implies — structured data for plan-time consumers
+    # (stale-argv membership, reset-path translation), so nothing parses it
+    # back out of rendered PlanItem strings.
+    renames: dict[str, str] = field(default_factory=dict)
 
     def render(self) -> str:
         if not self.items:
@@ -702,7 +707,25 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                     break
     for old, new in sorted(rename_map.items()):
         plan.items.append(PlanItem("rename", old, f"→ {new}"))
+    plan.renames.update(rename_map)
     return plan
+
+
+def translate_path(posix: str, renames: Mapping[str, str]) -> str:
+    """Map a SOURCE-coordinate rel path through a shallowest-prefix rename
+    map to its post-rename location; unrenamed paths pass through.
+
+    Declared paths (regeneration outputs, reset targets) are written in
+    source coordinates, but checks that model the POST-rename tree must
+    address the moved location — validating the declared path would report
+    a validly moved file as missing (P04 D1/D3).
+    """
+    for old, new in renames.items():
+        if posix == old:
+            return new
+        if posix.startswith(old + "/"):
+            return new + posix[len(old) :]
+    return posix
 
 
 @dataclass

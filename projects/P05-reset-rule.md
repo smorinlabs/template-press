@@ -203,13 +203,13 @@ All five open questions settled 2026-07-25 (codesign export
       from either source; the reset/replace overlap ban (reset⊗regenerate
       lands in P04-TS11)
 - [x] [P05-T02] Implement the `[[reset]]` schema + config-load validation
-- [ ] [P05-TS03] Failing tests: preflight — untracked or dirty target
+- [x] [P05-TS03] Failing tests: preflight — untracked or dirty target
       refused even under `--allow-dirty`; the named predicates
       (`assert_under_root`, `assert_ancestors_real`, `is_regular_lstat`);
       exit 2 = nothing written; two-level lines-based preview always present,
       the excerpt behind the new `--verbose` flag with its fixed 20-line
       bound
-- [ ] [P05-T04] Implement the preflight + preview
+- [x] [P05-T04] Implement the preflight + preview
 - [ ] [P05-TS05] Failing tests: apply — reset runs first (position zero,
       source coordinates); `safe_write` with original-mode preservation;
       `ApplyReport.reset` + receipt `reset = <n>` count; a failed reset

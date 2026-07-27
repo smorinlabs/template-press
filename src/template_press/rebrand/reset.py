@@ -11,17 +11,25 @@ uses (P04 D3's evidence standard), whatever its source.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
-from template_press.rebrand.engine import rendered_replace_rules
+from template_press.rebrand.engine import rendered_replace_rules, translate_path
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.matcher import find_occurrences
+from template_press.rebrand.regen import has_uncommitted_changes, tracked_paths
 from template_press.rebrand.rules import ResetRule, Rules, rule_matches_path
 from template_press.rebrand.safety import (
     SafetyError,
+    assert_ancestors_real,
     assert_under_root,
     is_regular_lstat,
 )
+
+# D2 (decided 2026-07-26): the verbose preview excerpt is bounded — the
+# motivating target is a release history running to thousands of lines.
+VERBOSE_PREVIEW_LINES = 20
 
 
 def _read_utf8(path: Path, what: str) -> str:
@@ -77,6 +85,14 @@ def read_reset_target_text(target: Path, rule: ResetRule) -> str:
     return _read_utf8(path, what)
 
 
+def _changed_pairs(source: Identity, dest: Identity) -> list[tuple[str, str]]:
+    """(field, source_value) for fields present on both sides that differ —
+    an unchanged field legitimately remains everywhere (changed-only, the
+    verifier's rule)."""
+    src, dst = source.as_dict(), dest.as_dict()
+    return [(f, src[f]) for f in src if f in dst and dst[f] != src[f]]
+
+
 def scan_stub_text(
     text: str,
     *,
@@ -93,11 +109,7 @@ def scan_stub_text(
     sides (``rendered_replace_rules`` already drops FROM == TO pairs).
     """
     problems: list[str] = []
-    src, dst = source.as_dict(), dest.as_dict()
-    for field in src:
-        value = src[field]
-        if field not in dst or dst[field] == value:
-            continue
+    for field, value in _changed_pairs(source, dest):
         spans = find_occurrences(
             text, field, value, substring=field in rules.substring_rewrite_fields
         )
@@ -118,3 +130,148 @@ def scan_stub_text(
                 f"{frm!r} ({replace_rule.reason})"
             )
     return problems
+
+
+def scan_reset_path(
+    translated: str,
+    rel: str,
+    *,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+) -> list[str]:
+    """The planned reset-path identity scan (wave-3 3654059289).
+
+    An excluded filename can itself carry changed identity
+    (``app_name = "changelog"`` → ``CHANGELOG.md``) and downstream
+    inventories never look at it (thread 3653398575). Scanned on the
+    TRANSLATED (post-rename) path — plan-time-knowable, so exit 2 before
+    writes; the final apply-time recheck is retained separately.
+    """
+    problems: list[str] = []
+    for field, value in _changed_pairs(source, dest):
+        spans = find_occurrences(
+            translated,
+            field,
+            value,
+            substring=field in rules.substring_rewrite_fields,
+        )
+        if spans:
+            problems.append(
+                f"reset {rel}: its path after this press ({translated}) "
+                f"still carries source {field} {value!r} — an excluded "
+                f"filename is invisible to every downstream inventory; "
+                f"rename the file or route it through verify_ignore"
+            )
+    return problems
+
+
+@dataclass(frozen=True)
+class ResetPreview:
+    """Plan-time preview of one reset — the always-present line count plus
+    the bounded excerpts the --verbose rendering shows."""
+
+    rule: ResetRule
+    line_count: int
+    current_head: tuple[str, ...]  # first VERBOSE_PREVIEW_LINES lines
+    stub_head: tuple[str, ...]
+    stub_text: str  # the full stub apply will write
+
+
+def preflight_reset_targets(
+    target: Path,
+    rules: Rules,
+    *,
+    source: Identity,
+    dest: Identity,
+    renames: Mapping[str, str],
+) -> tuple[list[ResetPreview], list[str]]:
+    """Validate every reset target at plan time (D5) and build previews.
+
+    Applies the NAMED write-path predicates (``assert_under_root``,
+    ``assert_ancestors_real``, ``is_regular_lstat``) so plan-time and
+    apply-time cannot drift; requires git-tracked and clean (refused even
+    under ``--allow-dirty`` — this function takes no such flag); reads
+    target and stub UTF-8 fail-closed; and runs the stub-content and
+    translated-path identity scans. Problems refuse the press (exit 2,
+    nothing written).
+    """
+    if not rules.reset:
+        return [], []
+    previews: list[ResetPreview] = []
+    problems: list[str] = []
+    tracked = tracked_paths(target)
+    for rule in rules.reset:
+        prefix = f"reset {rule.file}: "
+        path = target / rule.file
+        try:
+            assert_under_root(path, target)
+            assert_ancestors_real(path, target)
+        except SafetyError as exc:
+            problems.append(prefix + str(exc))
+            continue
+        if rule.file not in tracked:
+            problems.append(
+                prefix + "not git-tracked (the guard's purpose is an undo "
+                "path, and git restores only committed content)"
+            )
+            continue
+        if not is_regular_lstat(path):
+            problems.append(prefix + "not a regular file (no-follow check)")
+            continue
+        if has_uncommitted_changes(target, rule.file):
+            problems.append(
+                prefix + "has uncommitted changes — refused even under "
+                "--allow-dirty (a tracked file carrying unstaged work has "
+                "no recoverable copy of that work)"
+            )
+            continue
+        try:
+            text = read_reset_target_text(target, rule)
+            stub = load_stub_content(target, rule)
+        except ValidationError as exc:
+            problems.append(str(exc))
+            continue
+        problems.extend(
+            scan_stub_text(stub, rel=rule.file, source=source, dest=dest, rules=rules)
+        )
+        problems.extend(
+            scan_reset_path(
+                translate_path(rule.file, renames),
+                rule.file,
+                source=source,
+                dest=dest,
+                rules=rules,
+            )
+        )
+        lines = text.splitlines()
+        previews.append(
+            ResetPreview(
+                rule=rule,
+                line_count=len(lines),
+                current_head=tuple(lines[:VERBOSE_PREVIEW_LINES]),
+                stub_head=tuple(stub.splitlines()[:VERBOSE_PREVIEW_LINES]),
+                stub_text=stub,
+            )
+        )
+    return previews, problems
+
+
+def render_reset_plan(previews: list[ResetPreview], *, verbose: bool) -> str:
+    """The plan's reset section — never silent (one line per target with
+    its lines-based size), with the bounded content excerpt verbose-gated.
+    """
+    lines = ["Reset (declared stubs, written before every other pass):"]
+    for preview in previews:
+        lines.append(
+            f"  [reset  ] {preview.rule.file}  —  {preview.line_count:,} lines → stub"
+        )
+        if verbose:
+            lines.append(
+                f"            current (first {len(preview.current_head)} of "
+                f"{preview.line_count:,} lines):"
+            )
+            lines.extend(f"              | {ln}" for ln in preview.current_head)
+            lines.append("            stub:")
+            lines.extend(f"              | {ln}" for ln in preview.stub_head)
+    return "\n".join(lines)

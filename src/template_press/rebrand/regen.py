@@ -207,6 +207,11 @@ def tracked_paths(target: Path) -> frozenset[str]:
     return frozenset(p for p in out.split("\0") if p)
 
 
+def has_uncommitted_changes(target: Path, rel: str) -> bool:
+    """Staged or unstaged changes for one path (porcelain output non-empty)."""
+    return bool(_git_stdout(target, "status", "--porcelain", "--", rel).strip())
+
+
 def preflight_regenerate_outputs(target: Path, rules: Rules) -> list[str]:
     """Problems that make a declared regeneration output unpressable.
 
@@ -243,8 +248,7 @@ def preflight_regenerate_outputs(target: Path, rules: Rules) -> list[str]:
                 f"truncating regenerator would corrupt the external inode"
             )
             continue
-        status = _git_stdout(target, "status", "--porcelain", "--", rule.file)
-        if status.strip():
+        if has_uncommitted_changes(target, rule.file):
             problems.append(
                 prefix + "has uncommitted changes — refused even under "
                 "--allow-dirty (git restores only committed content)"

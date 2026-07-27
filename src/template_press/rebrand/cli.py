@@ -43,6 +43,10 @@ from template_press.rebrand.regen import (
     preflight_regenerate_outputs,
     render_regenerate_plan,
 )
+from template_press.rebrand.reset import (
+    preflight_reset_targets,
+    render_reset_plan,
+)
 from template_press.rebrand.rules import DEFAULT_RULES, Rules, load_rules
 from template_press.rebrand.safety import (
     SafetyError,
@@ -236,6 +240,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="show the bounded reset content excerpts in the plan",
+    )
     args = parser.parse_args(argv)
 
     target = args.target.resolve()
@@ -290,29 +299,34 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         plan = build_plan(target, source, dest, rules)
-        # Plan-time regeneration gates (P04 D1/D2/D5): output state, stale
-        # path-bearing argv against THIS plan's rename set, and executable
-        # resolution under the deny-by-default env — all before any write,
-        # under the exit-2-nothing-written contract (dry-run included).
-        renamed_set = frozenset(
-            item.path for item in plan.items if item.kind == "rename"
-        )
-        regen_problems = preflight_regenerate_outputs(target, rules)
+        # Plan-time gates for both declared mechanisms (P04 D1/D2/D5, P05
+        # D5): output/target state, stale path-bearing argv against THIS
+        # plan's rename set, executable resolution under the deny-by-default
+        # env, stub scans, and the translated reset-path identity scan — all
+        # before any write, under the exit-2-nothing-written contract
+        # (dry-run included).
+        gate_problems = preflight_regenerate_outputs(target, rules)
         regen_plans, plan_problems = plan_regenerate_commands(
-            target, rules.regenerate, renamed=renamed_set
+            target, rules.regenerate, renamed=frozenset(plan.renames)
         )
-        regen_problems += plan_problems
-        if regen_problems:
+        gate_problems += plan_problems
+        reset_previews, reset_problems = preflight_reset_targets(
+            target, rules, source=source, dest=dest, renames=plan.renames
+        )
+        gate_problems += reset_problems
+        if gate_problems:
             print(
-                "error: declared regeneration cannot run — nothing written:",
+                "error: declared regeneration/reset cannot run — nothing written:",
                 file=sys.stderr,
             )
-            for problem in regen_problems:
+            for problem in gate_problems:
                 print(f"  {problem}", file=sys.stderr)
             return 2
         print(plan.render())
         if regen_plans:
             print(render_regenerate_plan(regen_plans))
+        if reset_previews:
+            print(render_reset_plan(reset_previews, verbose=args.verbose))
         strays = stray_press_dirs(target)
         if strays:
             print(
