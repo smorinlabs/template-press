@@ -398,7 +398,10 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   **pinned**: plan-time lookup runs under the same deny-by-default env whose
   fixed base supplies `PATH`, and the resolved absolute path is what
   executes — no second runtime PATH lookup exists to diverge from what was
-  planned and shown in the plan. Consistent
+  planned and shown in the plan. And the plan renders that pinned path
+  beside the declared argv: plan visibility is the approval guard, so the
+  plan must show the executable that will actually launch, not only the
+  words that selected it. Consistent
   with P05 D5 (validate before mutating) and with the existing "exit 2 means
   nothing was written" contract. Considered and not taken: also recording the
   resolved binary path in the receipt for reproducibility across machines —
@@ -555,7 +558,12 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     removes `DEFAULT_RULES.regenerate` — today's de-facto source of that
     cap in `scan_paths` — the list becomes its own explicit constant
     (`uv.lock`, `bun.lock`), never derived from `exclude_files`, which would
-    wrongly exempt `CHANGELOG.md`-class artifacts.
+    wrongly exempt `CHANGELOG.md`-class artifacts. The declaration-side half
+    maps coordinates too: sandbox `apply()` has renamed the tree by scan
+    time, so declared source-coordinate outputs are translated through
+    `ApplyReport.renamed` before the exact-path comparison — basename alone
+    matches a nested `packages/demo_widget/bun.lock`, but the path half
+    would fail forever without the translation.
 
     **That exemption is a gap in coverage, and verify must say so.** Declaring a
     regeneration does not prove the command rebuilds anything — a target
@@ -663,7 +671,9 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
 - [ ] [P04-TS03] Failing tests: plan time — executable resolution (bare name
       → PATH, slash → target root, under the effective env, pinned absolute
       path); stale-argv refusal (normalized, prefix-aware, best-effort);
-      dry-run renders every command verbatim; exit 2 = nothing written
+      dry-run renders every command verbatim PLUS its resolved pinned
+      executable path (the plan must show what will actually launch);
+      exit 2 = nothing written
 - [ ] [P04-T04] Implement plan-time resolution, stale-path refusal, and the
       plan→apply rendering (no consent machinery)
 - [ ] [P04-TS05] Failing tests: executor — cwd = target root, no shell,
@@ -687,8 +697,9 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       or from `exclude_files` (CHANGELOG.md must NOT be exemptible); exempt
       files listed as not-verified; exit 0 with a machine-readable `exempt`
       field
-- [ ] [P04-T10] Implement verify exemption semantics + the `exempt` report
-      field; update `docs/source/reference/cli.md` exit-0 wording
+- [ ] [P04-T10] Implement verify exemption semantics + the `exempt` field in
+      BOTH the verify report and the receipt (each skipped file with its
+      reason); update `docs/source/reference/cli.md` exit-0 wording
 - [ ] [P04-TS11] Failing tests: §6 preflight — a tracked excluded file with
       no regenerate/reset/verify_ignore refuses (exit 2) naming the file and
       the three fixes (shared with P05); plus the cross-mechanism
@@ -704,12 +715,13 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       bun.lock regenerations, CHANGELOG reset); pinned bun installer and a
       `press-rules.toml` path filter in `.github/workflows/rebrand-matrix.yml`;
       update runbooks
-- [ ] [P04-T16] Full verification: `just check` and `just matrix` green with
-      the migrated rules
-- [ ] [P04-T17] On a `--force` re-press, invalidate the prior receipt after
-      the plan gates pass and before the first mutation — a failed forced
+- [ ] [P04-T16] On a `--force` re-press, invalidate the prior receipt after
+      the plan gates pass and before the first mutation — with a failing
+      test for the failed-forced-re-press case first; a failed forced
       re-press must not leave the old receipt advertising a verified press
       (PR #56 thread 3651682614, previously undispositioned)
+- [ ] [P04-T17] Full verification LAST: `just check` and `just matrix` green
+      with the migrated rules and every behavior above inside the pipeline
 
 ### Notes
 

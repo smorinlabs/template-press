@@ -176,6 +176,15 @@ All five open questions settled 2026-07-25 (codesign export
   may not restore the identity its reset exists to remove, whatever its
   source. Declaring both forms on one entry is a config-load error.
 
+  **The target key is `file` (decided 2026-07-26)** — the same key
+  `[[regenerate]]` uses, one vocabulary across `press-rules.toml`. The prior
+  art used `path`; consistency inside this tool's own config wins over
+  matching the embedded engine. And **reset reads bytes as text, fail
+  closed**: the target's current content and any `stub_file` must decode as
+  UTF-8 at plan time — the line count, the verbose excerpt, and the stub
+  scan all interpret text — and undecodable bytes refuse the press (exit 2),
+  mirroring P04's rule for regeneration outputs.
+
   **`stub_url` (remote fetch) considered and DEFERRED.** It would be the
   tool's first network dependency — press is pure stdlib, offline, and
   deterministic by design — to serve content that can equally be committed as
@@ -185,11 +194,14 @@ All five open questions settled 2026-07-25 (codesign export
 
 ### Tests & Tasks
 
-- [ ] [P05-TS01] Failing tests: `[[reset]]` schema — `stub` XOR `stub_file`
-      (both or neither is a config-load error); `stub_file` containment
-      predicates; stub-content scan refuses changed tokens and rendered FROM
-      literals from either source; reset/replace and reset/regenerate
-      overlap bans
+- [ ] [P05-TS01] Failing tests: `[[reset]]` schema — the target declared as
+      `file` (the `[[regenerate]]` key, not prior art's `path`); `stub` XOR
+      `stub_file` (both or neither is a config-load error); `stub_file`
+      containment predicates; `ROOT_CONTROL` paths rejected as reset
+      targets; non-UTF-8 target or `stub_file` refused at plan time;
+      stub-content scan refuses changed tokens and rendered FROM literals
+      from either source; the reset/replace overlap ban (reset⊗regenerate
+      lands in P04-TS11)
 - [ ] [P05-T02] Implement the `[[reset]]` schema + config-load validation
 - [ ] [P05-TS03] Failing tests: preflight — untracked or dirty target
       refused even under `--allow-dirty`; the named predicates
