@@ -412,14 +412,19 @@ def verify_command(argv: list[str] | None = None) -> int:
         with owned_sandbox(target) as dest_root:
             sandbox = make_sandbox(target, dest_root)
             try:
-                report = apply(sandbox.path, source, synth, rules)
                 # Model declared resets (codex 3654657444, P1): the real
                 # press writes the validated stub at position zero, so the
                 # hermetic scan must see the stub — not the history the
-                # reset exists to remove. Post-apply, the declared SOURCE
-                # path is addressed through the rename report.
-                for reset_rule in rules.reset:
-                    stub = load_stub_content(sandbox.path, reset_rule)
+                # reset exists to remove. Stub CONTENTS are captured before
+                # the press (codex 3654853355): apply() renames
+                # identity-bearing dirs, so a stub_file path beneath one
+                # would no longer resolve afterwards.
+                reset_stubs = [
+                    (rule, load_stub_content(sandbox.path, rule))
+                    for rule in rules.reset
+                ]
+                report = apply(sandbox.path, source, synth, rules)
+                for reset_rule, stub in reset_stubs:
                     rel = translate_path(reset_rule.file, dict(report.renamed))
                     safe_write(sandbox.path, rel, stub, refuse_hardlink=False)
                 _restage_sandbox(sandbox.path)

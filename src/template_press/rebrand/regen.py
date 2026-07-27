@@ -27,7 +27,11 @@ from template_press.rebrand.engine import (
     rendered_replace_rules,
     translate_path,
 )
-from template_press.rebrand.identity import Identity
+from template_press.rebrand.identity import (
+    DISPLAY_FORM_NAMES,
+    Identity,
+    display_forms,
+)
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.rules import (
     RegenerateRule,
@@ -421,8 +425,23 @@ def changed_identity_pairs(source: Identity, dest: Identity) -> list[tuple[str, 
     an unchanged field legitimately remains everywhere (changed-only, the
     verifier's rule; feeding the full source identity would turn a retained
     author in a correct fresh lockfile into a false leak)."""
-    src, dst = source.as_dict(), dest.as_dict()
+    src, dst = _expanded_fields(source), _expanded_fields(dest)
     return [(f, src[f]) for f in src if f in dst and dst[f] != src[f]]
+
+
+def _expanded_fields(identity: Identity) -> dict[str, str]:
+    """as_dict() with a raw display_name replaced by its DERIVED forms —
+    the rewriter and doctor both operate on the per-form tags, so the
+    changed-fields scan must see the same universe (a glued source
+    PascalCase form is invisible to the raw spaced value)."""
+    values = identity.as_dict()
+    if "display_name" not in values:
+        return values
+    expanded = {k: v for k, v in values.items() if k != "display_name"}
+    forms = display_forms(values["display_name"])
+    for form in DISPLAY_FORM_NAMES:
+        expanded[f"display_name_{form}"] = forms[form]
+    return expanded
 
 
 def scan_regenerated_output(

@@ -205,6 +205,25 @@ class TestVerifyModelsDeclaredResets:
         _commit(repo)
         assert verify_command(["--target", str(repo)]) == 0
 
+    def test_stub_file_under_renamed_directory(self, tmp_path: Path) -> None:
+        """Codex 3654853355: stub contents are captured BEFORE the sandbox
+        press — apply() renames identity-bearing directories, so a
+        stub_file beneath one no longer resolves afterwards."""
+        repo = make_pressable(tmp_path)
+        stub_dir = repo / "packages" / "demo_widget"
+        stub_dir.mkdir(parents=True)
+        (stub_dir / "stub.md").write_text("# Changelog\n", encoding="utf-8", newline="")
+        (repo / "CHANGELOG.md").write_text(
+            "## demo_widget 1.0\n", encoding="utf-8", newline=""
+        )
+        (repo / "press" / "press-rules.toml").write_text(
+            '[[reset]]\nfile = "CHANGELOG.md"\n'
+            'stub_file = "packages/demo_widget/stub.md"\n',
+            encoding="utf-8",
+        )
+        _commit(repo)
+        assert verify_command(["--target", str(repo)]) == 0
+
     def test_exempt_paths_reported_in_source_coordinates(
         self, tmp_path: Path, capsys
     ) -> None:

@@ -14,6 +14,7 @@ The receipt records each regeneration's resolved argv (D5 revision).
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import subprocess
 import sys
@@ -149,6 +150,27 @@ class TestPostCommandScan:
         )
         assert failed == ["bun.lock"]
         assert any("xpressy" in s for s in report.skipped)
+
+    def test_changed_display_form_in_output_fails(self, tmp_path: Path):
+        """Codex 3654853360 (P1): the changed-fields scan must expand
+        display-name DERIVED forms (pascal/camel) — the rewriter and the
+        doctor both do, and a glued source form in a regenerated output
+        is exactly what the raw spaced value cannot catch."""
+        src = dataclasses.replace(SOURCE, display_name="Demo Widget")
+        dst = dataclasses.replace(DEST, display_name="Potato Launcher")
+        target = _target(tmp_path, **{"bun.lock": "brand: DemoWidget\n"})
+        report = ApplyReport()
+        failed = execute_regenerations(
+            target,
+            [_plan("bun.lock", "-c", "pass")],
+            {},
+            report,
+            source=src,
+            dest=dst,
+            rules=DEFAULT_RULES,
+        )
+        assert failed == ["bun.lock"]
+        assert any("DemoWidget" in s for s in report.skipped)
 
     def test_rendered_path_literal_in_output_path_fails(self, tmp_path: Path):
         """Codex 3654736775 (P1): a paths-scoped rule's rendered literal
