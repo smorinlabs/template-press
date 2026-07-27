@@ -255,12 +255,16 @@ def test_failed_lock_regeneration_exits_1_no_receipt(
 
     from template_press.rebrand import cli as cli_mod
 
-    write_source_config(src_target)
+    # Files written BEFORE write_source_config so its `git add -A` + commit
+    # covers them: the plan-time output preflight requires uv.lock tracked
+    # and clean, and this test's subject is the MID-PRESS failure path.
     (src_target / "uv.lock").write_text("demo_widget==0.1.0\n", encoding="utf-8")
+    (src_target / "press").mkdir(exist_ok=True)
     (src_target / "press" / "press-rules.toml").write_text(
         '[[regenerate]]\nfile = "uv.lock"\ncommand = ["uv", "lock"]\n',
         encoding="utf-8",
     )
+    write_source_config(src_target)
     real_run = sp.run
 
     def fake_run(cmd, *args, **kwargs):

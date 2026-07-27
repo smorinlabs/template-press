@@ -356,10 +356,18 @@ def _parse_regenerate(entry: object, exclude_files: frozenset[str]) -> Regenerat
         )
     command: list[str] = []
     for element in raw_command:
-        if not isinstance(element, str) or not element or "\x00" in element:
+        # Control characters (NUL, newline/CR, ANSI ESC, tab) are rejected,
+        # not escaped: plan visibility is the approval guard, and a literal
+        # renderer could be forged by an argv element carrying its own
+        # plan-shaped lines (wave-3 thread 3654059282).
+        if (
+            not isinstance(element, str)
+            or not element
+            or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in element)
+        ):
             raise ValidationError(
                 f"{RULES_REL}: [[regenerate]] {file!r}: command elements must "
-                f"be non-empty NUL-free strings: {element!r}"
+                f"be non-empty strings without control characters: {element!r}"
             )
         command.append(element)
     raw_env = entry.get("env", [])
@@ -370,10 +378,16 @@ def _parse_regenerate(entry: object, exclude_files: frozenset[str]) -> Regenerat
         )
     env: list[str] = []
     for name in raw_env:
-        if not isinstance(name, str) or not name or "=" in name or "\x00" in name:
+        if (
+            not isinstance(name, str)
+            or not name
+            or "=" in name
+            or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in name)
+        ):
             raise ValidationError(
                 f"{RULES_REL}: [[regenerate]] {file!r}: env entries are "
-                f"variable NAMES (non-empty, no '=', no NUL): {name!r}"
+                f"variable NAMES (non-empty, no '=', no control characters): "
+                f"{name!r}"
             )
         env.append(name)
     return RegenerateRule(file=file, command=tuple(command), env=tuple(env))

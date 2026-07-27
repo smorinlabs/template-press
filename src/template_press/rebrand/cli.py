@@ -38,6 +38,11 @@ from template_press.rebrand.identity import (
     token_occurs,
 )
 from template_press.rebrand.receipt import read_receipt, write_receipt
+from template_press.rebrand.regen import (
+    plan_regenerate_commands,
+    preflight_regenerate_outputs,
+    render_regenerate_plan,
+)
 from template_press.rebrand.rules import DEFAULT_RULES, Rules, load_rules
 from template_press.rebrand.safety import (
     SafetyError,
@@ -285,7 +290,29 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         plan = build_plan(target, source, dest, rules)
+        # Plan-time regeneration gates (P04 D1/D2/D5): output state, stale
+        # path-bearing argv against THIS plan's rename set, and executable
+        # resolution under the deny-by-default env — all before any write,
+        # under the exit-2-nothing-written contract (dry-run included).
+        renamed_set = frozenset(
+            item.path for item in plan.items if item.kind == "rename"
+        )
+        regen_problems = preflight_regenerate_outputs(target, rules)
+        regen_plans, plan_problems = plan_regenerate_commands(
+            target, rules.regenerate, renamed=renamed_set
+        )
+        regen_problems += plan_problems
+        if regen_problems:
+            print(
+                "error: declared regeneration cannot run — nothing written:",
+                file=sys.stderr,
+            )
+            for problem in regen_problems:
+                print(f"  {problem}", file=sys.stderr)
+            return 2
         print(plan.render())
+        if regen_plans:
+            print(render_regenerate_plan(regen_plans))
         strays = stray_press_dirs(target)
         if strays:
             print(

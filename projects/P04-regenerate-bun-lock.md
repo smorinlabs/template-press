@@ -668,13 +668,13 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       overlap test lands in TS11, once both schemas exist)
 - [x] [P04-T02] Implement the schema + validation to pass TS01; remove
       `DEFAULT_RULES.regenerate`
-- [ ] [P04-TS03] Failing tests: plan time — executable resolution (bare name
+- [x] [P04-TS03] Failing tests: plan time — executable resolution (bare name
       → PATH, slash → target root, under the effective env, pinned absolute
       path); stale-argv refusal (normalized, prefix-aware, best-effort);
       dry-run renders every command verbatim PLUS its resolved pinned
       executable path (the plan must show what will actually launch);
       exit 2 = nothing written
-- [ ] [P04-T04] Implement plan-time resolution, stale-path refusal, and the
+- [x] [P04-T04] Implement plan-time resolution, stale-path refusal, and the
       plan→apply rendering (no consent machinery)
 - [ ] [P04-TS05] Failing tests: executor — cwd = target root, no shell,
       deny-by-default env (platform base + declared names, absent names
