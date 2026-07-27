@@ -511,6 +511,15 @@ def load_rules(target: Path) -> Rules:
                 f"one reset per file (the second write would silently win)"
             )
         seen_reset.add(reset_rule.file)
+    overlap = {r.file for r in regenerate} & seen_reset
+    if overlap:
+        raise ValidationError(
+            f"{RULES_REL}: {', '.join(sorted(overlap))} declared as BOTH a "
+            f"[[regenerate]] output and a [[reset]] target — reset runs first "
+            f"and regeneration after apply, so the stub would be written and "
+            f"immediately overwritten with both operations counted "
+            f"successful; declare exactly one mechanism per file"
+        )
     return Rules(
         exclude_dirs=DEFAULT_RULES.exclude_dirs
         | frozenset(_str_list(table, "extra_exclude_dirs", [])),

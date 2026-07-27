@@ -369,6 +369,39 @@ def preflight_regenerate_outputs(target: Path, rules: Rules) -> list[str]:
     return problems
 
 
+def preflight_excluded_files(target: Path, rules: Rules) -> list[str]:
+    """The §6 excluded-file contract preflight (P04 D5, shared with P05).
+
+    An excluded file is never rewritten; with the hidden regeneration
+    default removed, one with no declared neutralization is also never
+    rebuilt and never scanned — source identity would survive under a
+    clean receipt, and the R3 harness (a real rebrand, no independent
+    grep) cannot catch it. So every TRACKED excluded file must carry
+    exactly one of the three: a [[regenerate]] command, a [[reset]] stub,
+    or a deliberate [rules] verify_ignore entry. Exit 2, nothing written.
+    """
+    regenerated = {r.file for r in rules.regenerate}
+    reset_files = {r.file for r in rules.reset}
+    problems: list[str] = []
+    for rel in sorted(tracked_paths(target)):
+        if rel not in rules.exclude_files:
+            continue
+        if rel in regenerated or rel in reset_files:
+            continue
+        if any(part in rules.verify_ignore for part in rel.split("/")):
+            continue
+        if not os.path.lexists(target / rel):
+            continue  # tracked but absent from the worktree — nothing survives
+        problems.append(
+            f"excluded file {rel} is neither regenerated, reset, nor ignored "
+            f"— it would survive the press unrewritten AND unscanned; declare "
+            f"a [[regenerate]] command or a [[reset]] stub in "
+            f"press/press-rules.toml, or list it under [rules] verify_ignore "
+            f"(the deliberate, committed exemption)"
+        )
+    return problems
+
+
 def changed_identity_pairs(source: Identity, dest: Identity) -> list[tuple[str, str]]:
     """(field, source_value) for fields present on both sides that differ —
     an unchanged field legitimately remains everywhere (changed-only, the

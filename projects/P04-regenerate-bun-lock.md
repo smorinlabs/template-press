@@ -700,11 +700,11 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
 - [x] [P04-T10] Implement verify exemption semantics + the `exempt` field in
       BOTH the verify report and the receipt (each skipped file with its
       reason); update `docs/source/reference/cli.md` exit-0 wording
-- [ ] [P04-TS11] Failing tests: §6 preflight — a tracked excluded file with
+- [x] [P04-TS11] Failing tests: §6 preflight — a tracked excluded file with
       no regenerate/reset/verify_ignore refuses (exit 2) naming the file and
       the three fixes (shared with P05); plus the cross-mechanism
       reset⊗regenerate overlap rejection, now that both schemas exist
-- [ ] [P04-T12] Implement the §6 preflight
+- [x] [P04-T12] Implement the §6 preflight
 - [ ] [P04-TS13] Failing tests: `press check-tools` — reports `argv[0]` of
       every declared command plus `git`, each found (resolved path) or
       missing, using D2's exact resolution semantics (target-root

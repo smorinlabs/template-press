@@ -42,6 +42,7 @@ from template_press.rebrand.regen import (
     execute_regenerations,
     final_validation_pass,
     plan_regenerate_commands,
+    preflight_excluded_files,
     preflight_regenerate_outputs,
     render_regenerate_plan,
     snapshot_control_files,
@@ -309,7 +310,8 @@ def main(argv: list[str] | None = None) -> int:
         # env, stub scans, and the translated reset-path identity scan — all
         # before any write, under the exit-2-nothing-written contract
         # (dry-run included).
-        gate_problems = preflight_regenerate_outputs(target, rules)
+        gate_problems = preflight_excluded_files(target, rules)
+        gate_problems += preflight_regenerate_outputs(target, rules)
         regen_plans, plan_problems = plan_regenerate_commands(
             target, rules.regenerate, renamed=frozenset(plan.renames)
         )
