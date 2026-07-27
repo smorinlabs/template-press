@@ -676,12 +676,12 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       exit 2 = nothing written
 - [x] [P04-T04] Implement plan-time resolution, stale-path refusal, and the
       plan→apply rendering (no consent machinery)
-- [ ] [P04-TS05] Failing tests: executor — cwd = target root, no shell,
+- [x] [P04-TS05] Failing tests: executor — cwd = target root, no shell,
       deny-by-default env (platform base + declared names, absent names
       omitted), file-mode preservation on rewritten files; sink guards
       re-run before each command launch (symlink/hardlink planted by an
       earlier command at a later output's path)
-- [ ] [P04-T06] Implement the generic executor replacing the hardcoded
+- [x] [P04-T06] Implement the generic executor replacing the hardcoded
       `uv lock` branch in `_regenerate_lockfiles`
 - [ ] [P04-TS07] Failing tests: postconditions — output exists; full
       containment + type recheck; UTF-8 two-point gate; paranoid

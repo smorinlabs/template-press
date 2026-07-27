@@ -24,7 +24,6 @@ from template_press.rebrand.config import (
 from template_press.rebrand.discovery import discover, mismatches
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import (
-    ApplyReport,
     apply,
     build_plan,
     rendered_replace_rules,
@@ -39,6 +38,8 @@ from template_press.rebrand.identity import (
 )
 from template_press.rebrand.receipt import read_receipt, write_receipt
 from template_press.rebrand.regen import (
+    RegenerationPlan,
+    execute_regenerations,
     plan_regenerate_commands,
     preflight_regenerate_outputs,
     render_regenerate_plan,
@@ -52,7 +53,6 @@ from template_press.rebrand.safety import (
     SafetyError,
     git_hardening_args,
     scrubbed_git_env,
-    scrubbed_uv_env,
     write_control,
 )
 
@@ -356,46 +356,8 @@ def main(argv: list[str] | None = None) -> int:
         SafetyError,
     ) as exc:
         return _fail(str(exc))
-    outcome = _press(target, source, dest, rules)
+    outcome = _press(target, source, dest, rules, regen_plans)
     return 1 if (outcome.env_error is not None or outcome.leaked) else 0
-
-
-def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> list[str]:
-    """Regenerate listed lockfiles; return the ones that FAILED to regenerate.
-
-    A lockfile is excluded from both rewriting and the doctor scan, so a
-    failed regeneration would leave source-identity content behind invisibly.
-    Callers must treat failures as verification failures (no receipt).
-    """
-    failed: list[str] = []
-    for rule in rules.regenerate:
-        lockfile = rule.file
-        lockpath = target / lockfile
-        if lockpath.is_symlink():  # lstat-based, no-follow — check first
-            report.skipped.append(
-                f"regenerate {lockfile} (symlink — refusing to write through)"
-            )
-            failed.append(lockfile)
-            continue
-        if not lockpath.is_file():
-            continue
-        if lockfile == "uv.lock":
-            result = subprocess.run(  # nosec B603 B607
-                ["uv", "lock"],  # noqa: S607
-                cwd=target,
-                capture_output=True,
-                text=True,
-                env=scrubbed_uv_env(),  # G5: no UV_* override can steer the write
-            )
-            if result.returncode == 0:
-                report.regenerated.append(lockfile)
-            else:
-                report.skipped.append(f"regenerate {lockfile} (uv lock failed)")
-                failed.append(lockfile)
-        else:
-            report.skipped.append(f"regenerate {lockfile} (no regenerator)")
-            failed.append(lockfile)
-    return failed
 
 
 @dataclass
@@ -413,12 +375,20 @@ class PressOutcome:
 
 
 def _press(
-    target: Path, source: Identity, dest: Identity, rules: Rules
+    target: Path,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    regen_plans: list[RegenerationPlan],
 ) -> PressOutcome:
     report = None
     try:
         report = apply(target, source, dest, rules)
-        failed_locks = _regenerate_lockfiles(target, rules, report)
+        # Declared commands run against the FINAL tree: declared paths are
+        # translated through the apply-time rename report (P04 D1).
+        failed_locks = execute_regenerations(
+            target, regen_plans, dict(report.renamed), report
+        )
         if failed_locks:
             print(
                 f"error: lockfile regeneration failed for "

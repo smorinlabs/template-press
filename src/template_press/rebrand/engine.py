@@ -9,6 +9,7 @@ TARGET is the undo button (`git checkout . && git clean -fd`).
 from __future__ import annotations
 
 import os
+import stat
 import subprocess  # nosec B404 — git ls-files enumerates the target
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
@@ -781,7 +782,12 @@ def _apply_replacements(
             # atomicity already protects an external hardlink WITHOUT falsely
             # refusing a legitimate in-repo hardlinked file. A symlink LEAF
             # never reaches here — _read_text returns None for it upstream.
+            # The fresh inode starts from mkstemp's 0600, so the original
+            # permission bits are restored afterwards — a rewritten 0755
+            # helper must not come out non-executable (P04 D1).
+            mode = stat.S_IMODE(os.lstat(path).st_mode)
             safe_write(target, rel, new_text, refuse_hardlink=False)
+            os.chmod(path, mode)
             report.replaced.append(rel)
 
 

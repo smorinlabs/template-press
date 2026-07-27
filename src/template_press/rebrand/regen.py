@@ -21,9 +21,11 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from template_press.rebrand.engine import ApplyReport, translate_path
 from template_press.rebrand.rules import RegenerateRule, Rules
 from template_press.rebrand.safety import (
     SafetyError,
+    assert_ancestors_real,
     assert_under_root,
     git_hardening_args,
     is_regular_lstat,
@@ -169,6 +171,71 @@ def plan_regenerate_commands(
             )
         )
     return plans, problems
+
+
+def execute_regenerations(
+    target: Path,
+    plans: Sequence[RegenerationPlan],
+    renamed: Mapping[str, str],
+    report: ApplyReport,
+) -> list[str]:
+    """Run each declared command (D1's execution contract); return FAILED files.
+
+    cwd = the target root (a relative-path-resolving tool must mutate THIS
+    checkout, never the press caller's); NO shell (argv is a list precisely
+    so there is no shell to inject into); deny-by-default env; and the
+    PINNED plan-time executable launches — no second runtime PATH lookup
+    exists to diverge from what was planned and shown.
+
+    Declared paths are SOURCE coordinates translated through the rename
+    report (apply() has already moved identity-bearing directories). The
+    full sink-guard set — containment, real ancestors, no-follow regular
+    file, ``st_nlink == 1`` — re-runs immediately before EACH launch: an
+    earlier command can plant a symlink or hardlink at a later output's
+    path (D3). A nonzero exit fails the press regardless of how the output
+    scans afterwards (wave-3 3654059287).
+    """
+    failed: list[str] = []
+    renames = dict(renamed)
+    for plan in plans:
+        rule = plan.rule
+        out_rel = translate_path(rule.file, renames)
+        out_path = target / out_rel
+        try:
+            assert_under_root(out_path, target)
+            assert_ancestors_real(out_path, target)
+        except SafetyError as exc:
+            report.skipped.append(f"regenerate {rule.file} (sink guard: {exc})")
+            failed.append(rule.file)
+            continue
+        if not is_regular_lstat(out_path):
+            report.skipped.append(
+                f"regenerate {rule.file} (sink guard: {out_rel} is not a "
+                f"regular file — no-follow check)"
+            )
+            failed.append(rule.file)
+            continue
+        if os.lstat(out_path).st_nlink > 1:
+            report.skipped.append(
+                f"regenerate {rule.file} (sink guard: {out_rel} is hardlinked)"
+            )
+            failed.append(rule.file)
+            continue
+        result = subprocess.run(  # noqa: S603 # nosec B603
+            [plan.executable, *rule.command[1:]],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            env=command_env(rule.env),
+        )
+        if result.returncode != 0:
+            report.skipped.append(
+                f"regenerate {rule.file} (command exited {result.returncode})"
+            )
+            failed.append(rule.file)
+        else:
+            report.regenerated.append(rule.file)
+    return failed
 
 
 def render_regenerate_plan(plans: Sequence[RegenerationPlan]) -> str:

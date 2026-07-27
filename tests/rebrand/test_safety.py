@@ -32,7 +32,6 @@ from template_press.rebrand.safety import (
     safe_rename,
     safe_write,
     scrubbed_git_env,
-    scrubbed_uv_env,
     write_control,
 )
 
@@ -362,13 +361,9 @@ def test_hooks_do_not_execute_under_hardening(tmp_path: Path, src_target: Path) 
     assert not sentinel.exists()
 
 
-def test_scrubbed_uv_env_drops_uv_working_dir(tmp_path: Path) -> None:
-    base = dict(os.environ)
-    base["UV_WORKING_DIR"] = str(tmp_path / "outside" / "elsewhere")
-    base["UV_CACHE_DIR"] = str(tmp_path / "outside" / "cache")
-    env = scrubbed_uv_env(base)
-    assert "UV_WORKING_DIR" not in env
-    assert "UV_CACHE_DIR" not in env
+# scrubbed_uv_env was removed with P04 D1: the deny-by-default command env
+# (regen.command_env) subsumes the one-family UV_* blocklist — inherited
+# UV_* overrides simply never arrive (tests/rebrand/test_regenerate_execute.py).
 
 
 # ---------------------------------------------------------------------------
