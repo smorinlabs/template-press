@@ -720,7 +720,7 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       test for the failed-forced-re-press case first; a failed forced
       re-press must not leave the old receipt advertising a verified press
       (PR #56 thread 3651682614, previously undispositioned)
-- [ ] [P04-T17] Full verification LAST: `just check` and `just matrix` green
+- [x] [P04-T17] Full verification LAST: `just check` and `just matrix` green
       with the migrated rules and every behavior above inside the pipeline
 
 ### Notes

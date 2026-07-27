@@ -217,7 +217,7 @@ All five open questions settled 2026-07-25 (codesign export
       the same paranoid scan as regeneration output paths
       (`app_name = "changelog"` → `CHANGELOG.md`, thread 3653398575)
 - [x] [P05-T06] Implement the reset operation + reporting
-- [ ] [P05-T07] Joint acceptance: the R3 self-press with the migrated rules
+- [x] [P05-T07] Joint acceptance: the R3 self-press with the migrated rules
       yields a stub `CHANGELOG.md`, regenerated lockfiles, and a clean
       verify (§6 preflight is P04-TS11/T12; the migration itself is P04-T15)
 
