@@ -41,6 +41,7 @@ from template_press.rebrand.safety import (
     assert_under_root,
     git_hardening_args,
     is_regular_lstat,
+    safe_write,
     scrubbed_git_env,
 )
 
@@ -91,9 +92,12 @@ def resolve_executable(target: Path, argv0: str, env: Mapping[str, str]) -> Path
         else:
             candidate = os.path.normpath(os.path.join(str(target), text))
         found = shutil.which(candidate)
-        return Path(found) if found else None
+        return Path(os.path.abspath(found)) if found else None
+    # Absolute at resolution time: a relative PATH entry yields a relative
+    # which() result anchored to the CALLER's cwd, but execution launches
+    # with cwd=target — the pin must freeze the binary planning verified.
     found = shutil.which(argv0, path=env.get("PATH", ""))
-    return Path(found) if found else None
+    return Path(os.path.abspath(found)) if found else None
 
 
 def stale_argv_elements(command: Sequence[str], renamed: Collection[str]) -> list[str]:
@@ -312,8 +316,14 @@ def tracked_paths(target: Path) -> frozenset[str]:
 
 
 def has_uncommitted_changes(target: Path, rel: str) -> bool:
-    """Staged or unstaged changes for one path (porcelain output non-empty)."""
-    return bool(_git_stdout(target, "status", "--porcelain", "--", rel).strip())
+    """Staged or unstaged changes for one path — including edits the
+    assume-unchanged / skip-worktree bits hide from `status --porcelain`
+    (lowercase or S first column in `ls-files -v`): the guard's promise is
+    refusing to destroy hidden work, which is precisely that case."""
+    if _git_stdout(target, "status", "--porcelain", "--", rel).strip():
+        return True
+    flags = _git_stdout(target, "ls-files", "-v", "--", rel)
+    return any(line[:1].islower() or line[:1] == "S" for line in flags.splitlines())
 
 
 def preflight_regenerate_outputs(target: Path, rules: Rules) -> list[str]:
@@ -458,6 +468,15 @@ def scan_regenerated_output(
             problems.append(
                 f"output contains rendered [[replace]] literal {frm!r} ({rule.reason})"
             )
+        if (
+            rule.paths
+            and rule_matches_path(rule, source_scope)
+            and frm in translated_rel
+        ):
+            problems.append(
+                f"its path ({translated_rel}) carries rendered [[replace]] "
+                f"literal {frm!r} ({rule.reason})"
+            )
     return problems
 
 
@@ -575,6 +594,20 @@ def snapshot_control_files(target: Path) -> dict[str, bytes | None]:
         path = target / rel
         snapshot[rel] = path.read_bytes() if is_regular_lstat(path) else None
     return snapshot
+
+
+def restore_control_files(target: Path, snapshot: Mapping[str, bytes | None]) -> None:
+    """Put every press-owned control file back to its pre-command state —
+    including REMOVING one a failed command created: a planted
+    press-receipt.toml surviving a failed press would advertise a verified
+    target the press never certified.
+    """
+    for rel, data in snapshot.items():
+        path = target / rel
+        if data is None:
+            path.unlink(missing_ok=True)
+        elif not is_regular_lstat(path) or path.read_bytes() != data:
+            safe_write(target, rel, data, refuse_hardlink=False)
 
 
 def validate_control_files(

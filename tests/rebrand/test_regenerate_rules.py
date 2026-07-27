@@ -241,6 +241,19 @@ class TestOutputPreflight:
         _declare_bun_lock(src_target)
         assert preflight_regenerate_outputs(src_target, load_rules(src_target)) == []
 
+    def test_assume_unchanged_edit_refused(self, src_target: Path):
+        """Codex 3654736772 (P1): the assume-unchanged bit hides edits from
+        `status --porcelain`; hidden work is still work the guard promises
+        not to destroy — the preflight must see through the bit."""
+        (src_target / "bun.lock").write_text("lock\n", encoding="utf-8")
+        _git(src_target, "add", "bun.lock")
+        _git(src_target, "commit", "-q", "-m", "add lockfile")
+        _declare_bun_lock(src_target)
+        _git(src_target, "update-index", "--assume-unchanged", "bun.lock")
+        (src_target / "bun.lock").write_text("hidden edit\n", encoding="utf-8")
+        problems = preflight_regenerate_outputs(src_target, load_rules(src_target))
+        assert problems and "bun.lock" in problems[0]
+
     def test_untracked_output_refused(self, src_target: Path):
         (src_target / "bun.lock").write_text("lock\n", encoding="utf-8")
         _declare_bun_lock(src_target)

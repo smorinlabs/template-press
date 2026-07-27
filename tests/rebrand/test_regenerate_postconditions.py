@@ -150,6 +150,32 @@ class TestPostCommandScan:
         assert failed == ["bun.lock"]
         assert any("xpressy" in s for s in report.skipped)
 
+    def test_rendered_path_literal_in_output_path_fails(self, tmp_path: Path):
+        """Codex 3654736775 (P1): a paths-scoped rule's rendered literal
+        must be tested against the output PATH, not only content — an
+        excluded filename is exactly what downstream inventories never
+        see, so the postcondition is the only chance to catch it."""
+        target = _target(tmp_path, **{"xpressy.lock": "clean\n"})
+        rules = load_rules(
+            _rules_target(
+                tmp_path,
+                '[[replace]]\npattern = "x{app_name}y"\ncontent = false\n'
+                'paths = true\nreason = "glued legacy name"\n',
+            )
+        )
+        report = ApplyReport()
+        failed = execute_regenerations(
+            target,
+            [_plan("xpressy.lock", "-c", "pass")],
+            {},
+            report,
+            source=SOURCE,
+            dest=DEST,
+            rules=rules,
+        )
+        assert failed == ["xpressy.lock"]
+        assert any("xpressy" in s for s in report.skipped)
+
     def test_rule_scope_reverse_mapped_through_renames(self, tmp_path: Path):
         """A rule scoped packages/demo_widget/** must still hit the moved
         output at packages/potato_launcher/ — scopes are written in SOURCE

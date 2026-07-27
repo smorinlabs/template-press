@@ -142,6 +142,21 @@ class TestResolveExecutable:
         )
 
     @posix_only
+    def test_relative_path_entry_pins_absolute(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Codex 3654736767 (P1): a relative PATH entry resolves against the
+        press caller's cwd at plan time, but execution launches with
+        cwd=target — the pin must freeze an ABSOLUTE path so the launched
+        binary is exactly the one planning verified."""
+        _make_exe(tmp_path / "relbin" / "reltool")
+        monkeypatch.chdir(tmp_path)
+        found = resolve_executable(tmp_path / "target", "reltool", {"PATH": "relbin"})
+        assert found is not None
+        assert found.is_absolute()
+        assert found == tmp_path / "relbin" / "reltool"
+
+    @posix_only
     def test_absolute_argv0_pins_itself(self, tmp_path: Path):
         exe = _make_exe(tmp_path / "abs-bin" / "pinned")
         target = tmp_path / "target"
