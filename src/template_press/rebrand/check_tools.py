@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tomllib
 from pathlib import Path
 
 from template_press.rebrand.regen import command_env, resolve_executable
@@ -29,7 +30,14 @@ def check_tools_command(argv: list[str] | None = None) -> int:
         return 2
     try:
         rules = load_rules(target)
-    except ValidationError as exc:
+    except (
+        ValidationError,
+        tomllib.TOMLDecodeError,
+        UnicodeDecodeError,
+        OSError,
+    ) as exc:
+        # The same configuration exception set the rebrand and verify entry
+        # points normalize to exit 2 — never a traceback.
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

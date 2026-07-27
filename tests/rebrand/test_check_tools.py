@@ -202,3 +202,24 @@ class TestConfigAndDispatch:
     def test_usage_lists_the_verb(self, capsys: pytest.CaptureFixture):
         press_cli.main(["--help"])
         assert "check-tools" in capsys.readouterr().out
+
+
+class TestConfigErrorNormalization:
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "not [ valid toml",  # TOMLDecodeError
+            b"\xff\xfe broken".decode("latin-1"),  # invalid UTF-8 on disk
+        ],
+    )
+    def test_unparseable_config_exits_2(
+        self, src_target: Path, body: str, capsys: pytest.CaptureFixture
+    ):
+        """Codex thread 3654657449: every config failure is the documented
+        exit-2, matching the rebrand and verify entry points — no tracebacks."""
+        d = src_target / "press"
+        d.mkdir(exist_ok=True)
+        (d / "press-rules.toml").write_bytes(body.encode("latin-1"))
+        rc = check_tools_command(["--target", str(src_target)])
+        assert rc == 2
+        assert "error" in capsys.readouterr().err
