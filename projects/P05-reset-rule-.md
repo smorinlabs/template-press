@@ -122,6 +122,22 @@ All five open questions settled 2026-07-25 (codesign export
   on PATH) before a press begins, instead of discovering it after the rewrite
   phase has already run.
 
+- **D6 — Stub content comes from exactly one of two declared forms (decided
+  2026-07-26).** Either an inline string (`stub = "# Changelog\n"`, the prior-
+  art form) or a local file reference (`stub_file = "press/stubs/CHANGELOG.md"`)
+  whose path is validated with the same containment predicates as every other
+  declared path (inside the target, no traversal, no-follow regular file) and
+  whose content passes the same stub scan D5 applies to inline stubs — a stub
+  may not restore the identity its reset exists to remove, whatever its
+  source. Declaring both forms on one entry is a config-load error.
+
+  **`stub_url` (remote fetch) considered and DEFERRED.** It would be the
+  tool's first network dependency — press is pure stdlib, offline, and
+  deterministic by design — to serve content that can equally be committed as
+  a `stub_file`. If a real template ever needs it, the sketched semantics:
+  fetched once at plan time so the preview shows the actual content; an
+  unreachable URL is a plan-time refusal (exit 2, nothing written).
+
 ### Notes
 
 Gap **G1** from the dogfood register
