@@ -1,6 +1,6 @@
 # P04 — Regenerate bun.lock during a press
 
-- **Status:** `[ ]` scoped, not started
+- **Status:** `[~]` in progress
 
 Neutralize bun.lock: excluded from rewrite but never regenerated, so it always leaks
 
@@ -617,6 +617,54 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   Together these preserve EMP-01's actual purpose — a target must not be able to
   blind the scanner to a file that still carries old identity — under a model
   where "does press have a regenerator for this file" has become vacuously true.
+
+### Tests & Tasks
+
+- [ ] [P04-TS01] Failing tests: `[[regenerate]]` schema + config-load
+      validation — legacy list form rejected printing the object form;
+      `command` a non-empty list of non-empty strings; `env` valid names;
+      `file` containment (SafeRelPath, no-follow); output must be in
+      `exclude_files`, tracked, clean, `st_nlink == 1`; overlap bans
+      (reset, replace, `ROOT_CONTROL`)
+- [ ] [P04-T02] Implement the schema + validation to pass TS01; remove
+      `DEFAULT_RULES.regenerate`
+- [ ] [P04-TS03] Failing tests: plan time — executable resolution (bare name
+      → PATH, slash → target root, under the effective env, pinned absolute
+      path); stale-argv refusal (normalized, prefix-aware, best-effort);
+      dry-run renders every command verbatim; exit 2 = nothing written
+- [ ] [P04-T04] Implement plan-time resolution, stale-path refusal, and the
+      plan→apply rendering (no consent machinery)
+- [ ] [P04-TS05] Failing tests: executor — cwd = target root, no shell,
+      deny-by-default env (platform base + declared names, absent names
+      omitted), file-mode preservation on rewritten files
+- [ ] [P04-T06] Implement the generic executor replacing the hardcoded
+      `uv lock` branch in `_regenerate_lockfiles`
+- [ ] [P04-TS07] Failing tests: postconditions — output exists; full
+      containment + type recheck; UTF-8 two-point gate; paranoid
+      changed-fields scan incl. rendered FROM literals, translated path
+      components, reverse-mapped scopes; final pass over outputs, reset
+      stubs, and `ROOT_CONTROL` after the last command (multi-command
+      corruption cases)
+- [ ] [P04-T08] Implement the postconditions + final validation pass
+- [ ] [P04-TS09] Failing tests: hermetic verify — exemption requires
+      tool-list basename + target declaration; exempt files listed as
+      not-verified; exit 0 with a machine-readable `exempt` field
+- [ ] [P04-T10] Implement verify exemption semantics + the `exempt` report
+      field; update `docs/source/reference/cli.md` exit-0 wording
+- [ ] [P04-TS11] Failing tests: §6 preflight — a tracked excluded file with
+      no regenerate/reset/verify_ignore refuses (exit 2) naming the file and
+      the three fixes (shared with P05)
+- [ ] [P04-T12] Implement the §6 preflight
+- [ ] [P04-TS13] Failing tests: `press check-tools` — reports `argv[0]` of
+      every declared command plus `git`, each found (resolved path) or
+      missing; reads config, writes nothing, executes nothing
+- [ ] [P04-T14] Implement `press check-tools`
+- [ ] [P04-T15] Migration: create `press/press-rules.toml` (uv.lock +
+      bun.lock regenerations, CHANGELOG reset); pinned bun installer and a
+      `press-rules.toml` path filter in `.github/workflows/rebrand-matrix.yml`;
+      update runbooks
+- [ ] [P04-T16] Full verification: `just check` and `just matrix` green with
+      the migrated rules
 
 ### Notes
 
