@@ -1,0 +1,16 @@
+# This repo is its own press target (the R3 self-press in the acceptance
+# matrix), so every tracked excluded file declares its neutralization
+# (design 0006 §6): lockfiles regenerate under the pressed identity, and
+# the release history resets to a stub instead of leaking.
+
+[[regenerate]]
+file = "uv.lock"
+command = ["uv", "lock"]
+
+[[regenerate]]
+file = "bun.lock"
+command = ["bun", "install"]
+
+[[reset]]
+file = "CHANGELOG.md"
+stub = "# Changelog\n"

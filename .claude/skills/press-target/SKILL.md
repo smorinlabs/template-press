@@ -14,7 +14,9 @@ mismatch; a completed run is verified leak-free before a receipt is written.
 
 ## Steps
 
-1. Preconditions: target is a git repo with a clean tree.
+1. Preconditions: target is a git repo with a clean tree, and
+   `press check-tools --target <TARGET>` exits 0 — every declared
+   `[[regenerate]]` command (plus `git`) resolves before anything runs.
 2. Preview (never skip): if the target ships a
    `press/press-answers.example.toml` template, copy it first and fill in
    the destination identity:

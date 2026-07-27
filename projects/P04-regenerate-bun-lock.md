@@ -711,7 +711,7 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       path-qualified, deny-by-default effective env); reads config, writes
       nothing, executes nothing
 - [x] [P04-T14] Implement `press check-tools`
-- [ ] [P04-T15] Migration: create `press/press-rules.toml` (uv.lock +
+- [x] [P04-T15] Migration: create `press/press-rules.toml` (uv.lock +
       bun.lock regenerations, CHANGELOG reset); pinned bun installer and a
       `press-rules.toml` path filter in `.github/workflows/rebrand-matrix.yml`;
       update runbooks

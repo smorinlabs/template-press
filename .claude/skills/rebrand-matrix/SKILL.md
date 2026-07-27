@@ -21,6 +21,11 @@ The empirical harness from EMPIRICAL_BUGS.md as a repeatable check:
 `just matrix` (live: clones py-launch-blueprint; needs network), or only the
 pytest half: `uv run pytest tests/rebrand/test_matrix.py -m live -q`.
 
+R3's self-press runs this repo's declared regenerations (`uv lock`,
+`bun install` — see `press/press-rules.toml`), so uv and bun must both
+resolve: `uv run press check-tools --target .` confirms; CI installs a
+pinned bun.
+
 CI runs the same script weekly and on PRs touching the rebrand core
 (.github/workflows/rebrand-matrix.yml).
 
