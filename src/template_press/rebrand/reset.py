@@ -31,6 +31,7 @@ from template_press.rebrand.safety import (
     SafetyError,
     assert_ancestors_real,
     assert_under_root,
+    chmod_nofollow,
     is_regular_lstat,
     safe_write,
 )
@@ -280,7 +281,7 @@ def apply_resets(target: Path, resets: Sequence[tuple[ResetRule, str]]) -> list[
             )
         mode = stat.S_IMODE(os.lstat(path).st_mode)
         safe_write(target, rule.file, stub, refuse_hardlink=False)
-        os.chmod(path, mode)
+        chmod_nofollow(path, mode)
         done.append(rule.file)
     return done
 

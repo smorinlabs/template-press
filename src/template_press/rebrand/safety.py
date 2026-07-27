@@ -297,6 +297,23 @@ def safe_write(
     return path
 
 
+def chmod_nofollow(path: Path, mode: int) -> None:
+    """Restore permission bits on the just-written inode without following
+    a symlink swapped in at ``path`` after the atomic replace: open
+    O_NOFOLLOW and fchmod the descriptor (a swapped symlink makes the open
+    itself fail loudly, aborting the press). Windows — no fchmod, trivial
+    mode bits, and no O_NOFOLLOW — falls back to a plain chmod.
+    """
+    if not hasattr(os, "fchmod") or not hasattr(os, "O_NOFOLLOW"):
+        os.chmod(path, mode)
+        return
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+
+
 def write_control(
     root: Path,
     rel: str | os.PathLike[str] | SafeRelPath,
