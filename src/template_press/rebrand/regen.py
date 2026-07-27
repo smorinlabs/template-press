@@ -237,11 +237,13 @@ def execute_regenerations(
             )
             failed.append(rule.file)
             continue
+        # Bytes capture: only the exit code is consumed, and a declared
+        # command may legitimately emit non-UTF-8 — a strict text decode
+        # would crash mid-press with the target partially mutated.
         result = subprocess.run(  # noqa: S603 # nosec B603
             [plan.executable, *rule.command[1:]],
             cwd=target,
             capture_output=True,
-            text=True,
             env=command_env(rule.env),
         )
         if result.returncode != 0:
@@ -295,10 +297,12 @@ def _git_stdout(target: Path, *args: str) -> str:
         ["git", "-C", str(target), *git_hardening_args(), *args],  # noqa: S607
         check=True,
         capture_output=True,
-        text=True,
         env=scrubbed_git_env(),
     )
-    return result.stdout
+    # Bytes + surrogateescape, matching engine._git_listed: a git path is
+    # any byte except NUL, so a strict text decode would crash every
+    # preflight on a single non-UTF-8 filename.
+    return result.stdout.decode("utf-8", "surrogateescape")
 
 
 def tracked_paths(target: Path) -> frozenset[str]:
