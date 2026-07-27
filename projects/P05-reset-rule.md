@@ -1,8 +1,47 @@
 # P05 — Reset rule: blank a file to a declared stub
 
-- **Status:** `[?]` idea
+- **Status:** `[ ]` scoped, not started
 
 First destructive op — blank CHANGELOG-style files instead of leaking their history
+
+**References**
+
+- **Trunk:** [PROJECTS.md](../PROJECTS.md)
+- **Research:** [0004 — py-launch-blueprint conformance gaps, §G1](../docs/research/0004-py-launch-blueprint-conformance-gaps.md)
+  — the 86% measurement (678 of 791 findings were `CHANGELOG.md`)
+- **Ticket:** issue #54 (the G1/G2 dogfood gaps)
+- **PRs:** #56 (the decision record) · #57 (the revisions that touched it:
+  supersession alignment, stub-content scan)
+- **Prior art:** py-launch-blueprint's embedded engine — researched
+  2026-07-25, recorded under Notes below
+- **Sibling:** [P04 — regenerate](P04-regenerate-bun-lock.md) — ships
+  together per P04 D5
+
+### Scope
+
+The `[[reset]]` mechanism per D1–D6: declared only, no built-in changelog
+behavior; stub content from an inline string or a contained local
+`stub_file`, both scanned so a stub cannot restore the identity its reset
+removes; the guards — target must be git-tracked and clean (refused even
+under `--allow-dirty`), always-on two-level lines-based preview, every reset
+recorded in `ApplyReport` and the receipt, overlap bans with `[[replace]]`
+and `[[regenerate]]`; plan-time preflight with the named safety predicates;
+reset runs first, in source coordinates; a failed reset aborts the press;
+the stub write preserves the target's original file mode. Ships as one
+change with P04 — the §6 preflight needs both mechanisms to exist.
+
+### Out of scope
+
+- `stub_url` (remote fetch) — deferred; see D6 for the sketched semantics.
+- Idempotent skip-when-already-stubbed — deliberately not taken (D2);
+  revisit only if re-press noise proves annoying.
+- Anything that executes commands — that is P04's mechanism.
+- P06 substitution-set refactor (issue #42).
+
+### Open questions
+
+None — the five codesign answers are recorded (2026-07-25), D6 decided
+2026-07-26, and `stub_url` is a recorded deferral, not an open fork.
 
 ### Decisions
 

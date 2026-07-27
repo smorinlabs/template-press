@@ -1,8 +1,47 @@
 # P04 — Regenerate bun.lock during a press
 
-- **Status:** `[?]` idea
+- **Status:** `[ ]` scoped, not started
 
 Neutralize bun.lock: excluded from rewrite but never regenerated, so it always leaks
+
+**References**
+
+- **Trunk:** [PROJECTS.md](../PROJECTS.md)
+- **Research:** [0004 — py-launch-blueprint conformance gaps, §G2](../docs/research/0004-py-launch-blueprint-conformance-gaps.md)
+- **Research:** [0005 — scaffolder identity-variant handling](../docs/research/0005-scaffolder-identity-variant-handling.md)
+- **Design:** [0006 — external target model](../docs/design/0006-external-target-model.md)
+- **Ticket:** issue #54 (the G1/G2 dogfood gaps)
+- **PRs:** #56 (P05 decisions) · #57 (P04 decisions — four adversarial review
+  rounds; findings cited in-body by thread id)
+- **Sibling:** [P05 — reset rule](P05-reset-rule.md) — ships together per D5
+
+### Scope
+
+The declared-command regeneration model per D1–D5 as revised: the
+`[[regenerate]]` config schema and its load-time validation; the plan→apply
+flow (dry-run renders every command verbatim; a mutating run prints the same
+plan and executes it — no consent tokens); the execution contract (cwd =
+target root, no shell, deny-by-default platform-specific environment);
+plan-time executable resolution and stale-path refusal; the post-command and
+final-pass scans; hermetic-verify exemption semantics with the
+machine-readable `exempt` field; the §6 excluded-file preflight (shared with
+P05); `press check-tools`; and the migration — this repo's own
+`press/press-rules.toml`, bun provisioning in the rebrand-matrix workflow,
+and rejection of the legacy list-of-strings `regenerate` form.
+
+### Out of scope
+
+- Saved-plan mode (`--plan-out` / `--apply-plan`) — deferred until a
+  plan/apply-separated workflow actually exists.
+- P06 substitution-set refactor (issue #42) — sequenced after this ships.
+- M6 `provision` / `status` verbs.
+- py-launch-blueprint conformance work (it consumes this; separate effort).
+
+### Open questions
+
+None — the five 2026-07-26 walkthrough answers are recorded in the decisions,
+the D4 verb is decided (`check-tools`), and the consent machinery is
+superseded by plan→apply.
 
 ### Decisions
 
@@ -569,12 +608,11 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   regeneration command of its own, so `git` is the only tool it contributes to
   this list.
 
-  Open: the verb name and whether it stays standalone. `press check-tools` is a
-  working name; `press doctor` would collide with the existing leak-scanner
-  module (`doctor.py`) and should be avoided. M6's planned `press status`
-  ("computed from reality") may be the natural home, in which case this becomes
-  a section of that output rather than its own verb — worth deciding when M6 is
-  scoped rather than now.
+  **Decided 2026-07-26: `press check-tools`, a standalone verb.** `press
+  doctor` stays avoided (it collides with the leak-scanner module
+  `doctor.py`). If M6's planned `press status` later wants this as a section,
+  it can absorb the standalone verb then — shipping it now is not blocked on
+  M6 scoping.
 
   Together these preserve EMP-01's actual purpose — a target must not be able to
   blind the scanner to a file that still carries old identity — under a model
