@@ -1,5 +1,37 @@
 # Changelog
 
+## [3.4.0](https://github.com/smorinlabs/template-press/compare/v3.3.0...v3.4.0) (2026-07-27)
+
+
+### Features
+
+* **rebrand:** add declared [[regenerate]] and [[reset]] config schemas ([759c56e](https://github.com/smorinlabs/template-press/commit/759c56e39d292d7cb34aef05ba6638a0e35f9801))
+* **rebrand:** add press check-tools, the tool-availability verb ([2af2918](https://github.com/smorinlabs/template-press/commit/2af2918164930cbf41ddaabc48aa6de51a151deb))
+* **rebrand:** apply declared resets at position zero ([cd4e635](https://github.com/smorinlabs/template-press/commit/cd4e6354bde58c1282eb1ececd3ac8c9bb1b7b53))
+* **rebrand:** earn hermetic-verify exemption by cap and declaration ([7f0b4aa](https://github.com/smorinlabs/template-press/commit/7f0b4aa23eb0928c488a01744c9288a28f240f4a))
+* **rebrand:** earn the scan exemption by result — postconditions + final pass ([5493fa7](https://github.com/smorinlabs/template-press/commit/5493fa7c3d3f3fe6ccbc29ba1b2c152d0851e06b))
+* **rebrand:** execute declared commands via the generic executor ([608932d](https://github.com/smorinlabs/template-press/commit/608932dee591bcd5aa1cbff2b85335b277d0957e))
+* **rebrand:** gate the press on the excluded-file contract ([1bdd284](https://github.com/smorinlabs/template-press/commit/1bdd2847c139c65725b810e32c4d7a2c0cc44135))
+* **rebrand:** invalidate the prior receipt on a forced re-press ([467671e](https://github.com/smorinlabs/template-press/commit/467671efdde57ed373549f18fecc04b482acdc20))
+* **rebrand:** migrate this repo to declared regenerate and reset rules ([5efa42e](https://github.com/smorinlabs/template-press/commit/5efa42ec17c1dfa5d6288a4ca1e9879b141c779a))
+* **rebrand:** preflight reset targets with two-level preview ([de75784](https://github.com/smorinlabs/template-press/commit/de75784af2b161d750592a7a43a67f8f91e04b1f))
+* **rebrand:** resolve declared commands at plan time; refuse stale argv ([e609ef9](https://github.com/smorinlabs/template-press/commit/e609ef9f5e6b710075b7cb5081c764ee4183b073))
+
+
+### Bug Fixes
+
+* **rebrand:** chain declared-path translation to a fixpoint ([1a62e81](https://github.com/smorinlabs/template-press/commit/1a62e8171ddbd262877a50df2bca72b71bd26ab1))
+* **rebrand:** close three plan/postcondition gaps from re-review ([8410d00](https://github.com/smorinlabs/template-press/commit/8410d00fe32c3774866d3c2e880f9a63a7fad6a6))
+* **rebrand:** expand display forms in changed-fields scan; load stubs pre-press in verify ([12898ec](https://github.com/smorinlabs/template-press/commit/12898eced368a0d365f4e3ed3b43108d88b55fe9))
+* **rebrand:** final review pass — recovery containment, scan symmetry, guards ([cf4aef2](https://github.com/smorinlabs/template-press/commit/cf4aef23aa619be33bfee7af2ba043b6adaa4182))
+* **rebrand:** model declared resets in hermetic verify ([94d5c84](https://github.com/smorinlabs/template-press/commit/94d5c843fe4e3ea1c924fdef6390e3fb561b33fd))
+* **rebrand:** normalize check-tools config errors to exit 2 ([1073b87](https://github.com/smorinlabs/template-press/commit/1073b87de612145ec4810db2a73e02b650202004))
+* **rebrand:** regenerate bun.lock from scratch via a declared script ([b2be402](https://github.com/smorinlabs/template-press/commit/b2be402e5830a4f7911b666fdcefe359a19aff6f))
+* **rebrand:** reject terminal controls in declared paths ([bdd981e](https://github.com/smorinlabs/template-press/commit/bdd981e57dd816b2cbab634230b5a92eeb563064))
+* **rebrand:** restore control files after declared-command failures ([a1d8461](https://github.com/smorinlabs/template-press/commit/a1d846170a586c53ea854ee4b76ffbf117986e69))
+* **rebrand:** restore modes without following swapped symlinks ([05b163b](https://github.com/smorinlabs/template-press/commit/05b163bf5da34c566b1631c22fb3e125ff4a22b3))
+* **rebrand:** tolerate non-utf-8 bytes from git and declared commands ([36cd867](https://github.com/smorinlabs/template-press/commit/36cd867fa573568a782a84a01b458efea759e8d6))
+
 ## [3.3.0](https://github.com/smorinlabs/template-press/compare/v3.2.0...v3.3.0) (2026-07-25)
 
 
