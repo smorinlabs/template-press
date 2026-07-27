@@ -1,6 +1,6 @@
 # P05 — Reset rule: blank a file to a declared stub
 
-- **Status:** `[~]` in progress
+- **Status:** `[ ]` scoped, not started
 
 First destructive op — blank CHANGELOG-style files instead of leaking their history
 
@@ -8,7 +8,8 @@ First destructive op — blank CHANGELOG-style files instead of leaking their hi
 
 - **Trunk:** [PROJECTS.md](../PROJECTS.md)
 - **Research:** [0004 — py-launch-blueprint conformance gaps, §G1](../docs/research/0004-py-launch-blueprint-conformance-gaps.md)
-  — the 86% measurement (678 of 791 findings were `CHANGELOG.md`)
+  — the 86% measurement (678 of 784 findings; re-verified at 678 of 791 on
+  v3.3.0, see Notes)
 - **Ticket:** issue #54 (the G1/G2 dogfood gaps)
 - **PRs:** #56 (the decision record) · #57 (the revisions that touched it:
   supersession alignment, stub-content scan)
@@ -19,7 +20,9 @@ First destructive op — blank CHANGELOG-style files instead of leaking their hi
 
 ### Scope
 
-The `[[reset]]` mechanism per D1–D6: declared only, no built-in changelog
+The `[[reset]]` mechanism per D1–D6, plus two joint rules recorded in P04
+(the reset/regenerate overlap ban and stub mode preservation): declared
+only, no built-in changelog
 behavior; stub content from an inline string or a contained local
 `stub_file`, both scanned so a stub cannot restore the identity its reset
 removes; the guards — target must be git-tracked and clean (refused even
@@ -68,7 +71,10 @@ All five open questions settled 2026-07-25 (codesign export
     - **verbose** — additionally the first N lines of the current content plus
       the stub that would replace it, where N is the same unit as the count
       above. The motivating target is a release history running to thousands of
-      lines, so the excerpt is bounded rather than complete.
+      lines, so the excerpt is bounded rather than complete. (Decided
+      2026-07-26: the excerpt is gated behind a new `--verbose` flag on
+      `press rebrand` — no such flag exists today — and N is fixed at 20
+      lines.)
 
     Normal mode is never silent about a reset; only the content excerpt is
     verbose-gated.
@@ -188,12 +194,16 @@ All five open questions settled 2026-07-25 (codesign export
 - [ ] [P05-TS03] Failing tests: preflight — untracked or dirty target
       refused even under `--allow-dirty`; the named predicates
       (`assert_under_root`, `assert_ancestors_real`, `is_regular_lstat`);
-      exit 2 = nothing written; two-level lines-based preview always present
+      exit 2 = nothing written; two-level lines-based preview always present,
+      the excerpt behind the new `--verbose` flag with its fixed 20-line
+      bound
 - [ ] [P05-T04] Implement the preflight + preview
 - [ ] [P05-TS05] Failing tests: apply — reset runs first (position zero,
       source coordinates); `safe_write` with original-mode preservation;
       `ApplyReport.reset` + receipt `reset = <n>` count; a failed reset
-      aborts with no receipt
+      aborts with no receipt; translated reset-target path components pass
+      the same paranoid scan as regeneration output paths
+      (`app_name = "changelog"` → `CHANGELOG.md`, thread 3653398575)
 - [ ] [P05-T06] Implement the reset operation + reporting
 - [ ] [P05-T07] Joint acceptance: the R3 self-press with the migrated rules
       yields a stub `CHANGELOG.md`, regenerated lockfiles, and a clean
@@ -230,4 +240,3 @@ verify scan reads the file, so a reset file contributes zero findings.
 Not blocked by P06 — reset removes content rather than adding a substitution, so
 it adds no cell to the matrix P06 exists to eliminate.
 
-<!-- Promote with `project-refine P05`. -->

@@ -1,6 +1,6 @@
 # P04 — Regenerate bun.lock during a press
 
-- **Status:** `[~]` in progress
+- **Status:** `[ ]` scoped, not started
 
 Neutralize bun.lock: excluded from rewrite but never regenerated, so it always leaks
 
@@ -138,9 +138,9 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     `env` lists names — press copies each from the operator's environment at
     run time; values never live in the config, so a repo cannot smuggle
     secrets in and the operator's real setting is what flows through. The
-    list is part of the declaration: the plan and dry-run show it beside the
-    argv, and it is folded into the consent hash, so widening it (say, adding
-    `GITHUB_TOKEN`) invalidates standing consent exactly like a changed argv.
+    list is part of the declaration: every plan and apply prints it beside
+    the argv, so widening it (say, adding `GITHUB_TOKEN`) is visible on each
+    run — under plan→apply, visibility is the guard.
 
     `env` is validated at config load like `command`: a list of non-empty,
     platform-valid variable names — no `=`, no NUL, no non-strings. A
@@ -190,13 +190,13 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   persistence, leaving the reported regenerated result different from what
   ends up on disk.
 
-  Reservation alone is not protection, because a consented command can
+  Reservation alone is not protection, because a declared command can
   mutate arbitrary files and `ROOT_CONTROL` is omitted from the downstream
   doctor and verifier inventories. The final validation pass therefore
   snapshots reserved control files before the first command and revalidates
   their type, containment, and content after the last one; a mismatch aborts
-  the press — the rules that ran are no longer the rules that were consented
-  to and validated.
+  the press — the rules that ran are no longer the rules that were planned
+  and validated.
 
   **This deliberately reverses a documented guarantee, and it is a genuinely new
   trust boundary — not merely a more explicit one.** Today `regenerate` is a list
@@ -349,6 +349,13 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
 
   D3 below is what keeps this change from also weakening leak detection.
 
+  **END of the record-only region — text from here on is live.** (One
+  requirement from the record region survives on its own merits, restated
+  here as live: `press/press-rules.toml` is executable configuration — it
+  names the commands R3 runs — so the rebrand-matrix workflow's path filter
+  must include it, or a change to those commands would not itself trigger
+  the matrix. Lands with P04-T15.)
+
   **Migration is a required part of this decision, not an afterthought.** The
   `regenerate` key changes from a list of filenames to a list of objects, so
   every existing config is invalid, and — more sharply — removing the hidden
@@ -367,8 +374,9 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     that would fail D5's own preflight on the other two.
   - ~~Update `scripts/rebrand_matrix.sh` to carry consent for its own
     command.~~ **Superseded by the plan→apply revision** — with no consent
-    token, R3's existing invocation keeps working; only the rules file and the
-    bun provisioning below are needed.
+    token, R3's existing invocation keeps working; the remaining migration
+    items are the rules file plus the workflow's bun provisioning and its
+    `press-rules.toml` path filter (all in P04-T15).
   - Provision the declared commands in CI: `.github/workflows/rebrand-matrix.yml`
     installs only uv today, and the migrated rules file makes D2's preflight
     require `bun` — without the pinned bun installer in the workflow, R3
@@ -390,7 +398,7 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   **pinned**: plan-time lookup runs under the same deny-by-default env whose
   fixed base supplies `PATH`, and the resolved absolute path is what
   executes — no second runtime PATH lookup exists to diverge from what was
-  planned and consented to. Consistent
+  planned and shown in the plan. Consistent
   with P05 D5 (validate before mutating) and with the existing "exit 2 means
   nothing was written" contract. Considered and not taken: also recording the
   resolved binary path in the receipt for reproducibility across machines —
@@ -487,7 +495,19 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     FROM literal would "neutralize" the exclusion while deliberately keeping
     old identity in the tree, invisible to every downstream inventory. Stub
     content is validated at plan time with the same changed-only paranoid
-    identity and rendered-literal scan the post-command check uses.
+    identity and rendered-literal scan the post-command check uses. The final
+    pass also scans the **translated reset-target path components** with the
+    same paranoid matcher — an excluded filename can itself carry changed
+    identity (`app_name = "changelog"` → `CHANGELOG.md`), and downstream
+    inventories never look at it (thread 3653398575).
+
+    **Sink guards re-run immediately before EACH command launches.** With
+    multiple declarations, an earlier command can plant a symlink or hardlink
+    at a later output's path or an ancestor; an in-place-truncating later
+    command would then corrupt an outside file before any post-command check
+    runs. The full set — containment, real ancestors, no-follow regular
+    file, `st_nlink == 1` — is re-checked per command, not only at plan time
+    and afterwards.
 
     **Decided 2026-07-26: a non-UTF-8 output cannot earn the exemption — fail
     closed.** The exemption is bought with the post-command text scan; a file
@@ -531,7 +551,11 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     `packages/demo_widget/bun.lock` would never be exempted — hermetic verify
     would flag forever a file the real press regenerates and validates.
     Basename-on-the-list plus the target's declaration for that exact path
-    keeps the tool-side cap while covering nested outputs.
+    keeps the tool-side cap while covering nested outputs. And since T02
+    removes `DEFAULT_RULES.regenerate` — today's de-facto source of that
+    cap in `scan_paths` — the list becomes its own explicit constant
+    (`uv.lock`, `bun.lock`), never derived from `exclude_files`, which would
+    wrongly exempt `CHANGELOG.md`-class artifacts.
 
     **That exemption is a gap in coverage, and verify must say so.** Declaring a
     regeneration does not prove the command rebuilds anything — a target
@@ -581,13 +605,13 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   superseded by the final ruling above: the preflight ships with both projects
   together.)*
 
-  **Known limitation, accepted:** the receipt records `regenerated = <count>`
-  only, so two presses running different commands for the same output are
-  indistinguishable after the fact. Recording the argv or resolved binary was
-  considered twice and declined both times — the plan and dry-run already show
-  the exact argv at consent time, and D1's command-scoped consent means a
-  substituted command stops rather than running silently. Revisit if forensic
-  reconstruction of a past press is ever needed.
+  **REVISED 2026-07-26 with the plan→apply supersession: the receipt records
+  each regeneration's resolved argv.** The count-only form was accepted twice
+  on grounds the supersession deleted — command-scoped consent meant a
+  substituted command stopped, so the consent record doubled as the forensic
+  trace. Under plan→apply nothing stops a config change between two runs, and
+  the receipt is the only artifact recording what actually ran; recording the
+  resolved argv per output is cheap and closes the gap (lands with P04-T08).
 
 - **D4 — A standalone command that reports whether every external command is
   findable.** D2 makes the check happen during a press; this makes it runnable
@@ -600,6 +624,11 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   tools press itself invokes unconditionally (`git`) — reporting each as found
   (with its resolved path) or missing. Useful as a CI preflight and as the first
   thing to run when a press fails on someone else's machine.
+
+  Resolution uses D2's exact semantics — path-qualified `argv[0]` against
+  the target root, bare names on PATH under the deny-by-default effective
+  environment, the resolved path pinned — so its answer cannot diverge from
+  what the real press would do (thread 3653479445).
 
   Nothing is derived from a filename: requiring `uv` because a target declared
   `uv.lock` would reinstate exactly the inference D1 removes, and would reject a
@@ -621,11 +650,14 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
 ### Tests & Tasks
 
 - [ ] [P04-TS01] Failing tests: `[[regenerate]]` schema + config-load
-      validation — legacy list form rejected printing the object form;
-      `command` a non-empty list of non-empty strings; `env` valid names;
-      `file` containment (SafeRelPath, no-follow); output must be in
-      `exclude_files`, tracked, clean, `st_nlink == 1`; overlap bans
-      (reset, replace, `ROOT_CONTROL`)
+      validation — legacy list form rejected with a schema TEMPLATE carrying
+      a placeholder command (never a derived argv, which would reinstate the
+      filename→command inference D1 removes); `command` a non-empty list of
+      non-empty NUL-free strings; `env` valid names; `file` containment
+      (SafeRelPath, no-follow); output must be in `exclude_files`, tracked,
+      clean even under `--allow-dirty`, `st_nlink == 1`; replace +
+      `ROOT_CONTROL` overlap bans (the cross-mechanism reset⊗regenerate
+      overlap test lands in TS11, once both schemas exist)
 - [ ] [P04-T02] Implement the schema + validation to pass TS01; remove
       `DEFAULT_RULES.regenerate`
 - [ ] [P04-TS03] Failing tests: plan time — executable resolution (bare name
@@ -636,7 +668,9 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       plan→apply rendering (no consent machinery)
 - [ ] [P04-TS05] Failing tests: executor — cwd = target root, no shell,
       deny-by-default env (platform base + declared names, absent names
-      omitted), file-mode preservation on rewritten files
+      omitted), file-mode preservation on rewritten files; sink guards
+      re-run before each command launch (symlink/hardlink planted by an
+      earlier command at a later output's path)
 - [ ] [P04-T06] Implement the generic executor replacing the hardcoded
       `uv lock` branch in `_regenerate_lockfiles`
 - [ ] [P04-TS07] Failing tests: postconditions — output exists; full
@@ -645,19 +679,26 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       components, reverse-mapped scopes; final pass over outputs, reset
       stubs, and `ROOT_CONTROL` after the last command (multi-command
       corruption cases)
-- [ ] [P04-T08] Implement the postconditions + final validation pass
+- [ ] [P04-T08] Implement the postconditions + final validation pass; the
+      receipt records each regeneration's resolved argv
 - [ ] [P04-TS09] Failing tests: hermetic verify — exemption requires
-      tool-list basename + target declaration; exempt files listed as
-      not-verified; exit 0 with a machine-readable `exempt` field
+      tool-list basename + target declaration; the tool list is an explicit
+      constant (`uv.lock`, `bun.lock`), not derived from the removed default
+      or from `exclude_files` (CHANGELOG.md must NOT be exemptible); exempt
+      files listed as not-verified; exit 0 with a machine-readable `exempt`
+      field
 - [ ] [P04-T10] Implement verify exemption semantics + the `exempt` report
       field; update `docs/source/reference/cli.md` exit-0 wording
 - [ ] [P04-TS11] Failing tests: §6 preflight — a tracked excluded file with
       no regenerate/reset/verify_ignore refuses (exit 2) naming the file and
-      the three fixes (shared with P05)
+      the three fixes (shared with P05); plus the cross-mechanism
+      reset⊗regenerate overlap rejection, now that both schemas exist
 - [ ] [P04-T12] Implement the §6 preflight
 - [ ] [P04-TS13] Failing tests: `press check-tools` — reports `argv[0]` of
       every declared command plus `git`, each found (resolved path) or
-      missing; reads config, writes nothing, executes nothing
+      missing, using D2's exact resolution semantics (target-root
+      path-qualified, deny-by-default effective env); reads config, writes
+      nothing, executes nothing
 - [ ] [P04-T14] Implement `press check-tools`
 - [ ] [P04-T15] Migration: create `press/press-rules.toml` (uv.lock +
       bun.lock regenerations, CHANGELOG reset); pinned bun installer and a
@@ -665,6 +706,10 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       update runbooks
 - [ ] [P04-T16] Full verification: `just check` and `just matrix` green with
       the migrated rules
+- [ ] [P04-T17] On a `--force` re-press, invalidate the prior receipt after
+      the plan gates pass and before the first mutation — a failed forced
+      re-press must not leave the old receipt advertising a verified press
+      (PR #56 thread 3651682614, previously undispositioned)
 
 ### Notes
 
@@ -699,4 +744,3 @@ policy before the destructive operation (P05) has to answer the same question.
   `mkstemp`'s `0600` must not replace a `0644` changelog or strip execute
   bits (thread 3653398581).
 
-<!-- Promote with `project-refine P04`. -->
