@@ -32,7 +32,7 @@ from template_press.rebrand.regen import (
 )
 from template_press.rebrand.rules import RegenerateRule, load_rules
 
-from .conftest import DEST, SOURCE, write_answers_file
+from .conftest import DEST, SOURCE, posix_only, write_answers_file
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -79,6 +79,7 @@ class TestCommandEnv:
 # Executable resolution (D2) — bare → PATH, slash → target root, pinned
 # ---------------------------------------------------------------------------
 class TestResolveExecutable:
+    @posix_only
     def test_bare_name_resolves_on_effective_path(self, tmp_path: Path):
         exe = _make_exe(tmp_path / "bin" / "faketool")
         target = tmp_path / "target"
@@ -111,6 +112,7 @@ class TestResolveExecutable:
         target.mkdir()
         assert resolve_executable(target, "faketool", {"PATH": str(empty)}) is None
 
+    @posix_only
     def test_path_qualified_resolves_against_target_root(self, tmp_path: Path):
         """`./tools/regen` resolves relative to the TARGET root (the
         execution cwd) — never the press caller's directory (the autouse
@@ -121,6 +123,7 @@ class TestResolveExecutable:
         assert resolved == exe
         assert resolve_executable(target, "tools/regen", {"PATH": ""}) == exe
 
+    @posix_only
     def test_backslash_form_is_path_qualified(self, tmp_path: Path):
         target = tmp_path / "target"
         exe = _make_exe(target / "tools" / "regen")
@@ -138,6 +141,7 @@ class TestResolveExecutable:
             is None
         )
 
+    @posix_only
     def test_absolute_argv0_pins_itself(self, tmp_path: Path):
         exe = _make_exe(tmp_path / "abs-bin" / "pinned")
         target = tmp_path / "target"
@@ -230,6 +234,7 @@ class TestControlCharactersRejected:
 # plan_regenerate_commands + rendering
 # ---------------------------------------------------------------------------
 class TestPlanRegenerateCommands:
+    @posix_only
     def test_resolvable_command_planned_with_pinned_path(self, tmp_path: Path):
         exe = _make_exe(tmp_path / "bin" / "faketool")
         target = tmp_path / "target"

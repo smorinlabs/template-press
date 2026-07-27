@@ -181,7 +181,7 @@ class TestStubLoading:
     def test_stub_file_content_read(self, tmp_path: Path):
         stubs = tmp_path / "press" / "stubs"
         stubs.mkdir(parents=True)
-        (stubs / "CHANGELOG.md").write_text("# Fresh\n", encoding="utf-8")
+        (stubs / "CHANGELOG.md").write_text("# Fresh\n", encoding="utf-8", newline="")
         rule = ResetRule(file="CHANGELOG.md", stub_file="press/stubs/CHANGELOG.md")
         assert load_stub_content(tmp_path, rule) == "# Fresh\n"
 
@@ -218,7 +218,9 @@ class TestStubLoading:
             read_reset_target_text(tmp_path, rule)
 
     def test_reset_target_text_read(self, tmp_path: Path):
-        (tmp_path / "CHANGELOG.md").write_text("## v1\n## v2\n", encoding="utf-8")
+        (tmp_path / "CHANGELOG.md").write_text(
+            "## v1\n## v2\n", encoding="utf-8", newline=""
+        )
         rule = ResetRule(file="CHANGELOG.md", stub="# C\n")
         assert read_reset_target_text(tmp_path, rule) == "## v1\n## v2\n"
 

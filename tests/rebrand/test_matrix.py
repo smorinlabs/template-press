@@ -16,7 +16,7 @@ from template_press.rebrand.cli import main
 from template_press.rebrand.config import SOURCE_CONFIG_REL
 from template_press.rebrand.receipt import RECEIPT_REL
 
-from .conftest import DEST, write_answers_file
+from .conftest import DEST, posix_only, write_answers_file
 
 BLUEPRINT = "https://github.com/smorinlabs/py-launch-blueprint.git"
 
@@ -74,6 +74,7 @@ def test_r1a_undeclared_blueprint_refused_loudly(tmp_path: Path, capsys):
 
 
 @pytest.mark.live
+@posix_only
 def test_r1b_declared_blueprint_presses_clean(tmp_path: Path):
     """The declared pipeline against the real blueprint: CHANGELOG resets to
     the stub (G1), lockfiles regenerate under the pressed identity (G2)."""

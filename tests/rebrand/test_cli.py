@@ -325,7 +325,7 @@ def _pressed_target_with_receipt(src_target: Path, tmp_path: Path, monkeypatch) 
     real_run = sp.run
 
     def regen_succeeds(cmd, *args, **kwargs):
-        if Path(cmd[0]).name == "uv" and cmd[1:] == ["lock"]:
+        if Path(cmd[0]).stem == "uv" and cmd[1:] == ["lock"]:
             (src_target / "uv.lock").write_text(
                 "tuber_toolkit==1.0.0\n", encoding="utf-8"
             )
@@ -369,7 +369,7 @@ def test_failed_forced_repress_removes_stale_receipt(
     real_run = sp.run
 
     def regen_fails(cmd, *args, **kwargs):
-        if Path(cmd[0]).name == "uv" and cmd[1:] == ["lock"]:
+        if Path(cmd[0]).stem == "uv" and cmd[1:] == ["lock"]:
             return sp.CompletedProcess(cmd, returncode=1, stdout="", stderr="boom")
         return real_run(cmd, *args, **kwargs)
 

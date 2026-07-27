@@ -21,6 +21,8 @@ import pytest
 from template_press import press_cli
 from template_press.rebrand.check_tools import check_tools_command
 
+from .conftest import posix_only
+
 
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(  # noqa: S603
@@ -52,6 +54,7 @@ def _line_for(out: str, argv0: str) -> str:
 
 
 class TestResolution:
+    @posix_only
     def test_all_found_exit_0(self, src_target: Path, capsys: pytest.CaptureFixture):
         exe = _make_exe(src_target / "tools" / "gen.sh")
         _write_rules(
@@ -86,6 +89,7 @@ class TestResolution:
         assert "missing" in line
         assert "bun.lock" in line  # the declaration it would break
 
+    @posix_only
     def test_slash_argv0_resolves_against_target_root(
         self, src_target: Path, capsys: pytest.CaptureFixture
     ):
@@ -102,6 +106,7 @@ class TestResolution:
         assert rc == 0
         assert str(exe) in _line_for(capsys.readouterr().out, "scripts/regen")
 
+    @posix_only
     def test_bare_argv0_resolves_on_effective_path(
         self,
         src_target: Path,
@@ -130,6 +135,7 @@ class TestResolution:
 
 
 class TestSafety:
+    @posix_only
     def test_executes_nothing(self, src_target: Path):
         sentinel = src_target / "EXECUTED"
         _make_exe(

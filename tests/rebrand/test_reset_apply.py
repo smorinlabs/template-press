@@ -26,7 +26,7 @@ from template_press.rebrand.reset import apply_resets
 from template_press.rebrand.rules import ResetRule
 from template_press.rebrand.safety import SafetyError
 
-from .conftest import DEST, SOURCE, requires_symlink, write_answers_file
+from .conftest import DEST, SOURCE, posix_only, requires_symlink, write_answers_file
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -50,6 +50,7 @@ class TestApplyResets:
             "# Changelog\n"
         )
 
+    @posix_only
     def test_original_mode_preserved(self, tmp_path: Path):
         """Thread 3653398581: safe_write's fresh inode starts from mkstemp's
         0600 — the target's original permission bits must be restored."""

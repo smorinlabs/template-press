@@ -22,7 +22,7 @@ from template_press.rebrand.engine import ApplyReport
 from template_press.rebrand.regen import RegenerationPlan, execute_regenerations
 from template_press.rebrand.rules import DEFAULT_RULES, RegenerateRule
 
-from .conftest import DEST, SOURCE, requires_symlink
+from .conftest import DEST, SOURCE, posix_only, requires_symlink
 
 PY = sys.executable
 
@@ -202,6 +202,7 @@ class TestRenameTranslation:
         assert report.regenerated == ["packages/demo_widget/bun.lock"]
 
 
+@posix_only
 def test_replace_pass_preserves_file_mode(src_target: Path):
     """D1 (surviving requirement): safe_write's temp+rename creates a fresh
     inode and mkstemp's 0600 must not strip an 0755 script's execute bits —
