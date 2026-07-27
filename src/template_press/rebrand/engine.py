@@ -35,6 +35,7 @@ from template_press.rebrand.safety import (
     SafetyError,
     assert_ancestors_real,
     assert_under_root,
+    chmod_nofollow,
     git_hardening_args,
     safe_write,
     scrubbed_git_env,
@@ -755,13 +756,31 @@ def translate_path(posix: str, renames: Mapping[str, str]) -> str:
     source coordinates, but checks that model the POST-rename tree must
     address the moved location — validating the declared path would report
     a validly moved file as missing (P04 D1/D3).
+
+    ``_apply_renames`` runs MULTIPLE shallowest-prefix passes, so a
+    later-pass pair's old side is in INTERMEDIATE (already-partly-renamed)
+    coordinates — translation must chain to a fixpoint, longest matching
+    prefix per step, mirroring ``ignores.build_forward_map``'s reverse
+    fixpoint. Convergence is guaranteed for real maps (the collision gate
+    forbids dest identities embedding source tokens); the bound raises
+    rather than hangs on a pathological cycle.
     """
-    for old, new in renames.items():
-        if posix == old:
-            return new
-        if posix.startswith(old + "/"):
-            return new + posix[len(old) :]
-    return posix
+    current = posix
+    for _ in range(len(renames) + 1):
+        best: tuple[int, str, str] | None = None
+        for old, new in renames.items():
+            if current == old or current.startswith(old + "/"):
+                depth = old.count("/")
+                if best is None or depth > best[0]:
+                    best = (depth, old, new)
+        if best is None:
+            return current
+        _, old, new = best
+        current = new if current == old else new + current[len(old) :]
+    raise ValidationError(
+        f"path translation did not converge for {posix!r} after "
+        f"{len(renames) + 1} passes (rename map: {dict(renames)!r})"
+    )
 
 
 @dataclass
@@ -824,7 +843,7 @@ def _apply_replacements(
             # helper must not come out non-executable (P04 D1).
             mode = stat.S_IMODE(os.lstat(path).st_mode)
             safe_write(target, rel, new_text, refuse_hardlink=False)
-            os.chmod(path, mode)
+            chmod_nofollow(path, mode)
             report.replaced.append(rel)
 
 

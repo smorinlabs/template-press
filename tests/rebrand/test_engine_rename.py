@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.engine import _rename_candidates, apply, build_plan
+from template_press.rebrand.engine import (
+    _rename_candidates,
+    apply,
+    build_plan,
+    translate_path,
+)
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 from template_press.rebrand.safety import ContainmentError, SafetyError
@@ -673,3 +678,36 @@ class TestRenameSeesSymlinkNames:
             for p in _rename_candidates(src_target, DEFAULT_RULES)
         }
         assert "plbp-sub" not in candidates
+
+
+class TestTranslatePath:
+    """Copilot thread 3654632264: ApplyReport.renamed carries later-pass
+    pairs in INTERMEDIATE coordinates (see ignores.build_forward_map), so
+    forward translation must chain to a fixpoint, not stop at first match."""
+
+    def test_single_prefix_translation(self):
+        assert (
+            translate_path("pkg_press/HISTORY.md", {"pkg_press": "pkg_potato"})
+            == "pkg_potato/HISTORY.md"
+        )
+
+    def test_unrenamed_path_passes_through(self):
+        assert translate_path("docs/README.md", {"pkg_press": "pkg_potato"}) == (
+            "docs/README.md"
+        )
+
+    def test_intermediate_coordinate_chain_reaches_fixpoint(self):
+        renames = {
+            "src/demo_widget": "src/potato_launcher",
+            "src/potato_launcher/demo_widget.lock": (
+                "src/potato_launcher/potato_launcher.lock"
+            ),
+        }
+        assert (
+            translate_path("src/demo_widget/demo_widget.lock", renames)
+            == "src/potato_launcher/potato_launcher.lock"
+        )
+
+    def test_cyclic_map_raises_instead_of_hanging(self):
+        with pytest.raises(ValidationError):
+            translate_path("a/x", {"a": "b", "b": "a"})
