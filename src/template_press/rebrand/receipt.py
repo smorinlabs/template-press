@@ -38,6 +38,7 @@ def write_receipt(
     dest: Identity,
     report: ApplyReport,
     regenerations: Sequence[tuple[str, Sequence[str]]] = (),
+    exempt: Sequence[tuple[str, str]] = (),
 ) -> Path:
     stamp = datetime.now(UTC).isoformat(timespec="seconds")
     lines = [
@@ -68,5 +69,15 @@ def write_receipt(
             "[[press.regenerate]]",
             f"file = {toml_string(file)}",
             "argv = [" + ", ".join(toml_string(a) for a in argv) + "]",
+        ]
+    # Machine-readable coverage record (P04 D3): every file the ordinary
+    # doctor/verify inventories skip, with the mechanism that covered it —
+    # the gap stays visible and deliberate, never an unchecked free pass.
+    for file, reason in exempt:
+        lines += [
+            "",
+            "[[press.exempt]]",
+            f"file = {toml_string(file)}",
+            f"reason = {toml_string(reason)}",
         ]
     return write_control(target, RECEIPT_REL, "\n".join(lines) + "\n")

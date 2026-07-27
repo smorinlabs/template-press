@@ -691,13 +691,13 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       corruption cases)
 - [x] [P04-T08] Implement the postconditions + final validation pass; the
       receipt records each regeneration's resolved argv
-- [ ] [P04-TS09] Failing tests: hermetic verify — exemption requires
+- [x] [P04-TS09] Failing tests: hermetic verify — exemption requires
       tool-list basename + target declaration; the tool list is an explicit
       constant (`uv.lock`, `bun.lock`), not derived from the removed default
       or from `exclude_files` (CHANGELOG.md must NOT be exemptible); exempt
       files listed as not-verified; exit 0 with a machine-readable `exempt`
       field
-- [ ] [P04-T10] Implement verify exemption semantics + the `exempt` field in
+- [x] [P04-T10] Implement verify exemption semantics + the `exempt` field in
       BOTH the verify report and the receipt (each skipped file with its
       reason); update `docs/source/reference/cli.md` exit-0 wording
 - [ ] [P04-TS11] Failing tests: §6 preflight — a tracked excluded file with

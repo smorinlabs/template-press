@@ -331,7 +331,36 @@ def rewrite_paths(target: Path, rules: Rules) -> list[Path]:
     return iter_target_files(target, rules)
 
 
-def scan_paths(target: Path, rules: Rules) -> list[PathEntry]:
+def exempt_regenerated_paths(
+    rules: Rules, renamed: Mapping[str, str] | Collection[tuple[str, str]] = ()
+) -> list[tuple[str, str]]:
+    """(translated_path, reason) for every declared output the hermetic
+    scan may exempt (P04 D3): basename on the explicit tool cap AND a
+    target declaration for that exact path, translated through the renames
+    (the sandbox tree has moved by scan time). The exemption is a coverage
+    gap — callers must LIST these as not-verified, never omit them.
+    """
+    renames = dict(renamed)
+    out: list[tuple[str, str]] = []
+    for rule in rules.regenerate:
+        translated = translate_path(rule.file, renames)
+        if translated.rsplit("/", 1)[-1] in REGENERATE_EXEMPTIBLE:
+            out.append(
+                (
+                    translated,
+                    "declared regeneration — rebuilt and scanned by the real "
+                    "press's post-command check; the hermetic sandbox never "
+                    "runs commands, so verify cannot certify it",
+                )
+            )
+    return out
+
+
+def scan_paths(
+    target: Path,
+    rules: Rules,
+    renamed: Mapping[str, str] | Collection[tuple[str, str]] = (),
+) -> list[PathEntry]:
     """``copy_paths`` minus ``ROOT_CONTROL``, regenerable lockfiles, and
     ``verify_ignore`` dirs — the no-leak scan's candidate set.
 
@@ -352,8 +381,14 @@ def scan_paths(target: Path, rules: Rules) -> list[PathEntry]:
     Everything else stays: non-exemptible lockfiles (``package-lock.json``),
     a force-added gitignored file, and symlink/gitlink entries (type-tagged,
     for Task 7).
+
+    ``renamed`` (the press's rename map/report) translates declared
+    source-coordinate outputs to their post-rename locations before the
+    exact-path comparison — basename alone matches a nested
+    ``packages/demo_widget/bun.lock``, but the path half would fail forever
+    without the translation (P04 D3).
     """
-    exempt_lockfiles = {r.file for r in rules.regenerate} & REGENERATE_EXEMPTIBLE
+    exempt_lockfiles = {p for p, _ in exempt_regenerated_paths(rules, renamed)}
     out: list[PathEntry] = []
     for entry in copy_paths(target):
         posix = entry.rel.as_posix()

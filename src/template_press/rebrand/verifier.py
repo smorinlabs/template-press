@@ -362,7 +362,9 @@ def scan(
     rendered_rules = rendered_rules or []
     renamed = renamed or []
     findings: list[Finding] = []
-    for entry in scan_paths(target, rules):
+    # `renamed` also drives the regeneration exemption (P04 D3): declared
+    # source-coordinate outputs are exempt at their POST-rename locations.
+    for entry in scan_paths(target, rules, renamed):
         rel = entry.rel
         posix = rel.as_posix()
         findings.extend(

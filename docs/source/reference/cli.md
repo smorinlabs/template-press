@@ -76,7 +76,12 @@ press verify
 ```
 
 The exit code signals the result:
-- `0`: Verified — no source identity leaks survived the press.
+- `0`: Clean over the scanned set — no source identity leaks survived the
+  press in any scanned file. Files with a declared regeneration whose
+  basename is on the tool's exemptible list (`uv.lock`, `bun.lock`) are
+  NOT scanned (the hermetic sandbox never runs commands, so only the real
+  press's post-command scan can certify them); they are listed as exempt
+  in the report and in the `exempt` field of `--json` output.
 - `1`: Verification failed — source identity found in the pressed copy.
 - `2`: Configuration, environment, or unverifiable identity error.
 
