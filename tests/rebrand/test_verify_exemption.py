@@ -186,3 +186,46 @@ class TestReceiptExempt:
         assert "[[press.exempt]]" in receipt
         assert "bun.lock" in receipt
         assert "HISTORY.md" in receipt
+
+
+class TestVerifyModelsDeclaredResets:
+    def test_declared_reset_target_verifies_clean(self, tmp_path: Path) -> None:
+        """Codex thread 3654657444 (P1): the real press replaces a declared
+        reset target with its validated stub at position zero, so the
+        hermetic sandbox must model the same reset before scanning —
+        otherwise verify exits 1 for a target the real press handles."""
+        repo = make_pressable(tmp_path)
+        (repo / "CHANGELOG.md").write_text(
+            "## demo_widget 1.0 — by Demo Author\n", encoding="utf-8", newline=""
+        )
+        (repo / "press" / "press-rules.toml").write_text(
+            '[[reset]]\nfile = "CHANGELOG.md"\nstub = "# Changelog\\n"\n',
+            encoding="utf-8",
+        )
+        _commit(repo)
+        assert verify_command(["--target", str(repo)]) == 0
+
+    def test_exempt_paths_reported_in_source_coordinates(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Codex thread 3654657451: findings are mapped back to source
+        coordinates before reporting; the exempt list must be too — the
+        synthetic sandbox path does not exist in the user's repo."""
+        repo = make_pressable(tmp_path)
+        pkg = repo / "packages" / "demo_widget"
+        pkg.mkdir(parents=True)
+        (pkg / "index.js").write_text("// demo_widget\n", encoding="utf-8")
+        (pkg / "bun.lock").write_text('{"name": "demo_widget"}\n', encoding="utf-8")
+        (repo / "press" / "press-rules.toml").write_text(
+            "[rules]\n"
+            'extra_exclude_files = ["packages/demo_widget/bun.lock"]\n'
+            "[[regenerate]]\n"
+            'file = "packages/demo_widget/bun.lock"\n'
+            'command = ["bun", "install"]\n',
+            encoding="utf-8",
+        )
+        _commit(repo)
+        assert verify_command(["--target", str(repo), "--json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        (entry,) = payload["exempt"]
+        assert entry["file"] == "packages/demo_widget/bun.lock"
