@@ -6,11 +6,14 @@ One table the rewriter applies and every checker reads
 
 ### Open questions
 
-- Q: Land **before M6** as the three-lens review recommends, or after P04/P05?
-  M6 adds new mechanisms to this engine; building them on the current structure
-  multiplies the hand-written cells. But P04/P05 unblock the py-launch-blueprint
-  conform, which is the actual goal — a week of internal refactoring with no
-  user-visible output is its own risk.
+- ~~Q: Land **before M6** as the three-lens review recommends, or after P04/P05?~~
+  **A (2026-07-26): after P04/P05.** Two-round plan agreed in session: ship
+  P04+P05 together first (they unblock the py-launch-blueprint conform — the
+  actual goal), then take this refactor up once that work is integrated.
+  Original trade-off, for the record: M6 adds new mechanisms to this engine;
+  building them on the current structure multiplies the hand-written cells.
+  But a week of internal refactoring with no user-visible output is its own
+  risk.
 - Q: Does the three-PR split (walker → validator → table) hold up under design,
   or do the walker and table need to land together to be coherent?
 - Q: Correlated-failure risk: once doctor derives from the same table the

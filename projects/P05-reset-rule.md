@@ -1,8 +1,50 @@
 # P05 — Reset rule: blank a file to a declared stub
 
-- **Status:** `[?]` idea
+- **Status:** `[ ]` scoped, not started
 
 First destructive op — blank CHANGELOG-style files instead of leaking their history
+
+**References**
+
+- **Trunk:** [PROJECTS.md](../PROJECTS.md)
+- **Research:** [0004 — py-launch-blueprint conformance gaps, §G1](../docs/research/0004-py-launch-blueprint-conformance-gaps.md)
+  — the 86% measurement (678 of 784 findings; re-verified at 678 of 791 on
+  v3.3.0, see Notes)
+- **Ticket:** issue #54 (the G1/G2 dogfood gaps)
+- **PRs:** #56 (the decision record) · #57 (the revisions that touched it:
+  supersession alignment, stub-content scan)
+- **Prior art:** py-launch-blueprint's embedded engine — researched
+  2026-07-25, recorded under Notes below
+- **Sibling:** [P04 — regenerate](P04-regenerate-bun-lock.md) — ships
+  together per P04 D5
+
+### Scope
+
+The `[[reset]]` mechanism per D1–D6, plus two joint rules recorded in P04
+(the reset/regenerate overlap ban and stub mode preservation): declared
+only, no built-in changelog
+behavior; stub content from an inline string or a contained local
+`stub_file`, both scanned so a stub cannot restore the identity its reset
+removes; the guards — target must be git-tracked and clean (refused even
+under `--allow-dirty`), always-on two-level lines-based preview, every reset
+recorded in `ApplyReport` and the receipt, overlap bans with `[[replace]]`
+and `[[regenerate]]`; plan-time preflight with the named safety predicates;
+reset runs first, in source coordinates; a failed reset aborts the press;
+the stub write preserves the target's original file mode. Ships as one
+change with P04 — the §6 preflight needs both mechanisms to exist.
+
+### Out of scope
+
+- `stub_url` (remote fetch) — deferred; see D6 for the sketched semantics.
+- Idempotent skip-when-already-stubbed — deliberately not taken (D2);
+  revisit only if re-press noise proves annoying.
+- Anything that executes commands — that is P04's mechanism.
+- P06 substitution-set refactor (issue #42).
+
+### Open questions
+
+None — the five codesign answers are recorded (2026-07-25), D6 decided
+2026-07-26, and `stub_url` is a recorded deferral, not an open fork.
 
 ### Decisions
 
@@ -29,7 +71,10 @@ All five open questions settled 2026-07-25 (codesign export
     - **verbose** — additionally the first N lines of the current content plus
       the stub that would replace it, where N is the same unit as the count
       above. The motivating target is a release history running to thousands of
-      lines, so the excerpt is bounded rather than complete.
+      lines, so the excerpt is bounded rather than complete. (Decided
+      2026-07-26: the excerpt is gated behind a new `--verbose` flag on
+      `press rebrand` — no such flag exists today — and N is fixed at 20
+      lines.)
 
     Normal mode is never silent about a reset; only the content excerpt is
     verbose-gated.
@@ -122,6 +167,60 @@ All five open questions settled 2026-07-25 (codesign export
   on PATH) before a press begins, instead of discovering it after the rewrite
   phase has already run.
 
+- **D6 — Stub content comes from exactly one of two declared forms (decided
+  2026-07-26).** Either an inline string (`stub = "# Changelog\n"`, the prior-
+  art form) or a local file reference (`stub_file = "press/stubs/CHANGELOG.md"`)
+  whose path is validated with the same containment predicates as every other
+  declared path (inside the target, no traversal, no-follow regular file) and
+  whose content passes the same stub scan D5 applies to inline stubs — a stub
+  may not restore the identity its reset exists to remove, whatever its
+  source. Declaring both forms on one entry is a config-load error.
+
+  **The target key is `file` (decided 2026-07-26)** — the same key
+  `[[regenerate]]` uses, one vocabulary across `press-rules.toml`. The prior
+  art used `path`; consistency inside this tool's own config wins over
+  matching the embedded engine. And **reset reads bytes as text, fail
+  closed**: the target's current content and any `stub_file` must decode as
+  UTF-8 at plan time — the line count, the verbose excerpt, and the stub
+  scan all interpret text — and undecodable bytes refuse the press (exit 2),
+  mirroring P04's rule for regeneration outputs.
+
+  **`stub_url` (remote fetch) considered and DEFERRED.** It would be the
+  tool's first network dependency — press is pure stdlib, offline, and
+  deterministic by design — to serve content that can equally be committed as
+  a `stub_file`. If a real template ever needs it, the sketched semantics:
+  fetched once at plan time so the preview shows the actual content; an
+  unreachable URL is a plan-time refusal (exit 2, nothing written).
+
+### Tests & Tasks
+
+- [ ] [P05-TS01] Failing tests: `[[reset]]` schema — the target declared as
+      `file` (the `[[regenerate]]` key, not prior art's `path`); `stub` XOR
+      `stub_file` (both or neither is a config-load error); `stub_file`
+      containment predicates; `ROOT_CONTROL` paths rejected as reset
+      targets; non-UTF-8 target or `stub_file` refused at plan time;
+      stub-content scan refuses changed tokens and rendered FROM literals
+      from either source; the reset/replace overlap ban (reset⊗regenerate
+      lands in P04-TS11)
+- [ ] [P05-T02] Implement the `[[reset]]` schema + config-load validation
+- [ ] [P05-TS03] Failing tests: preflight — untracked or dirty target
+      refused even under `--allow-dirty`; the named predicates
+      (`assert_under_root`, `assert_ancestors_real`, `is_regular_lstat`);
+      exit 2 = nothing written; two-level lines-based preview always present,
+      the excerpt behind the new `--verbose` flag with its fixed 20-line
+      bound
+- [ ] [P05-T04] Implement the preflight + preview
+- [ ] [P05-TS05] Failing tests: apply — reset runs first (position zero,
+      source coordinates); `safe_write` with original-mode preservation;
+      `ApplyReport.reset` + receipt `reset = <n>` count; a failed reset
+      aborts with no receipt; translated reset-target path components pass
+      the same paranoid scan as regeneration output paths
+      (`app_name = "changelog"` → `CHANGELOG.md`, thread 3653398575)
+- [ ] [P05-T06] Implement the reset operation + reporting
+- [ ] [P05-T07] Joint acceptance: the R3 self-press with the migrated rules
+      yields a stub `CHANGELOG.md`, regenerated lockfiles, and a clean
+      verify (§6 preflight is P04-TS11/T12; the migration itself is P04-T15)
+
 ### Notes
 
 Gap **G1** from the dogfood register
@@ -153,4 +252,3 @@ verify scan reads the file, so a reset file contributes zero findings.
 Not blocked by P06 — reset removes content rather than adding a substitution, so
 it adds no cell to the matrix P06 exists to eliminate.
 
-<!-- Promote with `project-refine P05`. -->
