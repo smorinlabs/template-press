@@ -50,6 +50,7 @@ def write_receipt(
         "[press.counts]",
         f"replaced = {len(report.replaced)}",
         f"renamed = {len(report.renamed)}",
+        f"reset = {len(report.reset)}",
         f"regenerated = {len(report.regenerated)}",
         f"skipped = {len(report.skipped)}",
     ]

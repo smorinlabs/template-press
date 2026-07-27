@@ -735,11 +735,13 @@ class ApplyReport:
     renamed: list[tuple[str, str]] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     regenerated: list[str] = field(default_factory=list)
+    reset: list[str] = field(default_factory=list)  # declared stubs written
 
     def render(self) -> str:
         return (
             f"Applied: {len(self.replaced)} replaced, "
             f"{len(self.renamed)} renamed, "
+            f"{len(self.reset)} reset, "
             f"{len(self.regenerated)} regenerated, "
             f"{len(self.skipped)} skipped."
         )

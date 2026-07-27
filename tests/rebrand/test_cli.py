@@ -774,7 +774,7 @@ def test_press_outcome_env_error_on_regen_failure(tmp_path: Path, monkeypatch):
     direct_target = make_target(tmp_path / "direct", layout="src")
     write_source_config(direct_target)
     rules = load_rules(direct_target)
-    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules, [])
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules, [], [])
     assert outcome.env_error is not None
     assert outcome.leaked is False
 
@@ -802,7 +802,7 @@ def test_press_outcome_env_error_on_missing_tool(tmp_path: Path, monkeypatch):
     target = make_target(tmp_path / "direct", layout="src")
     write_source_config(target)
     rules = load_rules(target)
-    outcome = cli_mod._press(target, SOURCE, DEST, rules, [])
+    outcome = cli_mod._press(target, SOURCE, DEST, rules, [], [])
     assert outcome.env_error is not None
 
 
@@ -821,7 +821,7 @@ def test_press_outcome_env_error_on_apply_ioerror(tmp_path: Path, monkeypatch):
     direct_target = make_target(tmp_path / "direct", layout="src")
     write_source_config(direct_target)
     rules = load_rules(direct_target)
-    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules, [])
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules, [], [])
     assert outcome.env_error is not None
     assert outcome.renamed == []
 
@@ -849,7 +849,7 @@ def test_press_outcome_env_error_on_receipt_write_failure(tmp_path: Path, monkey
     direct_target = make_target(tmp_path / "direct", layout="src")
     write_source_config(direct_target)
     rules = load_rules(direct_target)
-    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules, [])
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules, [], [])
     assert outcome.env_error is not None
 
     main_target = make_target(tmp_path / "main", layout="src")
@@ -871,7 +871,7 @@ def test_press_outcome_success_no_env_error(tmp_path: Path):
     direct_target = make_target(tmp_path / "direct", layout="src")
     write_source_config(direct_target)
     rules = load_rules(direct_target)
-    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules, [])
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules, [], [])
     assert isinstance(outcome, cli_mod.PressOutcome)
     assert outcome.env_error is None
     assert outcome.leaked is False

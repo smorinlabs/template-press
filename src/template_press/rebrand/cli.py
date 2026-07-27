@@ -45,10 +45,11 @@ from template_press.rebrand.regen import (
     render_regenerate_plan,
 )
 from template_press.rebrand.reset import (
+    apply_resets,
     preflight_reset_targets,
     render_reset_plan,
 )
-from template_press.rebrand.rules import DEFAULT_RULES, Rules, load_rules
+from template_press.rebrand.rules import DEFAULT_RULES, ResetRule, Rules, load_rules
 from template_press.rebrand.safety import (
     SafetyError,
     git_hardening_args,
@@ -356,7 +357,14 @@ def main(argv: list[str] | None = None) -> int:
         SafetyError,
     ) as exc:
         return _fail(str(exc))
-    outcome = _press(target, source, dest, rules, regen_plans)
+    outcome = _press(
+        target,
+        source,
+        dest,
+        rules,
+        regen_plans,
+        [(preview.rule, preview.stub_text) for preview in reset_previews],
+    )
     return 1 if (outcome.env_error is not None or outcome.leaked) else 0
 
 
@@ -380,10 +388,16 @@ def _press(
     dest: Identity,
     rules: Rules,
     regen_plans: list[RegenerationPlan],
+    resets: list[tuple[ResetRule, str]],
 ) -> PressOutcome:
     report = None
     try:
+        # Reset takes position ZERO (P05 D5): declared paths are consumed in
+        # SOURCE coordinates before the rename pass moves anything. A raise
+        # here aborts the press (no receipt) — git is the undo button.
+        reset_done = apply_resets(target, resets)
         report = apply(target, source, dest, rules)
+        report.reset.extend(reset_done)
         # Declared commands run against the FINAL tree: declared paths are
         # translated through the apply-time rename report (P04 D1).
         failed_locks = execute_regenerations(

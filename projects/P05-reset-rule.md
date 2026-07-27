@@ -210,13 +210,13 @@ All five open questions settled 2026-07-25 (codesign export
       the excerpt behind the new `--verbose` flag with its fixed 20-line
       bound
 - [x] [P05-T04] Implement the preflight + preview
-- [ ] [P05-TS05] Failing tests: apply — reset runs first (position zero,
+- [x] [P05-TS05] Failing tests: apply — reset runs first (position zero,
       source coordinates); `safe_write` with original-mode preservation;
       `ApplyReport.reset` + receipt `reset = <n>` count; a failed reset
       aborts with no receipt; translated reset-target path components pass
       the same paranoid scan as regeneration output paths
       (`app_name = "changelog"` → `CHANGELOG.md`, thread 3653398575)
-- [ ] [P05-T06] Implement the reset operation + reporting
+- [x] [P05-T06] Implement the reset operation + reporting
 - [ ] [P05-T07] Joint acceptance: the R3 self-press with the migrated rules
       yields a stub `CHANGELOG.md`, regenerated lockfiles, and a clean
       verify (§6 preflight is P04-TS11/T12; the migration itself is P04-T15)

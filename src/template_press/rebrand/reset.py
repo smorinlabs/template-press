@@ -11,7 +11,9 @@ uses (P04 D3's evidence standard), whatever its source.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import os
+import stat
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,10 +23,12 @@ from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.regen import has_uncommitted_changes, tracked_paths
 from template_press.rebrand.rules import ResetRule, Rules, rule_matches_path
 from template_press.rebrand.safety import (
+    ContainmentError,
     SafetyError,
     assert_ancestors_real,
     assert_under_root,
     is_regular_lstat,
+    safe_write,
 )
 
 # D2 (decided 2026-07-26): the verbose preview excerpt is bounded — the
@@ -255,6 +259,34 @@ def preflight_reset_targets(
             )
         )
     return previews, problems
+
+
+def apply_resets(target: Path, resets: Sequence[tuple[ResetRule, str]]) -> list[str]:
+    """Write each declared stub — position ZERO, SOURCE coordinates (D5).
+
+    Runs before every other pass: declared paths are written against the
+    repo's current layout, so they must be consumed before the rename pass
+    moves anything (a stale path would silently CREATE a spurious file).
+    Re-applies the same predicates the preflight named, writes via
+    ``safe_write`` (atomic temp+rename = new inode, so an external hardlink
+    keeps the pre-reset content), and restores the target's original mode
+    (thread 3653398581). Any failure PROPAGATES — a failed reset aborts the
+    whole press with no receipt (D4); git is the undo button.
+    """
+    done: list[str] = []
+    for rule, stub in resets:
+        path = target / rule.file
+        assert_under_root(path, target)
+        assert_ancestors_real(path, target)
+        if not is_regular_lstat(path):
+            raise ContainmentError(
+                f"reset {rule.file}: not a regular file at apply time (no-follow check)"
+            )
+        mode = stat.S_IMODE(os.lstat(path).st_mode)
+        safe_write(target, rule.file, stub, refuse_hardlink=False)
+        os.chmod(path, mode)
+        done.append(rule.file)
+    return done
 
 
 def render_reset_plan(previews: list[ResetPreview], *, verbose: bool) -> str:
