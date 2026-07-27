@@ -705,12 +705,12 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       the three fixes (shared with P05); plus the cross-mechanism
       reset⊗regenerate overlap rejection, now that both schemas exist
 - [x] [P04-T12] Implement the §6 preflight
-- [ ] [P04-TS13] Failing tests: `press check-tools` — reports `argv[0]` of
+- [x] [P04-TS13] Failing tests: `press check-tools` — reports `argv[0]` of
       every declared command plus `git`, each found (resolved path) or
       missing, using D2's exact resolution semantics (target-root
       path-qualified, deny-by-default effective env); reads config, writes
       nothing, executes nothing
-- [ ] [P04-T14] Implement `press check-tools`
+- [x] [P04-T14] Implement `press check-tools`
 - [ ] [P04-T15] Migration: create `press/press-rules.toml` (uv.lock +
       bun.lock regenerations, CHANGELOG reset); pinned bun installer and a
       `press-rules.toml` path filter in `.github/workflows/rebrand-matrix.yml`;

@@ -145,3 +145,24 @@ file = "docs/CHANGELOG.md"
 line = 42
 reason = "Historical reference in changelog"
 ```
+
+## `press check-tools`
+
+Reports whether every declared `[[regenerate]]` command's `argv[0]` — plus
+`git`, the one tool press itself needs — resolves on this machine, using
+exactly the resolution the press will use (path-qualified names against the
+target root, bare names on the deny-by-default effective `PATH`). It reads
+the target's config, writes nothing, and executes nothing.
+
+```console
+$ press check-tools --target ../my-repo
+git — /usr/bin/git
+uv — /opt/homebrew/bin/uv (regenerates uv.lock)
+bun — missing (declared to regenerate bun.lock)
+```
+
+| Code | Meaning |
+|------|---------|
+| `0` | Every tool resolved. |
+| `1` | At least one tool is missing. |
+| `2` | Configuration or usage error. |
