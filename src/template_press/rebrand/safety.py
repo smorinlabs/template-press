@@ -17,8 +17,8 @@ Guards implemented here (see the plan's Defensive Hardening section):
   ``st_nlink > 1`` refusal for tracked/target sinks.
 * **G4** ``write_control`` — sink-local re-check immediately before each
   control-artifact write (D8 applied per write, not once at preflight).
-* **G5 / G5+** ``scrubbed_git_env`` / ``scrubbed_uv_env`` / ``git_hardening_args``
-  — neutralize a poisoned ``GIT_DIR`` / global config / ``UV_*`` and disable
+* **G5 / G5+** ``scrubbed_git_env`` / ``git_hardening_args``
+  — neutralize a poisoned ``GIT_DIR`` / global config and disable
   on-target ``core.fsmonitor`` / ``core.hooksPath`` / ext transport. Residual:
   a repo-local clean/smudge filter driver cannot be disabled by name via
   ``-c`` (see ``git_hardening_args`` docstring), so on-target callers should
@@ -62,7 +62,6 @@ __all__ = [
     "safe_rename",
     "safe_write",
     "scrubbed_git_env",
-    "scrubbed_uv_env",
     "write_control",
 ]
 
@@ -298,6 +297,23 @@ def safe_write(
     return path
 
 
+def chmod_nofollow(path: Path, mode: int) -> None:
+    """Restore permission bits on the just-written inode without following
+    a symlink swapped in at ``path`` after the atomic replace: open
+    O_NOFOLLOW and fchmod the descriptor (a swapped symlink makes the open
+    itself fail loudly, aborting the press). Windows — no fchmod, trivial
+    mode bits, and no O_NOFOLLOW — falls back to a plain chmod.
+    """
+    if not hasattr(os, "fchmod") or not hasattr(os, "O_NOFOLLOW"):
+        os.chmod(path, mode)
+        return
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+
+
 def write_control(
     root: Path,
     rel: str | os.PathLike[str] | SafeRelPath,
@@ -376,21 +392,6 @@ def scrubbed_git_env(
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_TERMINAL_PROMPT"] = "0"
-    if extra:
-        env.update(extra)
-    return env
-
-
-def scrubbed_uv_env(
-    base: Mapping[str, str] | None = None,
-    extra: Mapping[str, str] | None = None,
-) -> dict[str, str]:
-    """A uv-safe environment (G5): every ``UV_*`` override (working dir, cache,
-    index, ...) is dropped so ``uv lock`` cannot be steered off the target.
-    """
-    env = dict(os.environ if base is None else base)
-    for key in [k for k in env if k.startswith("UV_")]:
-        env.pop(key, None)
     if extra:
         env.update(extra)
     return env

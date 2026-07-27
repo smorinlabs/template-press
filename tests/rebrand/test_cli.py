@@ -255,8 +255,16 @@ def test_failed_lock_regeneration_exits_1_no_receipt(
 
     from template_press.rebrand import cli as cli_mod
 
-    write_source_config(src_target)
+    # Files written BEFORE write_source_config so its `git add -A` + commit
+    # covers them: the plan-time output preflight requires uv.lock tracked
+    # and clean, and this test's subject is the MID-PRESS failure path.
     (src_target / "uv.lock").write_text("demo_widget==0.1.0\n", encoding="utf-8")
+    (src_target / "press").mkdir(exist_ok=True)
+    (src_target / "press" / "press-rules.toml").write_text(
+        '[[regenerate]]\nfile = "uv.lock"\ncommand = ["uv", "lock"]\n',
+        encoding="utf-8",
+    )
+    write_source_config(src_target)
     real_run = sp.run
 
     def fake_run(cmd, *args, **kwargs):
@@ -274,97 +282,167 @@ def test_failed_lock_regeneration_exits_1_no_receipt(
     assert not (src_target / RECEIPT_REL).exists()
 
 
-@requires_symlink
-def test_regen_refuses_symlinked_lockfile_no_external_write(
-    tmp_path: Path, monkeypatch
-):
-    """M1: a symlinked uv.lock must be refused, never written through.
+def _commit_all(target: Path, message: str = "post-press") -> None:
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(target), "commit", "-q", "-m", message],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
 
-    `uv.lock` -> external file under tmp_path. `_regenerate_lockfiles` must
-    reject it on the leaf is_symlink() check BEFORE ever invoking `uv lock`,
-    so the external file is never touched.
+
+DEST2 = Identity(
+    package_name="tomato_thrower",
+    repo_name="tomato-thrower",
+    app_name="tomato",
+    author="Tomato Farmer",
+    email="tomato@example.com",
+    owner="tomatolabs",
+)
+
+
+def _pressed_target_with_receipt(src_target: Path, tmp_path: Path, monkeypatch) -> None:
+    """One verified press with a declared uv.lock regeneration, committed.
+
+    The regeneration is faked to succeed (the fixture pyproject has no
+    build-system, so a real `uv lock` fails) — the fake matches the PINNED
+    executable the executor actually launches, and writes output that
+    passes the postcondition scan.
     """
     import subprocess as sp
 
-    from template_press.rebrand import cli as cli_mod
-    from template_press.rebrand.engine import ApplyReport
-    from template_press.rebrand.rules import DEFAULT_RULES
+    (src_target / "uv.lock").write_text("demo_widget==0.1.0\n", encoding="utf-8")
+    (src_target / "press").mkdir(exist_ok=True)
+    (src_target / "press" / "press-rules.toml").write_text(
+        '[[regenerate]]\nfile = "uv.lock"\ncommand = ["uv", "lock"]\n',
+        encoding="utf-8",
+    )
+    write_source_config(src_target)
+    real_run = sp.run
 
-    target = tmp_path / "target"
-    target.mkdir()
-    external = tmp_path / "external.lock"
-    external_content = "external-untouched==1.0.0\n"
-    external.write_text(external_content, encoding="utf-8")
-    external_inode = external.stat().st_ino
-
-    (target / "uv.lock").symlink_to(external)
-
-    uv_lock_calls = []
-
-    def fake_run(cmd, *args, **kwargs):
-        if cmd[:2] == ["uv", "lock"]:
-            uv_lock_calls.append(cmd)
-            # Simulates what a real `uv lock` does: write the relative
-            # lockfile path in cwd. If the symlink guard is bypassed, this
-            # follows the symlink and mutates the external file.
-            (Path(kwargs["cwd"]) / "uv.lock").write_text(
-                "mutated-by-uv-lock\n", encoding="utf-8"
+    def regen_succeeds(cmd, *args, **kwargs):
+        if Path(cmd[0]).stem == "uv" and cmd[1:] == ["lock"]:
+            (src_target / "uv.lock").write_text(
+                "tuber_toolkit==1.0.0\n", encoding="utf-8"
             )
             return sp.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
-        raise AssertionError(f"unexpected subprocess call: {cmd}")
+        return real_run(cmd, *args, **kwargs)
 
-    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", regen_succeeds)
+    answers = write_answers(tmp_path)
+    assert main(["--target", str(src_target), "--config", str(answers)]) == 0
+    assert (src_target / RECEIPT_REL).is_file()
+    monkeypatch.setattr(subprocess, "run", real_run)
+    _commit_all(src_target)
+    # The press rewrites files, not git config: discovery would still see
+    # the old origin and refuse the re-press (EMP-01). Point it at the new
+    # identity, as a genuinely re-pressed repo would be.
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "git",
+            "-C",
+            str(src_target),
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/potatolabs/potato-launcher.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
 
-    report = ApplyReport()
-    failed = cli_mod._regenerate_lockfiles(target, DEFAULT_RULES, report)
 
-    assert uv_lock_calls == []  # uv lock must never run against a symlink
-    assert failed == ["uv.lock"]
-    assert any("symlink" in s for s in report.skipped)
-    assert external.read_text(encoding="utf-8") == external_content
-    assert external.stat().st_ino == external_inode
-
-
-def test_uv_lock_regen_uses_scrubbed_uv_env(tmp_path: Path, monkeypatch) -> None:
-    """G5: `uv lock` regeneration must run with a SCRUBBED UV_* environment.
-
-    A poisoned ``UV_*`` override (cache/index/working-dir) could steer the one
-    external-tool write the press performs off the target. `_regenerate_lockfiles`
-    must pass ``env=scrubbed_uv_env()`` — an explicit env carrying no ``UV_*``.
+def test_failed_forced_repress_removes_stale_receipt(
+    src_target: Path, tmp_path: Path, monkeypatch, capsys
+):
+    """P04-T16 (PR #56 thread 3651682614): a failed forced re-press must not
+    leave the prior receipt advertising a verified press — it is invalidated
+    after the plan gates pass and before the first mutation.
     """
     import subprocess as sp
 
-    from template_press.rebrand import cli as cli_mod
-    from template_press.rebrand.engine import ApplyReport
-    from template_press.rebrand.rules import DEFAULT_RULES
+    _pressed_target_with_receipt(src_target, tmp_path, monkeypatch)
+    real_run = sp.run
 
-    target = tmp_path / "target"
-    target.mkdir()
-    (target / "uv.lock").write_text("demo_widget==0.1.0\n", encoding="utf-8")
+    def regen_fails(cmd, *args, **kwargs):
+        if Path(cmd[0]).stem == "uv" and cmd[1:] == ["lock"]:
+            return sp.CompletedProcess(cmd, returncode=1, stdout="", stderr="boom")
+        return real_run(cmd, *args, **kwargs)
 
-    monkeypatch.setenv("UV_CACHE_DIR", "/tmp/evil-cache")  # noqa: S108
-    monkeypatch.setenv("UV_INDEX_URL", "https://evil.example/simple")
+    monkeypatch.setattr(subprocess, "run", regen_fails)
+    second = tmp_path / "second"
+    second.mkdir()
+    answers2 = write_answers_file(second, DEST2)
+    code = main(["--target", str(src_target), "--config", str(answers2), "--force"])
+    assert code == 1
+    assert "lockfile regeneration failed" in capsys.readouterr().err
+    assert not (src_target / RECEIPT_REL).exists()
 
-    captured: dict[str, object] = {}
 
-    def fake_run(cmd, *args, **kwargs):
-        if cmd[:2] == ["uv", "lock"]:
-            captured["env"] = kwargs.get("env")
-            return sp.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
-        raise AssertionError(f"unexpected subprocess call: {cmd}")
+def test_failed_command_cannot_plant_a_receipt(
+    src_target: Path, tmp_path: Path, monkeypatch, capsys
+):
+    """Codex 3654736777 (P1): a declared command that creates
+    press/press-receipt.toml and then fails must not leave it behind
+    advertising a verified press — the control snapshot is restored on
+    every post-command failure exit."""
+    import subprocess as sp
 
-    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+    (src_target / "uv.lock").write_text("demo_widget==0.1.0\n", encoding="utf-8")
+    (src_target / "press").mkdir(exist_ok=True)
+    (src_target / "press" / "press-rules.toml").write_text(
+        '[[regenerate]]\nfile = "uv.lock"\ncommand = ["uv", "lock"]\n',
+        encoding="utf-8",
+    )
+    write_source_config(src_target)
+    real_run = sp.run
 
-    report = ApplyReport()
-    failed = cli_mod._regenerate_lockfiles(target, DEFAULT_RULES, report)
+    def plant_and_fail(cmd, *args, **kwargs):
+        if Path(cmd[0]).stem == "uv" and cmd[1:] == ["lock"]:
+            (src_target / RECEIPT_REL).write_text(
+                "[press]\nverified = true\n", encoding="utf-8"
+            )
+            return sp.CompletedProcess(cmd, returncode=1, stdout=b"", stderr=b"")
+        return real_run(cmd, *args, **kwargs)
 
-    assert failed == []
-    assert report.regenerated == ["uv.lock"]
-    env = captured["env"]
-    # An explicit env was passed (not the ambient environment) ...
-    assert env is not None
-    # ... and it carries NO UV_* overrides (the poison was scrubbed).
-    assert not any(k.startswith("UV_") for k in env)
+    monkeypatch.setattr(subprocess, "run", plant_and_fail)
+    answers = write_answers(tmp_path)
+    code = main(["--target", str(src_target), "--config", str(answers)])
+    assert code == 1
+    assert "lockfile regeneration failed" in capsys.readouterr().err
+    assert not (src_target / RECEIPT_REL).exists()
+
+
+def test_forced_repress_blocked_at_plan_gate_keeps_receipt(
+    src_target: Path, tmp_path: Path, monkeypatch
+):
+    """Invalidation runs AFTER the plan gates: a forced re-press refused at
+    exit 2 (nothing written) must leave the prior receipt untouched.
+    """
+    _pressed_target_with_receipt(src_target, tmp_path, monkeypatch)
+    # Dirty the declared output: the output preflight refuses (exit 2) even
+    # under --allow-dirty, before any write.
+    with (src_target / "uv.lock").open("a", encoding="utf-8") as fh:
+        fh.write("# uncommitted\n")
+    second = tmp_path / "second"
+    second.mkdir()
+    answers2 = write_answers_file(second, DEST2)
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers2),
+            "--force",
+            "--allow-dirty",
+        ]
+    )
+    assert code == 2
+    assert (src_target / RECEIPT_REL).is_file()
 
 
 def test_dry_run_with_accept_discovery_writes_nothing(
@@ -854,12 +932,12 @@ def test_press_outcome_env_error_on_regen_failure(tmp_path: Path, monkeypatch):
 
     from .conftest import make_target
 
-    monkeypatch.setattr(cli_mod, "_regenerate_lockfiles", lambda *a, **k: ["uv.lock"])
+    monkeypatch.setattr(cli_mod, "execute_regenerations", lambda *a, **k: ["uv.lock"])
 
     direct_target = make_target(tmp_path / "direct", layout="src")
     write_source_config(direct_target)
     rules = load_rules(direct_target)
-    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules)
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules, [], [])
     assert outcome.env_error is not None
     assert outcome.leaked is False
 
@@ -882,12 +960,12 @@ def test_press_outcome_env_error_on_missing_tool(tmp_path: Path, monkeypatch):
     def boom(*_args, **_kwargs):
         raise FileNotFoundError("uv: command not found")
 
-    monkeypatch.setattr(cli_mod, "_regenerate_lockfiles", boom)
+    monkeypatch.setattr(cli_mod, "execute_regenerations", boom)
 
     target = make_target(tmp_path / "direct", layout="src")
     write_source_config(target)
     rules = load_rules(target)
-    outcome = cli_mod._press(target, SOURCE, DEST, rules)
+    outcome = cli_mod._press(target, SOURCE, DEST, rules, [], [])
     assert outcome.env_error is not None
 
 
@@ -906,7 +984,7 @@ def test_press_outcome_env_error_on_apply_ioerror(tmp_path: Path, monkeypatch):
     direct_target = make_target(tmp_path / "direct", layout="src")
     write_source_config(direct_target)
     rules = load_rules(direct_target)
-    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules)
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules, [], [])
     assert outcome.env_error is not None
     assert outcome.renamed == []
 
@@ -934,7 +1012,7 @@ def test_press_outcome_env_error_on_receipt_write_failure(tmp_path: Path, monkey
     direct_target = make_target(tmp_path / "direct", layout="src")
     write_source_config(direct_target)
     rules = load_rules(direct_target)
-    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules)
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules, [], [])
     assert outcome.env_error is not None
 
     main_target = make_target(tmp_path / "main", layout="src")
@@ -956,7 +1034,7 @@ def test_press_outcome_success_no_env_error(tmp_path: Path):
     direct_target = make_target(tmp_path / "direct", layout="src")
     write_source_config(direct_target)
     rules = load_rules(direct_target)
-    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules)
+    outcome = cli_mod._press(direct_target, SOURCE, DEST, rules, [], [])
     assert isinstance(outcome, cli_mod.PressOutcome)
     assert outcome.env_error is None
     assert outcome.leaked is False

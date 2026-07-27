@@ -1,6 +1,6 @@
 # P05 — Reset rule: blank a file to a declared stub
 
-- **Status:** `[ ]` scoped, not started
+- **Status:** `[x]` completed
 
 First destructive op — blank CHANGELOG-style files instead of leaking their history
 
@@ -194,7 +194,7 @@ All five open questions settled 2026-07-25 (codesign export
 
 ### Tests & Tasks
 
-- [ ] [P05-TS01] Failing tests: `[[reset]]` schema — the target declared as
+- [x] [P05-TS01] Failing tests: `[[reset]]` schema — the target declared as
       `file` (the `[[regenerate]]` key, not prior art's `path`); `stub` XOR
       `stub_file` (both or neither is a config-load error); `stub_file`
       containment predicates; `ROOT_CONTROL` paths rejected as reset
@@ -202,22 +202,22 @@ All five open questions settled 2026-07-25 (codesign export
       stub-content scan refuses changed tokens and rendered FROM literals
       from either source; the reset/replace overlap ban (reset⊗regenerate
       lands in P04-TS11)
-- [ ] [P05-T02] Implement the `[[reset]]` schema + config-load validation
-- [ ] [P05-TS03] Failing tests: preflight — untracked or dirty target
+- [x] [P05-T02] Implement the `[[reset]]` schema + config-load validation
+- [x] [P05-TS03] Failing tests: preflight — untracked or dirty target
       refused even under `--allow-dirty`; the named predicates
       (`assert_under_root`, `assert_ancestors_real`, `is_regular_lstat`);
       exit 2 = nothing written; two-level lines-based preview always present,
       the excerpt behind the new `--verbose` flag with its fixed 20-line
       bound
-- [ ] [P05-T04] Implement the preflight + preview
-- [ ] [P05-TS05] Failing tests: apply — reset runs first (position zero,
+- [x] [P05-T04] Implement the preflight + preview
+- [x] [P05-TS05] Failing tests: apply — reset runs first (position zero,
       source coordinates); `safe_write` with original-mode preservation;
       `ApplyReport.reset` + receipt `reset = <n>` count; a failed reset
       aborts with no receipt; translated reset-target path components pass
       the same paranoid scan as regeneration output paths
       (`app_name = "changelog"` → `CHANGELOG.md`, thread 3653398575)
-- [ ] [P05-T06] Implement the reset operation + reporting
-- [ ] [P05-T07] Joint acceptance: the R3 self-press with the migrated rules
+- [x] [P05-T06] Implement the reset operation + reporting
+- [x] [P05-T07] Joint acceptance: the R3 self-press with the migrated rules
       yields a stub `CHANGELOG.md`, regenerated lockfiles, and a clean
       verify (§6 preflight is P04-TS11/T12; the migration itself is P04-T15)
 

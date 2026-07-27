@@ -9,8 +9,9 @@ TARGET is the undo button (`git checkout . && git clean -fd`).
 from __future__ import annotations
 
 import os
+import stat
 import subprocess  # nosec B404 — git ls-files enumerates the target
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,7 +25,6 @@ from template_press.rebrand.identity import (
     token_occurs,
 )
 from template_press.rebrand.rules import (
-    DEFAULT_RULES,
     ReplaceRule,
     Rules,
     render_replace_pattern,
@@ -35,6 +35,7 @@ from template_press.rebrand.safety import (
     SafetyError,
     assert_ancestors_real,
     assert_under_root,
+    chmod_nofollow,
     git_hardening_args,
     safe_write,
     scrubbed_git_env,
@@ -71,6 +72,13 @@ ROOT_CONTROL: frozenset[str] = frozenset(
     }
 )
 
+# The tool-side cap on scan-exemptible regeneration outputs (P04 D3): a
+# target's declaration is necessary but not sufficient — the filename must
+# also be on this explicit list. Its own constant, NEVER derived from
+# ``exclude_files`` (which would wrongly exempt CHANGELOG.md-class artifacts)
+# nor from a rules default (removed with P04 D1).
+REGENERATE_EXEMPTIBLE: frozenset[str] = frozenset({"uv.lock", "bun.lock"})
+
 
 @dataclass(frozen=True)
 class PathEntry:
@@ -97,6 +105,11 @@ class PlanItem:
 @dataclass
 class Plan:
     items: list[PlanItem] = field(default_factory=list)
+    # The shallowest-prefix rename map (source → destination POSIX rel
+    # paths) this plan implies — structured data for plan-time consumers
+    # (stale-argv membership, reset-path translation), so nothing parses it
+    # back out of rendered PlanItem strings.
+    renames: dict[str, str] = field(default_factory=dict)
 
     def render(self) -> str:
         if not self.items:
@@ -319,33 +332,64 @@ def rewrite_paths(target: Path, rules: Rules) -> list[Path]:
     return iter_target_files(target, rules)
 
 
-def scan_paths(target: Path, rules: Rules) -> list[PathEntry]:
+def exempt_regenerated_paths(
+    rules: Rules, renamed: Mapping[str, str] | Collection[tuple[str, str]] = ()
+) -> list[tuple[str, str]]:
+    """(translated_path, reason) for every declared output the hermetic
+    scan may exempt (P04 D3): basename on the explicit tool cap AND a
+    target declaration for that exact path, translated through the renames
+    (the sandbox tree has moved by scan time). The exemption is a coverage
+    gap — callers must LIST these as not-verified, never omit them.
+    """
+    renames = dict(renamed)
+    out: list[tuple[str, str]] = []
+    for rule in rules.regenerate:
+        translated = translate_path(rule.file, renames)
+        if translated.rsplit("/", 1)[-1] in REGENERATE_EXEMPTIBLE:
+            out.append(
+                (
+                    translated,
+                    "declared regeneration — rebuilt and scanned by the real "
+                    "press's post-command check; the hermetic sandbox never "
+                    "runs commands, so verify cannot certify it",
+                )
+            )
+    return out
+
+
+def scan_paths(
+    target: Path,
+    rules: Rules,
+    renamed: Mapping[str, str] | Collection[tuple[str, str]] = (),
+) -> list[PathEntry]:
     """``copy_paths`` minus ``ROOT_CONTROL``, regenerable lockfiles, and
     ``verify_ignore`` dirs — the no-leak scan's candidate set.
 
     A lockfile is scan-exempt only when it is regenerated FRESH after apply,
     which requires it to be in BOTH:
 
-    - the TARGET's effective ``rules.regenerate`` — press actually regenerates
-      it for THIS target (so ``regenerate = []`` re-includes uv.lock: press
-      neither rewrites it, since it is in ``exclude_files``, nor regenerates
-      it, so a stale token must be scanned — keying on ``DEFAULT_RULES`` ALONE
-      would FALSE-CLEAN it); AND
-    - the tool's OWN ``DEFAULT_RULES.regenerate`` ∩ ``DEFAULT_RULES.exclude_files``
-      — the tool has a real regenerator for it (EMP-01/F5: a target's
-      ``press-rules.toml`` must not be able to hide content from the scan by
-      declaring ``regenerate = ["bun.lock"]`` for a lockfile press never
-      regenerates).
+    - the TARGET's effective ``rules.regenerate`` declarations — press
+      actually regenerates it for THIS target (no declaration → no rebuild →
+      a stale token must be scanned; keying on a tool-side list ALONE would
+      FALSE-CLEAN it); AND
+    - the tool's OWN ``REGENERATE_EXEMPTIBLE`` constant — the explicit cap on
+      what a target can exempt (EMP-01/F5: a target's ``press-rules.toml``
+      must not be able to hide arbitrary content from the scan by declaring a
+      regeneration for it). Deliberately its own constant, never derived
+      from ``exclude_files`` — that would wrongly exempt ``CHANGELOG.md``-
+      class artifacts (P04 D3).
 
-    Everything else stays: non-regenerable lockfiles (``bun.lock``,
-    ``package-lock.json``), a force-added gitignored file, and symlink/
-    gitlink entries (type-tagged, for Task 7).
+    Everything else stays: non-exemptible lockfiles (``package-lock.json``),
+    a force-added gitignored file, and symlink/gitlink entries (type-tagged,
+    for Task 7).
+
+    ``renamed`` (the press's rename map/report) translates declared
+    source-coordinate outputs to their post-rename locations before the
+    exact-path comparison — basename alone matches a nested
+    ``packages/demo_widget/bun.lock``, but the path half would fail forever
+    without the translation (P04 D3).
     """
-    exempt_lockfiles = (
-        set(rules.regenerate)
-        & set(DEFAULT_RULES.regenerate)
-        & DEFAULT_RULES.exclude_files
-    )
+    exempt_lockfiles = {p for p, _ in exempt_regenerated_paths(rules, renamed)}
     out: list[PathEntry] = []
     for entry in copy_paths(target):
         posix = entry.rel.as_posix()
@@ -700,7 +744,43 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                     break
     for old, new in sorted(rename_map.items()):
         plan.items.append(PlanItem("rename", old, f"→ {new}"))
+    plan.renames.update(rename_map)
     return plan
+
+
+def translate_path(posix: str, renames: Mapping[str, str]) -> str:
+    """Map a SOURCE-coordinate rel path through a shallowest-prefix rename
+    map to its post-rename location; unrenamed paths pass through.
+
+    Declared paths (regeneration outputs, reset targets) are written in
+    source coordinates, but checks that model the POST-rename tree must
+    address the moved location — validating the declared path would report
+    a validly moved file as missing (P04 D1/D3).
+
+    ``_apply_renames`` runs MULTIPLE shallowest-prefix passes, so a
+    later-pass pair's old side is in INTERMEDIATE (already-partly-renamed)
+    coordinates — translation must chain to a fixpoint, longest matching
+    prefix per step, mirroring ``ignores.build_forward_map``'s reverse
+    fixpoint. Convergence is guaranteed for real maps (the collision gate
+    forbids dest identities embedding source tokens); the bound raises
+    rather than hangs on a pathological cycle.
+    """
+    current = posix
+    for _ in range(len(renames) + 1):
+        best: tuple[int, str, str] | None = None
+        for old, new in renames.items():
+            if current == old or current.startswith(old + "/"):
+                depth = old.count("/")
+                if best is None or depth > best[0]:
+                    best = (depth, old, new)
+        if best is None:
+            return current
+        _, old, new = best
+        current = new if current == old else new + current[len(old) :]
+    raise ValidationError(
+        f"path translation did not converge for {posix!r} after "
+        f"{len(renames) + 1} passes (rename map: {dict(renames)!r})"
+    )
 
 
 @dataclass
@@ -709,11 +789,13 @@ class ApplyReport:
     renamed: list[tuple[str, str]] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     regenerated: list[str] = field(default_factory=list)
+    reset: list[str] = field(default_factory=list)  # declared stubs written
 
     def render(self) -> str:
         return (
             f"Applied: {len(self.replaced)} replaced, "
             f"{len(self.renamed)} renamed, "
+            f"{len(self.reset)} reset, "
             f"{len(self.regenerated)} regenerated, "
             f"{len(self.skipped)} skipped."
         )
@@ -756,7 +838,12 @@ def _apply_replacements(
             # atomicity already protects an external hardlink WITHOUT falsely
             # refusing a legitimate in-repo hardlinked file. A symlink LEAF
             # never reaches here — _read_text returns None for it upstream.
+            # The fresh inode starts from mkstemp's 0600, so the original
+            # permission bits are restored afterwards — a rewritten 0755
+            # helper must not come out non-executable (P04 D1).
+            mode = stat.S_IMODE(os.lstat(path).st_mode)
             safe_write(target, rel, new_text, refuse_hardlink=False)
+            chmod_nofollow(path, mode)
             report.replaced.append(rel)
 
 

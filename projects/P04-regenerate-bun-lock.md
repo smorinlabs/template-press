@@ -1,6 +1,6 @@
 # P04 — Regenerate bun.lock during a press
 
-- **Status:** `[ ]` scoped, not started
+- **Status:** `[x]` completed
 
 Neutralize bun.lock: excluded from rewrite but never regenerated, so it always leaks
 
@@ -657,7 +657,7 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
 
 ### Tests & Tasks
 
-- [ ] [P04-TS01] Failing tests: `[[regenerate]]` schema + config-load
+- [x] [P04-TS01] Failing tests: `[[regenerate]]` schema + config-load
       validation — legacy list form rejected with a schema TEMPLATE carrying
       a placeholder command (never a derived argv, which would reinstate the
       filename→command inference D1 removes); `command` a non-empty list of
@@ -666,61 +666,61 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       clean even under `--allow-dirty`, `st_nlink == 1`; replace +
       `ROOT_CONTROL` overlap bans (the cross-mechanism reset⊗regenerate
       overlap test lands in TS11, once both schemas exist)
-- [ ] [P04-T02] Implement the schema + validation to pass TS01; remove
+- [x] [P04-T02] Implement the schema + validation to pass TS01; remove
       `DEFAULT_RULES.regenerate`
-- [ ] [P04-TS03] Failing tests: plan time — executable resolution (bare name
+- [x] [P04-TS03] Failing tests: plan time — executable resolution (bare name
       → PATH, slash → target root, under the effective env, pinned absolute
       path); stale-argv refusal (normalized, prefix-aware, best-effort);
       dry-run renders every command verbatim PLUS its resolved pinned
       executable path (the plan must show what will actually launch);
       exit 2 = nothing written
-- [ ] [P04-T04] Implement plan-time resolution, stale-path refusal, and the
+- [x] [P04-T04] Implement plan-time resolution, stale-path refusal, and the
       plan→apply rendering (no consent machinery)
-- [ ] [P04-TS05] Failing tests: executor — cwd = target root, no shell,
+- [x] [P04-TS05] Failing tests: executor — cwd = target root, no shell,
       deny-by-default env (platform base + declared names, absent names
       omitted), file-mode preservation on rewritten files; sink guards
       re-run before each command launch (symlink/hardlink planted by an
       earlier command at a later output's path)
-- [ ] [P04-T06] Implement the generic executor replacing the hardcoded
+- [x] [P04-T06] Implement the generic executor replacing the hardcoded
       `uv lock` branch in `_regenerate_lockfiles`
-- [ ] [P04-TS07] Failing tests: postconditions — output exists; full
+- [x] [P04-TS07] Failing tests: postconditions — output exists; full
       containment + type recheck; UTF-8 two-point gate; paranoid
       changed-fields scan incl. rendered FROM literals, translated path
       components, reverse-mapped scopes; final pass over outputs, reset
       stubs, and `ROOT_CONTROL` after the last command (multi-command
       corruption cases)
-- [ ] [P04-T08] Implement the postconditions + final validation pass; the
+- [x] [P04-T08] Implement the postconditions + final validation pass; the
       receipt records each regeneration's resolved argv
-- [ ] [P04-TS09] Failing tests: hermetic verify — exemption requires
+- [x] [P04-TS09] Failing tests: hermetic verify — exemption requires
       tool-list basename + target declaration; the tool list is an explicit
       constant (`uv.lock`, `bun.lock`), not derived from the removed default
       or from `exclude_files` (CHANGELOG.md must NOT be exemptible); exempt
       files listed as not-verified; exit 0 with a machine-readable `exempt`
       field
-- [ ] [P04-T10] Implement verify exemption semantics + the `exempt` field in
+- [x] [P04-T10] Implement verify exemption semantics + the `exempt` field in
       BOTH the verify report and the receipt (each skipped file with its
       reason); update `docs/source/reference/cli.md` exit-0 wording
-- [ ] [P04-TS11] Failing tests: §6 preflight — a tracked excluded file with
+- [x] [P04-TS11] Failing tests: §6 preflight — a tracked excluded file with
       no regenerate/reset/verify_ignore refuses (exit 2) naming the file and
       the three fixes (shared with P05); plus the cross-mechanism
       reset⊗regenerate overlap rejection, now that both schemas exist
-- [ ] [P04-T12] Implement the §6 preflight
-- [ ] [P04-TS13] Failing tests: `press check-tools` — reports `argv[0]` of
+- [x] [P04-T12] Implement the §6 preflight
+- [x] [P04-TS13] Failing tests: `press check-tools` — reports `argv[0]` of
       every declared command plus `git`, each found (resolved path) or
       missing, using D2's exact resolution semantics (target-root
       path-qualified, deny-by-default effective env); reads config, writes
       nothing, executes nothing
-- [ ] [P04-T14] Implement `press check-tools`
-- [ ] [P04-T15] Migration: create `press/press-rules.toml` (uv.lock +
+- [x] [P04-T14] Implement `press check-tools`
+- [x] [P04-T15] Migration: create `press/press-rules.toml` (uv.lock +
       bun.lock regenerations, CHANGELOG reset); pinned bun installer and a
       `press-rules.toml` path filter in `.github/workflows/rebrand-matrix.yml`;
       update runbooks
-- [ ] [P04-T16] On a `--force` re-press, invalidate the prior receipt after
+- [x] [P04-T16] On a `--force` re-press, invalidate the prior receipt after
       the plan gates pass and before the first mutation — with a failing
       test for the failed-forced-re-press case first; a failed forced
       re-press must not leave the old receipt advertising a verified press
       (PR #56 thread 3651682614, previously undispositioned)
-- [ ] [P04-T17] Full verification LAST: `just check` and `just matrix` green
+- [x] [P04-T17] Full verification LAST: `just check` and `just matrix` green
       with the migrated rules and every behavior above inside the pipeline
 
 ### Notes

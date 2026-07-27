@@ -24,7 +24,7 @@ In a development checkout, run it through uv: `uv run press rebrand …`
 | `--source-config PATH` | Override the target's committed `press/press-source.toml` (the **source** identity). |
 | `--accept-discovery` | When the target has no source-config, write one from discovery and proceed. |
 | `--dry-run` | Print the plan and exit without touching the target. |
-| `--force` | Re-press a target that already has a receipt. |
+| `--force` | Re-press a target that already has a receipt. The prior receipt is removed once the plan gates pass, before the first write — a failed forced re-press cannot leave a stale receipt advertising a verified press. |
 | `--allow-dirty` | Allow a target whose working tree is not clean. |
 
 ### Exit codes
@@ -37,7 +37,7 @@ The exit code is the contract — scripts and CI can branch on it:
 | `1` | Leaks found after applying — a partial/incorrect rebrand. **No receipt** is written; the target is left rewritten (restore with `git -C <target> checkout . && git clean -fd`). |
 | `2` | Precondition or configuration error (missing target, dirty tree, source/target identity mismatch, an existing receipt without `--force`). **Nothing is written.** |
 
-`--dry-run` always exits `0` after printing the plan — it is a preview and writes nothing (no receipt).
+`--dry-run` exits `0` after printing the plan — it is a preview and writes nothing (no receipt). Plan-time refusals (a missing declared tool, a stale argv, an undeclared excluded file) exit `2` before the plan renders, exactly as they would without `--dry-run`.
 
 ### The ignore set
 
@@ -76,7 +76,12 @@ press verify
 ```
 
 The exit code signals the result:
-- `0`: Verified — no source identity leaks survived the press.
+- `0`: Clean over the scanned set — no source identity leaks survived the
+  press in any scanned file. Files with a declared regeneration whose
+  basename is on the tool's exemptible list (`uv.lock`, `bun.lock`) are
+  NOT scanned (the hermetic sandbox never runs commands, so only the real
+  press's post-command scan can certify them); they are listed as exempt
+  in the report and in the `exempt` field of `--json` output.
 - `1`: Verification failed — source identity found in the pressed copy.
 - `2`: Configuration, environment, or unverifiable identity error.
 
@@ -140,3 +145,24 @@ file = "docs/CHANGELOG.md"
 line = 42
 reason = "Historical reference in changelog"
 ```
+
+## `press check-tools`
+
+Reports whether every declared `[[regenerate]]` command's `argv[0]` — plus
+`git`, the one tool press itself needs — resolves on this machine, using
+exactly the resolution the press will use (path-qualified names against the
+target root, bare names on the deny-by-default effective `PATH`). It reads
+the target's config, writes nothing, and executes nothing.
+
+```console
+$ press check-tools --target ../my-repo
+git — /usr/bin/git
+uv — /opt/homebrew/bin/uv (regenerates uv.lock)
+bun — missing (declared to regenerate bun.lock)
+```
+
+| Code | Meaning |
+|------|---------|
+| `0` | Every tool resolved. |
+| `1` | At least one tool is missing. |
+| `2` | Configuration or usage error. |

@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -53,6 +54,15 @@ def _can_symlink(base: Path | None = None) -> bool:
 requires_symlink = pytest.mark.skipif(
     not _can_symlink(),
     reason="symlink creation requires privilege (skipped on Windows CI)",
+)
+
+# Applied to tests whose MECHANISM is POSIX-only — sh scripts as declared
+# executables, exec bits, permission-mode assertions. The engine behavior
+# they exercise stays correct on Windows (an unresolvable tool is reported
+# missing); only the fixture apparatus cannot exist there.
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only test mechanism (sh scripts / permission bits)",
 )
 
 SOURCE = Identity(

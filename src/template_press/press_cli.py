@@ -10,8 +10,8 @@ from __future__ import annotations
 import sys
 
 from template_press import __version__
+from template_press.rebrand import check_tools, verify_cli
 from template_press.rebrand import cli as rebrand_cli
-from template_press.rebrand import verify_cli
 
 _RESERVED = {"provision", "status"}
 
@@ -19,10 +19,11 @@ _USAGE = """\
 usage: press <command> [options]
 
 commands:
-  rebrand    press an identity onto a target repo (press rebrand --help)
-  verify     check that a template presses cleanly (press verify --help)
-  provision  configure a target's features (coming in M6)
-  status     report a target's provisioned state (coming in M6)
+  rebrand      press an identity onto a target repo (press rebrand --help)
+  verify       check that a template presses cleanly (press verify --help)
+  check-tools  report whether declared commands resolve (press check-tools --help)
+  provision    configure a target's features (coming in M6)
+  status       report a target's provisioned state (coming in M6)
 """
 
 
@@ -39,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
         return rebrand_cli.main(rest)
     if verb == "verify":
         return verify_cli.verify_command(rest)
+    if verb == "check-tools":
+        return check_tools.check_tools_command(rest)
     if verb in _RESERVED:
         print(
             f"error: '{verb}' is part of the Provision phase and is not "

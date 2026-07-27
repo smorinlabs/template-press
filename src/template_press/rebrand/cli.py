@@ -24,7 +24,6 @@ from template_press.rebrand.config import (
 from template_press.rebrand.discovery import discover, mismatches
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import (
-    ApplyReport,
     apply,
     build_plan,
     rendered_replace_rules,
@@ -37,13 +36,34 @@ from template_press.rebrand.identity import (
     display_forms,
     token_occurs,
 )
-from template_press.rebrand.receipt import read_receipt, write_receipt
-from template_press.rebrand.rules import DEFAULT_RULES, Rules, load_rules
+from template_press.rebrand.receipt import (
+    RECEIPT_REL,
+    invalidate_receipt,
+    read_receipt,
+    write_receipt,
+)
+from template_press.rebrand.regen import (
+    RegenerationPlan,
+    execute_regenerations,
+    final_validation_pass,
+    plan_regenerate_commands,
+    preflight_excluded_files,
+    preflight_regenerate_outputs,
+    render_regenerate_plan,
+    restore_control_files,
+    snapshot_control_files,
+    validate_control_files,
+)
+from template_press.rebrand.reset import (
+    apply_resets,
+    preflight_reset_targets,
+    render_reset_plan,
+)
+from template_press.rebrand.rules import DEFAULT_RULES, ResetRule, Rules, load_rules
 from template_press.rebrand.safety import (
     SafetyError,
     git_hardening_args,
     scrubbed_git_env,
-    scrubbed_uv_env,
     write_control,
 )
 
@@ -231,6 +251,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="show the bounded reset content excerpts in the plan",
+    )
     args = parser.parse_args(argv)
 
     target = args.target.resolve()
@@ -285,7 +310,35 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         plan = build_plan(target, source, dest, rules)
+        # Plan-time gates for both declared mechanisms (P04 D1/D2/D5, P05
+        # D5): output/target state, stale path-bearing argv against THIS
+        # plan's rename set, executable resolution under the deny-by-default
+        # env, stub scans, and the translated reset-path identity scan — all
+        # before any write, under the exit-2-nothing-written contract
+        # (dry-run included).
+        gate_problems = preflight_excluded_files(target, rules)
+        gate_problems += preflight_regenerate_outputs(target, rules)
+        regen_plans, plan_problems = plan_regenerate_commands(
+            target, rules.regenerate, renamed=frozenset(plan.renames)
+        )
+        gate_problems += plan_problems
+        reset_previews, reset_problems = preflight_reset_targets(
+            target, rules, source=source, dest=dest, renames=plan.renames
+        )
+        gate_problems += reset_problems
+        if gate_problems:
+            print(
+                "error: declared regeneration/reset cannot run — nothing written:",
+                file=sys.stderr,
+            )
+            for problem in gate_problems:
+                print(f"  {problem}", file=sys.stderr)
+            return 2
         print(plan.render())
+        if regen_plans:
+            print(render_regenerate_plan(regen_plans))
+        if reset_previews:
+            print(render_reset_plan(reset_previews, verbose=args.verbose))
         strays = stray_press_dirs(target)
         if strays:
             print(
@@ -304,6 +357,10 @@ def main(argv: list[str] | None = None) -> int:
         # LAST gate before apply: every exit-2 path (rules/plan included) is
         # behind us, so the deferred source-config write can no longer be
         # followed by a "no writes" exit code.
+        if args.force and invalidate_receipt(target):
+            # Before the first mutation (P04-T16): a failed forced re-press
+            # must not leave the old receipt advertising a verified press.
+            print(f"prior receipt invalidated ({RECEIPT_REL})")
         if write_pending:
             write_control(target, SOURCE_CONFIG_REL, render_source_config(source))
             print(f"wrote {SOURCE_CONFIG_REL} from discovery")
@@ -315,45 +372,15 @@ def main(argv: list[str] | None = None) -> int:
         SafetyError,
     ) as exc:
         return _fail(str(exc))
-    outcome = _press(target, source, dest, rules)
+    outcome = _press(
+        target,
+        source,
+        dest,
+        rules,
+        regen_plans,
+        [(preview.rule, preview.stub_text) for preview in reset_previews],
+    )
     return 1 if (outcome.env_error is not None or outcome.leaked) else 0
-
-
-def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> list[str]:
-    """Regenerate listed lockfiles; return the ones that FAILED to regenerate.
-
-    A lockfile is excluded from both rewriting and the doctor scan, so a
-    failed regeneration would leave source-identity content behind invisibly.
-    Callers must treat failures as verification failures (no receipt).
-    """
-    failed: list[str] = []
-    for lockfile in rules.regenerate:
-        lockpath = target / lockfile
-        if lockpath.is_symlink():  # lstat-based, no-follow — check first
-            report.skipped.append(
-                f"regenerate {lockfile} (symlink — refusing to write through)"
-            )
-            failed.append(lockfile)
-            continue
-        if not lockpath.is_file():
-            continue
-        if lockfile == "uv.lock":
-            result = subprocess.run(  # nosec B603 B607
-                ["uv", "lock"],  # noqa: S607
-                cwd=target,
-                capture_output=True,
-                text=True,
-                env=scrubbed_uv_env(),  # G5: no UV_* override can steer the write
-            )
-            if result.returncode == 0:
-                report.regenerated.append(lockfile)
-            else:
-                report.skipped.append(f"regenerate {lockfile} (uv lock failed)")
-                failed.append(lockfile)
-        else:
-            report.skipped.append(f"regenerate {lockfile} (no regenerator)")
-            failed.append(lockfile)
-    return failed
 
 
 @dataclass
@@ -371,13 +398,41 @@ class PressOutcome:
 
 
 def _press(
-    target: Path, source: Identity, dest: Identity, rules: Rules
+    target: Path,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    regen_plans: list[RegenerationPlan],
+    resets: list[tuple[ResetRule, str]],
 ) -> PressOutcome:
     report = None
     try:
+        # Reset takes position ZERO (P05 D5): declared paths are consumed in
+        # SOURCE coordinates before the rename pass moves anything. A raise
+        # here aborts the press (no receipt) — git is the undo button.
+        reset_done = apply_resets(target, resets)
         report = apply(target, source, dest, rules)
-        failed_locks = _regenerate_lockfiles(target, rules, report)
+        report.reset.extend(reset_done)
+        # Declared commands run against the FINAL tree: declared paths are
+        # translated through the apply-time rename report (P04 D1). The
+        # press-owned control files are snapshotted before the first
+        # command and revalidated after the last (D1 reservation is not
+        # protection — a command can mutate arbitrary files).
+        control_snapshot = snapshot_control_files(target) if regen_plans else {}
+        failed_locks = execute_regenerations(
+            target,
+            regen_plans,
+            dict(report.renamed),
+            report,
+            source=source,
+            dest=dest,
+            rules=rules,
+        )
         if failed_locks:
+            # A failed command must not leave a tampered/planted control
+            # file behind (codex 3654736777) — restore the snapshot before
+            # reporting; {} when no commands ran.
+            restore_control_files(target, control_snapshot)
             print(
                 f"error: lockfile regeneration failed for "
                 f"{', '.join(failed_locks)} — the lockfile still carries the old "
@@ -393,6 +448,35 @@ def _press(
                 report.regenerated,
                 env_error=f"lockfile regeneration failed for {', '.join(failed_locks)}",
             )
+        if regen_plans:
+            # Final validation pass (D3): outputs, reset stubs, and the
+            # control-file snapshot — a later command corrupting an earlier
+            # result is invisible to every downstream inventory.
+            post_problems = final_validation_pass(
+                target,
+                regen_plans,
+                resets,
+                dict(report.renamed),
+                source=source,
+                dest=dest,
+                rules=rules,
+            )
+            post_problems += validate_control_files(target, control_snapshot)
+            if post_problems:
+                restore_control_files(target, control_snapshot)
+                print(
+                    "error: post-regeneration validation failed — no receipt written:",
+                    file=sys.stderr,
+                )
+                for problem in post_problems:
+                    print(f"  {problem}", file=sys.stderr)
+                print(report.render(), file=sys.stderr)
+                return PressOutcome(
+                    False,
+                    report.renamed,
+                    report.regenerated,
+                    env_error="post-regeneration validation failed",
+                )
         # Verification never honors target-side REWRITE exclusions (EMP-01):
         # neither extra_exclude_files nor extra_exclude_dirs can hide content
         # from the doctor. The only sanctioned exemption is the explicit,
@@ -419,7 +503,30 @@ def _press(
             return PressOutcome(
                 True, report.renamed, report.regenerated, env_error=None
             )
-        receipt_path = write_receipt(target, source, dest, report)
+        receipt_path = write_receipt(
+            target,
+            source,
+            dest,
+            report,
+            regenerations=[
+                (plan.rule.file, (plan.executable, *plan.rule.command[1:]))
+                for plan in regen_plans
+            ],
+            exempt=[
+                *(
+                    (
+                        rel,
+                        "regenerated by declared command; validated by the "
+                        "press's post-command scan (hermetic verify skips it)",
+                    )
+                    for rel in report.regenerated
+                ),
+                *(
+                    (rel, "reset to the declared stub (scanned at plan time)")
+                    for rel in report.reset
+                ),
+            ],
+        )
         write_control(target, SOURCE_CONFIG_REL, render_source_config(dest))
         print(report.render())
         if report.skipped:

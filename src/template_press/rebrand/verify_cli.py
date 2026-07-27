@@ -45,16 +45,24 @@ from pathlib import Path
 
 from template_press.rebrand.config import SOURCE_CONFIG_REL, load_source_config
 from template_press.rebrand.discovery import Discovered, discover, mismatches
-from template_press.rebrand.engine import apply, rendered_replace_rules, scan_paths
+from template_press.rebrand.engine import (
+    apply,
+    exempt_regenerated_paths,
+    rendered_replace_rules,
+    scan_paths,
+    translate_path,
+)
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_map
 from template_press.rebrand.matcher import find_occurrences
+from template_press.rebrand.reset import load_stub_content
 from template_press.rebrand.rules import RULES_REL, Rules, load_rules
 from template_press.rebrand.safety import (
     SafetyError,
     git_hardening_args,
     is_regular_lstat,
     owned_sandbox,
+    safe_write,
     scrubbed_git_env,
 )
 from template_press.rebrand.sandbox import make_sandbox
@@ -392,6 +400,7 @@ def verify_command(argv: list[str] | None = None) -> int:
     surviving: list[Finding] = []
     stale: list[Ignore] = []
     unavailable: tuple[str, ...] = ()
+    exempt: list[tuple[str, str]] = []
     try:
         synth = synthesize_dest(source)
         # Rendered against (source, synth) — the SYNTHETIC destination verify
@@ -403,7 +412,21 @@ def verify_command(argv: list[str] | None = None) -> int:
         with owned_sandbox(target) as dest_root:
             sandbox = make_sandbox(target, dest_root)
             try:
+                # Model declared resets (codex 3654657444, P1): the real
+                # press writes the validated stub at position zero, so the
+                # hermetic scan must see the stub — not the history the
+                # reset exists to remove. Stub CONTENTS are captured before
+                # the press (codex 3654853355): apply() renames
+                # identity-bearing dirs, so a stub_file path beneath one
+                # would no longer resolve afterwards.
+                reset_stubs = [
+                    (rule, load_stub_content(sandbox.path, rule))
+                    for rule in rules.reset
+                ]
                 report = apply(sandbox.path, source, synth, rules)
+                for reset_rule, stub in reset_stubs:
+                    rel = translate_path(reset_rule.file, dict(report.renamed))
+                    safe_write(sandbox.path, rel, stub, refuse_hardlink=False)
                 _restage_sandbox(sandbox.path)
             except _PRESS_ENV_ERRORS as exc:
                 return _fail(
@@ -424,7 +447,17 @@ def verify_command(argv: list[str] | None = None) -> int:
                 # `doctor.find_leaks`'s `renamed` parameter exactly (9d9d0c5).
                 renamed=report.renamed,
             )
+            # The exemption is a COVERAGE GAP and verify must say so (P04
+            # D3): declaring a regeneration does not prove the command
+            # rebuilds anything — only the real press's post-command scan
+            # can certify these files, so they are listed as not-verified
+            # rather than silently omitted.
+            exempt = exempt_regenerated_paths(rules, report.renamed)
             forward_map = build_forward_map(report.renamed)
+            # Exempt paths back to SOURCE coordinates (codex 3654657451),
+            # exactly like the findings below — the synthetic sandbox path
+            # does not exist in the user's repo.
+            exempt = [(forward_map(file), reason) for file, reason in exempt]
             surviving, stale = apply_ignores(
                 findings,
                 list(cfg.ignores),
@@ -453,15 +486,27 @@ def verify_command(argv: list[str] | None = None) -> int:
                     "equal_fields_collision": (
                         list(equal_collision) if equal_collision else None
                     ),
+                    # Machine-readable coverage gap: every skipped file and
+                    # why (exit 0 means clean over the SCANNED set).
+                    "exempt": [
+                        {"file": file, "reason": reason} for file, reason in exempt
+                    ],
                 }
             )
         )
+    else:
+        for file, reason in exempt:
+            print(f"not verified (exempt): {file} — {reason}")
     if failed:
         if not args.as_json:
             _report(surviving, stale, unavailable, equal_collision)
         return 1
     if not args.as_json:
-        print("verified: no identity leftovers survived the hermetic self-press.")
+        print(
+            "verified: no identity leftovers survived the hermetic "
+            "self-press (clean over the scanned set"
+            + (", exemptions listed above)." if exempt else ").")
+        )
     return 0
 
 

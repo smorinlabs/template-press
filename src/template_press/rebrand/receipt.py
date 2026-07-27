@@ -7,6 +7,7 @@ answered. Its presence also guards re-runs (require --force).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,6 +26,23 @@ def read_receipt(target: Path) -> str | None:
     return path.read_text(encoding="utf-8")
 
 
+def invalidate_receipt(target: Path) -> bool:
+    """Remove the prior receipt, if any; True when one was removed.
+
+    A forced re-press consumes its predecessor's receipt after the plan
+    gates pass and BEFORE the first mutation (P04-T16): a failed forced
+    re-press must not leave the old receipt advertising a verified press.
+    No-follow — a symlinked press dir or receipt is left alone (the press
+    refuses such a layout at write time anyway).
+    """
+    press_dir = target / RECEIPT_REL.parent
+    path = target / RECEIPT_REL
+    if press_dir.is_symlink() or path.is_symlink() or not path.is_file():
+        return False
+    path.unlink()
+    return True
+
+
 def _identity_table(name: str, identity: Identity) -> list[str]:
     lines = [f"[press.{name}]"]
     lines += [f"{k} = {toml_string(v)}" for k, v in identity.as_dict_prompted().items()]
@@ -32,7 +50,12 @@ def _identity_table(name: str, identity: Identity) -> list[str]:
 
 
 def write_receipt(
-    target: Path, source: Identity, dest: Identity, report: ApplyReport
+    target: Path,
+    source: Identity,
+    dest: Identity,
+    report: ApplyReport,
+    regenerations: Sequence[tuple[str, Sequence[str]]] = (),
+    exempt: Sequence[tuple[str, str]] = (),
 ) -> Path:
     stamp = datetime.now(UTC).isoformat(timespec="seconds")
     lines = [
@@ -50,7 +73,28 @@ def write_receipt(
         "[press.counts]",
         f"replaced = {len(report.replaced)}",
         f"renamed = {len(report.renamed)}",
+        f"reset = {len(report.reset)}",
         f"regenerated = {len(report.regenerated)}",
         f"skipped = {len(report.skipped)}",
     ]
+    # Each regeneration's RESOLVED argv (P04 D5 revision): under plan→apply
+    # nothing stops a config change between two runs, so the receipt is the
+    # only artifact recording what actually ran.
+    for file, argv in regenerations:
+        lines += [
+            "",
+            "[[press.regenerate]]",
+            f"file = {toml_string(file)}",
+            "argv = [" + ", ".join(toml_string(a) for a in argv) + "]",
+        ]
+    # Machine-readable coverage record (P04 D3): every file the ordinary
+    # doctor/verify inventories skip, with the mechanism that covered it —
+    # the gap stays visible and deliberate, never an unchecked free pass.
+    for file, reason in exempt:
+        lines += [
+            "",
+            "[[press.exempt]]",
+            f"file = {toml_string(file)}",
+            f"reason = {toml_string(reason)}",
+        ]
     return write_control(target, RECEIPT_REL, "\n".join(lines) + "\n")
