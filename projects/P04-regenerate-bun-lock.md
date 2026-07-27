@@ -1,6 +1,6 @@
 # P04 — Regenerate bun.lock during a press
 
-- **Status:** `[ ]` scoped, not started
+- **Status:** `[~]` in progress
 
 Neutralize bun.lock: excluded from rewrite but never regenerated, so it always leaks
 
@@ -657,7 +657,7 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
 
 ### Tests & Tasks
 
-- [ ] [P04-TS01] Failing tests: `[[regenerate]]` schema + config-load
+- [x] [P04-TS01] Failing tests: `[[regenerate]]` schema + config-load
       validation — legacy list form rejected with a schema TEMPLATE carrying
       a placeholder command (never a derived argv, which would reinstate the
       filename→command inference D1 removes); `command` a non-empty list of
@@ -666,7 +666,7 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       clean even under `--allow-dirty`, `st_nlink == 1`; replace +
       `ROOT_CONTROL` overlap bans (the cross-mechanism reset⊗regenerate
       overlap test lands in TS11, once both schemas exist)
-- [ ] [P04-T02] Implement the schema + validation to pass TS01; remove
+- [x] [P04-T02] Implement the schema + validation to pass TS01; remove
       `DEFAULT_RULES.regenerate`
 - [ ] [P04-TS03] Failing tests: plan time — executable resolution (bare name
       → PATH, slash → target root, under the effective env, pinned absolute

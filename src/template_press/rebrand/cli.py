@@ -327,7 +327,8 @@ def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> li
     Callers must treat failures as verification failures (no receipt).
     """
     failed: list[str] = []
-    for lockfile in rules.regenerate:
+    for rule in rules.regenerate:
+        lockfile = rule.file
         lockpath = target / lockfile
         if lockpath.is_symlink():  # lstat-based, no-follow — check first
             report.skipped.append(

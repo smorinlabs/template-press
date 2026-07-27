@@ -149,9 +149,14 @@ def _tree(repo: Path) -> dict[str, tuple[str, str]]:
 # ---------------------------------------------------------------------------
 def test_clean_template_exits_0(tmp_path: Path) -> None:
     # incl. compress/press English traps in README + a regenerable uv.lock
-    # (exempt from the scan, so its old package_name is NOT a leak).
+    # (DECLARED for regeneration per P04 D1 + on the tool cap → exempt from
+    # the scan, so its old package_name is NOT a leak).
     repo = make_pressable(tmp_path)
     (repo / "uv.lock").write_text('name = "demo_widget"\n', encoding="utf-8")
+    (repo / "press" / "press-rules.toml").write_text(
+        '[[regenerate]]\nfile = "uv.lock"\ncommand = ["uv", "lock"]\n',
+        encoding="utf-8",
+    )
     _commit(repo)
     assert verify_command(["--target", str(repo)]) == 0
 
@@ -543,9 +548,13 @@ def test_rule_rendered_to_stability_check_exits_2_not_traceback(
 
 
 def test_verify_never_mutates_real_target_exit_0_and_1(tmp_path: Path) -> None:
-    # exit-0: a clean template (regenerable uv.lock is scan-exempt).
+    # exit-0: a clean template (uv.lock DECLARED for regeneration → exempt).
     clean = make_pressable(tmp_path / "clean")
     (clean / "uv.lock").write_text('name = "demo_widget"\n', encoding="utf-8")
+    (clean / "press" / "press-rules.toml").write_text(
+        '[[regenerate]]\nfile = "uv.lock"\ncommand = ["uv", "lock"]\n',
+        encoding="utf-8",
+    )
     _commit(clean)
     before_clean = _tree(clean)
     assert verify_command(["--target", str(clean)]) == 0

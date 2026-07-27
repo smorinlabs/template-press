@@ -257,6 +257,10 @@ def test_failed_lock_regeneration_exits_1_no_receipt(
 
     write_source_config(src_target)
     (src_target / "uv.lock").write_text("demo_widget==0.1.0\n", encoding="utf-8")
+    (src_target / "press" / "press-rules.toml").write_text(
+        '[[regenerate]]\nfile = "uv.lock"\ncommand = ["uv", "lock"]\n',
+        encoding="utf-8",
+    )
     real_run = sp.run
 
     def fake_run(cmd, *args, **kwargs):
@@ -284,12 +288,17 @@ def test_regen_refuses_symlinked_lockfile_no_external_write(
     reject it on the leaf is_symlink() check BEFORE ever invoking `uv lock`,
     so the external file is never touched.
     """
+    import dataclasses
     import subprocess as sp
 
     from template_press.rebrand import cli as cli_mod
     from template_press.rebrand.engine import ApplyReport
-    from template_press.rebrand.rules import DEFAULT_RULES
+    from template_press.rebrand.rules import DEFAULT_RULES, RegenerateRule
 
+    rules = dataclasses.replace(
+        DEFAULT_RULES,
+        regenerate=(RegenerateRule(file="uv.lock", command=("uv", "lock")),),
+    )
     target = tmp_path / "target"
     target.mkdir()
     external = tmp_path / "external.lock"
@@ -316,7 +325,7 @@ def test_regen_refuses_symlinked_lockfile_no_external_write(
     monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
 
     report = ApplyReport()
-    failed = cli_mod._regenerate_lockfiles(target, DEFAULT_RULES, report)
+    failed = cli_mod._regenerate_lockfiles(target, rules, report)
 
     assert uv_lock_calls == []  # uv lock must never run against a symlink
     assert failed == ["uv.lock"]
@@ -332,12 +341,17 @@ def test_uv_lock_regen_uses_scrubbed_uv_env(tmp_path: Path, monkeypatch) -> None
     external-tool write the press performs off the target. `_regenerate_lockfiles`
     must pass ``env=scrubbed_uv_env()`` — an explicit env carrying no ``UV_*``.
     """
+    import dataclasses
     import subprocess as sp
 
     from template_press.rebrand import cli as cli_mod
     from template_press.rebrand.engine import ApplyReport
-    from template_press.rebrand.rules import DEFAULT_RULES
+    from template_press.rebrand.rules import DEFAULT_RULES, RegenerateRule
 
+    rules = dataclasses.replace(
+        DEFAULT_RULES,
+        regenerate=(RegenerateRule(file="uv.lock", command=("uv", "lock")),),
+    )
     target = tmp_path / "target"
     target.mkdir()
     (target / "uv.lock").write_text("demo_widget==0.1.0\n", encoding="utf-8")
@@ -356,7 +370,7 @@ def test_uv_lock_regen_uses_scrubbed_uv_env(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
 
     report = ApplyReport()
-    failed = cli_mod._regenerate_lockfiles(target, DEFAULT_RULES, report)
+    failed = cli_mod._regenerate_lockfiles(target, rules, report)
 
     assert failed == []
     assert report.regenerated == ["uv.lock"]

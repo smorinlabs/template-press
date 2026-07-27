@@ -24,7 +24,6 @@ from template_press.rebrand.identity import (
     token_occurs,
 )
 from template_press.rebrand.rules import (
-    DEFAULT_RULES,
     ReplaceRule,
     Rules,
     render_replace_pattern,
@@ -70,6 +69,13 @@ ROOT_CONTROL: frozenset[str] = frozenset(
         "press/press-answers.toml",
     }
 )
+
+# The tool-side cap on scan-exemptible regeneration outputs (P04 D3): a
+# target's declaration is necessary but not sufficient — the filename must
+# also be on this explicit list. Its own constant, NEVER derived from
+# ``exclude_files`` (which would wrongly exempt CHANGELOG.md-class artifacts)
+# nor from a rules default (removed with P04 D1).
+REGENERATE_EXEMPTIBLE: frozenset[str] = frozenset({"uv.lock", "bun.lock"})
 
 
 @dataclass(frozen=True)
@@ -326,26 +332,22 @@ def scan_paths(target: Path, rules: Rules) -> list[PathEntry]:
     A lockfile is scan-exempt only when it is regenerated FRESH after apply,
     which requires it to be in BOTH:
 
-    - the TARGET's effective ``rules.regenerate`` — press actually regenerates
-      it for THIS target (so ``regenerate = []`` re-includes uv.lock: press
-      neither rewrites it, since it is in ``exclude_files``, nor regenerates
-      it, so a stale token must be scanned — keying on ``DEFAULT_RULES`` ALONE
-      would FALSE-CLEAN it); AND
-    - the tool's OWN ``DEFAULT_RULES.regenerate`` ∩ ``DEFAULT_RULES.exclude_files``
-      — the tool has a real regenerator for it (EMP-01/F5: a target's
-      ``press-rules.toml`` must not be able to hide content from the scan by
-      declaring ``regenerate = ["bun.lock"]`` for a lockfile press never
-      regenerates).
+    - the TARGET's effective ``rules.regenerate`` declarations — press
+      actually regenerates it for THIS target (no declaration → no rebuild →
+      a stale token must be scanned; keying on a tool-side list ALONE would
+      FALSE-CLEAN it); AND
+    - the tool's OWN ``REGENERATE_EXEMPTIBLE`` constant — the explicit cap on
+      what a target can exempt (EMP-01/F5: a target's ``press-rules.toml``
+      must not be able to hide arbitrary content from the scan by declaring a
+      regeneration for it). Deliberately its own constant, never derived
+      from ``exclude_files`` — that would wrongly exempt ``CHANGELOG.md``-
+      class artifacts (P04 D3).
 
-    Everything else stays: non-regenerable lockfiles (``bun.lock``,
-    ``package-lock.json``), a force-added gitignored file, and symlink/
-    gitlink entries (type-tagged, for Task 7).
+    Everything else stays: non-exemptible lockfiles (``package-lock.json``),
+    a force-added gitignored file, and symlink/gitlink entries (type-tagged,
+    for Task 7).
     """
-    exempt_lockfiles = (
-        set(rules.regenerate)
-        & set(DEFAULT_RULES.regenerate)
-        & DEFAULT_RULES.exclude_files
-    )
+    exempt_lockfiles = {r.file for r in rules.regenerate} & REGENERATE_EXEMPTIBLE
     out: list[PathEntry] = []
     for entry in copy_paths(target):
         posix = entry.rel.as_posix()
