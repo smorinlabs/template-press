@@ -20,7 +20,11 @@ from pathlib import Path
 from template_press.rebrand.engine import rendered_replace_rules, translate_path
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.matcher import find_occurrences
-from template_press.rebrand.regen import has_uncommitted_changes, tracked_paths
+from template_press.rebrand.regen import (
+    changed_identity_pairs,
+    has_uncommitted_changes,
+    tracked_paths,
+)
 from template_press.rebrand.rules import ResetRule, Rules, rule_matches_path
 from template_press.rebrand.safety import (
     ContainmentError,
@@ -89,14 +93,6 @@ def read_reset_target_text(target: Path, rule: ResetRule) -> str:
     return _read_utf8(path, what)
 
 
-def _changed_pairs(source: Identity, dest: Identity) -> list[tuple[str, str]]:
-    """(field, source_value) for fields present on both sides that differ —
-    an unchanged field legitimately remains everywhere (changed-only, the
-    verifier's rule)."""
-    src, dst = source.as_dict(), dest.as_dict()
-    return [(f, src[f]) for f in src if f in dst and dst[f] != src[f]]
-
-
 def scan_stub_text(
     text: str,
     *,
@@ -113,7 +109,7 @@ def scan_stub_text(
     sides (``rendered_replace_rules`` already drops FROM == TO pairs).
     """
     problems: list[str] = []
-    for field, value in _changed_pairs(source, dest):
+    for field, value in changed_identity_pairs(source, dest):
         spans = find_occurrences(
             text, field, value, substring=field in rules.substring_rewrite_fields
         )
@@ -153,7 +149,7 @@ def scan_reset_path(
     writes; the final apply-time recheck is retained separately.
     """
     problems: list[str] = []
-    for field, value in _changed_pairs(source, dest):
+    for field, value in changed_identity_pairs(source, dest):
         spans = find_occurrences(
             translated,
             field,

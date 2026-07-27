@@ -683,13 +683,13 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
       earlier command at a later output's path)
 - [x] [P04-T06] Implement the generic executor replacing the hardcoded
       `uv lock` branch in `_regenerate_lockfiles`
-- [ ] [P04-TS07] Failing tests: postconditions — output exists; full
+- [x] [P04-TS07] Failing tests: postconditions — output exists; full
       containment + type recheck; UTF-8 two-point gate; paranoid
       changed-fields scan incl. rendered FROM literals, translated path
       components, reverse-mapped scopes; final pass over outputs, reset
       stubs, and `ROOT_CONTROL` after the last command (multi-command
       corruption cases)
-- [ ] [P04-T08] Implement the postconditions + final validation pass; the
+- [x] [P04-T08] Implement the postconditions + final validation pass; the
       receipt records each regeneration's resolved argv
 - [ ] [P04-TS09] Failing tests: hermetic verify — exemption requires
       tool-list basename + target declaration; the tool list is an explicit

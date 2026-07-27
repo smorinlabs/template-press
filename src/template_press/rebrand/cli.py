@@ -40,9 +40,12 @@ from template_press.rebrand.receipt import read_receipt, write_receipt
 from template_press.rebrand.regen import (
     RegenerationPlan,
     execute_regenerations,
+    final_validation_pass,
     plan_regenerate_commands,
     preflight_regenerate_outputs,
     render_regenerate_plan,
+    snapshot_control_files,
+    validate_control_files,
 )
 from template_press.rebrand.reset import (
     apply_resets,
@@ -399,9 +402,19 @@ def _press(
         report = apply(target, source, dest, rules)
         report.reset.extend(reset_done)
         # Declared commands run against the FINAL tree: declared paths are
-        # translated through the apply-time rename report (P04 D1).
+        # translated through the apply-time rename report (P04 D1). The
+        # press-owned control files are snapshotted before the first
+        # command and revalidated after the last (D1 reservation is not
+        # protection — a command can mutate arbitrary files).
+        control_snapshot = snapshot_control_files(target) if regen_plans else {}
         failed_locks = execute_regenerations(
-            target, regen_plans, dict(report.renamed), report
+            target,
+            regen_plans,
+            dict(report.renamed),
+            report,
+            source=source,
+            dest=dest,
+            rules=rules,
         )
         if failed_locks:
             print(
@@ -419,6 +432,34 @@ def _press(
                 report.regenerated,
                 env_error=f"lockfile regeneration failed for {', '.join(failed_locks)}",
             )
+        if regen_plans:
+            # Final validation pass (D3): outputs, reset stubs, and the
+            # control-file snapshot — a later command corrupting an earlier
+            # result is invisible to every downstream inventory.
+            post_problems = final_validation_pass(
+                target,
+                regen_plans,
+                resets,
+                dict(report.renamed),
+                source=source,
+                dest=dest,
+                rules=rules,
+            )
+            post_problems += validate_control_files(target, control_snapshot)
+            if post_problems:
+                print(
+                    "error: post-regeneration validation failed — no receipt written:",
+                    file=sys.stderr,
+                )
+                for problem in post_problems:
+                    print(f"  {problem}", file=sys.stderr)
+                print(report.render(), file=sys.stderr)
+                return PressOutcome(
+                    False,
+                    report.renamed,
+                    report.regenerated,
+                    env_error="post-regeneration validation failed",
+                )
         # Verification never honors target-side REWRITE exclusions (EMP-01):
         # neither extra_exclude_files nor extra_exclude_dirs can hide content
         # from the doctor. The only sanctioned exemption is the explicit,
@@ -445,7 +486,16 @@ def _press(
             return PressOutcome(
                 True, report.renamed, report.regenerated, env_error=None
             )
-        receipt_path = write_receipt(target, source, dest, report)
+        receipt_path = write_receipt(
+            target,
+            source,
+            dest,
+            report,
+            regenerations=[
+                (plan.rule.file, (plan.executable, *plan.rule.command[1:]))
+                for plan in regen_plans
+            ],
+        )
         write_control(target, SOURCE_CONFIG_REL, render_source_config(dest))
         print(report.render())
         if report.skipped:

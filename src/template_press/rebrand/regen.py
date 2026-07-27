@@ -21,8 +21,20 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from template_press.rebrand.engine import ApplyReport, translate_path
-from template_press.rebrand.rules import RegenerateRule, Rules
+from template_press.rebrand.engine import (
+    ROOT_CONTROL,
+    ApplyReport,
+    rendered_replace_rules,
+    translate_path,
+)
+from template_press.rebrand.identity import Identity
+from template_press.rebrand.matcher import find_occurrences
+from template_press.rebrand.rules import (
+    RegenerateRule,
+    ResetRule,
+    Rules,
+    rule_matches_path,
+)
 from template_press.rebrand.safety import (
     SafetyError,
     assert_ancestors_real,
@@ -178,6 +190,10 @@ def execute_regenerations(
     plans: Sequence[RegenerationPlan],
     renamed: Mapping[str, str],
     report: ApplyReport,
+    *,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
 ) -> list[str]:
     """Run each declared command (D1's execution contract); return FAILED files.
 
@@ -231,6 +247,23 @@ def execute_regenerations(
         if result.returncode != 0:
             report.skipped.append(
                 f"regenerate {rule.file} (command exited {result.returncode})"
+            )
+            failed.append(rule.file)
+            continue
+        # Postconditions (D3): the exemption is earned by RESULT — the
+        # produced output must exist, still be a contained regular file,
+        # decode as UTF-8, and pass the paranoid changed-fields scan.
+        problems = _postcondition_problems(
+            target,
+            out_rel,
+            source=source,
+            dest=dest,
+            rules=rules,
+            renames=renames,
+        )
+        if problems:
+            report.skipped.extend(
+                f"regenerate {rule.file} ({problem})" for problem in problems
             )
             failed.append(rule.file)
         else:
@@ -319,5 +352,219 @@ def preflight_regenerate_outputs(target: Path, rules: Rules) -> list[str]:
             problems.append(
                 prefix + "has uncommitted changes — refused even under "
                 "--allow-dirty (git restores only committed content)"
+            )
+            continue
+        # Plan-time half of the UTF-8 two-point gate (D3): the exemption is
+        # bought with the post-command TEXT scan, so an undecodable
+        # pre-state can never earn it — fail closed, route such files
+        # through verify_ignore instead.
+        try:
+            path.read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            problems.append(
+                prefix + "tracked pre-state is not valid UTF-8 — a file the "
+                "text scan cannot read cannot earn the exemption (fail "
+                "closed; use verify_ignore for deliberate binaries)"
+            )
+    return problems
+
+
+def changed_identity_pairs(source: Identity, dest: Identity) -> list[tuple[str, str]]:
+    """(field, source_value) for fields present on both sides that differ —
+    an unchanged field legitimately remains everywhere (changed-only, the
+    verifier's rule; feeding the full source identity would turn a retained
+    author in a correct fresh lockfile into a false leak)."""
+    src, dst = source.as_dict(), dest.as_dict()
+    return [(f, src[f]) for f in src if f in dst and dst[f] != src[f]]
+
+
+def scan_regenerated_output(
+    text: str,
+    translated_rel: str,
+    *,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    renames: Mapping[str, str],
+) -> list[str]:
+    """Paranoid changed-fields scan of one produced output (D3).
+
+    The exemption being earned is exemption from VERIFY, whose reason for
+    existing is a stricter matcher than the doctor's — so the evidence uses
+    ``matcher.find_occurrences`` (case/separator-glued forms included),
+    covers rendered ``[[replace]]`` FROM literals (scopes are in SOURCE
+    coordinates, so the file's destination path is reverse-mapped through
+    the renames before the glob check), and covers every component of the
+    TRANSLATED output path (an identity token that doubles as the
+    lockfile's own name survives in the filename precisely because the
+    output is excluded from the rename pass).
+    """
+    problems: list[str] = []
+    for field, value in changed_identity_pairs(source, dest):
+        substring = field in rules.substring_rewrite_fields
+        spans = find_occurrences(text, field, value, substring=substring)
+        if spans:
+            problems.append(
+                f"output still carries source {field} {value!r} "
+                f"({len(spans)} occurrence(s))"
+            )
+        if find_occurrences(translated_rel, field, value, substring=substring):
+            problems.append(
+                f"its path ({translated_rel}) carries source {field} "
+                f"{value!r} — downstream inventories never look at an "
+                f"excluded filename"
+            )
+    reverse = {new: old for old, new in renames.items()}
+    source_scope = translate_path(translated_rel, reverse)
+    for rule, frm, _to in rendered_replace_rules(rules, source, dest):
+        if rule.content and rule_matches_path(rule, source_scope) and frm in text:
+            problems.append(
+                f"output contains rendered [[replace]] literal {frm!r} ({rule.reason})"
+            )
+    return problems
+
+
+def _postcondition_problems(
+    target: Path,
+    translated_rel: str,
+    *,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    renames: Mapping[str, str],
+) -> list[str]:
+    """Existence, type, containment, UTF-8, and the paranoid scan — what a
+    command must leave behind to have regenerated anything at all (D3)."""
+    path = target / translated_rel
+    try:
+        assert_under_root(path, target)
+        assert_ancestors_real(path, target)
+    except SafetyError as exc:
+        return [str(exc)]
+    if not is_regular_lstat(path):
+        return [
+            f"{translated_rel} is not a regular file after the command "
+            f"(deleted, symlink, or special — a declared regeneration that "
+            f"does not leave its file behind is a failed regeneration)"
+        ]
+    data = path.read_bytes()
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return [
+            f"{translated_rel} is not valid UTF-8 after the command — the "
+            f"exemption is bought with the text scan, fail closed"
+        ]
+    return scan_regenerated_output(
+        text,
+        translated_rel,
+        source=source,
+        dest=dest,
+        rules=rules,
+        renames=renames,
+    )
+
+
+def final_validation_pass(
+    target: Path,
+    plans: Sequence[RegenerationPlan],
+    resets: Sequence[tuple[ResetRule, str]],
+    renames: Mapping[str, str],
+    *,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+) -> list[str]:
+    """After the LAST declared command: re-validate EVERY output and reset
+    stub (D3). Per-command postconditions are not enough once a target
+    declares multiple regenerations — a later command can delete, replace,
+    or reintroduce source identity into an earlier output, or modify a
+    reset stub, after that output's own checks passed, and these files stay
+    excluded from the ordinary doctor and hermetic-verify inventories.
+    """
+    problems: list[str] = []
+    for plan in plans:
+        translated = translate_path(plan.rule.file, renames)
+        for problem in _postcondition_problems(
+            target,
+            translated,
+            source=source,
+            dest=dest,
+            rules=rules,
+            renames=renames,
+        ):
+            problems.append(f"final pass: {plan.rule.file}: {problem}")
+    for rule, stub in resets:
+        # Reset paths were consumed in SOURCE coordinates before the rename
+        # pass; this check runs after it, so translate — validating the
+        # declared path would report a validly moved stub as missing. The
+        # full guard set runs BEFORE the content compare: stub equality
+        # alone would follow a symlink a later command planted and accept
+        # matching outside content.
+        translated = translate_path(rule.file, dict(renames))
+        path = target / translated
+        prefix = f"final pass: reset {rule.file}: "
+        try:
+            assert_under_root(path, target)
+            assert_ancestors_real(path, target)
+        except SafetyError as exc:
+            problems.append(prefix + str(exc))
+            continue
+        if not is_regular_lstat(path):
+            problems.append(
+                prefix + f"{translated} is not a regular file after the "
+                f"declared commands (no-follow check)"
+            )
+            continue
+        if path.read_bytes() != stub.encode("utf-8"):
+            problems.append(
+                prefix + f"stub content at {translated} was modified after "
+                f"the reset — a later command altered it"
+            )
+    return problems
+
+
+def snapshot_control_files(target: Path) -> dict[str, bytes | None]:
+    """Presence + content of every press-owned control file (ROOT_CONTROL),
+    taken before the FIRST declared command runs.
+
+    Reservation alone is not protection (D1): a declared command can mutate
+    arbitrary files, and ROOT_CONTROL is omitted from the downstream doctor
+    and verifier inventories — so press snapshots what it owns and
+    revalidates after the last command.
+    """
+    snapshot: dict[str, bytes | None] = {}
+    for rel in sorted(ROOT_CONTROL):
+        path = target / rel
+        snapshot[rel] = path.read_bytes() if is_regular_lstat(path) else None
+    return snapshot
+
+
+def validate_control_files(
+    target: Path, snapshot: Mapping[str, bytes | None]
+) -> list[str]:
+    """Type, containment, and content revalidation against the snapshot —
+    a mismatch aborts the press: the rules that ran are no longer the rules
+    that were planned and validated (D1)."""
+    problems: list[str] = []
+    for rel, before in snapshot.items():
+        path = target / rel
+        try:
+            assert_under_root(path, target)
+        except SafetyError as exc:
+            problems.append(f"control file {rel}: {exc}")
+            continue
+        if os.path.lexists(path) and not is_regular_lstat(path):
+            problems.append(
+                f"control file {rel} is no longer a regular file — a "
+                f"declared command replaced it"
+            )
+            continue
+        now = path.read_bytes() if is_regular_lstat(path) else None
+        if now != before:
+            problems.append(
+                f"control file {rel} changed during regeneration — the "
+                f"rules that ran are no longer the rules that were planned "
+                f"and validated"
             )
     return problems

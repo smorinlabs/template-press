@@ -7,6 +7,7 @@ answered. Its presence also guards re-runs (require --force).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -32,7 +33,11 @@ def _identity_table(name: str, identity: Identity) -> list[str]:
 
 
 def write_receipt(
-    target: Path, source: Identity, dest: Identity, report: ApplyReport
+    target: Path,
+    source: Identity,
+    dest: Identity,
+    report: ApplyReport,
+    regenerations: Sequence[tuple[str, Sequence[str]]] = (),
 ) -> Path:
     stamp = datetime.now(UTC).isoformat(timespec="seconds")
     lines = [
@@ -54,4 +59,14 @@ def write_receipt(
         f"regenerated = {len(report.regenerated)}",
         f"skipped = {len(report.skipped)}",
     ]
+    # Each regeneration's RESOLVED argv (P04 D5 revision): under plan→apply
+    # nothing stops a config change between two runs, so the receipt is the
+    # only artifact recording what actually ran.
+    for file, argv in regenerations:
+        lines += [
+            "",
+            "[[press.regenerate]]",
+            f"file = {toml_string(file)}",
+            "argv = [" + ", ".join(toml_string(a) for a in argv) + "]",
+        ]
     return write_control(target, RECEIPT_REL, "\n".join(lines) + "\n")

@@ -20,11 +20,17 @@ import pytest
 
 from template_press.rebrand.engine import ApplyReport
 from template_press.rebrand.regen import RegenerationPlan, execute_regenerations
-from template_press.rebrand.rules import RegenerateRule
+from template_press.rebrand.rules import DEFAULT_RULES, RegenerateRule
 
-from .conftest import requires_symlink
+from .conftest import DEST, SOURCE, requires_symlink
 
 PY = sys.executable
+
+
+def _execute(target, plans, renamed, report):
+    return execute_regenerations(
+        target, plans, renamed, report, source=SOURCE, dest=DEST, rules=DEFAULT_RULES
+    )
 
 
 def _plan(file: str, *args: str, env: tuple[str, ...] = ()) -> RegenerationPlan:
@@ -36,7 +42,7 @@ def _plan(file: str, *args: str, env: tuple[str, ...] = ()) -> RegenerationPlan:
 def _target_with(tmp_path: Path, name: str = "bun.lock") -> Path:
     target = tmp_path / "target"
     target.mkdir()
-    (target / name).write_text("stale demo_widget\n", encoding="utf-8")
+    (target / name).write_text("lockdata\n", encoding="utf-8")
     return target
 
 
@@ -51,7 +57,7 @@ class TestExecutionContract:
             "import pathlib; pathlib.Path('cwd-probe.txt').write_text('here')",
         )
         report = ApplyReport()
-        failed = execute_regenerations(target, [plan], {}, report)
+        failed = _execute(target, [plan], {}, report)
         assert failed == []
         assert (target / "cwd-probe.txt").read_text() == "here"
         assert not Path("cwd-probe.txt").exists()  # nothing in caller cwd
@@ -66,7 +72,7 @@ class TestExecutionContract:
             "a && touch pwned; $(evil)",
         )
         report = ApplyReport()
-        assert execute_regenerations(target, [plan], {}, report) == []
+        assert _execute(target, [plan], {}, report) == []
         assert (target / "args.txt").read_text() == "a && touch pwned; $(evil)"
         assert not (target / "pwned").exists()
 
@@ -86,7 +92,7 @@ class TestExecutionContract:
             env=("PRESS_DECLARED_VAR", "PRESS_ABSENT_VAR"),
         )
         report = ApplyReport()
-        assert execute_regenerations(target, [plan], {}, report) == []
+        assert _execute(target, [plan], {}, report) == []
         child_env = json.loads((target / "env.json").read_text())
         assert child_env.get("PRESS_DECLARED_VAR") == "declared-value"
         assert "PRESS_ABSENT_VAR" not in child_env
@@ -99,7 +105,7 @@ class TestExecutionContract:
         target = _target_with(tmp_path)
         plan = _plan("bun.lock", "-c", "raise SystemExit(3)")
         report = ApplyReport()
-        failed = execute_regenerations(target, [plan], {}, report)
+        failed = _execute(target, [plan], {}, report)
         assert failed == ["bun.lock"]
         assert report.regenerated == []
         assert any("bun.lock" in s and "3" in s for s in report.skipped)
@@ -117,7 +123,7 @@ class TestExecutionContract:
         )
         plan = RegenerationPlan(rule=rule, executable=PY, env_present=(), env_absent=())
         report = ApplyReport()
-        assert execute_regenerations(target, [plan], {}, report) == []
+        assert _execute(target, [plan], {}, report) == []
         assert report.regenerated == ["bun.lock"]
 
 
@@ -136,7 +142,7 @@ class TestPerCommandSinkGuards:
             "import pathlib; pathlib.Path('launched.txt').write_text('x')",
         )
         report = ApplyReport()
-        failed = execute_regenerations(target, [plan], {}, report)
+        failed = _execute(target, [plan], {}, report)
         assert failed == ["bun.lock"]
         assert not (target / "launched.txt").exists()  # never launched
 
@@ -149,7 +155,7 @@ class TestPerCommandSinkGuards:
             "import pathlib; pathlib.Path('launched.txt').write_text('x')",
         )
         report = ApplyReport()
-        failed = execute_regenerations(target, [plan], {}, report)
+        failed = _execute(target, [plan], {}, report)
         assert failed == ["bun.lock"]
         assert not (target / "launched.txt").exists()
 
@@ -164,7 +170,7 @@ class TestPerCommandSinkGuards:
         rule = RegenerateRule(file="sub/custom.lock", command=(PY, "-c", "pass"))
         plan = RegenerationPlan(rule=rule, executable=PY, env_present=(), env_absent=())
         report = ApplyReport()
-        failed = execute_regenerations(target, [plan], {}, report)
+        failed = _execute(target, [plan], {}, report)
         assert failed == ["sub/custom.lock"]
 
 
@@ -185,7 +191,7 @@ class TestRenameTranslation:
             ".write_text('fresh')",
         )
         report = ApplyReport()
-        failed = execute_regenerations(
+        failed = _execute(
             target,
             [plan],
             {"packages/demo_widget": "packages/potato_launcher"},
