@@ -50,6 +50,7 @@ from template_press.rebrand.regen import (
     preflight_excluded_files,
     preflight_regenerate_outputs,
     render_regenerate_plan,
+    restore_control_files,
     snapshot_control_files,
     validate_control_files,
 )
@@ -428,6 +429,10 @@ def _press(
             rules=rules,
         )
         if failed_locks:
+            # A failed command must not leave a tampered/planted control
+            # file behind (codex 3654736777) — restore the snapshot before
+            # reporting; {} when no commands ran.
+            restore_control_files(target, control_snapshot)
             print(
                 f"error: lockfile regeneration failed for "
                 f"{', '.join(failed_locks)} — the lockfile still carries the old "
@@ -458,6 +463,7 @@ def _press(
             )
             post_problems += validate_control_files(target, control_snapshot)
             if post_problems:
+                restore_control_files(target, control_snapshot)
                 print(
                     "error: post-regeneration validation failed — no receipt written:",
                     file=sys.stderr,

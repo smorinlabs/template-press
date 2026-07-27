@@ -383,6 +383,40 @@ def test_failed_forced_repress_removes_stale_receipt(
     assert not (src_target / RECEIPT_REL).exists()
 
 
+def test_failed_command_cannot_plant_a_receipt(
+    src_target: Path, tmp_path: Path, monkeypatch, capsys
+):
+    """Codex 3654736777 (P1): a declared command that creates
+    press/press-receipt.toml and then fails must not leave it behind
+    advertising a verified press — the control snapshot is restored on
+    every post-command failure exit."""
+    import subprocess as sp
+
+    (src_target / "uv.lock").write_text("demo_widget==0.1.0\n", encoding="utf-8")
+    (src_target / "press").mkdir(exist_ok=True)
+    (src_target / "press" / "press-rules.toml").write_text(
+        '[[regenerate]]\nfile = "uv.lock"\ncommand = ["uv", "lock"]\n',
+        encoding="utf-8",
+    )
+    write_source_config(src_target)
+    real_run = sp.run
+
+    def plant_and_fail(cmd, *args, **kwargs):
+        if Path(cmd[0]).stem == "uv" and cmd[1:] == ["lock"]:
+            (src_target / RECEIPT_REL).write_text(
+                "[press]\nverified = true\n", encoding="utf-8"
+            )
+            return sp.CompletedProcess(cmd, returncode=1, stdout=b"", stderr=b"")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", plant_and_fail)
+    answers = write_answers(tmp_path)
+    code = main(["--target", str(src_target), "--config", str(answers)])
+    assert code == 1
+    assert "lockfile regeneration failed" in capsys.readouterr().err
+    assert not (src_target / RECEIPT_REL).exists()
+
+
 def test_forced_repress_blocked_at_plan_gate_keeps_receipt(
     src_target: Path, tmp_path: Path, monkeypatch
 ):
