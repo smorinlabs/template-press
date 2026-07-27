@@ -36,7 +36,11 @@ stub = "# Changelog\\n"
 
 # bun install alone never rewrites an existing lock's workspace name
 # (bun 1.3.14) — the lock must be regenerated from scratch.
-REGEN_BUN_LOCK = "#!/bin/sh\nset -e\nrm -f bun.lock\nexec bun install\n"
+REGEN_BUN_LOCK = (
+    "#!/bin/sh\nset -e\n"
+    'command -v bun >/dev/null 2>&1 || { echo "bun not found" >&2; exit 127; }\n'
+    "rm -f bun.lock\nexec bun install\n"
+)
 
 
 def clone(url: str, dest: Path) -> Path:

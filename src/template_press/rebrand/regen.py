@@ -252,6 +252,7 @@ def execute_regenerations(
             [plan.executable, *rule.command[1:]],
             cwd=target,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             env=command_env(rule.env),
         )
         if result.returncode != 0:
@@ -623,6 +624,14 @@ def restore_control_files(target: Path, snapshot: Mapping[str, bytes | None]) ->
     """
     for rel, data in snapshot.items():
         path = target / rel
+        try:
+            # Never traverse a symlinked control dir during recovery
+            # (codex 3654974418): a command that swapped press/ for a
+            # symlink must not turn restoration into an outside deletion.
+            assert_under_root(path, target)
+            assert_ancestors_real(path, target)
+        except SafetyError:
+            continue  # best-effort recovery; validation already reported
         if data is None:
             path.unlink(missing_ok=True)
         elif not is_regular_lstat(path) or path.read_bytes() != data:

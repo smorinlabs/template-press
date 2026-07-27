@@ -12,6 +12,7 @@ preflight — plan-time-knowable problems exit 2 before writes.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import subprocess
 from pathlib import Path
@@ -23,8 +24,9 @@ from template_press.rebrand.reset import (
     VERBOSE_PREVIEW_LINES,
     preflight_reset_targets,
     render_reset_plan,
+    scan_reset_path,
 )
-from template_press.rebrand.rules import load_rules
+from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, load_rules
 
 from .conftest import DEST, SOURCE, requires_symlink, write_answers_file
 
@@ -314,3 +316,27 @@ class TestCliResetGates:
         assert code == 0
         assert "## v1" in out  # excerpt present under --verbose
         assert "# Changelog" in out
+
+
+class TestResetPathRenderedLiteral:
+    def test_rendered_path_literal_in_reset_path_fails(self):
+        """Codex 3654974415 (P1): a paths-scoped rendered literal in the
+        reset target's post-press path is flagged, mirroring the
+        regenerated-output check — an excluded filename is invisible to
+        every downstream inventory."""
+        rules = dataclasses.replace(
+            DEFAULT_RULES,
+            replace=(
+                ReplaceRule(
+                    pattern="x{app_name}y",
+                    reason="glued legacy name",
+                    content=False,
+                    paths=True,
+                ),
+            ),
+        )
+        problems = scan_reset_path(
+            "xpressy.lock", "xpressy.lock", source=SOURCE, dest=DEST, rules=rules
+        )
+        assert problems
+        assert any("xpressy" in p for p in problems)

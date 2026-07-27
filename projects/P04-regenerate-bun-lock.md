@@ -1,6 +1,6 @@
 # P04 — Regenerate bun.lock during a press
 
-- **Status:** `[~]` in progress
+- **Status:** `[x]` completed
 
 Neutralize bun.lock: excluded from rewrite but never regenerated, so it always leaks
 

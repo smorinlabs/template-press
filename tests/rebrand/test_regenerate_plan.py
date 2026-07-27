@@ -357,6 +357,7 @@ class TestCliPlanGates:
         assert code == 2
         assert snapshot_target(src_target) == before
 
+    @posix_only
     def test_dry_run_renders_command_pinned_path_and_env(
         self, src_target: Path, tmp_path: Path, capsys, monkeypatch
     ):

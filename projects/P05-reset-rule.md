@@ -1,6 +1,6 @@
 # P05 — Reset rule: blank a file to a declared stub
 
-- **Status:** `[~]` in progress
+- **Status:** `[x]` completed
 
 First destructive op — blank CHANGELOG-style files instead of leaking their history
 

@@ -509,6 +509,15 @@ def load_rules(target: Path) -> Rules:
         _str_list(table, "extra_exclude_files", [])
     )
     regenerate = tuple(_parse_regenerate(e, exclude_files) for e in raw_regenerate)
+    seen_regen: set[str] = set()
+    for regen_rule in regenerate:
+        if regen_rule.file in seen_regen:
+            raise ValidationError(
+                f"{RULES_REL}: {regen_rule.file} declared by more than one "
+                f"[[regenerate]] table — one regeneration per file (the "
+                f"second command would silently win)"
+            )
+        seen_regen.add(regen_rule.file)
     reset = tuple(_parse_reset(e, exclude_files) for e in raw_reset)
     seen_reset: set[str] = set()
     for reset_rule in reset:

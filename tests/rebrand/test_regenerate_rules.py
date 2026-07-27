@@ -85,6 +85,19 @@ class TestRegenerateSchema:
             load_rules(target)
 
 
+class TestDuplicateTargets:
+    def test_duplicate_regenerate_targets_rejected(self, tmp_path: Path):
+        """CodeRabbit 3654968985: same second-write-silently-wins hazard the
+        reset duplicate ban prevents — and an ambiguous declaration."""
+        target = _write_rules(
+            tmp_path,
+            '[[regenerate]]\nfile = "bun.lock"\ncommand = ["a"]\n'
+            '[[regenerate]]\nfile = "bun.lock"\ncommand = ["b"]\n',
+        )
+        with pytest.raises(ValidationError, match="more than one"):
+            load_rules(target)
+
+
 class TestLegacyFormRejected:
     """The old list-of-strings `regenerate` must fail with a schema TEMPLATE
     carrying a PLACEHOLDER command — never an argv derived from the filename,

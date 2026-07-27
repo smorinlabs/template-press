@@ -164,6 +164,17 @@ def scan_reset_path(
                 f"filename is invisible to every downstream inventory; "
                 f"rename the file or route it through verify_ignore"
             )
+    for replace_rule, frm, _to in rendered_replace_rules(rules, source, dest):
+        if (
+            replace_rule.paths
+            and rule_matches_path(replace_rule, rel)
+            and frm in translated
+        ):
+            problems.append(
+                f"reset {rel}: its path after this press ({translated}) "
+                f"carries rendered [[replace]] literal {frm!r} "
+                f"({replace_rule.reason})"
+            )
     return problems
 
 

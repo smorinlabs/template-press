@@ -37,7 +37,7 @@ The exit code is the contract — scripts and CI can branch on it:
 | `1` | Leaks found after applying — a partial/incorrect rebrand. **No receipt** is written; the target is left rewritten (restore with `git -C <target> checkout . && git clean -fd`). |
 | `2` | Precondition or configuration error (missing target, dirty tree, source/target identity mismatch, an existing receipt without `--force`). **Nothing is written.** |
 
-`--dry-run` always exits `0` after printing the plan — it is a preview and writes nothing (no receipt).
+`--dry-run` exits `0` after printing the plan — it is a preview and writes nothing (no receipt). Plan-time refusals (a missing declared tool, a stale argv, an undeclared excluded file) exit `2` before the plan renders, exactly as they would without `--dry-run`.
 
 ### The ignore set
 
