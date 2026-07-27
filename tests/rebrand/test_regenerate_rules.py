@@ -170,6 +170,12 @@ class TestFileValidation:
             'file = ""',  # empty
             "file = 3",  # non-string
             "",  # missing
+            # Codex thread 3654657431 (P1): plan visibility is the approval
+            # guard — a declared path carrying a newline or ANSI escape can
+            # forge the rendered preview, exactly like argv elements.
+            'file = "bun\\nfake.lock"',  # newline
+            'file = "bun\\u001b[2Jx.lock"',  # ANSI escape
+            'file = "bun\\rx.lock"',  # carriage return
         ],
     )
     def test_unsafe_file_rejected(self, tmp_path: Path, file_toml: str):

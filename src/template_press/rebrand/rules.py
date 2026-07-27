@@ -312,6 +312,13 @@ def _declared_rel_path(context: str, value: object) -> str:
         )
     if "\x00" in value:
         raise ValidationError(f"{RULES_REL}: {context} must not contain NUL")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        # Plan visibility is the approval guard (wave-3 3654059282); a
+        # declared path is interpolated into the rendered plan exactly like
+        # argv elements, so terminal controls are rejected the same way.
+        raise ValidationError(
+            f"{RULES_REL}: {context} must not contain control characters: {value!r}"
+        )
     try:
         rel = SafeRelPath(value)
     except UnsafePathError as exc:
