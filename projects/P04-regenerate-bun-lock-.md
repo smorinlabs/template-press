@@ -177,6 +177,39 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
   They are not equivalent, and a decision this size should not rest on a
   comparison that collapses under one example.
 
+  **REVISED 2026-07-26 (post-merge): the consent machinery below is SUPERSEDED
+  by a plan→apply flow.** The token/hash model — argv hashes, referenced-file
+  fingerprints, env names and command order folded into a consent record,
+  pre-launch fingerprint revalidation, the appeared-between-plan-and-launch
+  and symlink-reference refusals — is not implemented. The recorded decision
+  is Terraform-shaped:
+
+  - `press rebrand --dry-run` renders the full plan, including every declared
+    command verbatim — argv, cwd, the env names it may see, what it rebuilds.
+  - A mutating `press rebrand` prints the same plan and executes it. Running
+    apply IS the approval; there are no tokens.
+  - A saved-plan mode (`--plan-out` / `--apply-plan`, refusing on drift like
+    `terraform apply <planfile>`) is deferred until a plan/apply-separated
+    workflow actually exists; the deterministic plan object keeps that purely
+    additive.
+
+  Why: press is a deliberately invoked tool with a plan step — the tool class
+  (make, just, pre-commit, terraform) that gates by visibility, not by hash.
+  Hash-scoped standing consent (direnv `allow`, mise `trust`) compensates for
+  AMBIENT execution, which press does not have. The CI argument for argv-scoped
+  consent does not hold either: the R3 workflow already executes arbitrary
+  repo code (tests, scripts, hooks), so guarding one argv is a locked window
+  next to an open door — the real boundary is the runner's isolation. And four
+  review rounds spent roughly half their findings on edge cases of the consent
+  mechanism itself, the signature of a feature generating bug surface faster
+  than it closes exposure.
+
+  What survives, on correctness (not approval) grounds: the deny-by-default
+  environment, `cwd` = target root, no shell, plan-time executable resolution,
+  mode preservation on rewritten files, and every scan, postcondition, and
+  preflight. In-repo helper scripts are simply allowed and shown in the plan.
+  The paragraphs below are kept for the record.
+
   **The boundary D1 requires: consent scoped to the exact command.** Target-
   declared commands execute only with explicit operator consent, and that consent
   is keyed to the specific argv — a recorded hash of the declared command, not a
@@ -293,11 +326,10 @@ All three open questions settled 2026-07-25 (walkthrough in chat).
     `CHANGELOG.md` reset from P05 — as part of the same change that removes the
     default. An earlier draft named only `uv.lock`; a literal implementation of
     that would fail D5's own preflight on the other two.
-  - Update `scripts/rebrand_matrix.sh` to carry consent for its own command.
-    Adding the rules file alone does not keep the matrix green: R3 invokes the
-    real self-press with only `--accept-discovery --allow-dirty`, and D1 says a
-    press without consent refuses. Runbooks that document the R3 invocation need
-    the same update.
+  - ~~Update `scripts/rebrand_matrix.sh` to carry consent for its own
+    command.~~ **Superseded by the plan→apply revision** — with no consent
+    token, R3's existing invocation keeps working; only the rules file and the
+    bun provisioning below are needed.
   - Provision the declared commands in CI: `.github/workflows/rebrand-matrix.yml`
     installs only uv today, and the migrated rules file makes D2's preflight
     require `bun` — without the pinned bun installer in the workflow, R3
