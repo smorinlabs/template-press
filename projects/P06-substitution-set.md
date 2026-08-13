@@ -27,7 +27,9 @@ One table the rewriter and inline checkers read; verify stays independent
 - **One kind-tagged surface walker** replacing the five independent ones
   (`engine._git_listed`, `engine.iter_target_files`, `engine.copy_paths`,
   `engine.scan_paths`, `regen.tracked_paths`) — walker disagreement is why
-  the doctor was once blind to submodule names.
+  the doctor was once blind to submodule names. Its snapshot also records the
+  Git ignore inputs needed to prove that content rewrites and resets cannot
+  change path visibility underneath the shared rename plan.
 - **One pipeline-stability validator** replacing the five accreted
   plan-time guards.
 - **The rendered substitution table** — (matcher, from, to, rewrite
@@ -42,8 +44,11 @@ One table the rewriter and inline checkers read; verify stays independent
 - **The independence guardrail (D2)**: a binding constraint in design
   0008 plus a regression test that fails if `verifier.py` ever imports
   the table module; the test is a named acceptance criterion.
-- Semantics-preserving throughout — the full automated suite and the
-  R1a/R1b/R2/R3 acceptance matrix stay green at every PR boundary.
+- Output-preserving for every stable configuration. P06 intentionally adds
+  pre-write refusals for cross-row output dependencies, path cycles, and a
+  press that would mutate Git's ignore inputs while relying on a frozen path
+  inventory. The full automated suite and the R1a/R1b/R2/R3 acceptance matrix
+  stay green at every PR boundary.
 
 ### Out of scope
 
@@ -63,9 +68,10 @@ One table the rewriter and inline checkers read; verify stays independent
   (PR #62 merged, v3.4.0).
 - **D1 (2026-07-27; checkpoint passed 2026-08-12): three PRs confirmed.**
   Design 0009 establishes one raw walker entry with relative path, node
-  kind, and tracked state. Table scope, rewrite and checker surfaces, and
-  the fixed-point rename plan remain policies above that entry; none
-  requires table-specific data inside the walker. The implementation
+  kind, and tracked state, wrapped in a snapshot whose Git-visibility guard
+  is independent of table matching. Table scope, rewrite and checker
+  surfaces, and the fixed-point rename plan remain policies above that entry;
+  none requires table-specific data inside the walker. The implementation
   therefore stays walker → validator → table, safest first, with each
   boundary provable against the suite and matrix. The recorded walker+table
   fallback is not needed. Context: PR #62's single 15-commit branch drew 29
@@ -119,11 +125,14 @@ load-bearing design. Parameterize it, but never merge the two scanners into
 one. The inline doctor intentionally derives from the rewriter's table under
 D2; it is not a third independent scanner.
 
-Sequenced as three PRs, safest first: (1) one kind-tagged surface walker;
-(2) one pipeline-stability validator replacing the five accreted guards;
-(3) the substitution table itself. Estimated ~1 focused week against the full
-automated suite and the acceptance matrix. Semantics-preserving — no rollback
-of the shipped C/D/E work; the accumulated fixes are the spec for the refactor.
+Sequenced as three PRs, safest first: (1) one kind-tagged, visibility-guarded
+surface walker; (2) one pipeline-stability validator replacing the five
+accreted guards; (3) the substitution table itself. Estimated ~1 focused week
+against the full automated suite and the acceptance matrix. Stable
+configurations preserve their current output, and every shipped C/D/E
+validation refusal remains a refusal. The only intentional acceptance changes
+are earlier, pre-write refusals for an order-dependent pipeline, a cross-pass
+path cycle, or mutation of Git's ignore inputs.
 
 ### Tests & Tasks
 
