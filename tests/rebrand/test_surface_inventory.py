@@ -767,6 +767,69 @@ def test_capture_refuses_temporary_missing_config_include(
         capture_surface_snapshot(src_target)
 
 
+def test_capture_refuses_temporary_onbranch_include_activation(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    included = src_target / "conditional-config"
+    ignore_a = src_target / "ignore-a"
+    included.write_text(f"[core]\n\texcludesFile = {ignore_a}\n", encoding="utf-8")
+    ignore_a.write_text("hide-a\n", encoding="utf-8")
+    (src_target / "hide-a").write_text("visible on main\n", encoding="utf-8")
+    _git(src_target, "branch", "feature")
+    _git(
+        src_target,
+        "config",
+        "includeIf.onbranch:feature.path",
+        str(included),
+    )
+    head = src_target / ".git" / "HEAD"
+    main_head = head.read_bytes()
+    real_resolver = inventory._core_excludes_path
+
+    def temporary_feature_branch(target: Path) -> Path | None:
+        head.write_text("ref: refs/heads/feature\n", encoding="utf-8")
+        try:
+            return real_resolver(target)
+        finally:
+            head.write_bytes(main_head)
+
+    monkeypatch.setattr(inventory, "_core_excludes_path", temporary_feature_branch)
+
+    with pytest.raises(SafetyError, match=r"config.*changed during capture"):
+        capture_surface_snapshot(src_target)
+
+
+def test_capture_refuses_temporary_linked_worktree_gitdir_redirect(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    linked = tmp_path / "linked-redirect"
+    _git(src_target, "worktree", "add", "--detach", str(linked), "HEAD")
+    git_pointer = linked / ".git"
+    original_pointer = git_pointer.read_bytes()
+
+    other = tmp_path / "other-repo"
+    other.mkdir()
+    _git(other, "init", "-q")
+    ignore_a = linked / "ignore-a"
+    ignore_a.write_text("hide-a\n", encoding="utf-8")
+    (linked / "hide-a").write_text("visible in linked worktree\n", encoding="utf-8")
+    _git(other, "config", "core.excludesFile", str(ignore_a))
+    other_pointer = f"gitdir: {(other / '.git').as_posix()}\n"
+    real_resolver = inventory._core_excludes_path
+
+    def temporary_other_repo(target: Path) -> Path | None:
+        git_pointer.write_text(other_pointer, encoding="utf-8")
+        try:
+            return real_resolver(target)
+        finally:
+            git_pointer.write_bytes(original_pointer)
+
+    monkeypatch.setattr(inventory, "_core_excludes_path", temporary_other_repo)
+
+    with pytest.raises(SafetyError, match=r"config.*changed during capture"):
+        capture_surface_snapshot(linked)
+
+
 @posix_only
 @requires_symlink
 def test_visibility_read_refuses_ancestor_swap_at_descriptor_open(

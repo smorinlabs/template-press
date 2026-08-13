@@ -100,6 +100,7 @@ class _ConfigSourceState:
 
     sources: tuple[_ConfigSourceStamp, ...]
     include_parents: tuple[_NodeStamp, ...]
+    condition_inputs: tuple[_NodeStamp, ...]
 
 
 def _run_git(
@@ -470,9 +471,29 @@ def _nearest_real_parent(path: Path) -> Path:
 def _config_source_state(target: Path) -> _ConfigSourceState:
     sources, includes = _config_source_paths(target)
     parents = {_nearest_real_parent(path) for path in includes}
+    git_dir = _absolute_git_path(
+        target, "rev-parse", "--path-format=absolute", "--git-dir"
+    )
+    common_dir = _absolute_git_path(
+        target, "rev-parse", "--path-format=absolute", "--git-common-dir"
+    )
+    head = _absolute_git_path(
+        target, "rev-parse", "--path-format=absolute", "--git-path", "HEAD"
+    )
+    condition_paths = {
+        target,
+        target / ".git",
+        git_dir,
+        git_dir.parent,
+        common_dir,
+        common_dir.parent,
+        head,
+        head.parent,
+    }
     return _ConfigSourceState(
         tuple(_config_source_stamp(path) for path in sources),
         tuple(_node_stamp(path) for path in sorted(parents)),
+        tuple(_node_stamp(path) for path in sorted(condition_paths)),
     )
 
 
