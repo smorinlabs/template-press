@@ -82,15 +82,24 @@ class _VisibilityState:
 
 @dataclass(frozen=True)
 class _ConfigSourceStamp:
-    """Content and node identity for one effective repository config file."""
+    """Content and node identity for one declared config source path."""
 
     path: Path
-    sha256: str
-    device: int
-    inode: int
-    size: int
-    mtime_ns: int
-    ctime_ns: int
+    kind: WorktreeKind
+    sha256: str | None
+    device: int | None
+    inode: int | None
+    size: int | None
+    mtime_ns: int | None
+    ctime_ns: int | None
+
+
+@dataclass(frozen=True)
+class _ConfigSourceState:
+    """Config files and parent directories that make includes observable."""
+
+    sources: tuple[_ConfigSourceStamp, ...]
+    include_parents: tuple[_NodeStamp, ...]
 
 
 def _run_git(
@@ -351,8 +360,17 @@ def _core_excludes_path(target: Path) -> Path | None:
     return path if path.is_absolute() else target / path
 
 
-def _config_source_paths(target: Path) -> tuple[Path, ...]:
-    """Every file origin used by the effective repository config graph."""
+def _resolve_config_include_path(value: str, origin: Path) -> Path:
+    """Resolve one Git include path relative to its declaring config file."""
+
+    if value.startswith("%("):
+        raise SafetyError(f"unsupported interpolated Git include path: {value!r}")
+    expanded = Path(os.path.expanduser(value))
+    return (expanded if expanded.is_absolute() else origin.parent / expanded).absolute()
+
+
+def _config_source_paths(target: Path) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    """Active file origins and every declared include target, including missing."""
 
     result = _run_git(
         target,
@@ -367,14 +385,38 @@ def _config_source_paths(target: Path) -> tuple[Path, ...]:
     records = result.stdout[:-1].split(b"\0")
     if len(records) % 2:
         raise SafetyError("malformed Git config origin/value pairs")
-    paths: set[Path] = set()
-    for origin_raw in records[::2]:
+    origins: set[Path] = set()
+    includes: set[Path] = set()
+    unconditional_includes: set[Path] = set()
+    for origin_raw, item_raw in zip(records[::2], records[1::2], strict=True):
         if not origin_raw.startswith(b"file:"):
             continue
         text = origin_raw[len(b"file:") :].decode("utf-8", "surrogateescape")
-        path = Path(text)
-        paths.add((path if path.is_absolute() else target / path).absolute())
-    return tuple(sorted(paths, key=lambda path: path.as_posix()))
+        origin = Path(text)
+        origin = (origin if origin.is_absolute() else target / origin).absolute()
+        origins.add(origin)
+        key_raw, separator, value_raw = item_raw.partition(b"\n")
+        if not separator:
+            raise SafetyError("malformed Git config key/value record")
+        key = key_raw.decode("utf-8", "surrogateescape").casefold()
+        is_include = key == "include.path" or (
+            key.startswith("includeif.") and key.endswith(".path")
+        )
+        if is_include:
+            value = value_raw.decode("utf-8", "surrogateescape")
+            include = _resolve_config_include_path(value, origin)
+            includes.add(include)
+            if key == "include.path":
+                unconditional_includes.add(include)
+    # Existing active conditional includes appear as file origins. A missing
+    # conditional target cannot be distinguished from an inactive one without
+    # reimplementing Git's condition language, so its parent directory is the
+    # portable change token; inactive existing targets remain irrelevant.
+    all_sources = origins | unconditional_includes
+    return (
+        tuple(sorted(all_sources, key=lambda path: path.as_posix())),
+        tuple(sorted(includes, key=lambda path: path.as_posix())),
+    )
 
 
 def _config_source_stamp(path: Path) -> _ConfigSourceStamp:
@@ -382,6 +424,9 @@ def _config_source_stamp(path: Path) -> _ConfigSourceStamp:
 
     try:
         before = os.lstat(path)
+    except FileNotFoundError:
+        return _ConfigSourceStamp(path, "missing", None, None, None, None, None, None)
+    try:
         if not stat.S_ISREG(before.st_mode):
             raise SafetyError(f"Git config source is not a regular file: {path}")
         data = read_regular_nofollow(path)
@@ -394,6 +439,7 @@ def _config_source_stamp(path: Path) -> _ConfigSourceStamp:
         raise SafetyError(f"Git config source changed while reading: {path}")
     return _ConfigSourceStamp(
         path,
+        "file",
         hashlib.sha256(data).hexdigest(),
         after.st_dev,
         after.st_ino,
@@ -403,8 +449,31 @@ def _config_source_stamp(path: Path) -> _ConfigSourceStamp:
     )
 
 
-def _config_source_state(target: Path) -> tuple[_ConfigSourceStamp, ...]:
-    return tuple(_config_source_stamp(path) for path in _config_source_paths(target))
+def _nearest_real_parent(path: Path) -> Path:
+    """Nearest existing real directory above a possibly missing include."""
+
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    nearest = current
+    for part in absolute.parent.parts[1:]:
+        current /= part
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            break
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            raise SafetyError(f"non-real ancestor in Git config include: {current}")
+        nearest = current
+    return nearest
+
+
+def _config_source_state(target: Path) -> _ConfigSourceState:
+    sources, includes = _config_source_paths(target)
+    parents = {_nearest_real_parent(path) for path in includes}
+    return _ConfigSourceState(
+        tuple(_config_source_stamp(path) for path in sources),
+        tuple(_node_stamp(path) for path in sorted(parents)),
+    )
 
 
 def _assert_real_ancestors(path: Path) -> bool:

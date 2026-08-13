@@ -281,7 +281,10 @@ def copy_paths(target: Path) -> list[PathEntry]:
             kind = "symlink"
         elif entry.worktree_kind == "file":
             kind = "file"
-        elif entry.index_kind == "gitlink":
+        elif entry.index_kind == "gitlink" and entry.worktree_kind in (
+            "directory",
+            "missing",
+        ):
             kind = "gitlink"
         else:
             kind = "unscannable"
