@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from template_press.rebrand import inventory
+from template_press.rebrand.engine import copy_paths, iter_target_files, scan_paths
 from template_press.rebrand.inventory import (
     SurfaceEntry,
     SurfaceSnapshot,
@@ -24,6 +25,7 @@ from template_press.rebrand.inventory import (
     select_verifier_entries,
     tracked_path_strings,
 )
+from template_press.rebrand.rules import DEFAULT_RULES
 from template_press.rebrand.safety import SafetyError
 
 from .conftest import _git, posix_only, requires_symlink
@@ -266,6 +268,24 @@ def test_ls_files_parser_refuses_unmerged_index_stages() -> None:
         parse_ls_files(raw)
 
 
+@posix_only
+def test_snapshot_preserves_legal_posix_backslash_and_colon_names(
+    src_target: Path,
+) -> None:
+    names = ("a\\b.txt", "a:b.txt")
+    for name in names:
+        (src_target / name).write_text("content\n", encoding="utf-8")
+    _git(src_target, "add", "--", *names)
+    _git(src_target, "commit", "-q", "-m", "add punctuation names")
+
+    entries = _entries(src_target)
+
+    for name in names:
+        assert name in entries
+        assert entries[name].worktree_kind == "file"
+        assert os.fsencode(entries[name].rel.as_posix()) == os.fsencode(name)
+
+
 def test_visibility_inventory_captures_gitignore_info_and_local_core_excludes(
     src_target: Path,
 ) -> None:
@@ -311,6 +331,109 @@ def test_visibility_inventory_resolves_relative_local_core_excludes(
     assert core.path == excludes
     assert core.kind == "file"
     assert "core-hidden.txt" not in {entry.rel.as_posix() for entry in snapshot.entries}
+
+
+def test_visibility_inventory_preserves_whitespace_in_core_excludes_path(
+    src_target: Path,
+) -> None:
+    excludes = src_target / " odd "
+    excludes.write_text("hidden-by-spaces.txt\n", encoding="utf-8")
+    (src_target / "hidden-by-spaces.txt").write_text("hidden\n", encoding="utf-8")
+    _git(src_target, "config", "--local", "core.excludesFile", " odd ")
+
+    snapshot = capture_surface_snapshot(src_target)
+    core = next(
+        item
+        for item in snapshot.visibility_inputs
+        if item.origin == "core_excludes_file"
+    )
+
+    assert core.path == excludes
+    assert core.kind == "file"
+    assert "hidden-by-spaces.txt" not in {
+        entry.rel.as_posix() for entry in snapshot.entries
+    }
+
+
+def test_visibility_inventory_uses_effective_worktree_core_excludes(
+    src_target: Path, tmp_path: Path
+) -> None:
+    _git(src_target, "config", "extensions.worktreeConfig", "true")
+    linked = tmp_path / "linked-with-config"
+    _git(src_target, "worktree", "add", "--detach", str(linked), "HEAD")
+    excludes = linked / "wt-ignore"
+    excludes.write_text("hidden-by-worktree.txt\n", encoding="utf-8")
+    (linked / "hidden-by-worktree.txt").write_text("hidden\n", encoding="utf-8")
+    _git(linked, "config", "--worktree", "core.excludesFile", "wt-ignore")
+
+    snapshot = capture_surface_snapshot(linked)
+    core = next(
+        item
+        for item in snapshot.visibility_inputs
+        if item.origin == "core_excludes_file"
+    )
+
+    assert core.path == excludes
+    assert core.kind == "file"
+    assert "hidden-by-worktree.txt" not in {
+        entry.rel.as_posix() for entry in snapshot.entries
+    }
+
+
+def test_visibility_inventory_uses_core_excludes_from_local_include(
+    src_target: Path,
+) -> None:
+    included = src_target / "included-config"
+    excludes = src_target / "included-ignore"
+    excludes.write_text("hidden-by-include.txt\n", encoding="utf-8")
+    included.write_text(
+        f"[core]\n\texcludesFile = {excludes.as_posix()}\n", encoding="utf-8"
+    )
+    (src_target / "hidden-by-include.txt").write_text("hidden\n", encoding="utf-8")
+    _git(src_target, "config", "--local", "include.path", str(included))
+
+    snapshot = capture_surface_snapshot(src_target)
+    core = next(
+        item
+        for item in snapshot.visibility_inputs
+        if item.origin == "core_excludes_file"
+    )
+
+    assert core.path == excludes
+    assert "hidden-by-include.txt" not in {
+        entry.rel.as_posix() for entry in snapshot.entries
+    }
+
+
+def test_inventory_ignores_ambient_xdg_and_command_scope_excludes(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    xdg = tmp_path / "xdg"
+    (xdg / "git").mkdir(parents=True)
+    ambient_ignore = xdg / "git" / "ignore"
+    ambient_ignore.write_text("ambient-hidden.txt\n", encoding="utf-8")
+    (src_target / "ambient-hidden.txt").write_text(
+        "must stay visible\n", encoding="utf-8"
+    )
+    injected_ignore = tmp_path / "injected-ignore"
+    injected_ignore.write_text("injected-hidden.txt\n", encoding="utf-8")
+    (src_target / "injected-hidden.txt").write_text(
+        "must stay visible\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.excludesFile")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(injected_ignore))
+
+    snapshot = capture_surface_snapshot(src_target)
+    rels = {entry.rel.as_posix() for entry in snapshot.entries}
+
+    assert "ambient-hidden.txt" in rels
+    assert "injected-hidden.txt" in rels
+    assert not any(
+        item.path in {ambient_ignore, injected_ignore}
+        for item in snapshot.visibility_inputs
+    )
 
 
 def test_visibility_inventory_includes_active_self_ignored_gitignore_files(
@@ -418,6 +541,20 @@ def test_visibility_inventory_refuses_core_excludes_beneath_symlink_ancestor(
 
 
 @requires_symlink
+def test_visibility_inventory_refuses_symlink_core_excludes_leaf(
+    src_target: Path,
+) -> None:
+    backing = src_target / "real-excludes"
+    backing.write_text("hidden.txt\n", encoding="utf-8")
+    linked = src_target / "linked-excludes"
+    linked.symlink_to(backing.name)
+    _git(src_target, "config", "--local", "core.excludesFile", linked.name)
+
+    with pytest.raises(SafetyError, match="symbolic link"):
+        capture_surface_snapshot(src_target)
+
+
+@requires_symlink
 def test_visibility_inventory_distinguishes_regular_gitignore_from_symlink(
     src_target: Path,
 ) -> None:
@@ -467,6 +604,91 @@ def test_every_inventory_git_call_uses_target_hardening(
         assert "core.fsmonitor=" in cmd
         assert kwargs["env"]["GIT_CONFIG_GLOBAL"] == os.devnull
         assert kwargs["env"]["GIT_CONFIG_SYSTEM"] == os.devnull
+
+
+def test_capture_refuses_ignore_policy_changed_during_enumeration(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gitignore = src_target / ".gitignore"
+    gitignore.write_text("old-only.txt\n", encoding="utf-8")
+    (src_target / "leak.txt").write_text("visible before change\n", encoding="utf-8")
+    real_run_git = inventory._run_git
+    changed = False
+
+    def mutate_after_listing(target: Path, *args: str, **kwargs):
+        nonlocal changed
+        result = real_run_git(target, *args, **kwargs)
+        if "ls-files" in args and not changed:
+            changed = True
+            gitignore.write_text("leak.txt\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(inventory, "_run_git", mutate_after_listing)
+
+    with pytest.raises(SafetyError, match="visibility changed during capture"):
+        capture_surface_snapshot(src_target)
+
+
+def test_copy_adapter_preserves_listed_missing_entry(src_target: Path) -> None:
+    missing = src_target / "tracked-missing.txt"
+    missing.write_text("tracked\n", encoding="utf-8")
+    _git(src_target, "add", missing.name)
+    _git(src_target, "commit", "-q", "-m", "add tracked missing")
+    missing.unlink()
+
+    entries = {entry.rel.as_posix(): entry.kind for entry in copy_paths(src_target)}
+
+    assert entries[missing.name] == "file"
+
+
+@requires_symlink
+def test_adapters_do_not_follow_symlink_ancestor_outside_target(
+    src_target: Path, tmp_path: Path
+) -> None:
+    tracked = src_target / "ancestor" / "leaf.txt"
+    tracked.parent.mkdir()
+    tracked.write_text("inside\n", encoding="utf-8")
+    _git(src_target, "add", "ancestor/leaf.txt")
+    _git(src_target, "commit", "-q", "-m", "add nested tracked file")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "leaf.txt").write_text("demo_widget outside\n", encoding="utf-8")
+    tracked.unlink()
+    tracked.parent.rmdir()
+    tracked.parent.symlink_to(outside, target_is_directory=True)
+
+    assert tracked not in iter_target_files(src_target, DEFAULT_RULES)
+    selected = {
+        entry.rel.as_posix(): entry.kind
+        for entry in scan_paths(src_target, DEFAULT_RULES)
+    }
+    assert selected["ancestor/leaf.txt"] == "unscannable"
+
+
+def test_visibility_walk_does_not_descend_into_checked_out_gitlink(
+    src_target: Path,
+) -> None:
+    head = subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "rev-parse", "HEAD"],  # noqa: S607
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _git(
+        src_target,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{head},sub",
+    )
+    sub = src_target / "sub"
+    sub.mkdir()
+    inner_ignore = sub / ".gitignore"
+    inner_ignore.write_text("hidden.txt\n", encoding="utf-8")
+
+    snapshot = capture_surface_snapshot(src_target)
+
+    assert inner_ignore not in {item.path for item in snapshot.visibility_inputs}
 
 
 def test_consumer_selectors_keep_their_distinct_contracts(

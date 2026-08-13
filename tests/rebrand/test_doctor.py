@@ -8,7 +8,7 @@ from template_press.rebrand.engine import apply
 from template_press.rebrand.identity import Identity
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, Rules
 
-from .conftest import DEST, SOURCE, requires_symlink
+from .conftest import DEST, SOURCE, posix_only, requires_symlink
 
 
 def _identity(**overrides):
@@ -50,6 +50,24 @@ def test_path_leak_detected(src_target: Path):
     (src_target / "demo_widget_old.txt").write_text("x", encoding="utf-8")
     leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
     assert any(e.where == "path" for e in leaks)
+
+
+@posix_only
+def test_doctor_scans_legal_backslash_filename(src_target: Path):
+    rel = "leak\\name.txt"
+    (src_target / rel).write_text("demo_widget survived\n", encoding="utf-8")
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "--", rel],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+
+    leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+
+    assert any(
+        leak.path == rel and leak.field == "package_name" and leak.where == "content"
+        for leak in leaks
+    )
 
 
 def test_english_press_words_are_not_leaks(src_target: Path):
@@ -159,6 +177,44 @@ def test_symlink_to_file_leak_not_double_reported(src_target: Path):
         if e.path == "link.txt" and e.where == "symlink" and e.field == "package_name"
     ]
     assert len(symlink_hits) == 1
+
+
+@requires_symlink
+def test_doctor_honors_verify_ignore_for_every_symlink_shape(
+    src_target: Path, monkeypatch
+):
+    ignored = src_target / "legacy"
+    ignored.mkdir()
+    (ignored / "file-link").symlink_to("../README.md")
+    (ignored / "dir-link").symlink_to("../src", target_is_directory=True)
+    (ignored / "dangling-link").symlink_to("missing/demo_widget")
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    rules = dataclasses.replace(
+        DEFAULT_RULES,
+        exclude_dirs=DEFAULT_RULES.exclude_dirs | {"legacy"},
+        verify_ignore=frozenset({"legacy"}),
+    )
+    from template_press.rebrand import inventory
+
+    calls = 0
+    real_run = inventory.subprocess.run
+
+    def spy(cmd, *args, **kwargs):
+        nonlocal calls
+        if "ls-files" in cmd:
+            calls += 1
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(inventory.subprocess, "run", spy)
+
+    leaks = find_leaks(src_target, SOURCE, rules)
+
+    assert not any(leak.path.startswith("legacy/") for leak in leaks)
+    assert calls == 1
 
 
 @requires_symlink
