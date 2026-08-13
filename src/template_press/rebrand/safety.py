@@ -293,6 +293,7 @@ def _read_regular_checked_path(path: Path) -> bytes:
     never makes returned bytes describe a different leaf.
     """
 
+    _assert_absolute_ancestors_real(path)
     before = os.lstat(path)
     if not stat.S_ISREG(before.st_mode):
         raise SafetyError(f"no-follow read source is not regular: {path}")
@@ -300,12 +301,24 @@ def _read_regular_checked_path(path: Path) -> bytes:
     descriptor = os.open(path, flags)
     try:
         opened = os.fstat(descriptor)
+        _assert_absolute_ancestors_real(path)
         after = os.lstat(path)
         if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(opened, after):
             raise SafetyError(f"read source changed while opening: {path}")
         return _read_descriptor(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _assert_absolute_ancestors_real(path: Path) -> None:
+    """Refuse a symlink or non-directory in an absolute path's ancestors."""
+
+    current = Path(path.anchor)
+    for part in path.parts[1:-1]:
+        current /= part
+        info = os.lstat(current)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise SafetyError(f"non-real ancestor in read source: {current}")
 
 
 def read_regular_nofollow(path: Path) -> bytes:
