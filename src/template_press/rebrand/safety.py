@@ -59,6 +59,7 @@ __all__ = [
     "is_regular_lstat",
     "owned_sandbox",
     "read_regular_nofollow",
+    "readlink_nofollow",
     "refuse_unsafe_root",
     "safe_mkdir",
     "safe_rename",
@@ -259,6 +260,25 @@ def _read_descriptor(descriptor: int) -> bytes:
     return bytes(data)
 
 
+def _lstat_absolute_nofollow(path: Path) -> os.stat_result:
+    """Fresh literal stat through no-follow directory descriptors."""
+
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    directory_flags = flags | os.O_DIRECTORY
+    parts = path.parts
+    if len(parts) < 2:
+        raise SafetyError(f"no-follow stat requires a leaf path: {path}")
+    parent_fd = os.open(path.anchor, directory_flags)
+    try:
+        for part in parts[1:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = next_fd
+        return os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+    finally:
+        os.close(parent_fd)
+
+
 def _read_regular_openat(path: Path) -> bytes:
     """Read an absolute POSIX path through no-follow directory descriptors."""
 
@@ -278,7 +298,16 @@ def _read_regular_openat(path: Path) -> bytes:
             opened = os.fstat(descriptor)
             if not stat.S_ISREG(opened.st_mode):
                 raise SafetyError(f"no-follow read source is not regular: {path}")
-            return _read_descriptor(descriptor)
+            data = _read_descriptor(descriptor)
+            try:
+                current = _lstat_absolute_nofollow(path)
+            except OSError as exc:
+                raise SafetyError(f"read source changed while reading: {path}") from exc
+            if not stat.S_ISREG(current.st_mode) or not os.path.samestat(
+                opened, current
+            ):
+                raise SafetyError(f"read source changed while reading: {path}")
+            return data
         finally:
             os.close(descriptor)
     finally:
@@ -288,9 +317,8 @@ def _read_regular_openat(path: Path) -> bytes:
 def _read_regular_checked_path(path: Path) -> bytes:
     """Fallback for platforms without descriptor-relative ``open`` support.
 
-    The handle is validated against a fresh literal ``lstat`` before bytes
-    are consumed. A concurrent pathname change can make the read refuse, but
-    never makes returned bytes describe a different leaf.
+    The handle is validated against a fresh literal ``lstat`` after bytes are
+    consumed. A concurrent pathname change makes the read refuse.
     """
 
     _assert_absolute_ancestors_real(path)
@@ -301,11 +329,12 @@ def _read_regular_checked_path(path: Path) -> bytes:
     descriptor = os.open(path, flags)
     try:
         opened = os.fstat(descriptor)
+        data = _read_descriptor(descriptor)
         _assert_absolute_ancestors_real(path)
         after = os.lstat(path)
         if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(opened, after):
-            raise SafetyError(f"read source changed while opening: {path}")
-        return _read_descriptor(descriptor)
+            raise SafetyError(f"read source changed while reading: {path}")
+        return data
     finally:
         os.close(descriptor)
 
@@ -339,6 +368,66 @@ def read_regular_nofollow(path: Path) -> bytes:
     ):
         return _read_regular_openat(absolute)
     return _read_regular_checked_path(absolute)
+
+
+def _readlink_openat(path: Path) -> str:
+    """Read one POSIX symlink through a no-follow parent descriptor."""
+
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    directory_flags = flags | os.O_DIRECTORY
+    parts = path.parts
+    if len(parts) < 2:
+        raise SafetyError(f"no-follow readlink requires a leaf path: {path}")
+    parent_fd = os.open(path.anchor, directory_flags)
+    try:
+        for part in parts[1:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = next_fd
+        before = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISLNK(before.st_mode):
+            raise SafetyError(f"no-follow readlink source is not a symlink: {path}")
+        link = os.readlink(parts[-1], dir_fd=parent_fd)
+        try:
+            current = _lstat_absolute_nofollow(path)
+        except OSError as exc:
+            raise SafetyError(f"readlink source changed while reading: {path}") from exc
+        if not stat.S_ISLNK(current.st_mode) or not os.path.samestat(before, current):
+            raise SafetyError(f"readlink source changed while reading: {path}")
+        return link
+    finally:
+        os.close(parent_fd)
+
+
+def _readlink_checked_path(path: Path) -> str:
+    """Checked fallback for platforms without descriptor-relative readlink."""
+
+    _assert_absolute_ancestors_real(path)
+    before = os.lstat(path)
+    if not stat.S_ISLNK(before.st_mode):
+        raise SafetyError(f"no-follow readlink source is not a symlink: {path}")
+    link = os.readlink(path)
+    _assert_absolute_ancestors_real(path)
+    after = os.lstat(path)
+    if not stat.S_ISLNK(after.st_mode) or not os.path.samestat(before, after):
+        raise SafetyError(f"readlink source changed while reading: {path}")
+    return link
+
+
+def readlink_nofollow(path: Path) -> str:
+    """Read one symlink string without following its leaf or ancestors."""
+
+    absolute = path.absolute()
+    if (
+        os.name != "nt"
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+        and os.open in os.supports_dir_fd
+        and os.readlink in os.supports_dir_fd
+        and os.stat in os.supports_follow_symlinks
+    ):
+        return _readlink_openat(absolute)
+    return _readlink_checked_path(absolute)
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:

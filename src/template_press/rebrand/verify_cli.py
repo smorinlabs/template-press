@@ -36,7 +36,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
-import os
 import subprocess  # nosec B404 — re-stages the OWNED sandbox git index only
 import sys
 import tomllib
@@ -62,6 +61,8 @@ from template_press.rebrand.safety import (
     git_hardening_args,
     is_regular_lstat,
     owned_sandbox,
+    read_regular_nofollow,
+    readlink_nofollow,
     safe_write,
     scrubbed_git_env,
 )
@@ -135,8 +136,8 @@ def _target_text_corpus(target: Path, rules: Rules) -> list[str]:
         path = target / entry.rel
         if entry.kind == "symlink":
             try:
-                corpus.append(os.readlink(path))
-            except OSError:
+                corpus.append(readlink_nofollow(path))
+            except (OSError, SafetyError):
                 continue
         elif entry.kind == "file" and is_regular_lstat(path):
             try:
@@ -144,8 +145,8 @@ def _target_text_corpus(target: Path, rules: Rules) -> list[str]:
                 # here, which only makes a value HARDER to confirm present —
                 # the presence check fails CLOSED to exit 2 (unverifiable), so
                 # a skipped binary can never cause a false CLEAN.
-                corpus.append(path.read_bytes().decode("utf-8"))
-            except (OSError, UnicodeDecodeError):
+                corpus.append(read_regular_nofollow(path).decode("utf-8"))
+            except (OSError, SafetyError, UnicodeDecodeError):
                 continue
     return corpus
 

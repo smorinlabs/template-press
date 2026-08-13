@@ -8,7 +8,6 @@ no receipt. Port of init_doctor.check_no_identity_leftover, generalized to
 
 from __future__ import annotations
 
-import os
 from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +37,7 @@ from template_press.rebrand.safety import (
     SafetyError,
     assert_ancestors_real,
     read_regular_nofollow,
+    readlink_nofollow,
 )
 
 PATH_FIELDS: tuple[str, ...] = (
@@ -228,12 +228,9 @@ def find_leaks(
             leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
             continue
         if entry.worktree_kind == "symlink":
-            if not path.is_symlink():
-                leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
-                continue
             try:
-                link = os.readlink(path)
-            except OSError:
+                link = readlink_nofollow(path)
+            except (OSError, SafetyError):
                 leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
                 continue
             for field_name, value in fields.items():

@@ -33,10 +33,11 @@ from pathlib import Path
 from template_press.rebrand.config import assert_control_real
 from template_press.rebrand.engine import copy_paths
 from template_press.rebrand.safety import (
+    SafetyError,
     assert_ancestors_real,
     git_hardening_args,
-    is_regular_lstat,
     read_regular_nofollow,
+    readlink_nofollow,
     refuse_unsafe_root,
     safe_mkdir,
     safe_write,
@@ -119,15 +120,13 @@ def make_sandbox(target: Path, dest_root: Path) -> Sandbox:
         if rel.parent != Path("."):
             safe_mkdir(sandbox, rel.parent)
         if entry.kind == "file":
-            # Never follow: only an lstat-regular file is copied as bytes.
-            if not is_regular_lstat(src):
-                continue
+            # The descriptor reader refuses a changed or non-regular source.
             safe_write(sandbox, rel, read_regular_nofollow(src))
             added.append(rel.as_posix())
         elif entry.kind == "symlink":
             # Recreate VERBATIM: do not follow and do not rewrite the target
             # (rewriting is apply's job; scanning never follows).
-            link = os.readlink(src)
+            link = readlink_nofollow(src)
             assert_ancestors_real(dest, sandbox)
             os.symlink(link, dest)
             added.append(rel.as_posix())
@@ -138,6 +137,8 @@ def make_sandbox(target: Path, dest_root: Path) -> Sandbox:
             safe_write(sandbox, rel / _SUBMODULE_PLACEHOLDER, b"")
             added.append(rel.as_posix())
             unavailable.append(rel.as_posix())
+        else:
+            raise SafetyError(f"cannot materialize worktree node: {rel.as_posix()}")
 
     # 4. Sandbox git — ALL ops `git -C <sandbox>`, scrubbed + hardened +
     #    synthetic identity; the add list is fed on STDIN (ARG_MAX-safe).

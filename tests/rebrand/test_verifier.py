@@ -386,7 +386,7 @@ def test_symlink_readlink_oserror_is_unscannable(src_target: Path, monkeypatch):
     def _boom(_path, *a, **k):
         raise OSError("stale symlink")
 
-    monkeypatch.setattr(verifier_mod.os, "readlink", _boom)
+    monkeypatch.setattr(verifier_mod, "readlink_nofollow", _boom)
 
     findings = scan(
         src_target,

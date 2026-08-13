@@ -45,6 +45,7 @@ from template_press.rebrand.safety import (
     assert_under_root,
     chmod_nofollow,
     read_regular_nofollow,
+    readlink_nofollow,
     safe_write,
 )
 
@@ -260,14 +261,15 @@ def _rename_candidates(target: Path, rules: Rules) -> list[Path]:
 
 
 def copy_paths(target: Path) -> list[PathEntry]:
-    """Materializable Git-listed files/links plus opaque gitlink placeholders.
+    """Present Git-listed nodes plus opaque gitlink placeholders.
 
     RETAINS symlinks and gitlinks — never filters on ``is_file()``, which
     would drop a symlink-to-dir/dangling symlink and hide gitlinks. ``kind``
     is determined without following links: a gitlink is detected via the
     index mode (``_gitlink_rels``); otherwise an ``lstat``-based
-    ``is_symlink()`` check on the (possibly not-checked-out) path decides
-    "symlink" vs "file". Sorted, deterministic.
+    snapshot kind decides ``file``/``symlink``/``gitlink``/``unscannable``.
+    Sorted, deterministic. The sandbox refuses ``unscannable`` rather than
+    silently certifying an incomplete copy.
     """
     entries: list[PathEntry] = []
     snapshot = capture_surface_snapshot(target)
@@ -281,8 +283,8 @@ def copy_paths(target: Path) -> list[PathEntry]:
             kind = "file"
         elif entry.index_kind == "gitlink":
             kind = "gitlink"
-        else:  # selector guarantees a materializable regular file
-            kind = "file"
+        else:
+            kind = "unscannable"
         entries.append(PathEntry(rel, kind))
     return sorted(entries, key=lambda e: e.rel.as_posix())
 
@@ -611,7 +613,7 @@ def symlink_target_posix(rel: Path, link: str) -> str:
 def _read_text(path: Path) -> str | None:
     try:
         return read_regular_nofollow(path).decode("utf-8")
-    except (UnicodeDecodeError, OSError, SafetyError):
+    except (UnicodeDecodeError, OSError):
         return None  # binary or unreadable — never a rewrite candidate
 
 
@@ -900,11 +902,13 @@ def _retarget_symlinks(
     cands = {
         p.relative_to(target).as_posix() for p in _rename_candidates(target, rules)
     }
-    for rel in _git_listed(target):
-        path = target / rel
-        if not path.is_symlink():
+    snapshot = capture_surface_snapshot(target)
+    for entry in snapshot.entries:
+        if entry.worktree_kind != "symlink":
             continue
-        link = os.readlink(path)
+        rel = entry.rel
+        path = target / rel
+        link = readlink_nofollow(path)
         if os.path.isabs(link):
             continue  # never rewrite or follow an absolute target
         new_link = link

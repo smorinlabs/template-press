@@ -114,6 +114,31 @@ def test_present_unmaterializable_node_refuses_sandbox(tmp_path: Path) -> None:
         make_sandbox(target, _dest_root(tmp_path))
 
 
+def test_file_changed_to_directory_after_copy_inventory_refuses_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import template_press.rebrand.sandbox as sandbox_mod
+
+    target = make_target(tmp_path)
+    source = target / "source.txt"
+    source.write_text("tracked file\n", encoding="utf-8")
+    _git(target, "add", source.name)
+    _git(target, "commit", "-q", "-m", "add source")
+    displaced = target / "displaced.txt"
+    real_copy_paths = sandbox_mod.copy_paths
+
+    def capture_then_replace(repo: Path):
+        entries = real_copy_paths(repo)
+        source.rename(displaced)
+        source.mkdir()
+        return entries
+
+    monkeypatch.setattr(sandbox_mod, "copy_paths", capture_then_replace)
+
+    with pytest.raises(SafetyError, match="not regular"):
+        make_sandbox(target, _dest_root(tmp_path))
+
+
 @posix_only
 def test_sandbox_preserves_legal_posix_punctuation_names(tmp_path: Path) -> None:
     target = make_target(tmp_path)

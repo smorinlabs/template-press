@@ -21,6 +21,7 @@ from template_press.rebrand.safety import (
     UnsafePathError,
     git_hardening_args,
     read_regular_nofollow,
+    readlink_nofollow,
     scrubbed_git_env,
 )
 
@@ -101,10 +102,6 @@ def _run_git(
     core_excludes: Path | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     command = ["git", "-C", str(target), *git_hardening_args()]
-    # Make ignore matching deterministic across repository config and
-    # platforms. A target cannot change the authorized surface by toggling
-    # core.ignoreCase between planning and mutation.
-    command.extend(["-c", "core.ignoreCase=false"])
     if pin_core_excludes:
         command.extend(["-c", f"core.excludesFile={core_excludes or Path(os.devnull)}"])
     command.extend(args)
@@ -443,7 +440,7 @@ def _fingerprint_visibility(origin: VisibilityOrigin, path: Path) -> VisibilityI
             raise SafetyError(
                 f"Git {origin} visibility input is a symbolic link: {path}"
             )
-        return VisibilityInput(origin, path, "symlink", None, os.readlink(path))
+        return VisibilityInput(origin, path, "symlink", None, readlink_nofollow(path))
     if stat.S_ISDIR(mode):
         return VisibilityInput(origin, path, "directory", None, None)
     if not stat.S_ISREG(mode):
@@ -609,12 +606,12 @@ def _excluded(
 
 
 def select_copy_entries(snapshot: SurfaceSnapshot) -> tuple[SurfaceEntry, ...]:
-    """Materializable sandbox entries plus every gitlink placeholder."""
+    """Every present worktree entry plus every gitlink placeholder."""
 
     return tuple(
         entry
         for entry in snapshot.entries
-        if entry.index_kind == "gitlink" or entry.worktree_kind in ("file", "symlink")
+        if entry.index_kind == "gitlink" or entry.worktree_kind != "missing"
     )
 
 

@@ -563,22 +563,20 @@ def test_readlink_refuses_ancestor_replaced_during_read(
     outside.mkdir()
     (outside / "link").symlink_to("demo_widget-target")
     displaced = tmp_path / "displaced"
-    real_readlink = os.readlink
+    real_lstat = safety._lstat_absolute_nofollow
     swapped = False
 
-    def swap_ancestor_during_readlink(
-        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
-        *,
-        dir_fd: int | None = None,
-    ) -> str | bytes:
+    def swap_ancestor_before_revalidation(path: Path) -> os.stat_result:
         nonlocal swapped
         if not swapped:
             inside.rename(displaced)
             inside.symlink_to(outside, target_is_directory=True)
             swapped = True
-        return real_readlink(path, dir_fd=dir_fd)
+        return real_lstat(path)
 
-    monkeypatch.setattr(safety.os, "readlink", swap_ancestor_during_readlink)
+    monkeypatch.setattr(
+        safety, "_lstat_absolute_nofollow", swap_ancestor_before_revalidation
+    )
 
     with pytest.raises(SafetyError, match="changed while reading"):
         safety.readlink_nofollow(link)

@@ -31,7 +31,6 @@ scanned. Raw findings only — no ignoring, no deduping (Task 8's job); no
 
 from __future__ import annotations
 
-import os
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +49,7 @@ from template_press.rebrand.safety import (
     assert_ancestors_real,
     is_regular_lstat,
     read_regular_nofollow,
+    readlink_nofollow,
 )
 
 
@@ -181,8 +181,7 @@ def _scan_symlink(
     it is) is irrelevant to this scan.
     """
     try:
-        assert_ancestors_real(target / rel, target)
-        link = os.readlink(target / rel)
+        link = readlink_nofollow(target / rel)
     except (OSError, SafetyError):
         # `scan_paths` tagged this entry "symlink" from an earlier lstat that
         # may be stale by now (TOCTOU), or a transient I/O error prevents the
