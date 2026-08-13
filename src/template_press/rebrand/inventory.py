@@ -394,7 +394,12 @@ def _active_gitignore_paths(
             marker_path_key = os.path.normcase(os.fspath(marker_path))
             discovered_marker = os.path.lexists(marker_path)
             if discovered_marker:
-                marker_info = os.lstat(marker_path)
+                try:
+                    marker_info = os.lstat(marker_path)
+                except OSError as exc:
+                    raise SafetyError(
+                        f"cannot inventory Git marker {marker_path}: {exc}"
+                    ) from exc
                 if stat.S_ISDIR(marker_info.st_mode):
                     marker_node = (marker_info.st_dev, marker_info.st_ino)
             try:

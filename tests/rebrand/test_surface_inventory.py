@@ -1346,6 +1346,33 @@ def test_visibility_walk_refuses_directory_changed_after_pending_probe(
         capture_surface_snapshot(src_target)
 
 
+def test_visibility_walk_normalizes_marker_disappearance(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = src_target / ".git"
+    real_lexists = os.path.lexists
+    real_lstat = os.lstat
+    marker_was_probed = False
+
+    def probe_marker(path: os.PathLike[str] | str) -> bool:
+        nonlocal marker_was_probed
+        exists = real_lexists(path)
+        if Path(path) == marker:
+            marker_was_probed = True
+        return exists
+
+    def disappear_after_probe(path: os.PathLike[str] | str) -> os.stat_result:
+        if Path(path) == marker and marker_was_probed:
+            raise FileNotFoundError(marker)
+        return real_lstat(path)
+
+    monkeypatch.setattr(os.path, "lexists", probe_marker)
+    monkeypatch.setattr(os, "lstat", disappear_after_probe)
+
+    with pytest.raises(SafetyError, match="cannot inventory Git marker"):
+        inventory._active_gitignore_paths(src_target, (), None)
+
+
 @requires_symlink
 def test_visibility_walk_refuses_queued_child_after_ancestor_swap(
     src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
