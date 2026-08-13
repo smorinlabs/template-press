@@ -126,7 +126,13 @@ def _run_git(
     pin_core_excludes: bool = False,
     core_excludes: Path | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    command = ["git", "-C", str(target), *git_hardening_args()]
+    command = [
+        "git",
+        "-C",
+        str(target),
+        f"--work-tree={target.absolute()}",
+        *git_hardening_args(),
+    ]
     if pin_core_excludes:
         command.extend(["-c", f"core.excludesFile={core_excludes or Path(os.devnull)}"])
     command.extend(args)
@@ -273,6 +279,63 @@ def _ignored_directories(
     }
 
 
+def _is_git_metadata_directory(
+    *,
+    child_name: str,
+    child_path_key: str,
+    child_node: tuple[int, int],
+    marker_path_key: str,
+    marker_node: tuple[int, int] | None,
+    windows: bool | None = None,
+) -> bool:
+    """Match Git metadata using only reliable identity facts per platform."""
+
+    if child_name == ".git":
+        return True
+    is_windows = os.name == "nt" if windows is None else windows
+    if is_windows:
+        return child_path_key == marker_path_key
+    return marker_node is not None and child_node == marker_node
+
+
+def _real_directory_chain(target: Path, rel_dir: Path) -> tuple[_NodeStamp, ...]:
+    """Fingerprint every real directory from ``target`` through ``rel_dir``."""
+
+    paths = [target]
+    current = target
+    if rel_dir != Path("."):
+        for part in rel_dir.parts:
+            current /= part
+            paths.append(current)
+    stamps: list[_NodeStamp] = []
+    for path in paths:
+        if os.path.isjunction(path):
+            raise SafetyError(f"cannot inventory Git ignore directory junction: {path}")
+        try:
+            info = os.lstat(path)
+        except OSError as exc:
+            raise SafetyError(
+                f"cannot inventory Git ignore directory {path}: {exc}"
+            ) from exc
+        if not stat.S_ISDIR(info.st_mode):
+            raise SafetyError(
+                f"cannot inventory Git ignore directory {path}: "
+                "node is no longer a real directory"
+            )
+        stamps.append(
+            _NodeStamp(
+                path,
+                "directory",
+                info.st_dev,
+                info.st_ino,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
+            )
+        )
+    return tuple(stamps)
+
+
 def _active_gitignore_paths(
     target: Path,
     entries: tuple[SurfaceEntry, ...],
@@ -323,23 +386,17 @@ def _active_gitignore_paths(
         children: list[Path] = []
         for rel_dir in pending:
             directory = target if rel_dir == Path(".") else target / rel_dir
-            try:
-                directory_mode = os.lstat(directory).st_mode
-            except OSError as exc:
-                raise SafetyError(
-                    f"cannot inventory Git ignore directory {directory}: {exc}"
-                ) from exc
-            if not stat.S_ISDIR(directory_mode):
-                raise SafetyError(
-                    f"cannot inventory Git ignore directory {directory}: "
-                    "node is no longer a real directory"
-                )
+            chain_before = _real_directory_chain(target, rel_dir)
             ignore_path = directory / ".gitignore"
-            if os.path.lexists(ignore_path):
-                found.add(ignore_path)
+            discovered_ignore = os.path.lexists(ignore_path)
             marker_path = directory / ".git"
-            if os.path.lexists(marker_path):
-                repository_markers.add(marker_path)
+            marker_node: tuple[int, int] | None = None
+            marker_path_key = os.path.normcase(os.fspath(marker_path))
+            discovered_marker = os.path.lexists(marker_path)
+            if discovered_marker:
+                marker_info = os.lstat(marker_path)
+                if stat.S_ISDIR(marker_info.st_mode):
+                    marker_node = (marker_info.st_dev, marker_info.st_ino)
             try:
                 scandir_entries = list(os.scandir(directory))
             except OSError as exc:
@@ -347,12 +404,31 @@ def _active_gitignore_paths(
                     f"cannot inventory Git ignore directory {directory}: {exc}"
                 ) from exc
             for child in scandir_entries:
-                if child.name == ".git" or not child.is_dir(follow_symlinks=False):
+                if not child.is_dir(follow_symlinks=False):
                     continue
+                child_info = child.stat(follow_symlinks=False)
+                child_node = (child_info.st_dev, child_info.st_ino)
+                child_path_key = os.path.normcase(child.path)
+                # On a case-insensitive filesystem, scandir may preserve an
+                # administrative directory's non-canonical spelling. Match
+                # the literal ``.git`` lookup by node identity so the walk
+                # never enters repository metadata under any stored casing.
+                is_metadata = _is_git_metadata_directory(
+                    child_name=child.name,
+                    child_path_key=child_path_key,
+                    child_node=child_node,
+                    marker_path_key=marker_path_key,
+                    marker_node=marker_node,
+                )
+                if is_metadata:
+                    continue
+                if os.path.isjunction(child.path):
+                    raise SafetyError(
+                        f"cannot inventory Git ignore directory junction: {child.path}"
+                    )
                 child_rel = (
                     Path(child.name) if rel_dir == Path(".") else rel_dir / child.name
                 )
-                child_info = child.stat(follow_symlinks=False)
                 child_path_key = os.path.normcase(os.fspath(target / child_rel))
                 if (
                     child_info.st_dev,
@@ -360,6 +436,15 @@ def _active_gitignore_paths(
                 ) in opaque_nodes or child_path_key in opaque_paths:
                     continue
                 children.append(child_rel)
+            chain_after = _real_directory_chain(target, rel_dir)
+            if chain_before != chain_after:
+                raise SafetyError(
+                    f"Git ignore directory changed during inventory: {directory}"
+                )
+            if discovered_ignore:
+                found.add(ignore_path)
+            if discovered_marker:
+                repository_markers.add(marker_path)
         ignored = _ignored_directories(target, children, core_excludes)
         pending = []
         for child in sorted(children, key=lambda path: path.as_posix()):
@@ -915,8 +1000,7 @@ def select_content_rewrite_entries(
     return tuple(
         entry
         for entry in snapshot.entries
-        if entry.index_kind != "gitlink"
-        and entry.worktree_kind == "file"
+        if entry.worktree_kind == "file"
         and not _excluded(
             entry,
             exclude_files=exclude_files,

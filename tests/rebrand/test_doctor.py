@@ -668,7 +668,7 @@ class TestGitlinkLeaks:
         leaks = find_leaks(src_target, src, DEFAULT_RULES)
         assert not any(lk.path == "vendor_lib" for lk in leaks)
 
-    def test_dirty_gitlink_replaced_by_file_is_unverifiable(self, src_target: Path):
+    def test_dirty_gitlink_replaced_by_file_is_scanned(self, src_target: Path):
         self._add_gitlink(src_target, "sub")
         dirty = src_target / "sub"
         dirty.write_text("demo_widget survives\n", encoding="utf-8")
@@ -676,8 +676,28 @@ class TestGitlinkLeaks:
         leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
 
         assert any(
-            leak.path == "sub" and leak.where == "unverifiable" for leak in leaks
+            leak.path == "sub"
+            and leak.field == "package_name"
+            and leak.where == "content"
+            for leak in leaks
         )
+
+    def test_clean_dirty_gitlink_file_replacement_is_not_a_leak(self, src_target: Path):
+        self._add_gitlink(src_target, "sub")
+        (src_target / "sub").write_text("clean replacement\n", encoding="utf-8")
+
+        leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+
+        assert not any(leak.path == "sub" for leak in leaks)
+
+    def test_apply_rewrites_dirty_gitlink_file_replacement(self, src_target: Path):
+        self._add_gitlink(src_target, "sub")
+        dirty = src_target / "sub"
+        dirty.write_text("demo_widget survives\n", encoding="utf-8")
+
+        apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+        assert dirty.read_text(encoding="utf-8") == "potato_launcher survives\n"
 
 
 @requires_symlink

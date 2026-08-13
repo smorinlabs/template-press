@@ -218,9 +218,13 @@ def find_leaks(
             for _rule, frm in path_rules:
                 if frm in component:
                     leaks.append(Leak(rel_posix, "replace_rule", frm, "path"))
-        if entry.index_kind == "gitlink":
-            if entry.worktree_kind not in ("directory", "missing"):
-                leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
+        if entry.index_kind == "gitlink" and entry.worktree_kind in (
+            "directory",
+            "missing",
+        ):
+            continue
+        if entry.worktree_kind == "other":
+            leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
             continue
         try:
             assert_ancestors_real(path, target)

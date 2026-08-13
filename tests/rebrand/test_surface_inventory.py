@@ -940,6 +940,25 @@ def test_inventory_preserves_effective_case_insensitive_ignore_matching(
     assert "foo" not in rels
 
 
+def test_inventory_pins_requested_target_over_configured_core_worktree(
+    src_target: Path, tmp_path: Path
+) -> None:
+    external = tmp_path / "external-worktree"
+    external.mkdir()
+    (external / "external-only.txt").write_text("outside\n", encoding="utf-8")
+    (src_target / "target-only.txt").write_text("inside\n", encoding="utf-8")
+    _git(src_target, "config", "--local", "core.worktree", str(external))
+
+    snapshot = capture_surface_snapshot(src_target)
+    rels = {entry.rel.as_posix() for entry in snapshot.entries}
+
+    assert "target-only.txt" in rels
+    assert "external-only.txt" not in rels
+    assert src_target / ".gitignore" in {
+        item.path for item in snapshot.visibility_inputs
+    }
+
+
 def test_capture_refuses_repeated_core_excludes_config_transition(
     src_target: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1265,6 +1284,135 @@ def test_visibility_walk_does_not_descend_into_checked_out_gitlink(
     inner_ignore.write_text("hidden.txt\n", encoding="utf-8")
 
     snapshot = capture_surface_snapshot(src_target)
+
+    assert inner_ignore not in {item.path for item in snapshot.visibility_inputs}
+
+
+def test_visibility_walk_refuses_directory_junction(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    junction = src_target / "junction"
+    junction.mkdir()
+    real_isjunction = os.path.isjunction
+
+    def fake_isjunction(path: os.PathLike[str] | str) -> bool:
+        return Path(path) == junction or real_isjunction(path)
+
+    monkeypatch.setattr(os.path, "isjunction", fake_isjunction)
+
+    with pytest.raises(SafetyError, match="junction"):
+        capture_surface_snapshot(src_target)
+
+
+def test_visibility_walk_refuses_directory_changed_to_junction(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    junction = src_target / "junction"
+    junction.mkdir()
+    real_isjunction = os.path.isjunction
+    probes = 0
+
+    def changing_isjunction(path: os.PathLike[str] | str) -> bool:
+        nonlocal probes
+        if Path(path) == junction:
+            probes += 1
+            return probes >= 2
+        return real_isjunction(path)
+
+    monkeypatch.setattr(os.path, "isjunction", changing_isjunction)
+
+    with pytest.raises(SafetyError, match="junction"):
+        capture_surface_snapshot(src_target)
+
+
+def test_visibility_walk_refuses_directory_changed_after_pending_probe(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    junction = src_target / "junction"
+    junction.mkdir()
+    real_isjunction = os.path.isjunction
+    probes = 0
+
+    def changing_isjunction(path: os.PathLike[str] | str) -> bool:
+        nonlocal probes
+        if Path(path) == junction:
+            probes += 1
+            return probes >= 3
+        return real_isjunction(path)
+
+    monkeypatch.setattr(os.path, "isjunction", changing_isjunction)
+
+    with pytest.raises(SafetyError, match="junction"):
+        capture_surface_snapshot(src_target)
+
+
+@requires_symlink
+def test_visibility_walk_refuses_queued_child_after_ancestor_swap(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = src_target / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside_child = outside / "child"
+    outside_child.mkdir(parents=True)
+    (outside_child / ".gitignore").write_text("hidden.txt\n", encoding="utf-8")
+    original = src_target / "parent-original"
+    real_ignored = inventory._ignored_directories
+    swapped = False
+
+    def swap_queued_ancestor(
+        target: Path, rels: list[Path], core_excludes: Path | None
+    ) -> set[str]:
+        nonlocal swapped
+        result = real_ignored(target, rels, core_excludes)
+        if Path("parent/child") in rels and not swapped:
+            swapped = True
+            parent.rename(original)
+            parent.symlink_to(outside, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(inventory, "_ignored_directories", swap_queued_ancestor)
+
+    with pytest.raises(SafetyError, match="parent"):
+        capture_surface_snapshot(src_target)
+
+
+def test_windows_metadata_pruning_ignores_unreliable_inode_equality(
+    src_target: Path,
+) -> None:
+    marker_info = os.lstat(src_target / ".git")
+    marker_node = (marker_info.st_dev, marker_info.st_ino)
+
+    assert not inventory._is_git_metadata_directory(
+        child_name="ordinary",
+        child_path_key=os.path.normcase(str(src_target / "ordinary")),
+        child_node=marker_node,
+        marker_path_key=os.path.normcase(str(src_target / ".git")),
+        marker_node=marker_node,
+        windows=True,
+    )
+
+
+def test_visibility_walk_skips_case_variant_git_metadata(
+    src_target: Path,
+) -> None:
+    canonical = src_target / ".git"
+    variant = src_target / ".GIT"
+    canonical.rename(variant)
+    if not canonical.exists():
+        variant.rename(canonical)
+        pytest.skip("requires a case-insensitive worktree")
+    probe = variant / "probe"
+    probe.mkdir()
+    inner_ignore = probe / ".gitignore"
+    inner_ignore.write_text("external.txt\n", encoding="utf-8")
+    try:
+        snapshot = capture_surface_snapshot(src_target)
+    finally:
+        inner_ignore.unlink()
+        probe.rmdir()
+        variant.rename(canonical)
 
     assert inner_ignore not in {item.path for item in snapshot.visibility_inputs}
 
