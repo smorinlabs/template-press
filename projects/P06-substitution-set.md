@@ -157,3 +157,49 @@ of being silently redirected.
       `SurfaceSnapshot`: tracked and untracked files, ignored paths, symlinks,
       gitlinks, non-UTF-8 path bytes, tracked deletions, file-to-directory
       replacements, and regular-versus-symlink Git visibility inputs.
+- [ ] [P06-T02] Implement `inventory.py` with `SurfaceEntry`,
+      `VisibilityInput`, and `SurfaceSnapshot`; make one hardened Git-backed
+      capture pass the TS01 contract; delegate the five existing walker APIs
+      to selectors over that snapshot; remove duplicate Git enumeration while
+      preserving every consumer's distinct exclusions.
+- [ ] [P06-T03] PR 1 gate: run the focused inventory and compatibility tests,
+      `just check`, and `just matrix`; perform an adversarial architecture and
+      defect review against design 0009, fix every reproduced in-scope defect,
+      and rerun all gates before advancing.
+- [ ] [P06-TS04] Failing validator tests: same-source ambiguity, ordered
+      content dependencies, stale-source emission, path dependencies and
+      cycles across passes, path-component structural safety, shared-prefix
+      conflicts, provenance-rich errors, and issue #45's sole intentional
+      relaxation for demonstrably disjoint content scopes.
+- [ ] [P06-T05] Implement one pure pipeline-stability validator and replace the
+      five accreted guards with it; preserve every existing stable output and
+      refusal except issue #45's approved relaxation.
+- [ ] [P06-T06] PR 2 gate: run the focused validator and compatibility tests,
+      `just check`, and `just matrix`; perform an adversarial architecture and
+      defect review against design 0009, fix every reproduced in-scope defect,
+      and rerun all gates before advancing.
+- [ ] [P06-TS07] Failing table/compiler tests: field-aware matcher specs,
+      ordered provenance, compatible-row normalization, consumer-specific hunt
+      policies, exact declared-rule matching, substring-aware paranoid hunts,
+      fixed-point rename steps, virtual dangling-link translations, and
+      source/current scope coordinates.
+- [ ] [P06-T08] Implement `substitutions.py`, compile the immutable
+      `SubstitutionTable` and target-specific `RenamePlan`, and make planning,
+      application, path translation, and symlink retargeting consume the one
+      ordered plan with predecessor gating.
+- [ ] [P06-TS09] Failing integration and architecture tests: table-derived
+      doctor/reset/regeneration hunts; visibility-input mutation projection and
+      pre-mutation revalidation; prefix closures that refuse ignored untracked
+      descendants, empty directories, and gitlinks; live-plan divergence;
+      nested two-pass translation; and direct/transitive verifier independence
+      with rule and identity ablations.
+- [ ] [P06-T10] Migrate the rewriter, inline doctor, reset scans, regeneration
+      scans, and final validation pass to the table; enforce visibility and
+      prefix-closure guards at the top-level mutation boundary; keep
+      `press verify` independently derived from `Identity`, `Rules`, and neutral
+      inventory/safety helpers.
+- [ ] [P06-T11] PR 3 and project-completion gate: run every focused P06 test,
+      `just check`, and the R1a/R1b/R2/R3 `just matrix`; perform the final
+      adversarial architecture, safety, and defect review; fix every reproduced
+      in-scope defect; rerun all gates; then close issue #42 and mark P06
+      complete only after the merged `main` state is verified.
