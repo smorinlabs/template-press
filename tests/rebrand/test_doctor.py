@@ -218,6 +218,44 @@ def test_doctor_honors_verify_ignore_for_every_symlink_shape(
 
 
 @requires_symlink
+def test_doctor_does_not_read_through_ancestor_swapped_after_snapshot(
+    src_target: Path, tmp_path: Path, monkeypatch
+):
+    nested = src_target / "swap" / "leaf.txt"
+    nested.parent.mkdir()
+    nested.write_text("clean\n", encoding="utf-8")
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "swap/leaf.txt"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "leaf.txt").write_text("demo_widget outside\n", encoding="utf-8")
+    from template_press.rebrand import doctor
+
+    real_capture = doctor.capture_surface_snapshot
+
+    def capture_then_swap(target: Path):
+        snapshot = real_capture(target)
+        nested.unlink()
+        nested.parent.rmdir()
+        nested.parent.symlink_to(outside, target_is_directory=True)
+        return snapshot
+
+    monkeypatch.setattr(doctor, "capture_surface_snapshot", capture_then_swap)
+
+    leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+
+    assert not any(
+        leak.path == "swap/leaf.txt" and leak.field == "package_name" for leak in leaks
+    )
+    assert any(
+        leak.path == "swap/leaf.txt" and leak.where == "unverifiable" for leak in leaks
+    )
+
+
+@requires_symlink
 def test_dangling_symlink_name_embedding_identity_is_path_leak(src_target: Path):
     """F-e: doctor Pass 2 must scan a dir/dangling symlink's own NAME, not just
     its readlink target. A dangling symlink whose NAME carries a source token

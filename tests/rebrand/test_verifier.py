@@ -235,6 +235,53 @@ def test_lstat_guard_failure_on_absent_file_is_unscannable_io(src_target: Path):
 
 
 @requires_symlink
+def test_scan_does_not_read_through_ancestor_swapped_after_inventory(
+    src_target: Path, tmp_path: Path, monkeypatch
+):
+    nested = src_target / "swap" / "leaf.txt"
+    nested.parent.mkdir()
+    nested.write_text("clean\n", encoding="utf-8")
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "swap/leaf.txt"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "leaf.txt").write_text("demo_widget outside\n", encoding="utf-8")
+    from template_press.rebrand import verifier
+
+    real_scan_paths = verifier.scan_paths
+
+    def inventory_then_swap(target: Path, rules, renamed=()):
+        entries = real_scan_paths(target, rules, renamed)
+        nested.unlink()
+        nested.parent.rmdir()
+        nested.parent.symlink_to(outside, target_is_directory=True)
+        return entries
+
+    monkeypatch.setattr(verifier, "scan_paths", inventory_then_swap)
+
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=("package_name",),
+        substring_fields=frozenset(),
+        rules=DEFAULT_RULES,
+    )
+
+    assert not any(
+        finding.path == "swap/leaf.txt" and finding.field == "package_name"
+        for finding in findings
+    )
+    assert any(
+        finding.path == "swap/leaf.txt" and finding.where == "unscannable"
+        for finding in findings
+    )
+
+
+@requires_symlink
 def test_dangling_symlink_readlink_leak_is_i2_closure(src_target: Path):
     """I2 closure: a DANGLING symlink whose readlink text embeds a changed
     value must still produce a `where="symlink"` finding — the destination

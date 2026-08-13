@@ -476,6 +476,33 @@ def test_visibility_inventory_resolves_linked_worktree_info_exclude(
     assert info.sha256 is not None
 
 
+@requires_symlink
+def test_visibility_inventory_preserves_whitespace_in_resolved_info_exclude(
+    src_target: Path,
+) -> None:
+    info_exclude = src_target / ".git" / "info" / "exclude"
+    backing = src_target / " info backing "
+    backing.write_text("hidden-by-info.txt\n", encoding="utf-8")
+    info_exclude.unlink()
+    info_exclude.symlink_to(backing)
+    (src_target / "hidden-by-info.txt").write_text("hidden\n", encoding="utf-8")
+
+    first = capture_surface_snapshot(src_target)
+    info_first = next(
+        item for item in first.visibility_inputs if item.origin == "info_exclude"
+    )
+    backing.write_text("different.txt\n", encoding="utf-8")
+    second = capture_surface_snapshot(src_target)
+    info_second = next(
+        item for item in second.visibility_inputs if item.origin == "info_exclude"
+    )
+
+    assert info_first.path == backing
+    assert info_first.kind == "file"
+    assert info_first.sha256 is not None
+    assert info_first != info_second
+
+
 def test_visibility_inputs_keep_missing_and_multiple_gitignores_in_stable_order(
     src_target: Path,
 ) -> None:
