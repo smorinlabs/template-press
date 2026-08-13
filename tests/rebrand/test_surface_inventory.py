@@ -696,6 +696,34 @@ def test_copy_adapter_preserves_listed_missing_entry(src_target: Path) -> None:
     assert entries[missing.name] == "file"
 
 
+def test_dirty_gitlink_file_replacement_is_scannable_worktree_content(
+    src_target: Path,
+) -> None:
+    head = subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "rev-parse", "HEAD"],  # noqa: S607
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _git(
+        src_target,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{head},sub",
+    )
+    (src_target / "sub").write_text("demo_widget survives\n", encoding="utf-8")
+
+    copied = {entry.rel.as_posix(): entry.kind for entry in copy_paths(src_target)}
+    scanned = {
+        entry.rel.as_posix(): entry.kind
+        for entry in scan_paths(src_target, DEFAULT_RULES)
+    }
+
+    assert copied["sub"] == "file"
+    assert scanned["sub"] == "file"
+
+
 @requires_symlink
 def test_adapters_do_not_follow_symlink_ancestor_outside_target(
     src_target: Path, tmp_path: Path
