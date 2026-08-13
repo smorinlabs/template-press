@@ -21,5 +21,7 @@ feature proposals, conventions, and requirements — before or while implementin
 | [0002](0002-web-api-conventions.md) | Web API conventions (the WEB-xx baseline) | Accepted |
 | [0003](0003-logging-conventions.md) | Logging conventions — one pipeline, two profiles | Accepted |
 | [0004](0004-template-press-plan.md) | Template Press — reusable init/post-init engine plan | Accepted |
+| [0006](0006-external-target-model.md) | template-press external-target model (canonical) | Accepted |
+| [0007](0007-press-verify-design.md) | `press verify` design & decision record | Accepted |
 | [0008](0008-identity-variants-and-replace-rules.md) | Identity variants & replace rules (C/D/E gap fixes) | Accepted |
 | [0009](0009-substitution-table.md) | Rendered substitution table and surface inventory | Accepted |
