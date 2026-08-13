@@ -50,6 +50,7 @@ from pathlib import Path, PurePosixPath
 __all__ = [
     "ContainmentError",
     "HardlinkError",
+    "NonRegularFileError",
     "SafeRelPath",
     "SafetyError",
     "UnsafePathError",
@@ -83,6 +84,10 @@ class ContainmentError(SafetyError, ValueError):
 
 class HardlinkError(SafetyError, ValueError):
     """A tracked/target sink has ``st_nlink > 1`` (G3 / G3+ / G5)."""
+
+
+class NonRegularFileError(SafetyError):
+    """A no-follow read observed a non-regular leaf before opening it."""
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +329,7 @@ def _read_regular_checked_path(path: Path) -> bytes:
     _assert_absolute_ancestors_real(path)
     before = os.lstat(path)
     if not stat.S_ISREG(before.st_mode):
-        raise SafetyError(f"no-follow read source is not regular: {path}")
+        raise NonRegularFileError(f"no-follow read source is not regular: {path}")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     descriptor = os.open(path, flags)
     try:

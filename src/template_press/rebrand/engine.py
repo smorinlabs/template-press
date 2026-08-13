@@ -40,6 +40,7 @@ from template_press.rebrand.rules import (
 )
 from template_press.rebrand.safety import (
     ContainmentError,
+    NonRegularFileError,
     SafetyError,
     assert_ancestors_real,
     assert_under_root,
@@ -623,12 +624,12 @@ def _read_text(path: Path) -> str | None:
         return read_regular_nofollow(path).decode("utf-8")
     except (UnicodeDecodeError, OSError):
         return None  # binary or unreadable — never a rewrite candidate
-    except SafetyError:
-        # The checked-path fallback reports a stable symlink as a SafetyError,
-        # whereas POSIX O_NOFOLLOW reports it as an OSError above. Preserve the
-        # cross-platform skip contract only after a second no-follow operation
-        # proves that the leaf is still a symlink. Every other safety refusal
-        # remains fail-closed.
+    except NonRegularFileError:
+        # The checked-path fallback reports an initially non-regular leaf with
+        # this dedicated exception, whereas POSIX O_NOFOLLOW reports a symlink
+        # as an OSError above. Preserve the cross-platform skip contract only
+        # after a second no-follow operation proves that the leaf is still a
+        # symlink. Every change-detection safety refusal remains fail-closed.
         readlink_nofollow(path)
         return None
 

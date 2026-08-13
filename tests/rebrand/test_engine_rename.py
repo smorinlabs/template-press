@@ -278,6 +278,32 @@ def test_rename_ignores_other_entries_under_excluded_directory(tmp_path: Path):
 
 
 @requires_symlink
+@pytest.mark.skipif(os.name == "nt", reason="descriptor-relative POSIX read")
+def test_read_text_refuses_regular_file_replaced_by_symlink_during_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mid-read type change is not the stable-symlink compatibility case."""
+
+    import template_press.rebrand.safety as safety_module
+
+    source = tmp_path / "source.txt"
+    source.write_text("captured bytes\n", encoding="utf-8")
+    displaced = tmp_path / "displaced.txt"
+    real_read = safety_module._read_descriptor
+
+    def replace_with_symlink(descriptor: int) -> bytes:
+        data = real_read(descriptor)
+        source.rename(displaced)
+        source.symlink_to("missing-target")
+        return data
+
+    monkeypatch.setattr(safety_module, "_read_descriptor", replace_with_symlink)
+
+    with pytest.raises(SafetyError, match="changed while reading"):
+        engine_module._read_text(source)
+
+
+@requires_symlink
 def test_build_plan_refuses_ancestor_swap_after_inventory(
     src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
