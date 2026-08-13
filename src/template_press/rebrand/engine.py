@@ -272,12 +272,15 @@ def copy_paths(target: Path) -> list[PathEntry]:
         rel = entry.rel
         if ".git" in rel.parts:
             continue
-        if entry.index_kind == "gitlink":
-            kind = "gitlink"
-        elif entry.worktree_kind == "symlink":
+        if entry.worktree_kind == "symlink":
             kind = "symlink"
         elif entry.worktree_kind == "file":
             kind = "file"
+        elif entry.index_kind == "gitlink" and entry.worktree_kind in (
+            "directory",
+            "missing",
+        ):
+            kind = "gitlink"
         else:
             kind = "file"
         entries.append(PathEntry(rel, kind))
@@ -361,12 +364,15 @@ def scan_paths(
     )
     out: list[PathEntry] = []
     for entry in selected:
-        if entry.index_kind == "gitlink":
-            kind = "gitlink"
-        elif entry.worktree_kind == "symlink":
+        if entry.worktree_kind == "symlink":
             kind = "symlink"
         elif entry.worktree_kind == "file":
             kind = "file"
+        elif entry.index_kind == "gitlink" and entry.worktree_kind in (
+            "directory",
+            "missing",
+        ):
+            kind = "gitlink"
         else:
             kind = "unscannable"
         out.append(PathEntry(entry.rel, kind))
