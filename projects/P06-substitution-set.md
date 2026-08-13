@@ -113,9 +113,11 @@ scans derive their hunts from it, so they cannot disagree by construction.
 `press verify` remains independently derived under D2. Adding a mechanism
 becomes one row, not seven edits.
 
-**Constraint all three lenses named independently:** the conservative-rewriter /
-paranoid-verify matcher asymmetry is load-bearing design — parameterize it, never
-merge the two scanners into one.
+**Constraint identified independently by all three architecture-review
+lenses:** the conservative-rewriter / paranoid-verifier matcher asymmetry is
+load-bearing design. Parameterize it, but never merge the two scanners into
+one. The inline doctor intentionally derives from the rewriter's table under
+D2; it is not a third independent scanner.
 
 Sequenced as three PRs, safest first: (1) one kind-tagged surface walker;
 (2) one pipeline-stability validator replacing the five accreted guards;

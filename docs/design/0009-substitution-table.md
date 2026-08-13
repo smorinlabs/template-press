@@ -392,11 +392,23 @@ do not decide what identity occurrence counts as a leak.
 
 ## D5 — Independence guardrail
 
-Design 0008 contains the binding dependency rule. P06 must also add a
-structural regression test that parses `verifier.py`'s imports and fails if the
-module imports `template_press.rebrand.substitutions`, including inside a
-`TYPE_CHECKING` block. The test is an acceptance criterion, not optional
-documentation coverage.
+Design 0008 contains the binding dependency rule. P06 must enforce both the
+module boundary and the data-flow boundary:
+
+1. A structural regression test parses `verifier.py` and `verify_cli.py`. The
+   test fails if `verifier.py` imports `template_press.rebrand.substitutions`,
+   including inside a `TYPE_CHECKING` block. It also fails if `verifier.scan()`
+   accepts a `SubstitutionTable`, substitution rows, or pre-rendered rule
+   literals, or if `verify_cli.py` passes any of those values into the scan.
+2. An ablation test deliberately removes one rendered `[[replace]]` row from
+   the rewriter's table before the sandbox apply. The independent verifier scan
+   must still derive that rule from `Rules` and report the surviving source
+   literal.
+
+Both tests are acceptance criteria, not optional documentation coverage. The
+structural test blocks the known direct data path. The ablation test proves the
+independence property even if a future refactor hides shared data behind a new
+helper name.
 
 The intended dependency boundary is:
 
@@ -435,7 +447,7 @@ independent checker inherit the rewriter's blind spots.
 - Add the verifier-independence architecture test.
 
 Each pull request must pass the full automated suite and the R1a/R1b/R2/R3
-rebrand acceptance matrix. PR 3 also needs focused regressions for:
+rebrand acceptance matrix. PR 3 also needs focused regression tests for:
 
 - a two-pass nested rename whose reset and regeneration paths translate to the
   final location;
@@ -445,7 +457,8 @@ rebrand acceptance matrix. PR 3 also needs focused regressions for:
 - current-path and reverse-source-path rule scope after an ancestor rename;
 - derivation of doctor, reset, and regeneration hunts from a newly added row;
   and
-- rejection of any verifier dependency on `substitutions`.
+- rejection of any verifier dependency on `substitutions`, including the
+  rewriter-row ablation described in D5.
 
 ## Rejected alternatives
 

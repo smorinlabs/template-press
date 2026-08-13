@@ -63,11 +63,17 @@ the raw surface inventory, path translation, safety checks, and neutral rule
 scope primitives is allowed because those facts do not define what counts as
 an identity occurrence.
 
-P06 must enforce this dependency rule with a structural regression test. The
-test parses `verifier.py` and fails on an import of the substitutions module,
-including an import inside a `TYPE_CHECKING` block. Prose alone is not
-sufficient because a future deduplication refactor could otherwise remove the
-final independent check without changing runtime output on ordinary fixtures.
+P06 must enforce this dependency rule at the module and call boundaries. A
+structural regression test parses `verifier.py` and `verify_cli.py`; it fails on
+an import of the substitutions module, including inside a `TYPE_CHECKING`
+block, and on any `verifier.scan()` parameter or caller argument that supplies
+a `SubstitutionTable`, substitution rows, or pre-rendered rule literals. A
+second ablation test removes one rendered `[[replace]]` row from the rewriter's
+table and requires the verifier to find the surviving literal independently.
+
+Prose alone is not sufficient because a future deduplication refactor could
+otherwise remove the final independent check without changing runtime output
+on ordinary fixtures.
 
 ## Order of operations (engine.apply)
 
