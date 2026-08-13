@@ -277,6 +277,47 @@ def test_rename_ignores_other_entries_under_excluded_directory(tmp_path: Path):
     assert not any(path.relative_to(target).parts[0] == "a" for path in candidates)
 
 
+def test_build_plan_refuses_tracked_file_replaced_by_directory(
+    src_target: Path,
+) -> None:
+    replaced = src_target / "README.md"
+    replaced.unlink()
+    replaced.mkdir()
+
+    with pytest.raises(SafetyError, match="unscannable worktree entry"):
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="mkfifo POSIX-only")
+def test_build_plan_refuses_visible_fifo(src_target: Path) -> None:
+    fifo = src_target / "events.pipe"
+    fifo.write_text("tracked\n", encoding="utf-8")
+    _git_add(src_target)
+    fifo.unlink()
+    os.mkfifo(fifo)
+
+    with pytest.raises(SafetyError, match="unscannable worktree entry"):
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="mkfifo POSIX-only")
+def test_apply_refuses_visible_fifo_before_rewriting_other_files(
+    src_target: Path,
+) -> None:
+    ordinary = src_target / "ordinary.txt"
+    ordinary.write_text("demo_widget stays\n", encoding="utf-8")
+    fifo = src_target / "events.pipe"
+    fifo.write_text("tracked\n", encoding="utf-8")
+    _git_add(src_target)
+    fifo.unlink()
+    os.mkfifo(fifo)
+
+    with pytest.raises(SafetyError, match="unscannable worktree entry"):
+        apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+    assert ordinary.read_text(encoding="utf-8") == "demo_widget stays\n"
+
+
 @requires_symlink
 @pytest.mark.skipif(os.name == "nt", reason="descriptor-relative POSIX read")
 def test_read_text_refuses_regular_file_replaced_by_symlink_during_read(

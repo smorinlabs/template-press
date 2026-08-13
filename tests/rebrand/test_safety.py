@@ -566,6 +566,27 @@ def test_read_regular_refuses_path_replaced_during_descriptor_read(
     assert source.read_text(encoding="utf-8") == "live replacement\n"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="descriptor-relative POSIX read")
+def test_read_regular_opens_fifo_leaf_without_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    fifo = tmp_path / "shared-index"
+    os.mkfifo(fifo)
+    real_open = safety.os.open
+
+    def guarded_open(path, flags, mode=0o777, *, dir_fd=None):
+        if path == fifo.name and dir_fd is not None:
+            assert flags & os.O_NONBLOCK
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(safety.os, "open", guarded_open)
+
+    with pytest.raises(SafetyError, match="not regular"):
+        safety._read_regular_openat(fifo)
+
+
 def test_read_regular_uses_fallback_without_stat_dirfd_support(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -251,17 +251,29 @@ def _rename_candidate_entries(target: Path, rules: Rules) -> tuple[SurfaceEntry,
     this pass.
     """
     snapshot = capture_surface_snapshot(target)
-    # A tracked path hidden behind a symlink ancestor is classified ``other``
-    # without traversal by the raw inventory. Do not silently drop it from the
-    # mutating path: preserve the existing fail-closed containment refusal.
+    # Refuse any selected, present node that the later doctor cannot scan.
+    # A tracked file replaced by a directory and any FIFO/socket/other leaf
+    # would otherwise be omitted from this plan, allow unrelated writes, and
+    # then make the post-mutation doctor fail.  A normal checked-out gitlink
+    # directory and an opaque untracked embedded repository remain allowed.
     for entry in snapshot.entries:
-        if (
-            entry.worktree_kind == "other"
+        if entry.rel.as_posix() in ROOT_CONTROL or _is_excluded(entry.rel, rules):
+            continue
+        unscannable = entry.worktree_kind == "other" or (
+            entry.worktree_kind == "directory"
+            and entry.tracked
             and entry.index_kind != "gitlink"
-            and entry.rel.as_posix() not in ROOT_CONTROL
-            and not _is_excluded(entry.rel, rules)
-        ):
+        )
+        if not unscannable:
+            continue
+        if entry.worktree_kind == "other" and entry.index_kind != "gitlink":
+            # Preserve the more specific containment refusal for a tracked
+            # path hidden behind a symlink ancestor.
             assert_ancestors_real(target / entry.rel, target)
+        raise SafetyError(
+            f"unscannable worktree entry must be resolved before rebrand: "
+            f"{entry.rel.as_posix()} ({entry.worktree_kind})"
+        )
     entries = select_rename_entries(
         snapshot,
         exclude_files=rules.exclude_files,
@@ -1012,6 +1024,9 @@ def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> Apply
     """Execute the rebrand: replace pass, symlink-retarget pass, rename pass."""
     source.validate()
     dest.validate()
+    # Validate every selected present node before the first content write.
+    # Later phases recapture their own candidates to fail closed on races.
+    _rename_candidate_entries(target, rules)
     report = ApplyReport()
     pairs = replacement_pairs(source, dest, rules.display_forms)
     rendered = rendered_replace_rules(rules, source, dest)

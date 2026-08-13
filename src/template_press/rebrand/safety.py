@@ -298,7 +298,8 @@ def _read_regular_openat(path: Path) -> bytes:
             next_fd = os.open(part, directory_flags, dir_fd=parent_fd)
             os.close(parent_fd)
             parent_fd = next_fd
-        descriptor = os.open(parts[-1], flags, dir_fd=parent_fd)
+        leaf_flags = flags | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(parts[-1], leaf_flags, dir_fd=parent_fd)
         try:
             opened = os.fstat(descriptor)
             if not stat.S_ISREG(opened.st_mode):
