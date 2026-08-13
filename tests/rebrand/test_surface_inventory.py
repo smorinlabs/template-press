@@ -742,6 +742,31 @@ def test_capture_refuses_repeated_core_excludes_config_transition(
         capture_surface_snapshot(src_target)
 
 
+def test_capture_refuses_temporary_missing_config_include(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    include_parent = tmp_path / "include-parent"
+    include_parent.mkdir()
+    included = include_parent / "optional-config"
+    ignore_a = src_target / "ignore-a"
+    ignore_a.write_text("hide-a\n", encoding="utf-8")
+    (src_target / "hide-a").write_text("visible without include\n", encoding="utf-8")
+    _git(src_target, "config", "include.path", str(included))
+    real_resolver = inventory._core_excludes_path
+
+    def temporary_include(target: Path) -> Path | None:
+        included.write_text(f"[core]\n\texcludesFile = {ignore_a}\n", encoding="utf-8")
+        try:
+            return real_resolver(target)
+        finally:
+            included.unlink()
+
+    monkeypatch.setattr(inventory, "_core_excludes_path", temporary_include)
+
+    with pytest.raises(SafetyError, match=r"config.*changed during capture"):
+        capture_surface_snapshot(src_target)
+
+
 @posix_only
 @requires_symlink
 def test_visibility_read_refuses_ancestor_swap_at_descriptor_open(

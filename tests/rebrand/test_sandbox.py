@@ -187,6 +187,16 @@ def test_gitlink_scannable_and_recorded_unavailable(tmp_path: Path) -> None:
     assert "sub" in result.unavailable_submodules
 
 
+@posix_only
+def test_dirty_gitlink_fifo_refuses_sandbox(tmp_path: Path) -> None:
+    target = make_target(tmp_path)
+    _add_gitlink(target, tmp_path)
+    os.mkfifo(target / "sub")
+
+    with pytest.raises(SafetyError, match="cannot materialize"):
+        make_sandbox(target, _dest_root(tmp_path))
+
+
 # ---------------------------------------------------------------------------
 # (d) a control-path symlink is rejected and NOTHING is written outside
 # ---------------------------------------------------------------------------
