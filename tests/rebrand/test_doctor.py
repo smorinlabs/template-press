@@ -3,6 +3,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import apply
 from template_press.rebrand.identity import Identity
@@ -676,6 +678,47 @@ class TestGitlinkLeaks:
         assert any(
             leak.path == "sub" and leak.where == "unverifiable" for leak in leaks
         )
+
+
+@requires_symlink
+def test_doctor_leaf_swap_at_read_is_unverifiable(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import doctor
+
+    leaf = src_target / "leaf.txt"
+    leaf.write_text("clean\n", encoding="utf-8")
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", leaf.name],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "commit", "-q", "-m", "add clean leaf"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    outside = tmp_path / "outside-doctor.txt"
+    outside.write_text("demo_widget outside\n", encoding="utf-8")
+    real_read = doctor._read_for_scan
+    swapped = False
+
+    def swap_then_read(path: Path):
+        nonlocal swapped
+        if path == leaf and not swapped:
+            swapped = True
+            path.unlink()
+            path.symlink_to(outside)
+        return real_read(path)
+
+    monkeypatch.setattr(doctor, "_read_for_scan", swap_then_read)
+
+    leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+
+    assert not any(leak.path == leaf.name and leak.where == "content" for leak in leaks)
+    assert any(
+        leak.path == leaf.name and leak.where == "unverifiable" for leak in leaks
+    )
 
 
 class TestRuleScopeMigratedByAncestorRename:

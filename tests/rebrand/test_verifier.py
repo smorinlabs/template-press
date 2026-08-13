@@ -282,6 +282,51 @@ def test_scan_does_not_read_through_ancestor_swapped_after_inventory(
 
 
 @requires_symlink
+def test_scan_does_not_read_leaf_swapped_after_lstat(
+    src_target: Path, tmp_path: Path, monkeypatch
+):
+    leaf = src_target / "leaf-race.txt"
+    leaf.write_text("clean\n", encoding="utf-8")
+    _git(src_target, "add", leaf.name)
+    _git(src_target, "commit", "-q", "-m", "add leaf race")
+    outside = tmp_path / "outside-verifier.txt"
+    outside.write_text("demo_widget outside\n", encoding="utf-8")
+    from template_press.rebrand import verifier
+
+    real_guard = verifier.is_regular_lstat
+    swapped = False
+
+    def guard_then_swap(path: Path) -> bool:
+        nonlocal swapped
+        result = real_guard(path)
+        if path == leaf and result and not swapped:
+            swapped = True
+            path.unlink()
+            path.symlink_to(outside)
+        return result
+
+    monkeypatch.setattr(verifier, "is_regular_lstat", guard_then_swap)
+
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=("package_name",),
+        substring_fields=frozenset(),
+        rules=DEFAULT_RULES,
+    )
+
+    assert not any(
+        finding.path == leaf.name and finding.field == "package_name"
+        for finding in findings
+    )
+    assert any(
+        finding.path == leaf.name and finding.where == "unscannable"
+        for finding in findings
+    )
+
+
+@requires_symlink
 def test_dangling_symlink_readlink_leak_is_i2_closure(src_target: Path):
     """I2 closure: a DANGLING symlink whose readlink text embeds a changed
     value must still produce a `where="symlink"` finding — the destination

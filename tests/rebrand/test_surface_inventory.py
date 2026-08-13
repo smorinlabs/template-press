@@ -684,16 +684,57 @@ def test_capture_refuses_transient_ignore_policy_during_first_enumeration(
         capture_surface_snapshot(src_target)
 
 
-def test_copy_adapter_preserves_listed_missing_entry(src_target: Path) -> None:
+def test_capture_refuses_same_ignore_transition_during_every_enumeration(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gitignore = src_target / ".gitignore"
+    gitignore.write_text("old-only.txt\n", encoding="utf-8")
+    (src_target / "leak.txt").write_text("visible under old policy\n", encoding="utf-8")
+    real_run_git = inventory._run_git
+
+    def repeat_transition(target: Path, *args: str, **kwargs):
+        if "ls-files" not in args:
+            return real_run_git(target, *args, **kwargs)
+        gitignore.write_text("old-only.txt\n", encoding="utf-8")
+        result = real_run_git(target, *args, **kwargs)
+        gitignore.write_text("leak.txt\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(inventory, "_run_git", repeat_transition)
+
+    with pytest.raises(SafetyError, match="changed during capture"):
+        capture_surface_snapshot(src_target)
+
+
+def test_inventory_pins_case_sensitive_ignore_matching(src_target: Path) -> None:
+    (src_target / ".gitignore").write_text("FOO\n", encoding="utf-8")
+    (src_target / "foo").write_text("must remain visible\n", encoding="utf-8")
+    _git(src_target, "config", "core.ignoreCase", "true")
+
+    rels = {
+        entry.rel.as_posix() for entry in capture_surface_snapshot(src_target).entries
+    }
+
+    assert "foo" in rels
+
+
+def test_copy_adapter_uses_materializable_copy_selector(src_target: Path) -> None:
     missing = src_target / "tracked-missing.txt"
     missing.write_text("tracked\n", encoding="utf-8")
     _git(src_target, "add", missing.name)
     _git(src_target, "commit", "-q", "-m", "add tracked missing")
     missing.unlink()
+    occupied = src_target / "occupied"
+    occupied.write_text("tracked\n", encoding="utf-8")
+    _git(src_target, "add", occupied.name)
+    _git(src_target, "commit", "-q", "-m", "add tracked occupied")
+    occupied.unlink()
+    occupied.mkdir()
 
     entries = {entry.rel.as_posix(): entry.kind for entry in copy_paths(src_target)}
 
-    assert entries[missing.name] == "file"
+    assert missing.name not in entries
+    assert occupied.name not in entries
 
 
 def test_dirty_gitlink_file_replacement_is_scannable_worktree_content(
@@ -801,6 +842,41 @@ def test_visibility_walk_does_not_descend_into_checked_out_gitlink(
     snapshot = capture_surface_snapshot(src_target)
 
     assert inner_ignore not in {item.path for item in snapshot.visibility_inputs}
+
+
+@requires_symlink
+def test_visibility_walk_refuses_directory_swapped_to_symlink(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nested = src_target / "nested"
+    nested.mkdir()
+    external = tmp_path / "external-ignore-tree"
+    external.mkdir()
+    (external / ".gitignore").write_text("hidden.txt\n", encoding="utf-8")
+    original = tmp_path / "original-nested"
+    real_ignored_directories = inventory._ignored_directories
+    real_scandir = inventory.os.scandir
+    swapped = False
+
+    def swap_after_child_selection(target, rels, core_excludes):
+        nonlocal swapped
+        result = real_ignored_directories(target, rels, core_excludes)
+        if not swapped and Path("nested") in rels:
+            nested.rename(original)
+            nested.symlink_to(external, target_is_directory=True)
+            swapped = True
+        return result
+
+    def refuse_external_scandir(path):
+        if Path(path) == nested and nested.is_symlink():
+            pytest.fail("visibility walk followed a swapped symlink directory")
+        return real_scandir(path)
+
+    monkeypatch.setattr(inventory, "_ignored_directories", swap_after_child_selection)
+    monkeypatch.setattr(inventory.os, "scandir", refuse_external_scandir)
+
+    with pytest.raises(SafetyError, match="ignore directory"):
+        capture_surface_snapshot(src_target)
 
 
 def test_consumer_selectors_keep_their_distinct_contracts(
