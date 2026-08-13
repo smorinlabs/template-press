@@ -153,4 +153,7 @@ of being silently redirected.
 
 ### Tests & Tasks
 
-<!-- Decompose with `project-refine P06` (tasks; TS-first per the TDD bias). -->
+- [ ] [P06-TS01] Failing characterization tests for the shared
+      `SurfaceSnapshot`: tracked and untracked files, ignored paths, symlinks,
+      gitlinks, non-UTF-8 path bytes, tracked deletions, file-to-directory
+      replacements, and regular-versus-symlink Git visibility inputs.
