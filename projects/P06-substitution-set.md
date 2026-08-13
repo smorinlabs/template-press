@@ -2,7 +2,7 @@
 
 - **Status:** `[ ]` ready
 
-One table the rewriter applies and every checker reads
+One table the rewriter and inline checkers read; verify stays independent
 
 **References**
 
@@ -12,6 +12,8 @@ One table the rewriter applies and every checker reads
   architecture review
 - **Design:** [0008 — identity variants and replace rules](../docs/design/0008-identity-variants-and-replace-rules.md)
   — what the table renders; D2's independence guardrail lands here
+- **Design:** [0009 — rendered substitution table and surface inventory](../docs/design/0009-substitution-table.md)
+  — D1's table-needs checkpoint and the implementation contracts
 - **Design:** [0006 — external target model](../docs/design/0006-external-target-model.md)
 - **Review:** PR #62 deferral — plan-time rename translation must read the
   fixpoint map (in scope; see Scope and D1 context)
@@ -25,22 +27,33 @@ One table the rewriter applies and every checker reads
 - **One kind-tagged surface walker** replacing the five independent ones
   (`engine._git_listed`, `engine.iter_target_files`, `engine.copy_paths`,
   `engine.scan_paths`, `regen.tracked_paths`) — walker disagreement is why
-  the doctor was once blind to submodule names.
+  the doctor was once blind to submodule names. Its snapshot also records the
+  Git ignore inputs needed to prove that content rewrites and resets cannot
+  change path visibility underneath the shared rename plan.
 - **One pipeline-stability validator** replacing the five accreted
   plan-time guards.
-- **The rendered substitution table** — (matcher, from, to, surfaces,
-  scope): the applier walks it; the doctor and the post-command /
-  final-pass scans derive their hunt sets from it. Adding a mechanism
-  becomes one row, not seven edit sites.
+- **The rendered substitution table** — (field-aware matcher specification,
+  from, to, rewrite
+  surfaces, consumer-specific hunt policies, scope, provenance): the
+  applier walks it; the doctor and the post-command / final-pass scans
+  derive their hunts from it. Adding a mechanism becomes one row, not seven
+  edit sites.
 - **Plan-time rename translation reads the same fixpoint map apply uses**
   (PR #62 deferral, thread 3654853364): `build_plan`'s single-pass map
   false-refuses reset targets nested under multiple identity-bearing
   levels; the table unifies the map.
-- **The independence guardrail (D2)**: a binding constraint in design
-  0008 plus a regression test that fails if `verifier.py` ever imports
-  the table module; the test is a named acceptance criterion.
-- Semantics-preserving throughout — the 459-test suite and the R1a/R1b/R2/R3
-  acceptance matrix stay green at every PR boundary.
+- **The independence guardrail (D2)**: binding module and data-flow constraints
+  in design 0008. A structural test rejects direct or transitive verifier
+  dependencies on table consumers. A call-boundary test rejects precompiled
+  scan inputs. Discriminating rule and identity ablations prove that the
+  verifier still derives both answers independently.
+- Output-preserving for every stable configuration. P06 intentionally adds
+  pre-write refusals for cross-row output dependencies, path cycles, and a
+  press that would mutate Git's ignore inputs while relying on a frozen path
+  inventory. It also refuses a prefix move that would carry a gitlink or a node
+  absent from that inventory, and runtime divergence from the authorized
+  rename plan. The full automated suite and the R1a/R1b/R2/R3 acceptance
+  matrix stay green at every PR boundary.
 
 ### Out of scope
 
@@ -51,6 +64,9 @@ One table the rewriter applies and every checker reads
   the table later as rows, not as part of this refactor).
 - Declared-command timeout hardening (PR #62 thread 3654968981 —
   executor concern, unrelated to the table).
+- Declared-command mutation of Git visibility inputs (issue #71 — a
+  post-apply executor invariant, separate from P06's pre-mutation inventory
+  authorization gate).
 
 ### Decisions
 
@@ -58,18 +74,24 @@ One table the rewriter applies and every checker reads
   session: ship P04+P05 first (they unblock the py-launch-blueprint
   conform — the actual goal), then this refactor. That gate is now open
   (PR #62 merged, v3.4.0).
-- **D1 (2026-07-27): three PRs with a design checkpoint.** Working plan
-  stays walker → validator → table, safest first, each provable against
-  the suite and matrix. The design phase's FIRST deliverable is a
-  table-needs sketch (columns, provenance, scope semantics) that the
-  walker interface must survive; recorded fallback: combine walker+table
-  into one PR if it does not. Context: PR #62's single 15-commit branch
-  drew 29 bot threads over four review cycles — small PRs demonstrably
-  keep review waves convergent.
-- **D2 (2026-07-27): correlated-failure trade accepted WITH enforced
+- **D1 (2026-07-27; checkpoint passed 2026-08-12): three PRs confirmed.**
+  Design 0009 establishes one raw walker entry with relative path, separate
+  index and worktree kinds, and tracked state, wrapped in a snapshot whose Git-visibility guard
+  is independent of table matching. Table scope, rewrite and checker
+  surfaces, and the fixed-point rename plan remain policies above that entry;
+  none requires table-specific data inside the walker. The implementation
+  therefore stays walker → validator → table, safest first, with each
+  boundary provable against the suite and matrix. The recorded walker+table
+  fallback is not needed. Context: PR #62's single 15-commit branch drew 29
+  bot threads over four review cycles — small PRs demonstrably keep review
+  waves convergent.
+- **D2 (2026-07-27; boundary clarified 2026-08-12): correlated-failure trade accepted WITH enforced
   guardrail.** Once the doctor derives from the table, it inherits the
   rewriter's blind spots by construction — the independence that matters
-  lives entirely in `press verify`'s paranoid matcher. Accepted (it is
+  lives in `press verify`'s independently derived paranoid matcher for
+  non-exempt surfaces. Declared regeneration outputs remain explicitly listed
+  as not verified; their table-driven postconditions retain the existing
+  correlated-risk tradeoff. Accepted (it is
   the point of the refactor), on condition the guardrail is stated in
   design 0008 AND enforced by a regression test (structurally
   impossible, not merely discouraged — same philosophy as the org's
@@ -102,19 +124,32 @@ It happened again during P04/P05 (2026-07-27): the postcondition scan did not
 know display-name derived forms until review cycle 3 caught it.
 
 **The fix.** Compile all mechanisms into one rendered substitution table —
-(matcher, from, to, surfaces, scope). The applier walks it; doctor and verify
-derive their scan set from the same table, so they cannot disagree by
-construction. Adding a mechanism becomes one row, not seven edits.
+(field-aware matcher specification, from, to, rewrite surfaces,
+consumer-specific hunt policies, scope, provenance). The applier walks it; the
+inline doctor and reset/regeneration scans derive their hunts from it, so they
+cannot disagree by construction. `press verify` remains independently derived
+under D2 for every non-exempt surface. Adding a mechanism becomes one row, not
+seven edits.
 
-**Constraint all three lenses named independently:** the conservative-rewriter /
-paranoid-verify matcher asymmetry is load-bearing design — parameterize it, never
-merge the two scanners into one.
+**Constraint identified independently by all three architecture-review
+lenses:** the conservative-rewriter / paranoid-verifier matcher asymmetry is
+load-bearing design. Parameterize it, but never merge the two scanners into
+one. The inline doctor intentionally derives from the rewriter's table under
+D2; it is not a third independent scanner.
 
-Sequenced as three PRs, safest first: (1) one kind-tagged surface walker;
-(2) one pipeline-stability validator replacing the five accreted guards;
-(3) the substitution table itself. Estimated ~1 focused week against the existing
-459-test suite and the acceptance matrix. Semantics-preserving — no rollback of
-the shipped C/D/E work; the accumulated fixes are the spec for the refactor.
+Sequenced as three PRs, safest first: (1) one kind-tagged, visibility-guarded
+surface walker; (2) one pipeline-stability validator replacing the five
+accreted guards; (3) the substitution table itself. Estimated ~1 focused week
+against the full automated suite and the acceptance matrix. Stable
+configurations preserve their current output. Shipped C/D/E validation
+refusals remain refusals except issue #45's approved acceptance of
+same-source/different-destination content rules with demonstrably disjoint
+`files` scopes. The other intentional acceptance changes are earlier,
+pre-write refusals for an order-dependent pipeline, a cross-pass path cycle,
+mutation of Git's ignore inputs, an unsafe prefix closure, or runtime divergence
+from the authorized rename plan. An existing symlink target that contains a
+changed non-path identity field is left unchanged and fails the doctor instead
+of being silently redirected.
 
 ### Tests & Tasks
 

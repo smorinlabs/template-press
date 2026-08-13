@@ -8,7 +8,8 @@
   `rules.py`, `doctor.py`)
 - **Informed by:**
   [research 0005](../research/0005-scaffolder-identity-variant-handling.md),
-  [research 0004 §5](../research/0004-py-launch-blueprint-conformance-gaps.md)
+  [research 0004 §5](../research/0004-py-launch-blueprint-conformance-gaps.md),
+  [design 0009](0009-substitution-table.md)
 
 ## Decisions
 
@@ -46,12 +47,54 @@
    dedicated path-only rename rule. New guard: a substitution that would
    empty a path component fails loud (cookiecutter #1518 class).
 
+## Independence guardrail (P06 D2)
+
+The rendered substitution table introduced by design 0009 is the conservative
+rewriter's compiled behavior. The inline doctor and the reset and regeneration
+scans may derive their hunt sets from it. The standalone paranoid verifier must
+not.
+
+`src/template_press/rebrand/verifier.py` **must not** import table-consuming
+`template_press.rebrand.substitutions`, `engine`, or `doctor` modules; accept a
+`SubstitutionTable`; or derive its occurrence matcher from table data. It must
+continue to derive configured changed identity fields and rendered
+`[[replace]]` literals independently from `Identity`, `Rules`, and neutral
+`VerifyConfig` field names and substring flags. Identity values use
+`matcher.find_occurrences` with the effective substring flag. Rendered rule
+sources use case-sensitive exact-literal occurrence matching on the rule's
+declared surfaces and scope. Sharing the raw surface inventory, path
+translation, safety checks, and neutral rule-scope primitives is allowed
+because those facts do not define what counts as an identity occurrence.
+
+P06 must enforce this dependency rule at the module and call boundaries. A
+structural regression test parses `verifier.py` and `verify_cli.py`, including
+aliases and `TYPE_CHECKING` blocks. It rejects a `verifier.py` import of
+`substitutions`, `engine`, or `doctor`, and any `verifier.scan()` parameter or
+caller argument that supplies table rows, precompiled identity values, rendered
+rule literals, hunt policies, or matcher dispatch. Neutral helpers move out of
+table-consuming modules. `verify_cli.py` may still call `engine.apply()` for
+orchestration.
+
+Two discriminating ablation tests enforce behavior. The rule ablation uses a
+boundary-invisible source such as `x{app_name}owned` and requires a
+`replace_rule` finding. The identity ablation leaves a glued or camel-case
+source occurrence that only the paranoid matcher detects and requires the
+configured identity-field finding.
+
+Prose alone is not sufficient because a future deduplication refactor could
+otherwise remove the final independent check without changing runtime output
+on ordinary fixtures.
+
 ## Order of operations (engine.apply)
 
 `[[replace]]` rules → boundary/substring token pairs (content), then
 symlink retarget, then renames to fixpoint. Rules run first because a
 rendered FROM may embed an identity token the token pass would rewrite
 out from under it.
+
+Design 0009 supersedes this order for P06 PR 3: content rewrite, renames to
+fixpoint, then symlink retarget from the executed rename plan. The reordered
+pass closes the duplicate retarget predicate described under Known limitations.
 
 ## Consequences
 
@@ -97,9 +140,10 @@ out from under it.
   for the retarget predicate (`_retarget_symlinks`, commit `a0f0f98`) is to
   run renames first and retarget links from the actual `(old -> new)` rename
   map, eliminating the second derivation of "does this rule govern this
-  path" entirely. Deferred: it requires reordering `apply()` and enumerating
-  links from a post-rename tree while git's index still holds pre-rename
-  paths. A further predicate edge no per-link check closes: a rule's `files`
+  path" entirely. Design 0009 accepts this change for P06 PR 3. It requires
+  reordering `apply()` and using the source surface inventory to locate links
+  in the post-rename tree while Git's index still holds pre-rename paths. A
+  further predicate edge no per-link check closes: a rule's `files`
   scope is evaluated against the FILE posix in `_renamed_rel` but the
   DIRECTORY posix in retarget, and the two can disagree — evidence that
   predicate variants will keep leaking until the refactor lands.
