@@ -156,22 +156,18 @@ class TestCliGate:
 
 
 class TestTrackedPathsDecoding:
-    def test_non_utf8_filename_survives_enumeration(self, monkeypatch):
+    def test_non_utf8_filename_survives_enumeration(self):
         """Codex thread 3654657435: a git path is any byte except NUL —
         strict decoding would crash every preflight on one such filename.
         Bytes decode with surrogateescape, matching engine._git_listed."""
-        import subprocess as sp
+        from template_press.rebrand.inventory import parse_ls_files
 
-        from template_press.rebrand import regen as regen_mod
-        from template_press.rebrand.regen import tracked_paths
-
-        raw = b"good.txt\x00data-\xe9-latin1.md\x00"
-
-        def fake_run(cmd, *args, **kwargs):
-            assert "text" not in kwargs and "encoding" not in kwargs
-            return sp.CompletedProcess(cmd, returncode=0, stdout=raw, stderr=b"")
-
-        monkeypatch.setattr(regen_mod.subprocess, "run", fake_run)
-        paths = tracked_paths(Path("/nonexistent-unused"))
+        raw = (
+            b"H 100644 " + b"0" * 40 + b" 0\tgood.txt\x00"
+            b"H 100644 " + b"1" * 40 + b" 0\tdata-\xe9-latin1.md\x00"
+        )
+        paths = frozenset(
+            rel.as_posix() for rel, tracked, _kind in parse_ls_files(raw) if tracked
+        )
         assert "good.txt" in paths
         assert b"data-\xe9-latin1.md".decode("utf-8", "surrogateescape") in paths

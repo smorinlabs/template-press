@@ -100,10 +100,11 @@ def test_cli_dirty_check_does_not_trigger_hostile_fsmonitor(
 
 # ---------------------------------------------------------------------------
 # Belt-and-suspenders: assert `-c core.fsmonitor=` is literally in argv for
-# every one of the four calls (a passing sentinel test could in principle be
-# a false green if the hook simply never ran for an unrelated reason).
+# every Git subprocess reached by these entry points. The shared P06 inventory
+# performs one surface enumeration plus visibility-path discovery, so call
+# count is intentionally no longer coupled to the old private walkers.
 # ---------------------------------------------------------------------------
-def test_all_four_call_sites_pass_core_fsmonitor_hardening_flag(
+def test_all_on_target_call_sites_pass_core_fsmonitor_hardening_flag(
     src_target: Path, monkeypatch
 ) -> None:
     calls: list[list[str]] = []
@@ -120,6 +121,6 @@ def test_all_four_call_sites_pass_core_fsmonitor_hardening_flag(
     discovery._origin(src_target)
     cli_mod.check_preconditions(src_target, force=False, allow_dirty=False)
 
-    assert len(calls) == 4
+    assert calls
     for cmd in calls:
         assert "core.fsmonitor=" in cmd, cmd
