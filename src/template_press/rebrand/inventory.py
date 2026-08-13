@@ -377,18 +377,33 @@ def _core_excludes_path(target: Path) -> Path | None:
 def _git_exec_prefix(target: Path) -> Path:
     """Installation prefix used by Git's ``%(prefix)`` interpolation."""
 
-    exec_path = _absolute_git_path(target, "--exec-path")
-    if len(exec_path.parents) < 2:
-        raise SafetyError(f"cannot derive Git installation prefix: {exec_path}")
-    return exec_path.parent.parent
+    result = _run_git(
+        target,
+        "-c",
+        "templatepress.prefix=%(prefix)/",
+        "config",
+        "--path",
+        "--null",
+        "--get",
+        "templatepress.prefix",
+    )
+    if not result.stdout.endswith(b"\0") or result.stdout.count(b"\0") != 1:
+        raise SafetyError("malformed NUL-delimited Git installation prefix")
+    text = result.stdout[:-1].decode("utf-8", "surrogateescape")
+    prefix = Path(text)
+    if not prefix.is_absolute():
+        raise SafetyError(f"Git installation prefix is not absolute: {prefix}")
+    return prefix
 
 
 def _resolve_config_include_path(value: str, origin: Path, target: Path) -> Path:
     """Resolve one Git include path relative to its declaring config file."""
 
-    if value == "%(prefix)" or value.startswith("%(prefix)/"):
+    if value.startswith("%(prefix)/"):
         suffix = value.removeprefix("%(prefix)").removeprefix("/")
         return (_git_exec_prefix(target) / suffix).absolute()
+    if value == "%(prefix)":
+        return (origin.parent / value).absolute()
     if value.startswith("%("):
         raise SafetyError(f"unsupported interpolated Git include path: {value!r}")
     expanded = Path(os.path.expanduser(value))

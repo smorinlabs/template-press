@@ -333,6 +333,7 @@ def test_visibility_inventory_resolves_relative_local_core_excludes(
     assert "core-hidden.txt" not in {entry.rel.as_posix() for entry in snapshot.entries}
 
 
+@posix_only
 def test_visibility_inventory_preserves_whitespace_in_core_excludes_path(
     src_target: Path,
 ) -> None:
@@ -440,6 +441,37 @@ def test_visibility_inventory_allows_missing_prefix_include(
     assert not missing.exists()
 
 
+@requires_symlink
+def test_config_include_does_not_normalize_across_symlink_ancestor(
+    src_target: Path, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside"
+    nested = outside / "nested"
+    nested.mkdir(parents=True)
+    ignore = src_target / "outside-ignore"
+    ignore.write_text("hidden-by-outside.txt\n", encoding="utf-8")
+    (outside / "active").write_text(
+        f"[core]\n\texcludesFile = {ignore.as_posix()}\n", encoding="utf-8"
+    )
+    (src_target / ".git" / "active").write_text(
+        "[user]\n\tname = decoy\n", encoding="utf-8"
+    )
+    (src_target / ".git" / "pivot").symlink_to(nested, target_is_directory=True)
+    _git(src_target, "config", "--local", "include.path", "pivot/../active")
+    (src_target / "hidden-by-outside.txt").write_text("hidden\n", encoding="utf-8")
+
+    with pytest.raises(SafetyError, match=r"non-real ancestor.*pivot"):
+        capture_surface_snapshot(src_target)
+
+
+def test_exact_prefix_token_is_a_literal_relative_include(src_target: Path) -> None:
+    _git(src_target, "config", "--local", "include.path", "%(prefix)")
+
+    snapshot = capture_surface_snapshot(src_target)
+
+    assert snapshot.entries
+
+
 def test_inventory_ignores_ambient_xdg_and_command_scope_excludes(
     src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -511,6 +543,7 @@ def test_visibility_inventory_resolves_linked_worktree_info_exclude(
     assert info.sha256 is not None
 
 
+@posix_only
 @requires_symlink
 def test_visibility_inventory_preserves_whitespace_in_resolved_info_exclude(
     src_target: Path,
@@ -790,7 +823,9 @@ def test_capture_refuses_temporary_missing_config_include(
     real_resolver = inventory._core_excludes_path
 
     def temporary_include(target: Path) -> Path | None:
-        included.write_text(f"[core]\n\texcludesFile = {ignore_a}\n", encoding="utf-8")
+        included.write_text(
+            f"[core]\n\texcludesFile = {ignore_a.as_posix()}\n", encoding="utf-8"
+        )
         try:
             return real_resolver(target)
         finally:
@@ -807,7 +842,9 @@ def test_capture_refuses_temporary_onbranch_include_activation(
 ) -> None:
     included = src_target / "conditional-config"
     ignore_a = src_target / "ignore-a"
-    included.write_text(f"[core]\n\texcludesFile = {ignore_a}\n", encoding="utf-8")
+    included.write_text(
+        f"[core]\n\texcludesFile = {ignore_a.as_posix()}\n", encoding="utf-8"
+    )
     ignore_a.write_text("hide-a\n", encoding="utf-8")
     (src_target / "hide-a").write_text("visible on main\n", encoding="utf-8")
     _git(src_target, "branch", "feature")
@@ -841,6 +878,7 @@ def test_capture_refuses_temporary_linked_worktree_gitdir_redirect(
     _git(src_target, "worktree", "add", "--detach", str(linked), "HEAD")
     git_pointer = linked / ".git"
     original_pointer = git_pointer.read_bytes()
+    git_pointer.chmod(0o600)
 
     other = tmp_path / "other-repo"
     other.mkdir()
