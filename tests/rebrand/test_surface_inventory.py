@@ -533,7 +533,10 @@ def test_visibility_inventory_expands_prefix_include_path(
         f"[core]\n\texcludesFile = {excludes.as_posix()}\n", encoding="utf-8"
     )
     (src_target / "hidden-by-prefix.txt").write_text("hidden\n", encoding="utf-8")
-    prefix = inventory._git_exec_prefix(src_target)
+    # Git traverses a symlinked installation prefix before applying ``..``
+    # components in the suffix.  Build the fixture path from that physical
+    # directory so the configured include names ``included`` on Homebrew too.
+    prefix = inventory._git_exec_prefix(src_target).resolve()
     relative = os.path.relpath(included, prefix)
     _git(src_target, "config", "--local", "include.path", f"%(prefix)/{relative}")
 
@@ -548,7 +551,7 @@ def test_visibility_inventory_allows_missing_prefix_include(
     src_target: Path, tmp_path: Path
 ) -> None:
     missing = tmp_path / "missing-prefix-include"
-    prefix = inventory._git_exec_prefix(src_target)
+    prefix = inventory._git_exec_prefix(src_target).resolve()
     relative = os.path.relpath(missing, prefix)
     _git(src_target, "config", "--local", "include.path", f"%(prefix)/{relative}")
 
