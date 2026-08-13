@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import stat
-import subprocess  # nosec B404 — git ls-files enumerates the target
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +23,14 @@ from template_press.rebrand.identity import (
     replace_token,
     token_occurs,
 )
+from template_press.rebrand.inventory import (
+    capture_surface_snapshot,
+    gitlink_path_strings,
+    listed_paths,
+    select_copy_entries,
+    select_rename_entries,
+    select_verifier_entries,
+)
 from template_press.rebrand.rules import (
     ReplaceRule,
     Rules,
@@ -36,9 +43,7 @@ from template_press.rebrand.safety import (
     assert_ancestors_real,
     assert_under_root,
     chmod_nofollow,
-    git_hardening_args,
     safe_write,
-    scrubbed_git_env,
 )
 
 RENAME_FIELDS: tuple[str, ...] = (
@@ -130,37 +135,9 @@ def _is_excluded(rel: Path, rules: Rules) -> bool:
 
 
 def _git_listed(target: Path) -> list[Path]:
-    """Relative paths git reports (tracked+untracked), honoring .gitignore.
+    """Compatibility adapter over the one raw surface inventory."""
 
-    Uses `git ls-files --cached --others --exclude-standard`. This is a
-    working-tree-scanning read on an untrusted target (a hostile
-    `.git/config` is attacker input), so it is scrubbed-env + hardening-args
-    protected (G5+) exactly like the sandbox's on-target git calls: no
-    identity is needed for a read.
-    """
-    result = subprocess.run(  # noqa: S603 # nosec B603 B607
-        [  # noqa: S607
-            "git",
-            "-C",
-            str(target),
-            *git_hardening_args(),
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-        ],
-        check=True,
-        capture_output=True,
-        # Capture raw BYTES (no encoding=): a git path is any byte except NUL,
-        # so a non-UTF-8 filename would raise UnicodeDecodeError under a strict
-        # text decode and crash enumeration. Decode UTF-8 with surrogateescape
-        # so arbitrary bytes round-trip to str (and back, via os.fsencode) —
-        # this also avoids the Windows locale-codepage mojibake text=True gives.
-        env=scrubbed_git_env(),
-    )
-    stdout = result.stdout.decode("utf-8", "surrogateescape")
-    return [Path(line) for line in stdout.split("\0") if line]
+    return list(listed_paths(capture_surface_snapshot(target)))
 
 
 def _press_dirs(files: list[Path]) -> set[str]:
@@ -229,39 +206,9 @@ def iter_target_files(target: Path, rules: Rules) -> list[Path]:
 
 
 def _gitlink_rels(target: Path) -> frozenset[str]:
-    """POSIX rel paths of index entries whose mode is a gitlink (160000).
+    """Compatibility adapter for gitlink index paths."""
 
-    Reads the index directly (``git ls-files --stage``), so a submodule
-    that isn't checked out is still correctly identified — no working-tree
-    directory needs to exist. Scrubbed-env + hardening-args protected (G5+):
-    the target's own ``.git/config`` is attacker input.
-    """
-    result = subprocess.run(  # noqa: S603 # nosec B603 B607
-        [  # noqa: S607
-            "git",
-            "-C",
-            str(target),
-            *git_hardening_args(),
-            "ls-files",
-            "--stage",
-            "-z",
-        ],
-        check=True,
-        capture_output=True,
-        # Raw bytes + surrogateescape decode (see _git_listed): a gitlink whose
-        # path carries a non-UTF-8 byte must not crash enumeration.
-        env=scrubbed_git_env(),
-    )
-    stdout = result.stdout.decode("utf-8", "surrogateescape")
-    rels: set[str] = set()
-    for entry in stdout.split("\0"):
-        if not entry:
-            continue
-        meta, _, rel = entry.partition("\t")
-        mode = meta.split(" ", 1)[0]
-        if mode == "160000":
-            rels.add(rel)
-    return frozenset(rels)
+    return gitlink_path_strings(capture_surface_snapshot(target))
 
 
 def _rename_candidates(target: Path, rules: Rules) -> list[Path]:
@@ -280,20 +227,20 @@ def _rename_candidates(target: Path, rules: Rules) -> list[Path]:
     excluded outright: a submodule mount point must never be renamed by
     this pass.
     """
-    gitlinks = _gitlink_rels(target)
-    out: list[Path] = []
-    for rel in _git_listed(target):
-        if _is_excluded(rel, rules):
-            continue
-        posix = rel.as_posix()
-        if posix in ROOT_CONTROL:
-            continue
-        if posix in gitlinks:
-            continue
-        path = target / rel
-        if path.is_file() or path.is_symlink():
-            out.append(path)
-    return sorted(out)
+    snapshot = capture_surface_snapshot(target)
+    # A tracked path hidden behind a symlink ancestor is classified ``other``
+    # without traversal by the raw inventory. Do not silently drop it from the
+    # mutating path: preserve the existing fail-closed containment refusal.
+    for entry in snapshot.entries:
+        if entry.worktree_kind == "other":
+            assert_ancestors_real(target / entry.rel, target)
+    entries = select_rename_entries(
+        snapshot,
+        exclude_files=rules.exclude_files,
+        exclude_dirs=rules.exclude_dirs,
+        root_control=ROOT_CONTROL,
+    )
+    return [target / entry.rel for entry in entries]
 
 
 def copy_paths(target: Path) -> list[PathEntry]:
@@ -306,18 +253,19 @@ def copy_paths(target: Path) -> list[PathEntry]:
     ``is_symlink()`` check on the (possibly not-checked-out) path decides
     "symlink" vs "file". Sorted, deterministic.
     """
-    gitlinks = _gitlink_rels(target)
     entries: list[PathEntry] = []
-    for rel in _git_listed(target):
+    for entry in select_copy_entries(capture_surface_snapshot(target)):
+        rel = entry.rel
         if ".git" in rel.parts:
             continue
-        posix = rel.as_posix()
-        if posix in gitlinks:
+        if entry.index_kind == "gitlink":
             kind = "gitlink"
-        elif (target / rel).is_symlink():
+        elif entry.worktree_kind == "symlink":
             kind = "symlink"
-        else:
+        elif entry.worktree_kind == "file":
             kind = "file"
+        else:
+            continue
         entries.append(PathEntry(rel, kind))
     return sorted(entries, key=lambda e: e.rel.as_posix())
 
@@ -390,16 +338,22 @@ def scan_paths(
     without the translation (P04 D3).
     """
     exempt_lockfiles = {p for p, _ in exempt_regenerated_paths(rules, renamed)}
+    snapshot = capture_surface_snapshot(target)
+    selected = select_verifier_entries(
+        snapshot,
+        verify_ignore=rules.verify_ignore,
+        root_control=ROOT_CONTROL,
+        exempt_paths=frozenset(exempt_lockfiles),
+    )
     out: list[PathEntry] = []
-    for entry in copy_paths(target):
-        posix = entry.rel.as_posix()
-        if posix in ROOT_CONTROL:
-            continue
-        if posix in exempt_lockfiles:
-            continue
-        if any(part in rules.verify_ignore for part in entry.rel.parts):
-            continue
-        out.append(entry)
+    for entry in selected:
+        if entry.index_kind == "gitlink":
+            kind = "gitlink"
+        elif entry.worktree_kind == "symlink":
+            kind = "symlink"
+        else:
+            kind = "file"
+        out.append(PathEntry(entry.rel, kind))
     return out
 
 

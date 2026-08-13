@@ -32,6 +32,10 @@ from template_press.rebrand.identity import (
     Identity,
     display_forms,
 )
+from template_press.rebrand.inventory import (
+    capture_surface_snapshot,
+    tracked_path_strings,
+)
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.rules import (
     RegenerateRule,
@@ -315,9 +319,9 @@ def _git_stdout(target: Path, *args: str) -> str:
 
 
 def tracked_paths(target: Path) -> frozenset[str]:
-    """POSIX rel paths git tracks — an index read (no clean/smudge filters)."""
-    out = _git_stdout(target, "ls-files", "-z")
-    return frozenset(p for p in out.split("\0") if p)
+    """Compatibility adapter for every path present in the target index."""
+
+    return tracked_path_strings(capture_surface_snapshot(target))
 
 
 def has_uncommitted_changes(target: Path, rel: str) -> bool:
