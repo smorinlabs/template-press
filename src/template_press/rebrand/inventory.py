@@ -291,6 +291,7 @@ def _active_gitignore_paths(
     repository_markers: set[Path] = set()
     active_dirs: set[str] = {"."}
     opaque_nodes: set[tuple[int, int]] = set()
+    opaque_paths: set[str] = set()
     for entry in entries:
         is_gitlink = entry.index_kind == "gitlink"
         if entry.worktree_kind != "directory":
@@ -310,6 +311,13 @@ def _active_gitignore_paths(
                 f"cannot identify Git link boundary {target / entry.rel}: {exc}"
             ) from exc
         opaque_nodes.add((info.st_dev, info.st_ino))
+        # Git for Windows can report a case-preserving index spelling whose
+        # directory entry has different case, while its inode fields are not
+        # reliable enough to identify the alias.  ``normcase`` supplies that
+        # platform's path identity; POSIX keeps the inode check for
+        # case-insensitive volumes because ``normcase`` is intentionally a
+        # no-op there.
+        opaque_paths.add(os.path.normcase(os.fspath(target / entry.rel)))
     pending: list[Path] = [Path(".")]
     while pending:
         children: list[Path] = []
@@ -345,7 +353,11 @@ def _active_gitignore_paths(
                     Path(child.name) if rel_dir == Path(".") else rel_dir / child.name
                 )
                 child_info = child.stat(follow_symlinks=False)
-                if (child_info.st_dev, child_info.st_ino) in opaque_nodes:
+                child_path_key = os.path.normcase(os.fspath(target / child_rel))
+                if (
+                    child_info.st_dev,
+                    child_info.st_ino,
+                ) in opaque_nodes or child_path_key in opaque_paths:
                     continue
                 children.append(child_rel)
         ignored = _ignored_directories(target, children, core_excludes)

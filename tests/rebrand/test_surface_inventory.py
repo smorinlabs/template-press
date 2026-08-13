@@ -1025,6 +1025,7 @@ def test_capture_refuses_temporary_onbranch_include_activation(
         capture_surface_snapshot(src_target)
 
 
+@posix_only
 def test_capture_refuses_temporary_linked_worktree_gitdir_redirect(
     src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
