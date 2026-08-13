@@ -518,6 +518,72 @@ def test_gitlink_submodule_dir_is_not_a_regular_file(tmp_path: Path) -> None:
     assert is_regular_lstat(sub) is False
 
 
+@pytest.mark.skipif(os.name == "nt", reason="descriptor-relative POSIX read")
+def test_read_regular_refuses_path_replaced_during_descriptor_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    source = tmp_path / "source.txt"
+    source.write_text("captured bytes\n", encoding="utf-8")
+    replacement = tmp_path / "replacement.txt"
+    replacement.write_text("live replacement\n", encoding="utf-8")
+    displaced = tmp_path / "displaced.txt"
+    real_read = safety._read_descriptor
+    swapped = False
+
+    def swap_path_after_read(descriptor: int) -> bytes:
+        nonlocal swapped
+        data = real_read(descriptor)
+        if not swapped:
+            source.rename(displaced)
+            replacement.rename(source)
+            swapped = True
+        return data
+
+    monkeypatch.setattr(safety, "_read_descriptor", swap_path_after_read)
+
+    with pytest.raises(SafetyError, match="changed while reading"):
+        safety.read_regular_nofollow(source)
+    assert source.read_text(encoding="utf-8") == "live replacement\n"
+
+
+@requires_symlink
+@pytest.mark.skipif(os.name == "nt", reason="descriptor-relative POSIX readlink")
+def test_readlink_refuses_ancestor_replaced_during_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    inside = tmp_path / "inside"
+    inside.mkdir()
+    link = inside / "link"
+    link.symlink_to("clean-target")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "link").symlink_to("demo_widget-target")
+    displaced = tmp_path / "displaced"
+    real_readlink = os.readlink
+    swapped = False
+
+    def swap_ancestor_during_readlink(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        dir_fd: int | None = None,
+    ) -> str | bytes:
+        nonlocal swapped
+        if not swapped:
+            inside.rename(displaced)
+            inside.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return real_readlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(safety.os, "readlink", swap_ancestor_during_readlink)
+
+    with pytest.raises(SafetyError, match="changed while reading"):
+        safety.readlink_nofollow(link)
+
+
 # ---------------------------------------------------------------------------
 # G1 / G1+ — test isolation guard (autouse conftest)
 # ---------------------------------------------------------------------------

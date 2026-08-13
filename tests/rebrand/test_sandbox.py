@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.safety import ContainmentError
+from template_press.rebrand.safety import ContainmentError, SafetyError
 from template_press.rebrand.sandbox import Sandbox, make_sandbox
 
 from .conftest import make_target, posix_only, requires_symlink
@@ -99,6 +99,19 @@ def test_force_added_gitignored_file_in_commit(tmp_path: Path) -> None:
     # The sandbox copies .gitignore too (which ignores secret.env); only a
     # forced add (`-f`) lands it in the sandbox commit.
     assert "secret.env" in _committed_paths(result.path)
+
+
+def test_present_unmaterializable_node_refuses_sandbox(tmp_path: Path) -> None:
+    target = make_target(tmp_path)
+    occupied = target / "occupied"
+    occupied.write_text("tracked file\n", encoding="utf-8")
+    _git(target, "add", occupied.name)
+    _git(target, "commit", "-q", "-m", "add occupied")
+    occupied.unlink()
+    occupied.mkdir()
+
+    with pytest.raises(SafetyError, match="cannot materialize"):
+        make_sandbox(target, _dest_root(tmp_path))
 
 
 @posix_only

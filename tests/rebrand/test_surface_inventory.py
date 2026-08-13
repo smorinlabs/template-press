@@ -704,7 +704,9 @@ def test_capture_refuses_same_ignore_transition_during_every_enumeration(
         capture_surface_snapshot(src_target)
 
 
-def test_inventory_pins_case_sensitive_ignore_matching(src_target: Path) -> None:
+def test_inventory_preserves_effective_case_insensitive_ignore_matching(
+    src_target: Path,
+) -> None:
     (src_target / ".gitignore").write_text("FOO\n", encoding="utf-8")
     (src_target / "foo").write_text("must remain visible\n", encoding="utf-8")
     _git(src_target, "config", "core.ignoreCase", "true")
@@ -713,7 +715,7 @@ def test_inventory_pins_case_sensitive_ignore_matching(src_target: Path) -> None
         entry.rel.as_posix() for entry in capture_surface_snapshot(src_target).entries
     }
 
-    assert "foo" in rels
+    assert "foo" not in rels
 
 
 def test_capture_refuses_repeated_core_excludes_config_transition(
@@ -773,7 +775,9 @@ def test_visibility_read_refuses_ancestor_swap_at_descriptor_open(
         capture_surface_snapshot(src_target)
 
 
-def test_copy_adapter_uses_materializable_copy_selector(src_target: Path) -> None:
+def test_copy_adapter_marks_present_unmaterializable_nodes(
+    src_target: Path,
+) -> None:
     missing = src_target / "tracked-missing.txt"
     missing.write_text("tracked\n", encoding="utf-8")
     _git(src_target, "add", missing.name)
@@ -789,7 +793,7 @@ def test_copy_adapter_uses_materializable_copy_selector(src_target: Path) -> Non
     entries = {entry.rel.as_posix(): entry.kind for entry in copy_paths(src_target)}
 
     assert missing.name not in entries
-    assert occupied.name not in entries
+    assert entries[occupied.name] == "unscannable"
 
 
 def test_dirty_gitlink_file_replacement_is_scannable_worktree_content(
@@ -990,6 +994,7 @@ def test_consumer_selectors_keep_their_distinct_contracts(
         "README.md",
         "link",
         "sub",
+        "occupied",
         "press/press-source.toml",
         "uv.lock",
         "bun.lock",
