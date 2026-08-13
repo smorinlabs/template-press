@@ -201,11 +201,29 @@ uses the subject appropriate to the surface:
 |---|---|---|
 | Content | The file's current relative path | The current path or its reverse-mapped source path |
 | Path | The entry's current relative path | The current path or its reverse-mapped source path |
-| Symlink | The normalized link-target path | The current target path or its reverse-mapped source path |
+| Symlink | No direct row rewrite; retargeting uses the path plan | The path-plan trigger that moved the target prefix; direct current or reverse-source target scope remains a supplemental match |
 
 The post-apply union preserves the doctor's current fail-safe behavior. A
 source-coordinate `files` glob must still govern a path after an ancestor has
 been renamed.
+
+Symlink scope cannot be decided only by applying a rule's `files` glob to the
+normalized target path. A scoped descendant can trigger an ancestor-prefix
+rename even when the target directory itself does not match the glob. Each
+`RenamePlan` step therefore records the source entries that triggered the step
+and the contributing row IDs. The inline doctor selects a row's symlink hunt
+when the normalized old or current target falls under a planned or executed
+prefix contributed by that row. A direct current-target or reverse-source
+scope match remains sufficient, including for a dangling target's virtual
+translation.
+
+The standalone verifier reaches the same safety result through its independent
+path. It renders each `paths = true` rule from `Identity` and `Rules`, applies
+that rule's scope to the raw source `SurfaceSnapshot`, and derives the ancestor
+prefixes those matching entries can trigger. It does not consume table row IDs,
+plan provenance, or compiled hunt policies. This preserves the verifier's
+independence while preventing the rewriter, doctor, and verifier from sharing a
+target-directory-only scope blind spot.
 
 ### Mechanism-to-row mapping
 
@@ -275,12 +293,12 @@ leave Git's ignore inputs unchanged.
 
 `RenamePlan` retains ordered steps rather than collapsing them into one
 single-pass dictionary. Each step records a stable step ID, the old prefix, the
-new prefix, the pass number, contributing row IDs, and predecessor step IDs.
-A predecessor is a step whose successful move creates the intermediate
-coordinate used by the later step. Apply executes a step only when every
-predecessor executed. A skipped or failed predecessor therefore cannot cause a
-later step to rename unrelated content that already occupies the intermediate
-path.
+new prefix, the pass number, contributing row IDs, source entries that triggered
+the prefix change, and predecessor step IDs. A predecessor is a step whose
+successful move creates the intermediate coordinate used by the later step.
+Apply executes a step only when every predecessor executed. A skipped or failed
+predecessor therefore cannot cause a later step to rename unrelated content
+that already occupies the intermediate path.
 
 Each executable prefix step also retains a closure formed from two sources:
 all no-follow worktree descendants and all `SurfaceEntry` index paths beneath
@@ -463,6 +481,12 @@ validator enforces two properties before any target write:
    no intermediate coordinate enters both scopes; the conservative validator
    may decline every glob-based path exemption.
 
+   Target-specific overlap also includes shared rewritten prefixes. Two rules
+   scoped to different leaves can still conflict when both leaves cause a
+   change to the same ancestor component. If two reachable candidates assign
+   different destinations to one source prefix, planning refuses the conflict
+   even when the leaf-level `files` globs do not overlap.
+
    The validator builds the cross-row dependency graph by applying the
    potential receiving row's exact `MatcherSpec` to each output. It rejects
    every dependency. When dependencies form a cycle, the error reports the full
@@ -472,9 +496,12 @@ validator enforces two properties before any target write:
    path behavior that row-local output comparison cannot see. Symlink text is
    derived from the validated final rename plan, not a third ordered rewrite
    pipeline.
-2. **Path-component structural safety.** A path substitution cannot introduce
-   a separator, an empty component, `.` or `..`, or another value that changes
-   the component count.
+2. **Path-component structural safety.** A path row's `from_value` cannot
+   contain `/` or `\`, because the component-wise matcher can never observe a
+   cross-component source. Its `to_value` cannot contain either separator,
+   produce an empty component, produce `.` or `..`, or otherwise change the
+   component count. These checks preserve the current source- and
+   destination-side refusals.
 
 The row-local checks see matches wholly inside `to_value`. They do not claim to
 detect a content match that straddles surrounding file text and the inserted
@@ -665,6 +692,9 @@ rebrand acceptance matrix. PR 3 also needs focused regression tests for:
 - rejection of a path output that feeds an earlier row, a two-row path cycle,
   a content output that feeds a later row, and a content output that emits an
   earlier row's doctor source;
+- rejection when two leaf-scoped path rules assign different destinations to a
+  shared ancestor prefix, and rejection of a path-row source containing `/` or
+  `\`;
 - pre-write rejection when a content rewrite, reset, direct path rename, or
   ancestor-prefix rename would change a Git visibility input and expose a
   previously ignored untracked path;
@@ -678,6 +708,10 @@ rebrand acceptance matrix. PR 3 also needs focused regression tests for:
   content, and regenerated paths;
 - preservation of dangling-link translation through a virtual plan entry, and
   refusal to retarget an existing link for a changed non-path identity field;
+- retargeting and leak detection when a scoped descendant triggers an ancestor
+  rename but a symlink target names only that ancestor; require the standalone
+  verifier to derive the trigger from `Rules` and the source snapshot rather
+  than table or plan provenance;
 - derivation of doctor, reset, and regeneration hunts from a newly added row;
   and
 - rejection of direct or transitive verifier dependencies on table consumers,
