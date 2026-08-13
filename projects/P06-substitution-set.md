@@ -153,16 +153,16 @@ of being silently redirected.
 
 ### Tests & Tasks
 
-- [ ] [P06-TS01] Failing characterization tests for the shared
+- [x] [P06-TS01] Failing characterization tests for the shared
       `SurfaceSnapshot`: tracked and untracked files, ignored paths, symlinks,
       gitlinks, non-UTF-8 path bytes, tracked deletions, file-to-directory
       replacements, and regular-versus-symlink Git visibility inputs.
-- [ ] [P06-T02] Implement `inventory.py` with `SurfaceEntry`,
+- [x] [P06-T02] Implement `inventory.py` with `SurfaceEntry`,
       `VisibilityInput`, and `SurfaceSnapshot`; make one hardened Git-backed
       capture pass the TS01 contract; delegate the five existing walker APIs
       to selectors over that snapshot; remove duplicate Git enumeration while
       preserving every consumer's distinct exclusions.
-- [ ] [P06-T03] PR 1 gate: run the focused inventory and compatibility tests,
+- [x] [P06-T03] PR 1 gate: run the focused inventory and compatibility tests,
       `just check`, and `just matrix`; perform an adversarial architecture and
       defect review against design 0009, fix every reproduced in-scope defect,
       and rerun all gates before advancing.
