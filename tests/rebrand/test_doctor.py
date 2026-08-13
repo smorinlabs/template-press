@@ -214,7 +214,7 @@ def test_doctor_honors_verify_ignore_for_every_symlink_shape(
     leaks = find_leaks(src_target, SOURCE, rules)
 
     assert not any(leak.path.startswith("legacy/") for leak in leaks)
-    assert calls == 1
+    assert calls == 2
 
 
 @requires_symlink
@@ -665,6 +665,17 @@ class TestGitlinkLeaks:
         src = _identity()
         leaks = find_leaks(src_target, src, DEFAULT_RULES)
         assert not any(lk.path == "vendor_lib" for lk in leaks)
+
+    def test_dirty_gitlink_replaced_by_file_is_unverifiable(self, src_target: Path):
+        self._add_gitlink(src_target, "sub")
+        dirty = src_target / "sub"
+        dirty.write_text("demo_widget survives\n", encoding="utf-8")
+
+        leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+
+        assert any(
+            leak.path == "sub" and leak.where == "unverifiable" for leak in leaks
+        )
 
 
 class TestRuleScopeMigratedByAncestorRename:

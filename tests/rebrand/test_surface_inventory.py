@@ -625,7 +625,7 @@ def test_every_inventory_git_call_uses_target_hardening(
     capture_surface_snapshot(src_target)
 
     assert calls
-    assert sum("ls-files" in cmd for cmd, _kwargs in calls) == 1
+    assert sum("ls-files" in cmd for cmd, _kwargs in calls) == 2
     for cmd, kwargs in calls:
         assert cmd[0] == "git"
         assert "core.fsmonitor=" in cmd
@@ -653,6 +653,34 @@ def test_capture_refuses_ignore_policy_changed_during_enumeration(
     monkeypatch.setattr(inventory, "_run_git", mutate_after_listing)
 
     with pytest.raises(SafetyError, match="visibility changed during capture"):
+        capture_surface_snapshot(src_target)
+
+
+def test_capture_refuses_transient_ignore_policy_during_first_enumeration(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nested = src_target / "transient"
+    nested.mkdir()
+    leak = nested / "leak.txt"
+    leak.write_text("must remain visible\n", encoding="utf-8")
+    gitignore = nested / ".gitignore"
+    real_run_git = inventory._run_git
+    calls = 0
+
+    def transient_ignore(target: Path, *args: str, **kwargs):
+        nonlocal calls
+        if "ls-files" in args:
+            calls += 1
+            if calls == 1:
+                gitignore.write_text("leak.txt\n", encoding="utf-8")
+                result = real_run_git(target, *args, **kwargs)
+                gitignore.unlink()
+                return result
+        return real_run_git(target, *args, **kwargs)
+
+    monkeypatch.setattr(inventory, "_run_git", transient_ignore)
+
+    with pytest.raises(SafetyError, match="changed during capture"):
         capture_surface_snapshot(src_target)
 
 

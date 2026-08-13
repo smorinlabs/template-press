@@ -13,7 +13,7 @@ from template_press.rebrand.engine import (
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 
-from .conftest import DEST, SOURCE
+from .conftest import DEST, SOURCE, posix_only
 
 
 def _git_add_all(repo: Path) -> None:
@@ -98,6 +98,20 @@ def test_symlink_content_is_never_followed(src_target: Path, tmp_path: Path):
     report = apply(src_target, SOURCE, DEST, DEFAULT_RULES)
     assert outside.read_text(encoding="utf-8") == "demo_widget lives outside\n"
     assert any("link.txt (symlink)" in s for s in report.skipped)
+
+
+@posix_only
+def test_apply_preserves_legal_posix_punctuation_names(src_target: Path):
+    names = ("colon:name.txt", "back\\slash.txt")
+    for name in names:
+        (src_target / name).write_text("demo_widget\n", encoding="utf-8")
+    _git_add_all(src_target)
+
+    apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+    for name in names:
+        assert (src_target / name).read_text(encoding="utf-8") == "potato_launcher\n"
+    assert not (src_target / "back" / "slash.txt").exists()
 
 
 class TestDisplayPairs:

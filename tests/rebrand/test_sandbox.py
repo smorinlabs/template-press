@@ -22,7 +22,7 @@ import pytest
 from template_press.rebrand.safety import ContainmentError
 from template_press.rebrand.sandbox import Sandbox, make_sandbox
 
-from .conftest import make_target, requires_symlink
+from .conftest import make_target, posix_only, requires_symlink
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -99,6 +99,22 @@ def test_force_added_gitignored_file_in_commit(tmp_path: Path) -> None:
     # The sandbox copies .gitignore too (which ignores secret.env); only a
     # forced add (`-f`) lands it in the sandbox commit.
     assert "secret.env" in _committed_paths(result.path)
+
+
+@posix_only
+def test_sandbox_preserves_legal_posix_punctuation_names(tmp_path: Path) -> None:
+    target = make_target(tmp_path)
+    names = ("colon:name.txt", "back\\slash.txt")
+    for name in names:
+        (target / name).write_text("content\n", encoding="utf-8")
+    _git(target, "add", "--", *names)
+    _git(target, "commit", "-q", "-m", "add punctuation names")
+
+    result = make_sandbox(target, _dest_root(tmp_path))
+
+    for name in names:
+        assert (result.path / name).read_text(encoding="utf-8") == "content\n"
+    assert not (result.path / "back" / "slash.txt").exists()
 
 
 # ---------------------------------------------------------------------------
