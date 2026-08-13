@@ -361,9 +361,21 @@ def _core_excludes_path(target: Path) -> Path | None:
     return path if path.is_absolute() else target / path
 
 
-def _resolve_config_include_path(value: str, origin: Path) -> Path:
+def _git_exec_prefix(target: Path) -> Path:
+    """Installation prefix used by Git's ``%(prefix)`` interpolation."""
+
+    exec_path = _absolute_git_path(target, "--exec-path")
+    if len(exec_path.parents) < 2:
+        raise SafetyError(f"cannot derive Git installation prefix: {exec_path}")
+    return exec_path.parent.parent
+
+
+def _resolve_config_include_path(value: str, origin: Path, target: Path) -> Path:
     """Resolve one Git include path relative to its declaring config file."""
 
+    if value == "%(prefix)" or value.startswith("%(prefix)/"):
+        suffix = value.removeprefix("%(prefix)").removeprefix("/")
+        return (_git_exec_prefix(target) / suffix).absolute()
     if value.startswith("%("):
         raise SafetyError(f"unsupported interpolated Git include path: {value!r}")
     expanded = Path(os.path.expanduser(value))
@@ -405,7 +417,7 @@ def _config_source_paths(target: Path) -> tuple[tuple[Path, ...], tuple[Path, ..
         )
         if is_include:
             value = value_raw.decode("utf-8", "surrogateescape")
-            include = _resolve_config_include_path(value, origin)
+            include = _resolve_config_include_path(value, origin, target)
             includes.add(include)
             if key == "include.path":
                 unconditional_includes.add(include)

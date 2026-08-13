@@ -277,6 +277,11 @@ def test_scrubbed_git_env_clears_git_dir(tmp_path: Path, src_target: Path) -> No
     assert Path(resolved.stdout.strip()).resolve() == (src_target / ".git").resolve()
 
 
+def test_scrubbed_git_env_clears_git_exec_path() -> None:
+    env = scrubbed_git_env({"GIT_EXEC_PATH": "/outside/git-core"})
+    assert "GIT_EXEC_PATH" not in env
+
+
 def test_git_hardening_args_override_on_target_hookspath(src_target: Path) -> None:
     _git(
         "-C",

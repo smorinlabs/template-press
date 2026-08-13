@@ -405,6 +405,41 @@ def test_visibility_inventory_uses_core_excludes_from_local_include(
     }
 
 
+def test_visibility_inventory_expands_prefix_include_path(
+    src_target: Path, tmp_path: Path
+) -> None:
+    included = tmp_path / "prefix-included-config"
+    excludes = src_target / "prefix-included-ignore"
+    excludes.write_text("hidden-by-prefix.txt\n", encoding="utf-8")
+    included.write_text(
+        f"[core]\n\texcludesFile = {excludes.as_posix()}\n", encoding="utf-8"
+    )
+    (src_target / "hidden-by-prefix.txt").write_text("hidden\n", encoding="utf-8")
+    prefix = inventory._git_exec_prefix(src_target)
+    relative = os.path.relpath(included, prefix)
+    _git(src_target, "config", "--local", "include.path", f"%(prefix)/{relative}")
+
+    snapshot = capture_surface_snapshot(src_target)
+
+    assert "hidden-by-prefix.txt" not in {
+        entry.rel.as_posix() for entry in snapshot.entries
+    }
+
+
+def test_visibility_inventory_allows_missing_prefix_include(
+    src_target: Path, tmp_path: Path
+) -> None:
+    missing = tmp_path / "missing-prefix-include"
+    prefix = inventory._git_exec_prefix(src_target)
+    relative = os.path.relpath(missing, prefix)
+    _git(src_target, "config", "--local", "include.path", f"%(prefix)/{relative}")
+
+    snapshot = capture_surface_snapshot(src_target)
+
+    assert snapshot.entries
+    assert not missing.exists()
+
+
 def test_inventory_ignores_ambient_xdg_and_command_scope_excludes(
     src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
