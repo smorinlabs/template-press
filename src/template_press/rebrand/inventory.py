@@ -79,6 +79,19 @@ class _VisibilityState:
     stamps: tuple[_NodeStamp, ...]
 
 
+@dataclass(frozen=True)
+class _ConfigSourceStamp:
+    """Content and node identity for one effective repository config file."""
+
+    path: Path
+    sha256: str
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
 def _run_git(
     target: Path,
     *args: str,
@@ -341,6 +354,62 @@ def _core_excludes_path(target: Path) -> Path | None:
     return path if path.is_absolute() else target / path
 
 
+def _config_source_paths(target: Path) -> tuple[Path, ...]:
+    """Every file origin used by the effective repository config graph."""
+
+    result = _run_git(
+        target,
+        "config",
+        "--includes",
+        "--show-origin",
+        "--null",
+        "--list",
+    )
+    if not result.stdout.endswith(b"\0"):
+        raise SafetyError("malformed NUL-delimited Git config origins")
+    records = result.stdout[:-1].split(b"\0")
+    if len(records) % 2:
+        raise SafetyError("malformed Git config origin/value pairs")
+    paths: set[Path] = set()
+    for origin_raw in records[::2]:
+        if not origin_raw.startswith(b"file:"):
+            continue
+        text = origin_raw[len(b"file:") :].decode("utf-8", "surrogateescape")
+        path = Path(text)
+        paths.add((path if path.is_absolute() else target / path).absolute())
+    return tuple(sorted(paths, key=lambda path: path.as_posix()))
+
+
+def _config_source_stamp(path: Path) -> _ConfigSourceStamp:
+    """Fingerprint one config source without following path components."""
+
+    try:
+        before = os.lstat(path)
+        if not stat.S_ISREG(before.st_mode):
+            raise SafetyError(f"Git config source is not a regular file: {path}")
+        data = read_regular_nofollow(path)
+        after = os.lstat(path)
+    except OSError as exc:
+        raise SafetyError(
+            f"cannot fingerprint Git config source {path}: {exc}"
+        ) from exc
+    if not stat.S_ISREG(after.st_mode) or not os.path.samestat(before, after):
+        raise SafetyError(f"Git config source changed while reading: {path}")
+    return _ConfigSourceStamp(
+        path,
+        hashlib.sha256(data).hexdigest(),
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+
+
+def _config_source_state(target: Path) -> tuple[_ConfigSourceStamp, ...]:
+    return tuple(_config_source_stamp(path) for path in _config_source_paths(target))
+
+
 def _assert_real_ancestors(path: Path) -> bool:
     """Return False for a missing ancestor; raise for a symlink/non-directory."""
 
@@ -486,10 +555,15 @@ def _capture_candidate(
 ) -> SurfaceSnapshot:
     """One coherent candidate; the public capture compares two candidates."""
 
-    core_excludes = _core_excludes_path(target)
-    visibility_before = _visibility_inputs(target, seed_entries, core_excludes)
-    entries = _enumerate_entries(target, core_excludes)
-    visibility_after = _visibility_inputs(target, entries, core_excludes)
+    config_before = _config_source_state(target)
+    core_excludes_before = _core_excludes_path(target)
+    visibility_before = _visibility_inputs(target, seed_entries, core_excludes_before)
+    entries = _enumerate_entries(target, core_excludes_before)
+    core_excludes_after = _core_excludes_path(target)
+    visibility_after = _visibility_inputs(target, entries, core_excludes_after)
+    config_after = _config_source_state(target)
+    if config_before != config_after or core_excludes_before != core_excludes_after:
+        raise SafetyError("Git config sources changed during capture")
     if visibility_before != visibility_after:
         raise SafetyError("Git visibility changed during capture")
     return SurfaceSnapshot(entries, visibility_after.inputs)
