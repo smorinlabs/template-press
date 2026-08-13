@@ -27,7 +27,7 @@ from template_press.rebrand.inventory import (
     capture_surface_snapshot,
     gitlink_path_strings,
     listed_paths,
-    select_copy_entries,
+    select_content_rewrite_entries,
     select_rename_entries,
     select_verifier_entries,
 )
@@ -89,8 +89,8 @@ REGENERATE_EXEMPTIBLE: frozenset[str] = frozenset({"uv.lock", "bun.lock"})
 class PathEntry:
     """A ``copy_paths``/``scan_paths`` entry: a relative path plus its kind.
 
-    ``kind`` is ``"file" | "symlink" | "gitlink"``, determined without
-    following links — this is the interface Task 7's scanner consumes.
+    ``kind`` is ``"file" | "symlink" | "gitlink" | "unscannable"``,
+    determined without following links.
     """
 
     rel: Path
@@ -192,17 +192,31 @@ def iter_target_files(target: Path, rules: Rules) -> list[Path]:
     artifacts in ROOT_CONTROL. Everything else under a press/ dir — root or
     nested — is ordinary content: scanned and rewritten like any file.
     """
-    files = _git_listed(target)
-    out: list[Path] = []
-    for rel in files:
-        if _is_excluded(rel, rules):
-            continue
-        if rel.as_posix() in ROOT_CONTROL:
-            continue
-        path = target / rel
-        if path.is_file():
-            out.append(path)
-    return sorted(out)
+    snapshot = capture_surface_snapshot(target)
+    entries = select_content_rewrite_entries(
+        snapshot,
+        exclude_files=rules.exclude_files,
+        exclude_dirs=rules.exclude_dirs,
+        root_control=ROOT_CONTROL,
+    )
+    # Preserve the compatibility adapter's observable symlink skip reporting
+    # without recovering membership through ``Path.is_file()``, which would
+    # follow the link or one of its ancestors. All symlink leaves are safe for
+    # ``_read_text``: it refuses them before reading bytes.
+    symlinks = tuple(
+        entry
+        for entry in select_rename_entries(
+            snapshot,
+            exclude_files=rules.exclude_files,
+            exclude_dirs=rules.exclude_dirs,
+            root_control=ROOT_CONTROL,
+        )
+        if entry.worktree_kind == "symlink"
+    )
+    return [
+        target / entry.rel
+        for entry in sorted((*entries, *symlinks), key=lambda item: item.rel.as_posix())
+    ]
 
 
 def _gitlink_rels(target: Path) -> frozenset[str]:
@@ -254,7 +268,7 @@ def copy_paths(target: Path) -> list[PathEntry]:
     "symlink" vs "file". Sorted, deterministic.
     """
     entries: list[PathEntry] = []
-    for entry in select_copy_entries(capture_surface_snapshot(target)):
+    for entry in capture_surface_snapshot(target).entries:
         rel = entry.rel
         if ".git" in rel.parts:
             continue
@@ -265,7 +279,7 @@ def copy_paths(target: Path) -> list[PathEntry]:
         elif entry.worktree_kind == "file":
             kind = "file"
         else:
-            continue
+            kind = "file"
         entries.append(PathEntry(rel, kind))
     return sorted(entries, key=lambda e: e.rel.as_posix())
 
@@ -351,8 +365,10 @@ def scan_paths(
             kind = "gitlink"
         elif entry.worktree_kind == "symlink":
             kind = "symlink"
-        else:
+        elif entry.worktree_kind == "file":
             kind = "file"
+        else:
+            kind = "unscannable"
         out.append(PathEntry(entry.rel, kind))
     return out
 

@@ -374,6 +374,8 @@ GIT_ENV_UNSET: tuple[str, ...] = (
     "GIT_OBJECT_DIRECTORY",
     "GIT_COMMON_DIR",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
 )
 
 
@@ -388,6 +390,9 @@ def scrubbed_git_env(
     env = dict(os.environ if base is None else base)
     for key in GIT_ENV_UNSET:
         env.pop(key, None)
+    for key in tuple(env):
+        if key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
+            env.pop(key, None)
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"

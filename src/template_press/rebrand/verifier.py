@@ -387,6 +387,19 @@ def scan(
                 )
             )
             continue
+        if entry.kind == "unscannable":
+            findings.append(
+                Finding(
+                    posix,
+                    "io",
+                    "unreadable",
+                    "unscannable",
+                    None,
+                    None,
+                    "",
+                )
+            )
+            continue
         findings.extend(
             _scan_file(
                 target, rel, posix, changed, substring_fields, rendered_rules, renamed

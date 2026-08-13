@@ -114,6 +114,7 @@ def make_sandbox(target: Path, dest_root: Path) -> Sandbox:
         rel = entry.rel
         src = target / rel
         dest = sandbox / rel
+        assert_ancestors_real(src, target)
         if rel.parent != Path("."):
             safe_mkdir(sandbox, rel.parent)
         if entry.kind == "file":

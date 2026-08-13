@@ -18,6 +18,7 @@ from typing import Literal
 from template_press.rebrand.safety import (
     SafeRelPath,
     SafetyError,
+    UnsafePathError,
     git_hardening_args,
     scrubbed_git_env,
 )
@@ -61,8 +62,13 @@ def _run_git(
     *args: str,
     check: bool = True,
     stdin: bytes | None = None,
+    pin_core_excludes: bool = False,
+    core_excludes: Path | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    command = ["git", "-C", str(target), *git_hardening_args(), *args]
+    command = ["git", "-C", str(target), *git_hardening_args()]
+    if pin_core_excludes:
+        command.extend(["-c", f"core.excludesFile={core_excludes or Path(os.devnull)}"])
+    command.extend(args)
     return subprocess.run(  # noqa: S603 # nosec B603 B607
         command,
         check=check,
@@ -80,6 +86,24 @@ def _index_kind(mode: str) -> IndexKind:
     if mode == "160000":
         return "gitlink"
     raise SafetyError(f"unsupported Git index mode {mode!r} in surface inventory")
+
+
+def _git_rel_path(path_text: str) -> Path:
+    """Validate Git's canonical slash-separated path without changing bytes."""
+
+    if os.name == "nt":
+        return Path(SafeRelPath(path_text).as_posix())
+    if not path_text or path_text.startswith("/"):
+        raise UnsafePathError(f"unsafe Git relative path: {path_text!r}")
+    parts = path_text.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        raise UnsafePathError(f"unsafe Git path component: {path_text!r}")
+    if any(part == ".git" for part in parts):
+        raise UnsafePathError(f"'.git' component not allowed: {path_text!r}")
+    rel = Path(*parts)
+    if os.fsencode(rel.as_posix()) != path_text.encode("utf-8", "surrogateescape"):
+        raise UnsafePathError(f"Git path did not round trip exactly: {path_text!r}")
+    return rel
 
 
 def parse_ls_files(raw: bytes) -> list[tuple[Path, bool, IndexKind | None]]:
@@ -122,7 +146,7 @@ def parse_ls_files(raw: bytes) -> list[tuple[Path, bool, IndexKind | None]]:
             tracked = True
             kind = _index_kind(mode)
         path_text = path_raw.decode("utf-8", "surrogateescape")
-        rel = Path(SafeRelPath(path_text).as_posix())
+        rel = _git_rel_path(path_text)
         posix = rel.as_posix()
         if posix in parsed:
             raise SafetyError(f"duplicate Git inventory path {posix!r}")
@@ -156,7 +180,9 @@ def _worktree_kind(target: Path, rel: Path) -> WorktreeKind:
     return "other"
 
 
-def _ignored_directories(target: Path, rels: list[Path]) -> set[str]:
+def _ignored_directories(
+    target: Path, rels: list[Path], core_excludes: Path | None
+) -> set[str]:
     if not rels:
         return set()
     payload = b"".join(
@@ -170,6 +196,8 @@ def _ignored_directories(target: Path, rels: list[Path]) -> set[str]:
         "--stdin",
         check=False,
         stdin=payload,
+        pin_core_excludes=True,
+        core_excludes=core_excludes,
     )
     if result.returncode not in (0, 1):
         raise subprocess.CalledProcessError(
@@ -183,7 +211,9 @@ def _ignored_directories(target: Path, rels: list[Path]) -> set[str]:
 
 
 def _active_gitignore_paths(
-    target: Path, entries: tuple[SurfaceEntry, ...]
+    target: Path,
+    entries: tuple[SurfaceEntry, ...],
+    core_excludes: Path | None,
 ) -> set[Path]:
     """Find `.gitignore` leaves in directories Git can traverse.
 
@@ -195,6 +225,9 @@ def _active_gitignore_paths(
 
     found: set[Path] = set()
     active_dirs: set[str] = {"."}
+    gitlinks = {
+        entry.rel.as_posix() for entry in entries if entry.index_kind == "gitlink"
+    }
     pending: list[Path] = [Path(".")]
     while pending:
         children: list[Path] = []
@@ -215,8 +248,10 @@ def _active_gitignore_paths(
                 child_rel = (
                     Path(child.name) if rel_dir == Path(".") else rel_dir / child.name
                 )
+                if child_rel.as_posix() in gitlinks:
+                    continue
                 children.append(child_rel)
-        ignored = _ignored_directories(target, children)
+        ignored = _ignored_directories(target, children, core_excludes)
         pending = []
         for child in sorted(children, key=lambda path: path.as_posix()):
             if child.as_posix() in ignored:
@@ -244,8 +279,9 @@ def _core_excludes_path(target: Path) -> Path | None:
     result = _run_git(
         target,
         "config",
-        "--local",
+        "--includes",
         "--path",
+        "--null",
         "--get",
         "core.excludesFile",
         check=False,
@@ -256,7 +292,9 @@ def _core_excludes_path(target: Path) -> Path | None:
         raise subprocess.CalledProcessError(
             result.returncode, result.args, result.stdout, result.stderr
         )
-    text = result.stdout.decode("utf-8", "surrogateescape").strip()
+    if not result.stdout.endswith(b"\0") or result.stdout.count(b"\0") != 1:
+        raise SafetyError("malformed NUL-delimited core.excludesFile value")
+    text = result.stdout[:-1].decode("utf-8", "surrogateescape")
     if not text:
         return None
     path = Path(text)
@@ -292,6 +330,10 @@ def _fingerprint_visibility(origin: VisibilityOrigin, path: Path) -> VisibilityI
     except FileNotFoundError:
         return VisibilityInput(origin, path, "missing", None, None)
     if stat.S_ISLNK(mode):
+        if origin != "gitignore":
+            raise SafetyError(
+                f"Git {origin} visibility input is a symbolic link: {path}"
+            )
         return VisibilityInput(origin, path, "symlink", None, os.readlink(path))
     if stat.S_ISDIR(mode):
         return VisibilityInput(origin, path, "directory", None, None)
@@ -314,17 +356,18 @@ def _fingerprint_visibility(origin: VisibilityOrigin, path: Path) -> VisibilityI
 
 
 def _visibility_inputs(
-    target: Path, entries: tuple[SurfaceEntry, ...]
+    target: Path,
+    entries: tuple[SurfaceEntry, ...],
+    core_excludes: Path | None,
 ) -> tuple[VisibilityInput, ...]:
     items = [
         _fingerprint_visibility("gitignore", path)
-        for path in _active_gitignore_paths(target, entries)
+        for path in _active_gitignore_paths(target, entries, core_excludes)
     ]
     info_exclude = _absolute_git_path(
         target, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"
     )
     items.append(_fingerprint_visibility("info_exclude", info_exclude))
-    core_excludes = _core_excludes_path(target)
     if core_excludes is not None:
         items.append(_fingerprint_visibility("core_excludes_file", core_excludes))
     order = {"gitignore": 0, "info_exclude": 1, "core_excludes_file": 2}
@@ -337,6 +380,8 @@ def capture_surface_snapshot(target: Path) -> SurfaceSnapshot:
     """Capture one sorted raw surface snapshot from an external target."""
 
     target = target.absolute()
+    core_excludes = _core_excludes_path(target)
+    visibility_before = _visibility_inputs(target, (), core_excludes)
     result = _run_git(
         target,
         "ls-files",
@@ -346,12 +391,42 @@ def capture_surface_snapshot(target: Path) -> SurfaceSnapshot:
         "--cached",
         "--others",
         "--exclude-standard",
+        pin_core_excludes=True,
+        core_excludes=core_excludes,
     )
+    parsed = parse_ls_files(result.stdout)
     entries = tuple(
         SurfaceEntry(rel, tracked, index_kind, _worktree_kind(target, rel))
-        for rel, tracked, index_kind in parse_ls_files(result.stdout)
+        for rel, tracked, index_kind in parsed
     )
-    return SurfaceSnapshot(entries, _visibility_inputs(target, entries))
+    visibility_after = _visibility_inputs(target, entries, core_excludes)
+    gitlink_paths = tuple(
+        entry.rel for entry in entries if entry.index_kind == "gitlink"
+    )
+    comparable_before = tuple(
+        item
+        for item in visibility_before
+        if not (
+            item.origin == "gitignore"
+            and any(
+                item.path.is_relative_to(target / gitlink) for gitlink in gitlink_paths
+            )
+        )
+    )
+    comparable_after = tuple(
+        item
+        for item in visibility_after
+        if not (item.origin == "gitignore" and item.kind == "missing")
+    )
+    if comparable_before != comparable_after:
+        raise SafetyError("Git visibility changed during capture")
+    entries_after = tuple(
+        SurfaceEntry(rel, tracked, index_kind, _worktree_kind(target, rel))
+        for rel, tracked, index_kind in parsed
+    )
+    if entries != entries_after:
+        raise SafetyError("worktree kinds changed during surface capture")
+    return SurfaceSnapshot(entries, visibility_after)
 
 
 def listed_paths(snapshot: SurfaceSnapshot) -> tuple[Path, ...]:
