@@ -34,6 +34,7 @@ from template_press.rebrand.rules import (
     Rules,
     rule_matches_path,
 )
+from template_press.rebrand.safety import SafetyError, assert_ancestors_real
 
 PATH_FIELDS: tuple[str, ...] = (
     "package_name",
@@ -216,8 +217,18 @@ def find_leaks(
                 if frm in component:
                     leaks.append(Leak(rel_posix, "replace_rule", frm, "path"))
         if entry.index_kind == "gitlink":
+            if entry.worktree_kind not in ("directory", "missing"):
+                leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
+            continue
+        try:
+            assert_ancestors_real(path, target)
+        except SafetyError:
+            leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
             continue
         if entry.worktree_kind == "symlink":
+            if not path.is_symlink():
+                leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
+                continue
             try:
                 link = os.readlink(path)
             except OSError:
@@ -236,6 +247,9 @@ def find_leaks(
                     leaks.append(Leak(rel_posix, "replace_rule", frm, "symlink"))
             continue
         if entry.worktree_kind != "file":
+            leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
+            continue
+        if path.is_symlink():
             leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
             continue
         try:

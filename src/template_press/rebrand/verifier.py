@@ -45,7 +45,11 @@ from template_press.rebrand.engine import (
 from template_press.rebrand.identity import Identity
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.rules import ReplaceRule, Rules
-from template_press.rebrand.safety import is_regular_lstat
+from template_press.rebrand.safety import (
+    SafetyError,
+    assert_ancestors_real,
+    is_regular_lstat,
+)
 
 
 @dataclass(frozen=True)
@@ -176,8 +180,9 @@ def _scan_symlink(
     it is) is irrelevant to this scan.
     """
     try:
+        assert_ancestors_real(target / rel, target)
         link = os.readlink(target / rel)
-    except OSError:
+    except (OSError, SafetyError):
         # `scan_paths` tagged this entry "symlink" from an earlier lstat that
         # may be stale by now (TOCTOU), or a transient I/O error prevents the
         # read. Never guess — flag it unscannable, mirroring `_scan_file`.
@@ -289,6 +294,10 @@ def _scan_file(
     renamed: list[tuple[str, str]],
 ) -> list[Finding]:
     path = target / rel
+    try:
+        assert_ancestors_real(path, target)
+    except SafetyError:
+        return [Finding(posix, "io", "unreadable", "unscannable", None, None, "")]
     if not is_regular_lstat(path):
         # Defense-in-depth TOCTOU guard: `scan_paths` tagged this entry
         # "file" from an earlier lstat that may be stale by now (or, in

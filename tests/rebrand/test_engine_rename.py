@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import template_press.rebrand.engine as engine_module
 from template_press.rebrand.engine import (
     _rename_candidates,
     apply,
@@ -261,6 +262,61 @@ def test_replace_refuses_symlinked_ancestor_no_external_write(tmp_path: Path):
     assert (ext / "file.txt").is_file()
     assert os.lstat(ext / "file.txt").st_ino == ext_inode_before
     assert (ext / "file.txt").read_text(encoding="utf-8") == ext_content_before
+
+
+@requires_symlink
+def test_build_plan_refuses_ancestor_swap_after_inventory(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A selected file must not be read after its ancestor becomes a link."""
+    tracked = src_target / "race" / "file.txt"
+    tracked.parent.mkdir()
+    tracked.write_text("mentions demo_widget\n", encoding="utf-8")
+    _git_add(src_target)
+    external = tmp_path / "external-plan"
+    external.mkdir()
+    (external / "file.txt").write_text("external demo_widget\n", encoding="utf-8")
+    real_candidates = engine_module._rename_candidates
+
+    def swap_after_inventory(target: Path, rules):
+        paths = real_candidates(target, rules)
+        shutil.rmtree(target / "race")
+        os.symlink(external, target / "race")
+        return paths
+
+    monkeypatch.setattr(engine_module, "_rename_candidates", swap_after_inventory)
+
+    with pytest.raises(ContainmentError):
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+
+@requires_symlink
+def test_apply_refuses_ancestor_swap_after_inventory(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The content pass rechecks ancestors immediately before reading."""
+    tracked = src_target / "race" / "file.txt"
+    tracked.parent.mkdir()
+    tracked.write_text("mentions demo_widget\n", encoding="utf-8")
+    _git_add(src_target)
+    external = tmp_path / "external-apply"
+    external.mkdir()
+    outside = external / "file.txt"
+    outside.write_text("external demo_widget\n", encoding="utf-8")
+    outside_before = outside.read_bytes()
+    real_iter = engine_module.iter_target_files
+
+    def swap_after_inventory(target: Path, rules):
+        paths = real_iter(target, rules)
+        shutil.rmtree(target / "race")
+        os.symlink(external, target / "race")
+        return paths
+
+    monkeypatch.setattr(engine_module, "iter_target_files", swap_after_inventory)
+
+    with pytest.raises(ContainmentError):
+        apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+    assert outside.read_bytes() == outside_before
 
 
 class TestRulePathRenames:

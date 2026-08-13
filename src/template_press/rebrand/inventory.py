@@ -270,7 +270,9 @@ def _active_gitignore_paths(
 
 def _absolute_git_path(target: Path, *args: str) -> Path:
     result = _run_git(target, *args)
-    text = result.stdout.decode("utf-8", "surrogateescape").strip()
+    if not result.stdout.endswith(b"\n"):
+        raise SafetyError("malformed newline-terminated Git path")
+    text = result.stdout[:-1].decode("utf-8", "surrogateescape")
     path = Path(text)
     return path if path.is_absolute() else target / path
 
@@ -377,11 +379,20 @@ def _visibility_inputs(
 
 
 def capture_surface_snapshot(target: Path) -> SurfaceSnapshot:
-    """Capture one sorted raw surface snapshot from an external target."""
+    """Capture two equal candidates or refuse a changing external target."""
 
     target = target.absolute()
+    first = _capture_candidate(target)
+    second = _capture_candidate(target)
+    if first != second:
+        raise SafetyError("Git surface or visibility changed during capture")
+    return second
+
+
+def _capture_candidate(target: Path) -> SurfaceSnapshot:
+    """One coherent candidate; the public capture compares two candidates."""
+
     core_excludes = _core_excludes_path(target)
-    visibility_before = _visibility_inputs(target, (), core_excludes)
     result = _run_git(
         target,
         "ls-files",
@@ -394,39 +405,11 @@ def capture_surface_snapshot(target: Path) -> SurfaceSnapshot:
         pin_core_excludes=True,
         core_excludes=core_excludes,
     )
-    parsed = parse_ls_files(result.stdout)
     entries = tuple(
         SurfaceEntry(rel, tracked, index_kind, _worktree_kind(target, rel))
-        for rel, tracked, index_kind in parsed
+        for rel, tracked, index_kind in parse_ls_files(result.stdout)
     )
-    visibility_after = _visibility_inputs(target, entries, core_excludes)
-    gitlink_paths = tuple(
-        entry.rel for entry in entries if entry.index_kind == "gitlink"
-    )
-    comparable_before = tuple(
-        item
-        for item in visibility_before
-        if not (
-            item.origin == "gitignore"
-            and any(
-                item.path.is_relative_to(target / gitlink) for gitlink in gitlink_paths
-            )
-        )
-    )
-    comparable_after = tuple(
-        item
-        for item in visibility_after
-        if not (item.origin == "gitignore" and item.kind == "missing")
-    )
-    if comparable_before != comparable_after:
-        raise SafetyError("Git visibility changed during capture")
-    entries_after = tuple(
-        SurfaceEntry(rel, tracked, index_kind, _worktree_kind(target, rel))
-        for rel, tracked, index_kind in parsed
-    )
-    if entries != entries_after:
-        raise SafetyError("worktree kinds changed during surface capture")
-    return SurfaceSnapshot(entries, visibility_after)
+    return SurfaceSnapshot(entries, _visibility_inputs(target, entries, core_excludes))
 
 
 def listed_paths(snapshot: SurfaceSnapshot) -> tuple[Path, ...]:
@@ -490,7 +473,8 @@ def select_content_rewrite_entries(
     return tuple(
         entry
         for entry in snapshot.entries
-        if entry.worktree_kind == "file"
+        if entry.index_kind != "gitlink"
+        and entry.worktree_kind == "file"
         and not _excluded(
             entry,
             exclude_files=exclude_files,

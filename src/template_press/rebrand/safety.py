@@ -112,6 +112,7 @@ class SafeRelPath:
     __slots__ = ("_parts",)
 
     def __init__(self, raw: str | os.PathLike[str]) -> None:
+        literal_posix_path = os.name != "nt" and not isinstance(raw, str)
         text = os.fspath(raw)
         if not isinstance(text, str):  # pragma: no cover - defensive
             raise UnsafePathError(f"path must be str-like: {raw!r}")
@@ -125,8 +126,9 @@ class SafeRelPath:
         # normalized text: ``\\server\share`` -> ``//server/share`` (absolute),
         # ``C:\x`` -> ``C:/x`` (colon), ``..\x`` -> ``../x`` (dotdot),
         # ``a\.git\b`` -> ``a/.git/b`` (.git).
-        text = text.replace("\\", "/")
-        if ":" in text:
+        if not literal_posix_path:
+            text = text.replace("\\", "/")
+        if not literal_posix_path and ":" in text:
             raise UnsafePathError(f"drive/colon not allowed: {text!r}")
         if text.startswith("/"):
             raise UnsafePathError(f"absolute/rooted path not allowed: {text!r}")
@@ -138,7 +140,7 @@ class SafeRelPath:
                 )
             if part in (".", ".."):
                 raise UnsafePathError(f"'.'/'..' component not allowed: {text!r}")
-            if _is_dotgit(part):
+            if part == ".git" if literal_posix_path else _is_dotgit(part):
                 raise UnsafePathError(f"'.git' component not allowed: {text!r}")
         self._parts: tuple[str, ...] = tuple(parts)
 
@@ -287,7 +289,7 @@ def safe_write(
     ancestor/leaf, refuses a hardlinked target (``st_nlink > 1``) unless
     ``refuse_hardlink=False``, then writes a new inode via temp + rename.
     """
-    rel_sp = rel if isinstance(rel, SafeRelPath) else SafeRelPath(os.fspath(rel))
+    rel_sp = rel if isinstance(rel, SafeRelPath) else SafeRelPath(rel)
     root_r = root.resolve()
     path = root_r / Path(*rel_sp.parts)
     assert_under_root(path, root_r)
@@ -331,7 +333,7 @@ def write_control(
 
 def safe_mkdir(root: Path, rel: str | os.PathLike[str] | SafeRelPath) -> Path:
     """Create ``root/rel`` (with parents) under full containment (G3)."""
-    rel_sp = rel if isinstance(rel, SafeRelPath) else SafeRelPath(os.fspath(rel))
+    rel_sp = rel if isinstance(rel, SafeRelPath) else SafeRelPath(rel)
     root_r = root.resolve()
     path = root_r / Path(*rel_sp.parts)
     assert_under_root(path, root_r)
@@ -349,12 +351,8 @@ def safe_rename(
     Both endpoints are validated and checked for symlink ancestors; the
     destination's parent is created (contained) before ``os.rename``.
     """
-    src_sp = (
-        src_rel if isinstance(src_rel, SafeRelPath) else SafeRelPath(os.fspath(src_rel))
-    )
-    dst_sp = (
-        dst_rel if isinstance(dst_rel, SafeRelPath) else SafeRelPath(os.fspath(dst_rel))
-    )
+    src_sp = src_rel if isinstance(src_rel, SafeRelPath) else SafeRelPath(src_rel)
+    dst_sp = dst_rel if isinstance(dst_rel, SafeRelPath) else SafeRelPath(dst_rel)
     root_r = root.resolve()
     src = root_r / Path(*src_sp.parts)
     dst = root_r / Path(*dst_sp.parts)

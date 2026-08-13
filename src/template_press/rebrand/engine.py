@@ -675,6 +675,7 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
     # unaffected — this only widens what the rename-plan branch below it sees.
     for path in _rename_candidates(target, rules):
         rel = path.relative_to(target)
+        assert_ancestors_real(path, target)
         text = _read_text(path)
         if text is not None:
             for rule, frm, to in rendered:
@@ -780,6 +781,7 @@ def _apply_replacements(
 ) -> None:
     for path in iter_target_files(target, rules):
         rel = path.relative_to(target).as_posix()
+        assert_ancestors_real(path, target)
         text = _read_text(path)
         if text is None:
             kind = "symlink" if path.is_symlink() else "binary"
@@ -812,7 +814,12 @@ def _apply_replacements(
             # permission bits are restored afterwards — a rewritten 0755
             # helper must not come out non-executable (P04 D1).
             mode = stat.S_IMODE(os.lstat(path).st_mode)
-            safe_write(target, rel, new_text, refuse_hardlink=False)
+            safe_write(
+                target,
+                path.relative_to(target),
+                new_text,
+                refuse_hardlink=False,
+            )
             chmod_nofollow(path, mode)
             report.replaced.append(rel)
 
