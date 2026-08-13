@@ -38,14 +38,13 @@ split:
 3. the rendered substitution table and its consumers.
 
 The walker and table do not need to land together. The inventory supplies only
-path facts. Table-specific matching, scope, and rename translation remain in
-pure policies above it.
+path, index-kind, worktree-kind, and tracked-state facts. Table-specific
+matching, scope, and rename translation remain in pure policies above it.
 
 ## Terms
 
-- A **surface entry** is one Git-visible relative path and its node kind:
-  regular file, symbolic link, or gitlink. A gitlink is the Git index entry
-  that represents a submodule.
+- A **surface entry** is one Git-listed relative path plus separate index and
+  worktree facts. A gitlink is the Git index entry that represents a submodule.
 - A **rewrite surface** is a location the rewriter may change: file content, a
   path component, or symbolic-link text.
 - A **hunt policy** names one table-consuming checker, the surfaces that
@@ -81,7 +80,7 @@ source identity + destination identity + Rules
                      |
 surface inventory ---+--> fixed-point RenamePlan --> plan/apply/translation
 
-source identity + destination identity + Rules
+source identity + destination identity + Rules + VerifyConfig
                      |
                      +--> verifier matcher + verifier scan
                           (no SubstitutionTable dependency)
@@ -105,7 +104,7 @@ has these fields:
 class RenderedSubstitution:
     row_id: str
     provenance: tuple[Provenance, ...]
-    matcher: MatcherKind
+    matcher: MatcherSpec
     from_value: str
     to_value: str
     rewrite_surfaces: frozenset[Surface]
@@ -116,7 +115,7 @@ class RenderedSubstitution:
 @dataclass(frozen=True)
 class HuntPolicy:
     consumer: HuntConsumer
-    matcher: MatcherKind
+    matcher: MatcherSpec
     surfaces: frozenset[Surface]
     scope_coordinates: ScopeCoordinates
 
@@ -133,6 +132,13 @@ class Provenance:
 @dataclass(frozen=True)
 class Scope:
     files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class MatcherSpec:
+    algorithm: MatcherKind
+    identity_field: str | None
+    substring: bool
 ```
 
 For identity provenance, `name` is the exact identity field and the last three
@@ -145,15 +151,24 @@ An empty `Scope.files` tuple means all paths, matching the current
 `ReplaceRule.files` contract. Otherwise, the tuple contains the declared POSIX
 path globs.
 
-`MatcherKind` has four values:
+`MatcherSpec` preserves every input that changes matching behavior. Its
+`algorithm` field has three values:
 
-- `boundary` uses the conservative identity-token boundary matcher;
-- `substring` uses literal substring replacement for an identity field that
-  `substring_rewrite_fields` explicitly enables;
-- `literal` uses exact string replacement for a rendered `[[replace]]` rule;
-  and
-- `paranoid` uses `matcher.find_occurrences`, the verifier-grade occurrence
-  matcher. It is valid only in a hunt policy, never as the rewriter's matcher.
+- `conservative` uses the field-specific identity-token matcher for a rewrite
+  or inline-doctor hunt. `identity_field` is the exact field tag required by
+  that matcher. `substring=True` selects its explicit substring mode;
+- `literal` uses case-sensitive exact replacement or occurrence matching for a
+  rendered `[[replace]]` rule; and
+- `paranoid` uses `matcher.find_occurrences` for a reset or regeneration
+  identity hunt. `identity_field` and `substring` remain required. It is valid
+  only in a hunt policy, never as the rewriter's matcher.
+
+An identity `MatcherSpec` never reduces to a generic boundary marker. For
+example, `app_name`, `app_name_upper`, and `display_name_spaced` have different
+boundary expressions even when their source text is equal. A paranoid hunt
+also retains the effective substring flag from
+`Rules.substring_rewrite_fields`; otherwise a glued opted-in occurrence could
+survive a reset or regenerated output scan.
 
 `HuntConsumer` is `doctor`, `reset_stub`, `reset_path`, or `regeneration`.
 `ScopeCoordinates` is `source` or `current_or_source`. Reset and regeneration
@@ -161,9 +176,11 @@ policies use the declared source path. Doctor policies match the current path
 or its reverse-mapped source path so an ancestor rename cannot move a leftover
 outside the rule that was meant to govern it.
 
-`Surface` has `content`, `path`, and `symlink` values. Separate rewrite
-surfaces and consumer-specific hunt policies are required for behavior parity.
-A single `surfaces` set would lose two existing asymmetries:
+`Surface` has `content`, `path`, and `symlink` values. Table rows directly
+rewrite `content` and `path`; eligible symlink text is derived from the final
+path translation. Hunt policies may inspect all three surfaces. Separate
+rewrite surfaces and consumer-specific hunt policies are required for behavior
+parity. A single `surfaces` set would lose two existing asymmetries:
 
 - enabled `display_name` forms are rewritten only in content but the doctor
   also hunts them in path names and symlink text; and
@@ -198,24 +215,35 @@ path-renamable identity fields: `package_name`, `repo_name`, `app_name`, and
 
 | Provenance | Rewrite | Doctor hunt | Reset-stub hunt | Reset-path hunt | Regeneration hunt | Scope |
 |---|---|---|---|---|---|---|
-| Changed identity field in `RENAME_FIELDS` | content, path, symlink; `boundary` or declared `substring` | content, path, symlink; rewrite matcher | content; `paranoid` | path; `paranoid` | content, path; `paranoid` | all paths |
-| Other changed identity field | content, symlink; `boundary` or declared `substring` | content, symlink; rewrite matcher | content; `paranoid` | path; `paranoid` | content, path; `paranoid` | all paths |
-| Enabled derived `display_name` form | content; `boundary` | content, path, symlink; `boundary` | content; `paranoid` | path; `paranoid` | content, path; `paranoid` | all paths |
+| Changed identity field in `RENAME_FIELDS` | content, path; field-specific `conservative` | content, path, symlink; rewrite matcher | content; `paranoid` with effective substring flag | path; `paranoid` with effective substring flag | content, path; `paranoid` with effective substring flag | all paths |
+| Other changed identity field | content; field-specific `conservative` | content, symlink; rewrite matcher | content; `paranoid` with effective substring flag | path; `paranoid` with effective substring flag | content, path; `paranoid` with effective substring flag | all paths |
+| Enabled derived `display_name` form | content; field-specific `conservative` | content, path, symlink; rewrite matcher | content; `paranoid` | path; `paranoid` | content, path; `paranoid` | all paths |
 | Disabled derived `display_name` form | none | none | content; `paranoid` | path; `paranoid` | content, path; `paranoid` | all paths |
-| Rendered `[[replace]]` rule | `literal`; content when `content`, path and symlink when `paths` | the same enabled surfaces; `literal` | content when `content`; `literal` | path when `paths`; `literal` | content when `content`, path when `paths`; `literal` | the rule's `files` globs |
+| Rendered `[[replace]]` rule | `literal`; content when `content`, path when `paths`; eligible symlink text derives from the path plan | content when `content`, path and symlink when `paths`; `literal` | content when `content`; `literal` | path when `paths`; `literal` | content when `content`, path when `paths`; `literal` | the rule's `files` globs |
 
 Rows whose rendered source and destination values are equal are omitted.
 Declared `[[replace]]` rows run before identity rows, matching the current
-pipeline. Declared rows retain declaration order. Identity rows retain the
-current longest-source-value-first order.
+pipeline. Declared rows retain declaration order. Identity candidates retain
+the current longest-source-value-first order.
 
-Candidates with the same matcher, source, destination, rewrite surfaces, hunt
-policies, and scope coalesce into one row and retain all provenance. The
-current display-family exception also remains: if multiple `display_name`
-forms collapse to the same source text but render different destinations, the
-first configured enabled form supplies the rewrite destination. Later enabled
-forms and all disabled forms remain as hunt provenance. If no form is enabled,
-the first canonical form supplies the unused `to_value`.
+Identity candidates are normalized by source and destination before rewrite
+surfaces are expanded. For equal source and destination values, the first
+ordered candidate owns all rewrite behavior. A later candidate adds provenance
+and hunt policies, but it adds no matcher or rewrite surface. This preserves
+the current global first-pair rule when, for example, `app_name` and
+`display_name_spaced` both render `press` to `tool`: the later display matcher
+must not newly rewrite `_press_` in content. The same rule also prevents a later
+path-renamable field from introducing a path rewrite that the current global
+deduplication drops.
+
+After that normalization, candidates with the same matcher, source,
+destination, rewrite surfaces, hunt policies, and scope coalesce into one row
+and retain all provenance. The current display-family exception also remains:
+if multiple `display_name` forms collapse to the same source text but render
+different destinations, the first configured enabled form supplies the rewrite
+destination. Later enabled forms and all disabled forms remain as hunt
+provenance. If no form is enabled, the first canonical form supplies the unused
+`to_value`.
 
 For example, the source display name `NumPy` can produce the same source text
 for its spaced and Pascal forms while the destination `Acme Widget` produces
@@ -242,15 +270,36 @@ The compiler first renders and validates the rows. It then combines the path
 rows with one guarded `SurfaceSnapshot`, defined in D2, to build `rename_plan`
 to a fixed point. `build_plan()` and `apply()` consume that same plan; neither
 independently re-derives rename candidates. The snapshot is accepted only when
-the planner proves that position-zero resets and content rewrites leave Git's
-ignore inputs unchanged.
+the planner proves that position-zero resets, content rewrites, and path renames
+leave Git's ignore inputs unchanged.
 
 `RenamePlan` retains ordered steps rather than collapsing them into one
-single-pass dictionary. Each step records the old prefix, new prefix, pass
-number, and contributing row IDs. The plan also retains the snapshot's
-`visibility_inputs`, which apply revalidates before its first mutation. This
-preserves both the path coordinates and the inventory lifecycle that produced
-them. A nested rename therefore records:
+single-pass dictionary. Each step records a stable step ID, the old prefix, the
+new prefix, the pass number, contributing row IDs, and predecessor step IDs.
+A predecessor is a step whose successful move creates the intermediate
+coordinate used by the later step. Apply executes a step only when every
+predecessor executed. A skipped or failed predecessor therefore cannot cause a
+later step to rename unrelated content that already occupies the intermediate
+path.
+
+Each executable prefix step also retains a closure formed from two sources:
+all no-follow worktree descendants and all `SurfaceEntry` index paths beneath
+the prefix. A covered entry whose `index_kind` is `gitlink` causes immediate
+refusal regardless of whether its `worktree_kind` is `directory` or `missing`;
+the closure never descends into a checked-out gitlink. A non-directory
+worktree node must appear in the authorized `SurfaceSnapshot`. Ordinary
+directories are structural containers and are authorized by their descendants,
+but an uninventoried empty directory is refused because Git cannot restore it.
+
+This closure is a movement-safety guard, not a second consumer inventory. Apply
+revalidates the closure and destination occupancy before the top-level press
+executor performs its first mutation. A mismatch is runtime divergence and
+raises `SafetyError`; apply does not continue with a partially valid static
+plan.
+
+The plan retains the snapshot's `visibility_inputs` for the same pre-mutation
+revalidation. These fields preserve both the path coordinates and the
+inventory lifecycle that produced them. A nested rename therefore records:
 
 ```text
 packages/demo_widget/demo_widget.py
@@ -265,9 +314,9 @@ both passes and a valid reset target was refused before the press.
 
 Apply executes the planned steps with the existing containment, ancestor,
 destination, and time-of-check/time-of-use checks. The apply report marks which
-steps actually ran. Post-apply consumers use that executed view; preflight and
-dry-run consumers use the full planned view. These are two lifecycle views of
-one plan, not independently derived maps.
+steps actually ran and why a blocked step did not run. Post-apply consumers use
+that executed view; preflight and dry-run consumers use the full planned view.
+These are two lifecycle views of one plan, not independently derived maps.
 
 P06 changes the `apply()` order to content rewrite, fixed-point renames, then
 symlink retarget. The retarget pass reads the executed rename-plan view and
@@ -275,14 +324,20 @@ must not maintain a second calculation of which existing targets were movable.
 It locates each link by translating the source-inventory entry to its executed
 post-rename path; Git's index may still contain the source path.
 
-For an existing relative in-tree target, a symlink row is eligible only when
-the executed plan moved that target or one of its descendants. For a dangling
-relative in-tree target, the current safe behavior remains: path rows may
-rewrite its text because no existing content can be silently redirected. For
-an eligible target, the pass translates both the link location and target
+For an existing relative in-tree target, retargeting is eligible only when the
+executed plan moved that target or one of its ancestors. The compiler also
+builds non-executable, validated virtual translations for dangling relative
+in-tree targets. A virtual translation applies the same fixed-point path-row
+algorithm but can never authorize a filesystem move. It preserves the current
+safe dangling-link behavior without recreating a private symlink rewrite
+pipeline.
+
+For an eligible target, the pass translates both the link location and target
 location to their final coordinates and computes the final relative link text.
-Existing fail-safe behavior for absolute, escaping, and ignored existing
-targets remains unchanged.
+An existing target that the executed plan did not move is never retargeted.
+This prevents a non-path identity field in a link target from silently
+redirecting the link to unrelated content. Existing fail-safe behavior for
+absolute, escaping, and ignored existing targets remains unchanged.
 
 ## D2 — One surface inventory, policies above it
 
@@ -292,16 +347,18 @@ The inventory returns raw path facts and an inventory-lifecycle guard:
 @dataclass(frozen=True)
 class SurfaceEntry:
     rel: Path
-    kind: Literal["file", "symlink", "gitlink"]
     tracked: bool
+    index_kind: Literal["file", "symlink", "gitlink"] | None
+    worktree_kind: Literal["file", "symlink", "directory", "missing", "other"]
 
 
 @dataclass(frozen=True)
 class VisibilityInput:
     origin: Literal["gitignore", "info_exclude", "core_excludes_file"]
     path: Path
-    exists: bool
+    kind: Literal["file", "symlink", "directory", "missing", "other"]
     sha256: str | None
+    link_text: str | None
 
 
 @dataclass(frozen=True)
@@ -314,14 +371,20 @@ class SurfaceSnapshot:
 bytes with `surrogateescape`, the Python error handler that preserves
 undecodable bytes for round-trip filesystem access. The inventory module is the
 only rebrand component that shells out to Git to enumerate tracked,
-non-ignored untracked, and gitlink entries. Symbolic-link classification never
-follows the link.
+non-ignored untracked, and gitlink entries. `index_kind` records the Git index
+mode when an index entry exists. `worktree_kind` is classified independently
+without following symbolic links. The separate facts represent tracked
+deletions and dirty replacements without misclassifying a missing path as a
+regular file.
 
-`VisibilityInput` records the existence and SHA-256 byte digest of every ignore
+`VisibilityInput` records the no-follow node kind and bytes of every ignore
 source that the hardened `git ls-files --exclude-standard` invocation uses:
 worktree `.gitignore` files, `.git/info/exclude`, and the repository-local
-`core.excludesFile` when configured. `path` is retained for diagnostics;
-`sha256` is `None` when the input does not exist.
+`core.excludesFile` when configured. `sha256` is populated only for a regular
+file read without traversing a symbolic-link ancestor. `link_text` is populated
+only for a symbolic link. This distinction is required because Git does not
+treat a `.gitignore` symlink like a regular file even when following the link
+would produce identical bytes.
 
 The walker does not accept a `copy`, `rewrite`, or `scan` mode. Those modes are
 policies, not path facts. Pure selectors above the inventory preserve the
@@ -329,13 +392,13 @@ current contracts:
 
 | Consumer | Selection from the raw inventory |
 |---|---|
-| Copy sandbox | Every entry, excluding Git's own metadata |
+| Copy sandbox | Every worktree-present entry, excluding Git's own metadata |
 | Content rewrite | Current rewrite exclusions and exact root-control exemptions |
-| Rename planning | Rewrite-eligible files and symlinks; never gitlinks |
+| Rename planning | Rewrite-eligible regular files and symlinks; never missing entries, directories, other nodes, or gitlinks |
 | Inline doctor | Exact root-control exemptions, built-in rewrite exclusions, and `verify_ignore` |
 | Standalone verifier | Exact root-control exemptions, `verify_ignore`, and only outputs that are both declared regenerations and on the tool's regeneration-exemption cap |
 | Regeneration/reset preflight | Entries whose `tracked` field is true |
-| Symlink retarget | Entries whose kind is `symlink` |
+| Symlink retarget | Entries whose `worktree_kind` is `symlink` |
 
 This interface replaces `engine._git_listed`, `engine.iter_target_files`,
 `engine.copy_paths`, `engine.scan_paths`, and `regen.tracked_paths`. Compatibility
@@ -346,34 +409,37 @@ one consumer cannot silently change another consumer's coverage.
 ### Git-visibility stability gate
 
 The snapshot is phase-stable, not assumed immutable merely because it was
-captured once. Before accepting it, the top-level planner projects all
-position-zero reset bytes and table-driven content rewrites for every
-`VisibilityInput` inside the target. If that projected state changes an
-input's existence or bytes, planning fails before any write. The diagnostic
-names the input and explains that changing Git visibility would make the
-shared plan stale. A target must change and commit its ignore policy separately
-before it can be pressed.
+captured once. Before accepting the snapshot, the top-level planner projects
+every mutation that can change a visibility input: a position-zero reset, a
+table-driven content rewrite, a path-row rename of the input itself, or an
+ancestor-prefix rename that moves the input. Planning fails if the projected
+path, node kind, existence, bytes, or link text differs from the captured
+state. The diagnostic names the input and explains that changing Git visibility
+would make the shared plan stale. A target must change and commit its ignore
+policy separately before it can be pressed.
 
-Immediately before the first mutation, apply recaptures the visibility inputs
-and compares them with the snapshot. A mismatch raises `SafetyError` before a
-reset, content rewrite, or rename runs. Once that check passes, apply does not
-ask Git for a new rename-candidate set between content rewriting and renames;
-it executes the snapshot-backed `RenamePlan`. Post-apply doctor and verifier
-scans may capture a new snapshot because they observe the completed tree rather
-than decide what apply was authorized to move.
+The top-level `_press()` mutation executor owns revalidation because
+`apply_resets()` runs before `engine.apply()`. Immediately before
+`apply_resets()`, `_press()` recaptures the visibility inputs, prefix closures,
+and planned destinations. A mismatch raises `SafetyError` before a reset,
+content rewrite, or rename runs. Once that check passes, apply does not ask Git
+for a new rename-candidate set between content rewriting and renames; it
+executes the snapshot-backed `RenamePlan`. Post-apply doctor and verifier scans
+may capture a new snapshot because they observe the completed tree rather than
+decide what apply was authorized to move.
 
-This gate covers both ways the tool itself can change ignore behavior: a table
-row rewriting `.gitignore` and a declared reset replacing it before
-`engine.apply()`. It also makes concurrent pre-apply changes to
-`.git/info/exclude` or a repository-local `core.excludesFile` fail closed. The
-gate does not add a table-specific field to `SurfaceEntry`, so the walker
-interface still survives the D1 checkpoint.
+This gate covers every in-process mutation that can change ignore behavior. It
+also makes concurrent pre-apply changes to `.git/info/exclude` or a
+repository-local `core.excludesFile` fail closed. The gate does not add a
+table-specific field to `SurfaceEntry`, so the walker interface still survives
+the D1 checkpoint.
 
 The table requires no additional per-entry inventory field. Table scopes
 operate on `SurfaceEntry.rel`; node-specific behavior dispatches on
-`SurfaceEntry.kind`; tracked-only preflights use `SurfaceEntry.tracked`; and
-rename coordinates live in `RenamePlan`. Therefore the walker entry interface
-survives the table-needs checkpoint and can land independently.
+`SurfaceEntry.index_kind` and `SurfaceEntry.worktree_kind`; tracked-only
+preflights use `SurfaceEntry.tracked`; and rename coordinates live in
+`RenamePlan`. Therefore the walker entry interface survives the table-needs
+checkpoint and can land independently.
 
 ## D3 — One pipeline-stability validator
 
@@ -382,26 +448,53 @@ one pure validator over rendered source-to-destination candidates. The
 validator enforces two properties before any target write:
 
 1. **Pipeline stability and termination.** On the content surface, one source
-   literal has one destination meaning and a row's output is stable under every
-   later overlapping content row. Path rows have a stronger rule because the
-   complete ordered path pipeline runs again on every rename pass: each path
-   row's output must be stable under every overlapping path row, including
-   itself and rows declared earlier. The validator builds the cross-row
-   dependency graph by applying the potential receiving row's matcher to each
-   output. It rejects every dependency; when dependencies form a cycle, the
-   error reports the full cycle and every row's provenance. Symlink text is
+   literal has one destination meaning. A row's output must be stable under
+   every later overlapping content row. It also must not emit an earlier
+   overlapping row's source literal, because the earlier row will not run again
+   and the doctor will reject the survivor. The first check rejects an ordered
+   rewrite dependency; the second rejects a stale-source emission.
+
+   Path rows have a stronger rule because the complete ordered path pipeline
+   runs again on every rename pass: each path row's output must be stable under
+   every overlapping path row, including itself and rows declared earlier. A
+   static proof that two `files` glob languages do not overlap is insufficient.
+   One row can move a path into the other row's scope on a later pass. A path
+   scope exemption is valid only when target-specific reachability proves that
+   no intermediate coordinate enters both scopes; the conservative validator
+   may decline every glob-based path exemption.
+
+   The validator builds the cross-row dependency graph by applying the
+   potential receiving row's exact `MatcherSpec` to each output. It rejects
+   every dependency. When dependencies form a cycle, the error reports the full
+   cycle and every row's provenance. The target-specific `RenamePlan` simulation
+   separately records every complete relative-path state and rejects a repeated
+   state or a pass-bound exhaustion. That simulation catches context-dependent
+   path behavior that row-local output comparison cannot see. Symlink text is
    derived from the validated final rename plan, not a third ordered rewrite
    pipeline.
 2. **Path-component structural safety.** A path substitution cannot introduce
    a separator, an empty component, `.` or `..`, or another value that changes
    the component count.
 
+The row-local checks see matches wholly inside `to_value`. They do not claim to
+detect a content match that straddles surrounding file text and the inserted
+output; design 0008 records that existing limitation. Target-specific path
+simulation has full path context and therefore does not receive the same
+exception.
+
 The validator preserves current harmless cases: equal source and destination
 rows are omitted; compatible duplicates are coalesced without losing their
 scope or provenance; the same-source display-family exception keeps its first
 configured enabled destination; hunt-only rows do not create rewrite
-conflicts; and rules whose rewrite surfaces or scopes provably do not overlap
-do not conflict. Validation errors name every conflicting `row_id` and its
+conflicts; and rows on disjoint rewrite surfaces do not conflict. Content rows
+with demonstrably disjoint `files` scopes may avoid an output-dependency
+conflict because content scope is evaluated at one unchanged coordinate. The
+same proof may allow content rows with one source and different destinations,
+which implements issue #45. A path rule receives a scope exemption only from
+the target-specific reachability proof described above. The content-scope proof
+is conservative: it must recognize disjoint finite sets of exact paths, and it
+may treat wildcard-bearing glob pairs as overlapping unless their non-overlap
+is proven. Validation errors name every conflicting `row_id` and its
 provenance.
 
 This validator intentionally tightens plan-time acceptance. The current engine
@@ -410,8 +503,9 @@ content row, or a path row's output feeds a row that runs on the next rename
 pass. Their results depend on row order or pass count, and a path cycle can
 mutate until the 32-pass runtime bound fails after writes. P06 rejects these
 configurations before any write. Existing configurations whose outputs are
-stable under the rules above retain their current output; all current
-validation refusals remain refusals.
+stable under the rules above retain their current output. Existing validation
+refusals remain refusals except issue #45's intentional acceptance of
+demonstrably disjoint content scopes.
 
 The validator lands before the table. It initially accepts the existing
 identity-pair and rendered-rule tuples. The table compiler becomes its only
@@ -445,7 +539,8 @@ current paranoid evidence standard where a file is exempt from the hermetic
 verifier. Identity and display-form policies use `paranoid`; declared-rule
 policies use `literal`. Reset-stub policies use a declared rule's content
 surface; reset-path policies use its path surface; and regeneration policies
-cover both when the declared rule enables both.
+cover both when the declared rule enables both. Every identity policy carries
+the effective `substring` flag from `Rules.substring_rewrite_fields`.
 
 The final regeneration pass reruns the `regeneration` hunt policies for every
 declared output. The final reset check still compares the file with its exact
@@ -453,38 +548,67 @@ approved stub bytes; it does not need another identity hunt policy.
 
 ### Standalone verifier
 
-`verifier.py` does not receive the table, its rows, its rename-plan provenance,
-or its matcher dispatch. It independently derives changed identity fields and
-rendered rule literals from `Identity` and `Rules`, then scans them with the
-paranoid matcher from design 0007. Sharing the raw surface inventory, executed
-path translations, and neutral scope primitives is allowed because those facts
-do not decide what identity occurrence counts as a leak.
+`verifier.py` receives source and destination `Identity`, `Rules`, and the
+effective `VerifyConfig` field names and substring flags. Field names are
+neutral scan configuration; pre-rendered field values are not. The verifier
+independently derives values only for the configured fields. This preserves
+design 0007's opt-in treatment of fields such as `author` and `email`.
+
+For an identity field, the verifier uses `matcher.find_occurrences` with the
+effective substring flag. For a rendered `[[replace]]` source, it uses
+case-sensitive exact-literal occurrence matching on the rule's declared
+surfaces and scope. It does not pass a rule literal through the identity
+matcher. Sharing the raw surface inventory, executed path translations, and
+neutral scope primitives is allowed because those facts do not decide what
+identity occurrence counts as a leak.
+
+The independence guarantee has an explicit boundary. Declared regenerated
+outputs remain listed by `press verify` as not verified, so their post-command
+and final-pass certification comes from the table-driven regeneration hunts.
+The independent verifier covers non-exempt surfaces; it does not eliminate
+correlated table risk for a declared regenerated output. This is the existing
+regeneration-exemption tradeoff, now stated without claiming broader coverage.
 
 ## D5 — Independence guardrail
 
 Design 0008 contains the binding dependency rule. P06 must enforce both the
 module boundary and the data-flow boundary:
 
-1. A structural regression test parses `verifier.py` and `verify_cli.py`. The
-   test fails if `verifier.py` imports `template_press.rebrand.substitutions`,
-   including inside a `TYPE_CHECKING` block. It also fails if `verifier.scan()`
-   accepts a `SubstitutionTable`, substitution rows, or pre-rendered rule
-   literals, or if `verify_cli.py` passes any of those values into the scan.
-2. An ablation test deliberately removes one rendered `[[replace]]` row from
-   the rewriter's table before the sandbox apply. The independent verifier scan
-   must still derive that rule from `Rules` and report the surviving source
-   literal.
+1. A structural regression test resolves the repository-local import graph
+   rooted at `verifier.py`, including aliases and `TYPE_CHECKING` blocks. No
+   module in that transitive closure may import table-consuming
+   `substitutions`, `engine`, or `doctor` modules. Shared path translation,
+   scope, root protection, symlink normalization, and scan selection therefore
+   live in named neutral modules whose own import closures satisfy the same
+   rule. The test parses `verify_cli.py` separately: it may call
+   `engine.apply()` as orchestration, but it must not pass table-derived scan
+   data across the `verifier.scan()` call boundary.
+2. The same test rejects a `verifier.scan()` parameter or caller argument that
+   supplies a `SubstitutionTable`, rows, precompiled identity values, rendered
+   rule literals, hunt policies, or matcher dispatch. The permitted inputs are
+   `Identity`, `Rules`, effective configured field names and substring flags,
+   the surface snapshot, executed path translations, and neutral scan options.
+3. A rule ablation removes one rendered `[[replace]]` row from the rewriter's
+   table before sandbox apply. Its fixture uses a boundary-invisible literal
+   such as `x{app_name}owned`. The verifier must independently derive the
+   literal from `Rules` and report a `replace_rule` finding.
+4. An identity ablation removes one identity row and leaves a glued or
+   camel-case source occurrence that only the paranoid matcher detects. The
+   verifier must independently derive the configured identity value and report
+   that identity field.
 
-Both tests are acceptance criteria, not optional documentation coverage. The
-structural test blocks the known direct data path. The ablation test proves the
-independence property even if a future refactor hides shared data behind a new
-helper name.
+All four checks are acceptance criteria, not optional documentation coverage.
+The structural and call-boundary checks block direct and transitive data paths.
+The discriminating ablations prove rule and identity independence even if a
+future refactor hides shared data behind a new helper name.
 
 The intended dependency boundary is:
 
 ```text
-allowed:   verifier -> inventory, matcher, rules, safety, neutral scope helpers
-forbidden: verifier -> substitutions or SubstitutionTable
+allowed:   verifier -> inventory, matcher, rules, safety,
+                       neutral scope and path-translation helpers
+forbidden: verifier -> substitutions, engine, doctor,
+                       or any precompiled substitution data
 ```
 
 This guard prevents a future deduplication refactor from making the final
@@ -500,15 +624,25 @@ independent checker inherit the rewriter's blind spots.
 - Preserve inventory behavior for tracked and untracked files, symbolic links,
   gitlinks, non-UTF-8 path bytes, root-control artifacts, rewrite exclusions,
   and scan exemptions.
+- Preserve index and worktree facts separately for a tracked deletion and for a
+  tracked file replaced by a directory.
+- Prove that visibility revalidation distinguishes a regular `.gitignore` from
+  a symbolic link to identical bytes.
 
 ### PR 2 — Pipeline-stability validator
 
 - Move the scattered ambiguity, output-stability, termination, and structural
   checks behind one validator.
-- Preserve output for every currently accepted stable configuration and every
-  current refusal. Add the intentional pre-write refusals for cross-row output
-  dependencies and cycles.
+- Preserve output for every currently accepted stable configuration. Preserve
+  every current refusal except issue #45's intentional relaxation for
+  demonstrably disjoint content scopes. Add the intentional pre-write refusals
+  for cross-row output dependencies and cycles.
 - Report conflicts with provenance rather than tuple positions.
+- Regress an identity output that emits an earlier declared-rule source and
+  would otherwise fail the post-apply doctor.
+- Regress two path scopes where one rename moves a path into the other scope,
+  and accept same-source/different-destination content rules when their
+  declared `files` scopes are demonstrably disjoint.
 
 ### PR 3 — Substitution table
 
@@ -525,24 +659,37 @@ rebrand acceptance matrix. PR 3 also needs focused regression tests for:
   final location;
 - every mechanism-to-surface row in the mapping table above;
 - duplicate and collapsed `display_name` forms, including the valid one-word
-  source and multi-word destination case;
+  source and multi-word destination case, plus an aligned `app_name` and
+  `display_name` whose field-specific matchers treat `_press_` differently;
 - current-path and reverse-source-path rule scope after an ancestor rename;
 - rejection of a path output that feeds an earlier row, a two-row path cycle,
-  and a content output that feeds a later row;
-- pre-write rejection when either a content rewrite or a reset would change a
-  Git visibility input and expose a previously ignored untracked path;
+  a content output that feeds a later row, and a content output that emits an
+  earlier row's doctor source;
+- pre-write rejection when a content rewrite, reset, direct path rename, or
+  ancestor-prefix rename would change a Git visibility input and expose a
+  previously ignored untracked path;
+- pre-write rejection when a prefix move would carry an ignored untracked
+  descendant, uninventoried empty directory, or gitlink, and when the live
+  closure or destination diverges from the authorized plan; exercise both a
+  checked-out-directory and an uninitialized-missing gitlink;
+- predecessor gating when an occupied parent destination blocks a later-pass
+  step whose intermediate coordinate already contains unrelated content;
+- substring-aware identity hunts in reset content, reset paths, regenerated
+  content, and regenerated paths;
+- preservation of dangling-link translation through a virtual plan entry, and
+  refusal to retarget an existing link for a changed non-path identity field;
 - derivation of doctor, reset, and regeneration hunts from a newly added row;
   and
-- rejection of any verifier dependency on `substitutions`, including the
-  rewriter-row ablation described in D5.
+- rejection of direct or transitive verifier dependencies on table consumers,
+  including both discriminating ablations described in D5.
 
 ## Rejected alternatives
 
 ### Combine the walker and table in one pull request
 
-Rejected after the table-needs checkpoint. The table needs only `rel`, `kind`,
-and `tracked` from the walker. Combining them would increase review scope
-without resolving an interface dependency.
+Rejected after the table-needs checkpoint. The table needs only `rel`,
+`index_kind`, `worktree_kind`, and `tracked` from the walker. Combining them
+would increase review scope without resolving an interface dependency.
 
 ### Put exclusions inside walker modes
 
@@ -559,17 +706,24 @@ whether a source identity survived the press.
 
 - Adding a rewriter mechanism requires one compiler change and its row tests;
   the doctor and reset/regeneration hunt sets update by construction.
-- Every target path is classified once per phase snapshot, while each
-  consumer's exclusions remain explicit and independently testable.
-- A press that would change Git's ignore inputs is newly refused before any
-  write, so the shared inventory and rename plan cannot become stale midway
-  through apply.
+- Every Git-listed target path is classified once per phase snapshot, while
+  each consumer's exclusions remain explicit and independently testable. A
+  no-follow prefix closure separately proves which filesystem nodes one
+  directory rename would carry.
+- A press that would change Git's ignore inputs, move a gitlink or
+  uninventoried node through a prefix rename, or execute a plan that diverged
+  from live state is newly refused before any write.
+- An existing symlink target that contains a changed non-path identity field is
+  no longer silently redirected. The link remains unchanged, and the inline
+  doctor refuses the press if the source value survives.
 - Configurations with order-dependent row outputs or cross-pass path cycles are
   newly refused before any write; stable configurations retain their current
   output.
 - Plan-time and apply-time rename translation share one fixed-point derivation,
   closing the nested-target false refusal deferred from PR #62.
-- The shared doctor can inherit a table defect. That correlated-failure risk is
-  accepted because the independent verifier remains structurally separated.
+- The shared doctor can inherit a table defect. The structurally independent
+  verifier remains a backstop for non-exempt surfaces. Declared regenerated
+  outputs are explicitly reported as not verified and retain the existing
+  correlated-risk tradeoff in their table-driven postconditions.
 - Acceptance of this design makes P06 ready for task decomposition; this
   document does not decompose or implement the work.

@@ -54,22 +54,32 @@ rewriter's compiled behavior. The inline doctor and the reset and regeneration
 scans may derive their hunt sets from it. The standalone paranoid verifier must
 not.
 
-`src/template_press/rebrand/verifier.py` **must not** import
-`template_press.rebrand.substitutions`, accept a `SubstitutionTable`, or derive
-its occurrence matcher from a table row. It must continue to derive changed
-identity fields and rendered `[[replace]]` literals independently from
-`Identity` and `Rules`, then scan them with `matcher.find_occurrences`. Sharing
-the raw surface inventory, path translation, safety checks, and neutral rule
-scope primitives is allowed because those facts do not define what counts as
-an identity occurrence.
+`src/template_press/rebrand/verifier.py` **must not** import table-consuming
+`template_press.rebrand.substitutions`, `engine`, or `doctor` modules; accept a
+`SubstitutionTable`; or derive its occurrence matcher from table data. It must
+continue to derive configured changed identity fields and rendered
+`[[replace]]` literals independently from `Identity`, `Rules`, and neutral
+`VerifyConfig` field names and substring flags. Identity values use
+`matcher.find_occurrences` with the effective substring flag. Rendered rule
+sources use case-sensitive exact-literal occurrence matching on the rule's
+declared surfaces and scope. Sharing the raw surface inventory, path
+translation, safety checks, and neutral rule-scope primitives is allowed
+because those facts do not define what counts as an identity occurrence.
 
 P06 must enforce this dependency rule at the module and call boundaries. A
-structural regression test parses `verifier.py` and `verify_cli.py`; it fails on
-an import of the substitutions module, including inside a `TYPE_CHECKING`
-block, and on any `verifier.scan()` parameter or caller argument that supplies
-a `SubstitutionTable`, substitution rows, or pre-rendered rule literals. A
-second ablation test removes one rendered `[[replace]]` row from the rewriter's
-table and requires the verifier to find the surviving literal independently.
+structural regression test parses `verifier.py` and `verify_cli.py`, including
+aliases and `TYPE_CHECKING` blocks. It rejects a `verifier.py` import of
+`substitutions`, `engine`, or `doctor`, and any `verifier.scan()` parameter or
+caller argument that supplies table rows, precompiled identity values, rendered
+rule literals, hunt policies, or matcher dispatch. Neutral helpers move out of
+table-consuming modules. `verify_cli.py` may still call `engine.apply()` for
+orchestration.
+
+Two discriminating ablation tests enforce behavior. The rule ablation uses a
+boundary-invisible source such as `x{app_name}owned` and requires a
+`replace_rule` finding. The identity ablation leaves a glued or camel-case
+source occurrence that only the paranoid matcher detects and requires the
+configured identity-field finding.
 
 Prose alone is not sufficient because a future deduplication refactor could
 otherwise remove the final independent check without changing runtime output
