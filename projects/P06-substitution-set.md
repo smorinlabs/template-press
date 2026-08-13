@@ -2,7 +2,7 @@
 
 - **Status:** `[ ]` ready
 
-One table the rewriter applies and every checker reads
+One table the rewriter and inline checkers read; verify stays independent
 
 **References**
 
@@ -12,6 +12,8 @@ One table the rewriter applies and every checker reads
   architecture review
 - **Design:** [0008 — identity variants and replace rules](../docs/design/0008-identity-variants-and-replace-rules.md)
   — what the table renders; D2's independence guardrail lands here
+- **Design:** [0009 — rendered substitution table and surface inventory](../docs/design/0009-substitution-table.md)
+  — D1's table-needs checkpoint and the implementation contracts
 - **Design:** [0006 — external target model](../docs/design/0006-external-target-model.md)
 - **Review:** PR #62 deferral — plan-time rename translation must read the
   fixpoint map (in scope; see Scope and D1 context)
@@ -28,10 +30,11 @@ One table the rewriter applies and every checker reads
   the doctor was once blind to submodule names.
 - **One pipeline-stability validator** replacing the five accreted
   plan-time guards.
-- **The rendered substitution table** — (matcher, from, to, surfaces,
-  scope): the applier walks it; the doctor and the post-command /
-  final-pass scans derive their hunt sets from it. Adding a mechanism
-  becomes one row, not seven edit sites.
+- **The rendered substitution table** — (matcher, from, to, rewrite
+  surfaces, consumer-specific hunt policies, scope, provenance): the
+  applier walks it; the doctor and the post-command / final-pass scans
+  derive their hunts from it. Adding a mechanism becomes one row, not seven
+  edit sites.
 - **Plan-time rename translation reads the same fixpoint map apply uses**
   (PR #62 deferral, thread 3654853364): `build_plan`'s single-pass map
   false-refuses reset targets nested under multiple identity-bearing
@@ -39,8 +42,8 @@ One table the rewriter applies and every checker reads
 - **The independence guardrail (D2)**: a binding constraint in design
   0008 plus a regression test that fails if `verifier.py` ever imports
   the table module; the test is a named acceptance criterion.
-- Semantics-preserving throughout — the 459-test suite and the R1a/R1b/R2/R3
-  acceptance matrix stay green at every PR boundary.
+- Semantics-preserving throughout — the full automated suite and the
+  R1a/R1b/R2/R3 acceptance matrix stay green at every PR boundary.
 
 ### Out of scope
 
@@ -58,14 +61,16 @@ One table the rewriter applies and every checker reads
   session: ship P04+P05 first (they unblock the py-launch-blueprint
   conform — the actual goal), then this refactor. That gate is now open
   (PR #62 merged, v3.4.0).
-- **D1 (2026-07-27): three PRs with a design checkpoint.** Working plan
-  stays walker → validator → table, safest first, each provable against
-  the suite and matrix. The design phase's FIRST deliverable is a
-  table-needs sketch (columns, provenance, scope semantics) that the
-  walker interface must survive; recorded fallback: combine walker+table
-  into one PR if it does not. Context: PR #62's single 15-commit branch
-  drew 29 bot threads over four review cycles — small PRs demonstrably
-  keep review waves convergent.
+- **D1 (2026-07-27; checkpoint passed 2026-08-12): three PRs confirmed.**
+  Design 0009 establishes one raw walker entry with relative path, node
+  kind, and tracked state. Table scope, rewrite and checker surfaces, and
+  the fixed-point rename plan remain policies above that entry; none
+  requires table-specific data inside the walker. The implementation
+  therefore stays walker → validator → table, safest first, with each
+  boundary provable against the suite and matrix. The recorded walker+table
+  fallback is not needed. Context: PR #62's single 15-commit branch drew 29
+  bot threads over four review cycles — small PRs demonstrably keep review
+  waves convergent.
 - **D2 (2026-07-27): correlated-failure trade accepted WITH enforced
   guardrail.** Once the doctor derives from the table, it inherits the
   rewriter's blind spots by construction — the independence that matters
@@ -102,9 +107,11 @@ It happened again during P04/P05 (2026-07-27): the postcondition scan did not
 know display-name derived forms until review cycle 3 caught it.
 
 **The fix.** Compile all mechanisms into one rendered substitution table —
-(matcher, from, to, surfaces, scope). The applier walks it; doctor and verify
-derive their scan set from the same table, so they cannot disagree by
-construction. Adding a mechanism becomes one row, not seven edits.
+(matcher, from, to, rewrite surfaces, consumer-specific hunt policies, scope,
+provenance). The applier walks it; the inline doctor and reset/regeneration
+scans derive their hunts from it, so they cannot disagree by construction.
+`press verify` remains independently derived under D2. Adding a mechanism
+becomes one row, not seven edits.
 
 **Constraint all three lenses named independently:** the conservative-rewriter /
 paranoid-verify matcher asymmetry is load-bearing design — parameterize it, never
@@ -112,9 +119,9 @@ merge the two scanners into one.
 
 Sequenced as three PRs, safest first: (1) one kind-tagged surface walker;
 (2) one pipeline-stability validator replacing the five accreted guards;
-(3) the substitution table itself. Estimated ~1 focused week against the existing
-459-test suite and the acceptance matrix. Semantics-preserving — no rollback of
-the shipped C/D/E work; the accumulated fixes are the spec for the refactor.
+(3) the substitution table itself. Estimated ~1 focused week against the full
+automated suite and the acceptance matrix. Semantics-preserving — no rollback
+of the shipped C/D/E work; the accumulated fixes are the spec for the refactor.
 
 ### Tests & Tasks
 
