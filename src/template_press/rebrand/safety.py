@@ -27,8 +27,9 @@ Guards implemented here (see the plan's Defensive Hardening section):
   ``git status`` where feasible.
 * **G6** ``owned_sandbox`` / ``refuse_unsafe_root`` — a ``mkdtemp`` 0700 root,
   disjoint from the target, cleaned up as the only owned child.
-* **G8** ``is_regular_lstat`` — scan only ``lstat``-regular files (no
-  FIFO/socket/device hang, no symlink follow).
+* **G8** ``read_regular_nofollow`` / ``is_regular_lstat`` — scan only regular
+  files through descriptor-relative, no-follow reads on POSIX (no
+  FIFO/socket/device hang, no symlink or swapped-ancestor traversal).
 
 The concurrent-local ancestor-swap TOCTOU (between the lstat-walk and
 ``os.replace``/``os.rename``) is a documented residual: leaf writes are atomic
@@ -57,6 +58,7 @@ __all__ = [
     "git_hardening_args",
     "is_regular_lstat",
     "owned_sandbox",
+    "read_regular_nofollow",
     "refuse_unsafe_root",
     "safe_mkdir",
     "safe_rename",
@@ -250,6 +252,82 @@ def _reject_hardlink(path: Path) -> None:
         )
 
 
+def _read_descriptor(descriptor: int) -> bytes:
+    data = bytearray()
+    while chunk := os.read(descriptor, 1024 * 1024):
+        data.extend(chunk)
+    return bytes(data)
+
+
+def _read_regular_openat(path: Path) -> bytes:
+    """Read an absolute POSIX path through no-follow directory descriptors."""
+
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    directory_flags = flags | os.O_DIRECTORY
+    parts = path.parts
+    if len(parts) < 2:
+        raise SafetyError(f"regular-file read requires a leaf path: {path}")
+    parent_fd = os.open(path.anchor, directory_flags)
+    try:
+        for part in parts[1:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = next_fd
+        descriptor = os.open(parts[-1], flags, dir_fd=parent_fd)
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode):
+                raise SafetyError(f"no-follow read source is not regular: {path}")
+            return _read_descriptor(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(parent_fd)
+
+
+def _read_regular_checked_path(path: Path) -> bytes:
+    """Fallback for platforms without descriptor-relative ``open`` support.
+
+    The handle is validated against a fresh literal ``lstat`` before bytes
+    are consumed. A concurrent pathname change can make the read refuse, but
+    never makes returned bytes describe a different leaf.
+    """
+
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode):
+        raise SafetyError(f"no-follow read source is not regular: {path}")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        after = os.lstat(path)
+        if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(opened, after):
+            raise SafetyError(f"read source changed while opening: {path}")
+        return _read_descriptor(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def read_regular_nofollow(path: Path) -> bytes:
+    """Read one regular file without following a leaf or ancestor symlink.
+
+    POSIX walks from the filesystem root with ``openat``-style ``dir_fd``
+    calls and ``O_NOFOLLOW`` on every component. Other platforms use a
+    checked-handle fallback and refuse if the opened handle no longer matches
+    the literal leaf.
+    """
+
+    absolute = path.absolute()
+    if (
+        os.name != "nt"
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+        and os.open in os.supports_dir_fd
+    ):
+        return _read_regular_openat(absolute)
+    return _read_regular_checked_path(absolute)
+
+
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write ``data`` to ``path`` via temp + ``os.replace`` (new inode).
 
@@ -372,6 +450,7 @@ GIT_ENV_UNSET: tuple[str, ...] = (
     "GIT_OBJECT_DIRECTORY",
     "GIT_COMMON_DIR",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
     "GIT_CONFIG_COUNT",
     "GIT_CONFIG_PARAMETERS",
 )

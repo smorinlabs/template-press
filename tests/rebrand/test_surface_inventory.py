@@ -625,7 +625,9 @@ def test_every_inventory_git_call_uses_target_hardening(
     capture_surface_snapshot(src_target)
 
     assert calls
-    assert sum("ls-files" in cmd for cmd, _kwargs in calls) == 2
+    # One seed learns opaque gitlink boundaries; two bracketed candidates
+    # must then agree before the public snapshot is accepted.
+    assert sum("ls-files" in cmd for cmd, _kwargs in calls) == 3
     for cmd, kwargs in calls:
         assert cmd[0] == "git"
         assert "core.fsmonitor=" in cmd
@@ -645,7 +647,7 @@ def test_capture_refuses_ignore_policy_changed_during_enumeration(
     def mutate_after_listing(target: Path, *args: str, **kwargs):
         nonlocal changed
         result = real_run_git(target, *args, **kwargs)
-        if "ls-files" in args and not changed:
+        if "ls-files" in args and "--others" in args and not changed:
             changed = True
             gitignore.write_text("leak.txt\n", encoding="utf-8")
         return result
@@ -656,7 +658,7 @@ def test_capture_refuses_ignore_policy_changed_during_enumeration(
         capture_surface_snapshot(src_target)
 
 
-def test_capture_refuses_transient_ignore_policy_during_first_enumeration(
+def test_capture_refuses_transient_ignore_policy_during_every_enumeration(
     src_target: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     nested = src_target / "transient"
@@ -665,17 +667,13 @@ def test_capture_refuses_transient_ignore_policy_during_first_enumeration(
     leak.write_text("must remain visible\n", encoding="utf-8")
     gitignore = nested / ".gitignore"
     real_run_git = inventory._run_git
-    calls = 0
 
     def transient_ignore(target: Path, *args: str, **kwargs):
-        nonlocal calls
         if "ls-files" in args:
-            calls += 1
-            if calls == 1:
-                gitignore.write_text("leak.txt\n", encoding="utf-8")
-                result = real_run_git(target, *args, **kwargs)
-                gitignore.unlink()
-                return result
+            gitignore.write_text(".gitignore\nleak.txt\n", encoding="utf-8")
+            result = real_run_git(target, *args, **kwargs)
+            gitignore.unlink()
+            return result
         return real_run_git(target, *args, **kwargs)
 
     monkeypatch.setattr(inventory, "_run_git", transient_ignore)
@@ -716,6 +714,39 @@ def test_inventory_pins_case_sensitive_ignore_matching(src_target: Path) -> None
     }
 
     assert "foo" in rels
+
+
+@posix_only
+@requires_symlink
+def test_visibility_read_refuses_ancestor_swap_at_descriptor_open(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    configured = src_target / "config"
+    configured.mkdir()
+    excludes = configured / "excludes"
+    excludes.write_text("inside-only.txt\n", encoding="utf-8")
+    _git(src_target, "config", "core.excludesFile", "config/excludes")
+    external = tmp_path / "external-config"
+    external.mkdir()
+    (external / "excludes").write_text("outside-only.txt\n", encoding="utf-8")
+    original = tmp_path / "original-config"
+    real_read = safety._read_regular_openat
+    swapped = False
+
+    def swap_ancestor_before_open(path: Path) -> bytes:
+        nonlocal swapped
+        if path == excludes and not swapped:
+            configured.rename(original)
+            configured.symlink_to(external, target_is_directory=True)
+            swapped = True
+        return real_read(path)
+
+    monkeypatch.setattr(safety, "_read_regular_openat", swap_ancestor_before_open)
+
+    with pytest.raises(SafetyError, match="visibility input"):
+        capture_surface_snapshot(src_target)
 
 
 def test_copy_adapter_uses_materializable_copy_selector(src_target: Path) -> None:

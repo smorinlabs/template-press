@@ -49,6 +49,7 @@ from template_press.rebrand.safety import (
     SafetyError,
     assert_ancestors_real,
     is_regular_lstat,
+    read_regular_nofollow,
 )
 
 
@@ -305,8 +306,8 @@ def _scan_file(
         # never guess — flag it unscannable rather than silently skip.
         return [Finding(posix, "io", "unreadable", "unscannable", None, None, "")]
     try:
-        data = path.read_bytes()
-    except OSError:
+        data = read_regular_nofollow(path)
+    except (OSError, SafetyError):
         # `where="unscannable"` is reserved for real I/O errors ONLY.
         return [Finding(posix, "io", "unreadable", "unscannable", None, None, "")]
     try:

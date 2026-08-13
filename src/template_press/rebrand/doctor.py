@@ -34,7 +34,11 @@ from template_press.rebrand.rules import (
     Rules,
     rule_matches_path,
 )
-from template_press.rebrand.safety import SafetyError, assert_ancestors_real
+from template_press.rebrand.safety import (
+    SafetyError,
+    assert_ancestors_real,
+    read_regular_nofollow,
+)
 
 PATH_FIELDS: tuple[str, ...] = (
     "package_name",
@@ -58,10 +62,8 @@ def _read_for_scan(path: Path) -> str | None:
     Unlike the engine's lenient reader, the doctor must NOT silently skip an
     unreadable file — a file it cannot scan is a file it cannot certify.
     """
-    if path.is_symlink():
-        return None  # content lives outside the target; the name is scanned
     try:
-        return path.read_text(encoding="utf-8")
+        return read_regular_nofollow(path).decode("utf-8")
     except UnicodeDecodeError:
         return None  # binary: the rewrite pass cannot alter it either
 
@@ -254,7 +256,7 @@ def find_leaks(
             continue
         try:
             text = _read_for_scan(path)
-        except OSError:
+        except (OSError, SafetyError):
             leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
             continue
         if text is None:

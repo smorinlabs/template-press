@@ -28,6 +28,7 @@ from template_press.rebrand.inventory import (
     gitlink_path_strings,
     listed_paths,
     select_content_rewrite_entries,
+    select_copy_entries,
     select_rename_entries,
     select_verifier_entries,
 )
@@ -43,6 +44,7 @@ from template_press.rebrand.safety import (
     assert_ancestors_real,
     assert_under_root,
     chmod_nofollow,
+    read_regular_nofollow,
     safe_write,
 )
 
@@ -258,7 +260,7 @@ def _rename_candidates(target: Path, rules: Rules) -> list[Path]:
 
 
 def copy_paths(target: Path) -> list[PathEntry]:
-    """Everything git lists (tracked + non-ignored untracked), minus ``.git``.
+    """Materializable Git-listed files/links plus opaque gitlink placeholders.
 
     RETAINS symlinks and gitlinks — never filters on ``is_file()``, which
     would drop a symlink-to-dir/dangling symlink and hide gitlinks. ``kind``
@@ -268,7 +270,8 @@ def copy_paths(target: Path) -> list[PathEntry]:
     "symlink" vs "file". Sorted, deterministic.
     """
     entries: list[PathEntry] = []
-    for entry in capture_surface_snapshot(target).entries:
+    snapshot = capture_surface_snapshot(target)
+    for entry in select_copy_entries(snapshot):
         rel = entry.rel
         if ".git" in rel.parts:
             continue
@@ -276,12 +279,9 @@ def copy_paths(target: Path) -> list[PathEntry]:
             kind = "symlink"
         elif entry.worktree_kind == "file":
             kind = "file"
-        elif entry.index_kind == "gitlink" and entry.worktree_kind in (
-            "directory",
-            "missing",
-        ):
+        elif entry.index_kind == "gitlink":
             kind = "gitlink"
-        else:
+        else:  # selector guarantees a materializable regular file
             kind = "file"
         entries.append(PathEntry(rel, kind))
     return sorted(entries, key=lambda e: e.rel.as_posix())
@@ -609,11 +609,9 @@ def symlink_target_posix(rel: Path, link: str) -> str:
 
 
 def _read_text(path: Path) -> str | None:
-    if path.is_symlink():
-        return None  # never follow a link: writes must stay inside the target
     try:
-        return path.read_text(encoding="utf-8")
-    except (UnicodeDecodeError, OSError):
+        return read_regular_nofollow(path).decode("utf-8")
+    except (UnicodeDecodeError, OSError, SafetyError):
         return None  # binary or unreadable — never a rewrite candidate
 
 

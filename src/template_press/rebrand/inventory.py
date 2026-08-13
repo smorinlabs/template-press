@@ -20,6 +20,7 @@ from template_press.rebrand.safety import (
     SafetyError,
     UnsafePathError,
     git_hardening_args,
+    read_regular_nofollow,
     scrubbed_git_env,
 )
 
@@ -57,6 +58,27 @@ class SurfaceSnapshot:
     visibility_inputs: tuple[VisibilityInput, ...]
 
 
+@dataclass(frozen=True)
+class _NodeStamp:
+    """Change token for a visibility input or traversed directory."""
+
+    path: Path
+    kind: WorktreeKind
+    device: int | None
+    inode: int | None
+    size: int | None
+    mtime_ns: int | None
+    ctime_ns: int | None
+
+
+@dataclass(frozen=True)
+class _VisibilityState:
+    """Public fingerprints plus internal change tokens for capture bracketing."""
+
+    inputs: tuple[VisibilityInput, ...]
+    stamps: tuple[_NodeStamp, ...]
+
+
 def _run_git(
     target: Path,
     *args: str,
@@ -66,6 +88,10 @@ def _run_git(
     core_excludes: Path | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     command = ["git", "-C", str(target), *git_hardening_args()]
+    # Make ignore matching deterministic across repository config and
+    # platforms. A target cannot change the authorized surface by toggling
+    # core.ignoreCase between planning and mutation.
+    command.extend(["-c", "core.ignoreCase=false"])
     if pin_core_excludes:
         command.extend(["-c", f"core.excludesFile={core_excludes or Path(os.devnull)}"])
     command.extend(args)
@@ -214,7 +240,7 @@ def _active_gitignore_paths(
     target: Path,
     entries: tuple[SurfaceEntry, ...],
     core_excludes: Path | None,
-) -> set[Path]:
+) -> tuple[set[Path], set[Path]]:
     """Find `.gitignore` leaves in directories Git can traverse.
 
     This filesystem walk is no-follow. Git itself decides which real child
@@ -233,6 +259,17 @@ def _active_gitignore_paths(
         children: list[Path] = []
         for rel_dir in pending:
             directory = target if rel_dir == Path(".") else target / rel_dir
+            try:
+                directory_mode = os.lstat(directory).st_mode
+            except OSError as exc:
+                raise SafetyError(
+                    f"cannot inventory Git ignore directory {directory}: {exc}"
+                ) from exc
+            if not stat.S_ISDIR(directory_mode):
+                raise SafetyError(
+                    f"cannot inventory Git ignore directory {directory}: "
+                    "node is no longer a real directory"
+                )
             ignore_path = directory / ".gitignore"
             if os.path.lexists(ignore_path):
                 found.add(ignore_path)
@@ -265,7 +302,8 @@ def _active_gitignore_paths(
         parent = entry.rel.parent.as_posix()
         if parent in active_dirs:
             found.add(target / entry.rel)
-    return found
+    directories = {target if rel == "." else target / rel for rel in active_dirs}
+    return found, directories
 
 
 def _absolute_git_path(target: Path, *args: str) -> Path:
@@ -341,31 +379,48 @@ def _fingerprint_visibility(origin: VisibilityOrigin, path: Path) -> VisibilityI
         return VisibilityInput(origin, path, "directory", None, None)
     if not stat.S_ISREG(mode):
         return VisibilityInput(origin, path, "other", None, None)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
     try:
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode):
-            raise SafetyError(
-                f"Git visibility input changed type while opening: {path}"
-            )
-        digest = hashlib.sha256()
-        while chunk := os.read(descriptor, 1024 * 1024):
-            digest.update(chunk)
-    finally:
-        os.close(descriptor)
-    return VisibilityInput(origin, path, "file", digest.hexdigest(), None)
+        data = read_regular_nofollow(path)
+    except OSError as exc:
+        raise SafetyError(f"cannot read Git visibility input {path}: {exc}") from exc
+    return VisibilityInput(origin, path, "file", hashlib.sha256(data).hexdigest(), None)
+
+
+def _node_stamp(path: Path) -> _NodeStamp:
+    path = path.absolute()
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return _NodeStamp(path, "missing", None, None, None, None, None)
+    mode = info.st_mode
+    if stat.S_ISREG(mode):
+        kind: WorktreeKind = "file"
+    elif stat.S_ISLNK(mode):
+        kind = "symlink"
+    elif stat.S_ISDIR(mode):
+        kind = "directory"
+    else:
+        kind = "other"
+    return _NodeStamp(
+        path,
+        kind,
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
 
 
 def _visibility_inputs(
     target: Path,
     entries: tuple[SurfaceEntry, ...],
     core_excludes: Path | None,
-) -> tuple[VisibilityInput, ...]:
-    items = [
-        _fingerprint_visibility("gitignore", path)
-        for path in _active_gitignore_paths(target, entries, core_excludes)
-    ]
+) -> _VisibilityState:
+    gitignore_paths, active_directories = _active_gitignore_paths(
+        target, entries, core_excludes
+    )
+    items = [_fingerprint_visibility("gitignore", path) for path in gitignore_paths]
     info_exclude = _absolute_git_path(
         target, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"
     )
@@ -373,26 +428,31 @@ def _visibility_inputs(
     if core_excludes is not None:
         items.append(_fingerprint_visibility("core_excludes_file", core_excludes))
     order = {"gitignore": 0, "info_exclude": 1, "core_excludes_file": 2}
-    return tuple(
+    inputs = tuple(
         sorted(items, key=lambda item: (order[item.origin], item.path.as_posix()))
     )
+    stamp_paths = active_directories | {item.path for item in inputs}
+    stamps = tuple(_node_stamp(path) for path in sorted(stamp_paths))
+    return _VisibilityState(inputs, stamps)
 
 
 def capture_surface_snapshot(target: Path) -> SurfaceSnapshot:
     """Capture two equal candidates or refuse a changing external target."""
 
     target = target.absolute()
-    first = _capture_candidate(target)
-    second = _capture_candidate(target)
+    seed_entries = _enumerate_index_entries(target)
+    first = _capture_candidate(target, seed_entries)
+    second = _capture_candidate(target, first.entries)
     if first != second:
         raise SafetyError("Git surface or visibility changed during capture")
     return second
 
 
-def _capture_candidate(target: Path) -> SurfaceSnapshot:
-    """One coherent candidate; the public capture compares two candidates."""
+def _enumerate_entries(
+    target: Path, core_excludes: Path | None
+) -> tuple[SurfaceEntry, ...]:
+    """Enumerate raw entries under one explicitly pinned ignore policy."""
 
-    core_excludes = _core_excludes_path(target)
     result = _run_git(
         target,
         "ls-files",
@@ -405,11 +465,34 @@ def _capture_candidate(target: Path) -> SurfaceSnapshot:
         pin_core_excludes=True,
         core_excludes=core_excludes,
     )
-    entries = tuple(
+    return tuple(
         SurfaceEntry(rel, tracked, index_kind, _worktree_kind(target, rel))
         for rel, tracked, index_kind in parse_ls_files(result.stdout)
     )
-    return SurfaceSnapshot(entries, _visibility_inputs(target, entries, core_excludes))
+
+
+def _enumerate_index_entries(target: Path) -> tuple[SurfaceEntry, ...]:
+    """Learn tracked kinds, especially opaque gitlink directory boundaries."""
+
+    result = _run_git(target, "ls-files", "-z", "-t", "--stage", "--cached")
+    return tuple(
+        SurfaceEntry(rel, tracked, index_kind, _worktree_kind(target, rel))
+        for rel, tracked, index_kind in parse_ls_files(result.stdout)
+    )
+
+
+def _capture_candidate(
+    target: Path, seed_entries: tuple[SurfaceEntry, ...]
+) -> SurfaceSnapshot:
+    """One coherent candidate; the public capture compares two candidates."""
+
+    core_excludes = _core_excludes_path(target)
+    visibility_before = _visibility_inputs(target, seed_entries, core_excludes)
+    entries = _enumerate_entries(target, core_excludes)
+    visibility_after = _visibility_inputs(target, entries, core_excludes)
+    if visibility_before != visibility_after:
+        raise SafetyError("Git visibility changed during capture")
+    return SurfaceSnapshot(entries, visibility_after.inputs)
 
 
 def listed_paths(snapshot: SurfaceSnapshot) -> tuple[Path, ...]:

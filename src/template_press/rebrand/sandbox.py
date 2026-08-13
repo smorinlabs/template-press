@@ -36,6 +36,7 @@ from template_press.rebrand.safety import (
     assert_ancestors_real,
     git_hardening_args,
     is_regular_lstat,
+    read_regular_nofollow,
     refuse_unsafe_root,
     safe_mkdir,
     safe_write,
@@ -121,7 +122,7 @@ def make_sandbox(target: Path, dest_root: Path) -> Sandbox:
             # Never follow: only an lstat-regular file is copied as bytes.
             if not is_regular_lstat(src):
                 continue
-            safe_write(sandbox, rel, src.read_bytes())
+            safe_write(sandbox, rel, read_regular_nofollow(src))
             added.append(rel.as_posix())
         elif entry.kind == "symlink":
             # Recreate VERBATIM: do not follow and do not rewrite the target

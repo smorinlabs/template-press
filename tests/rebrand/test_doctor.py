@@ -216,7 +216,7 @@ def test_doctor_honors_verify_ignore_for_every_symlink_shape(
     leaks = find_leaks(src_target, SOURCE, rules)
 
     assert not any(leak.path.startswith("legacy/") for leak in leaks)
-    assert calls == 2
+    assert calls == 3
 
 
 @requires_symlink
