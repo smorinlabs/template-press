@@ -904,6 +904,16 @@ def test_capture_refuses_temporary_alternate_git_index(
         capture_surface_snapshot(src_target)
 
 
+def test_capture_accepts_stable_split_index(src_target: Path) -> None:
+    _git(src_target, "update-index", "--split-index")
+
+    first = capture_surface_snapshot(src_target)
+    second = capture_surface_snapshot(src_target)
+
+    assert first == second
+    assert "README.md" in {entry.rel.as_posix() for entry in first.entries}
+
+
 @posix_only
 @requires_symlink
 def test_visibility_read_refuses_ancestor_swap_at_descriptor_open(

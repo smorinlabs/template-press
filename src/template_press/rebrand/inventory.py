@@ -95,6 +95,17 @@ class _ConfigSourceStamp:
 
 
 @dataclass(frozen=True)
+class _SharedIndexStamp:
+    """Stable content identity for a Git content-addressed shared index."""
+
+    path: Path
+    sha256: str
+    device: int
+    inode: int
+    size: int
+
+
+@dataclass(frozen=True)
 class _ConfigSourceState:
     """Finite Git inputs that must remain stable through enumeration."""
 
@@ -102,6 +113,7 @@ class _ConfigSourceState:
     include_parents: tuple[_NodeStamp, ...]
     condition_inputs: tuple[_NodeStamp, ...]
     index_inputs: tuple[_NodeStamp, ...]
+    shared_indexes: tuple[_SharedIndexStamp, ...]
 
 
 def _run_git(
@@ -463,6 +475,25 @@ def _config_source_stamp(path: Path) -> _ConfigSourceStamp:
     )
 
 
+def _shared_index_stamp(path: Path) -> _SharedIndexStamp:
+    """Hash a shared index while ignoring Git's read-side timestamp updates."""
+
+    try:
+        data = read_regular_nofollow(path)
+        info = os.lstat(path)
+    except OSError as exc:
+        raise SafetyError(f"cannot fingerprint shared Git index {path}: {exc}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise SafetyError(f"shared Git index is not a regular file: {path}")
+    return _SharedIndexStamp(
+        path,
+        hashlib.sha256(data).hexdigest(),
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+    )
+
+
 def _nearest_real_parent(path: Path) -> Path:
     """Nearest existing real directory above a possibly missing include."""
 
@@ -512,15 +543,18 @@ def _config_source_state(target: Path) -> _ConfigSourceState:
     shared_raw = shared_result.stdout[:-1] if shared_result.stdout else b""
     shared_text = shared_raw.decode("utf-8", "surrogateescape")
     index_paths = {index, index.parent}
+    shared_paths: set[Path] = set()
     if shared_text:
         shared = Path(shared_text)
         shared = shared if shared.is_absolute() else target / shared
-        index_paths.update((shared, shared.parent))
+        shared_paths.add(shared)
+        index_paths.add(shared.parent)
     return _ConfigSourceState(
         tuple(_config_source_stamp(path) for path in sources),
         tuple(_node_stamp(path) for path in sorted(parents)),
         tuple(_node_stamp(path) for path in sorted(condition_paths)),
         tuple(_node_stamp(path) for path in sorted(index_paths)),
+        tuple(_shared_index_stamp(path) for path in sorted(shared_paths)),
     )
 
 
