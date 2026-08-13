@@ -24,6 +24,8 @@ from template_press.rebrand.identity import (
     token_occurs,
 )
 from template_press.rebrand.inventory import (
+    SurfaceEntry,
+    WorktreeKind,
     capture_surface_snapshot,
     gitlink_path_strings,
     listed_paths,
@@ -189,13 +191,9 @@ def stray_press_dirs(target: Path) -> list[str]:
     return sorted(_press_dirs(files) - _control_press_dirs(target, files))
 
 
-def iter_target_files(target: Path, rules: Rules) -> list[Path]:
-    """All non-excluded tracked+untracked files under target, sorted.
+def _content_candidate_entries(target: Path, rules: Rules) -> tuple[SurfaceEntry, ...]:
+    """Snapshot-backed regular-file and symlink rewrite candidates."""
 
-    Excludes rules.exclude_files / exclude_dirs and the exact root control
-    artifacts in ROOT_CONTROL. Everything else under a press/ dir — root or
-    nested — is ordinary content: scanned and rewritten like any file.
-    """
     snapshot = capture_surface_snapshot(target)
     entries = select_content_rewrite_entries(
         snapshot,
@@ -217,10 +215,17 @@ def iter_target_files(target: Path, rules: Rules) -> list[Path]:
         )
         if entry.worktree_kind == "symlink"
     )
-    return [
-        target / entry.rel
-        for entry in sorted((*entries, *symlinks), key=lambda item: item.rel.as_posix())
-    ]
+    return tuple(sorted((*entries, *symlinks), key=lambda item: item.rel.as_posix()))
+
+
+def iter_target_files(target: Path, rules: Rules) -> list[Path]:
+    """All non-excluded tracked+untracked files under target, sorted.
+
+    Excludes rules.exclude_files / exclude_dirs and the exact root control
+    artifacts in ROOT_CONTROL. Everything else under a press/ dir — root or
+    nested — is ordinary content: scanned and rewritten like any file.
+    """
+    return [target / entry.rel for entry in _content_candidate_entries(target, rules)]
 
 
 def _gitlink_rels(target: Path) -> frozenset[str]:
@@ -229,8 +234,8 @@ def _gitlink_rels(target: Path) -> frozenset[str]:
     return gitlink_path_strings(capture_surface_snapshot(target))
 
 
-def _rename_candidates(target: Path, rules: Rules) -> list[Path]:
-    """Rename-pass candidates: every eligible path, symlink LEAVES included.
+def _rename_candidate_entries(target: Path, rules: Rules) -> tuple[SurfaceEntry, ...]:
+    """Snapshot-backed rename candidates, with their expected leaf kinds.
 
     Mirrors ``iter_target_files``'s exclusion filtering (``_is_excluded`` +
     ``ROOT_CONTROL``), but enumerates by no-follow ``is_symlink()`` in
@@ -263,7 +268,13 @@ def _rename_candidates(target: Path, rules: Rules) -> list[Path]:
         exclude_dirs=rules.exclude_dirs,
         root_control=ROOT_CONTROL,
     )
-    return [target / entry.rel for entry in entries]
+    return entries
+
+
+def _rename_candidates(target: Path, rules: Rules) -> list[Path]:
+    """Rename-pass candidate paths; compatibility view over raw entries."""
+
+    return [target / entry.rel for entry in _rename_candidate_entries(target, rules)]
 
 
 def copy_paths(target: Path) -> list[PathEntry]:
@@ -619,12 +630,27 @@ def symlink_target_posix(rel: Path, link: str) -> str:
     return Path(os.path.normpath(os.path.join(rel.parent.as_posix(), link))).as_posix()
 
 
-def _read_text(path: Path) -> str | None:
+def _read_text(path: Path, *, expected_kind: WorktreeKind | None = None) -> str | None:
+    if expected_kind == "symlink":
+        # A stable selected symlink remains a non-content candidate. If the
+        # pathname changed to any other kind, the no-follow readlink refuses.
+        readlink_nofollow(path)
+        return None
     try:
         return read_regular_nofollow(path).decode("utf-8")
-    except (UnicodeDecodeError, OSError):
-        return None  # binary or unreadable — never a rewrite candidate
-    except NonRegularFileError:
+    except UnicodeDecodeError:
+        return None  # binary — never a rewrite candidate
+    except OSError as exc:
+        if expected_kind == "file":
+            raise SafetyError(
+                f"selected regular file changed before read: {path}"
+            ) from exc
+        return None  # compatibility path for an unclassified unreadable leaf
+    except NonRegularFileError as exc:
+        if expected_kind == "file":
+            raise SafetyError(
+                f"selected regular file changed before read: {path}"
+            ) from exc
         # The checked-path fallback reports an initially non-regular leaf with
         # this dedicated exception, whereas POSIX O_NOFOLLOW reports a symlink
         # as an OSError above. Preserve the cross-platform skip contract only
@@ -696,10 +722,11 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
     # rename candidate here too, or the plan silently omits it. `_read_text`
     # still returns None for a symlink, so the content-plan branch below is
     # unaffected — this only widens what the rename-plan branch below it sees.
-    for path in _rename_candidates(target, rules):
-        rel = path.relative_to(target)
+    for entry in _rename_candidate_entries(target, rules):
+        path = target / entry.rel
+        rel = entry.rel
         assert_ancestors_real(path, target)
-        text = _read_text(path)
+        text = _read_text(path, expected_kind=entry.worktree_kind)
         if text is not None:
             for rule, frm, to in rendered:
                 if rule.content and rule_matches_path(rule, rel.as_posix()):
@@ -802,10 +829,11 @@ def _apply_replacements(
     report: ApplyReport,
     rendered: list[tuple[ReplaceRule, str, str]],
 ) -> None:
-    for path in iter_target_files(target, rules):
-        rel = path.relative_to(target).as_posix()
+    for entry in _content_candidate_entries(target, rules):
+        path = target / entry.rel
+        rel = entry.rel.as_posix()
         assert_ancestors_real(path, target)
-        text = _read_text(path)
+        text = _read_text(path, expected_kind=entry.worktree_kind)
         if text is None:
             kind = "symlink" if path.is_symlink() else "binary"
             report.skipped.append(f"replace {rel} ({kind})")

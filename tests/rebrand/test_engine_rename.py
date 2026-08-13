@@ -315,7 +315,7 @@ def test_build_plan_refuses_ancestor_swap_after_inventory(
     external = tmp_path / "external-plan"
     external.mkdir()
     (external / "file.txt").write_text("external demo_widget\n", encoding="utf-8")
-    real_candidates = engine_module._rename_candidates
+    real_candidates = engine_module._rename_candidate_entries
 
     def swap_after_inventory(target: Path, rules):
         paths = real_candidates(target, rules)
@@ -323,7 +323,9 @@ def test_build_plan_refuses_ancestor_swap_after_inventory(
         os.symlink(external, target / "race")
         return paths
 
-    monkeypatch.setattr(engine_module, "_rename_candidates", swap_after_inventory)
+    monkeypatch.setattr(
+        engine_module, "_rename_candidate_entries", swap_after_inventory
+    )
 
     with pytest.raises(ContainmentError):
         build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
@@ -343,7 +345,7 @@ def test_apply_refuses_ancestor_swap_after_inventory(
     outside = external / "file.txt"
     outside.write_text("external demo_widget\n", encoding="utf-8")
     outside_before = outside.read_bytes()
-    real_iter = engine_module.iter_target_files
+    real_iter = engine_module._content_candidate_entries
 
     def swap_after_inventory(target: Path, rules):
         paths = real_iter(target, rules)
@@ -351,11 +353,45 @@ def test_apply_refuses_ancestor_swap_after_inventory(
         os.symlink(external, target / "race")
         return paths
 
-    monkeypatch.setattr(engine_module, "iter_target_files", swap_after_inventory)
+    monkeypatch.setattr(
+        engine_module, "_content_candidate_entries", swap_after_inventory
+    )
 
     with pytest.raises(ContainmentError):
         apply(src_target, SOURCE, DEST, DEFAULT_RULES)
     assert outside.read_bytes() == outside_before
+
+
+@requires_symlink
+@pytest.mark.parametrize("operation", ["plan", "apply"])
+def test_content_pass_refuses_file_replaced_by_symlink_before_open(
+    src_target: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    tracked = src_target / "leaf.txt"
+    tracked.write_text("mentions demo_widget\n", encoding="utf-8")
+    _git_add(src_target)
+    displaced = tmp_path / f"displaced-{operation}.txt"
+    real_read = engine_module.read_regular_nofollow
+    swapped = False
+
+    def swap_before_open(path: Path) -> bytes:
+        nonlocal swapped
+        if path == tracked and not swapped:
+            swapped = True
+            tracked.rename(displaced)
+            tracked.symlink_to("missing-target")
+        return real_read(path)
+
+    monkeypatch.setattr(engine_module, "read_regular_nofollow", swap_before_open)
+
+    with pytest.raises(SafetyError, match="selected regular file changed"):
+        if operation == "plan":
+            build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+        else:
+            apply(src_target, SOURCE, DEST, DEFAULT_RULES)
 
 
 class TestRulePathRenames:

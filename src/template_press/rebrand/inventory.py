@@ -78,6 +78,8 @@ class _VisibilityState:
 
     inputs: tuple[VisibilityInput, ...]
     stamps: tuple[_NodeStamp, ...]
+    embedded_repositories: tuple[Path, ...]
+    repository_markers: tuple[Path, ...]
 
 
 @dataclass(frozen=True)
@@ -147,9 +149,11 @@ def _index_kind(mode: str) -> IndexKind:
     raise SafetyError(f"unsupported Git index mode {mode!r} in surface inventory")
 
 
-def _git_rel_path(path_text: str) -> Path:
+def _git_rel_path(path_text: str, *, directory_record: bool = False) -> Path:
     """Validate Git's canonical slash-separated path without changing bytes."""
 
+    if directory_record and path_text.endswith("/"):
+        path_text = path_text[:-1]
     if os.name == "nt":
         return Path(SafeRelPath(path_text).as_posix())
     if not path_text or path_text.startswith("/"):
@@ -205,7 +209,7 @@ def parse_ls_files(raw: bytes) -> list[tuple[Path, bool, IndexKind | None]]:
             tracked = True
             kind = _index_kind(mode)
         path_text = path_raw.decode("utf-8", "surrogateescape")
-        rel = _git_rel_path(path_text)
+        rel = _git_rel_path(path_text, directory_record=not tracked)
         posix = rel.as_posix()
         if posix in parsed:
             raise SafetyError(f"duplicate Git inventory path {posix!r}")
@@ -273,7 +277,7 @@ def _active_gitignore_paths(
     target: Path,
     entries: tuple[SurfaceEntry, ...],
     core_excludes: Path | None,
-) -> tuple[set[Path], set[Path]]:
+) -> tuple[set[Path], set[Path], set[Path], set[Path]]:
     """Find `.gitignore` leaves in directories Git can traverse.
 
     This filesystem walk is no-follow. Git itself decides which real child
@@ -283,10 +287,29 @@ def _active_gitignore_paths(
     """
 
     found: set[Path] = set()
+    embedded_repositories: set[Path] = set()
+    repository_markers: set[Path] = set()
     active_dirs: set[str] = {"."}
-    gitlinks = {
-        entry.rel.as_posix() for entry in entries if entry.index_kind == "gitlink"
-    }
+    opaque_nodes: set[tuple[int, int]] = set()
+    for entry in entries:
+        is_gitlink = entry.index_kind == "gitlink"
+        if entry.worktree_kind != "directory":
+            continue
+        # The hardened outer Git enumeration emits an untracked directory
+        # record only for an embedded repository. Treat that record—not the
+        # child repository's attacker-controlled config—as authoritative.
+        is_embedded_repository = not entry.tracked
+        if not (is_gitlink or is_embedded_repository):
+            continue
+        if is_embedded_repository:
+            embedded_repositories.add(entry.rel)
+        try:
+            info = os.lstat(target / entry.rel)
+        except OSError as exc:
+            raise SafetyError(
+                f"cannot identify Git link boundary {target / entry.rel}: {exc}"
+            ) from exc
+        opaque_nodes.add((info.st_dev, info.st_ino))
     pending: list[Path] = [Path(".")]
     while pending:
         children: list[Path] = []
@@ -306,6 +329,9 @@ def _active_gitignore_paths(
             ignore_path = directory / ".gitignore"
             if os.path.lexists(ignore_path):
                 found.add(ignore_path)
+            marker_path = directory / ".git"
+            if os.path.lexists(marker_path):
+                repository_markers.add(marker_path)
             try:
                 scandir_entries = list(os.scandir(directory))
             except OSError as exc:
@@ -318,7 +344,8 @@ def _active_gitignore_paths(
                 child_rel = (
                     Path(child.name) if rel_dir == Path(".") else rel_dir / child.name
                 )
-                if child_rel.as_posix() in gitlinks:
+                child_info = child.stat(follow_symlinks=False)
+                if (child_info.st_dev, child_info.st_ino) in opaque_nodes:
                     continue
                 children.append(child_rel)
         ignored = _ignored_directories(target, children, core_excludes)
@@ -336,7 +363,8 @@ def _active_gitignore_paths(
         if parent in active_dirs:
             found.add(target / entry.rel)
     directories = {target if rel == "." else target / rel for rel in active_dirs}
-    return found, directories
+    repository_markers.update(target / rel / ".git" for rel in embedded_repositories)
+    return found, directories, embedded_repositories, repository_markers
 
 
 def _absolute_git_path(target: Path, *args: str) -> Path:
@@ -401,7 +429,12 @@ def _resolve_config_include_path(value: str, origin: Path, target: Path) -> Path
 
     if value.startswith("%(prefix)/"):
         suffix = value.removeprefix("%(prefix)").removeprefix("/")
-        return (_git_exec_prefix(target) / suffix).absolute()
+        # The operating system resolves Git's installation-prefix symlink
+        # before consuming the suffix.  Start from that physical directory so
+        # Homebrew's stable ``opt/git`` alias is supported while every symlink
+        # introduced by the repository-controlled suffix remains visible to
+        # the no-follow ancestry guard.
+        return (_git_exec_prefix(target).resolve() / suffix).absolute()
     if value == "%(prefix)":
         return (origin.parent / value).absolute()
     if value.startswith("%("):
@@ -426,27 +459,46 @@ def _config_source_paths(target: Path) -> tuple[tuple[Path, ...], tuple[Path, ..
     records = result.stdout[:-1].split(b"\0")
     if len(records) % 2:
         raise SafetyError("malformed Git config origin/value pairs")
-    origins: set[Path] = set()
-    includes: set[Path] = set()
-    unconditional_includes: set[Path] = set()
+    parsed: list[tuple[Path, str, str]] = []
     for origin_raw, item_raw in zip(records[::2], records[1::2], strict=True):
         if not origin_raw.startswith(b"file:"):
             continue
         text = origin_raw[len(b"file:") :].decode("utf-8", "surrogateescape")
         origin = Path(text)
         origin = (origin if origin.is_absolute() else target / origin).absolute()
-        origins.add(origin)
         key_raw, separator, value_raw = item_raw.partition(b"\n")
         if not separator:
             raise SafetyError("malformed Git config key/value record")
-        key = key_raw.decode("utf-8", "surrogateescape").casefold()
+        parsed.append(
+            (
+                origin,
+                key_raw.decode("utf-8", "surrogateescape").casefold(),
+                value_raw.decode("utf-8", "surrogateescape"),
+            )
+        )
+
+    origins: set[Path] = set()
+    includes: set[Path] = set()
+    unconditional_includes: set[Path] = set()
+    origin_aliases: dict[Path, Path] = {}
+    for origin, key, value in parsed:
+        physical_origin = origin_aliases.get(origin, origin)
+        origins.add(physical_origin)
         is_include = key == "include.path" or (
             key.startswith("includeif.") and key.endswith(".path")
         )
         if is_include:
-            value = value_raw.decode("utf-8", "surrogateescape")
-            include = _resolve_config_include_path(value, origin, target)
+            include = _resolve_config_include_path(value, physical_origin, target)
             includes.add(include)
+            if value.startswith("%(prefix)/"):
+                suffix = value.removeprefix("%(prefix)/")
+                reported = (_git_exec_prefix(target) / suffix).absolute()
+            else:
+                expanded = Path(os.path.expanduser(value))
+                reported = (
+                    expanded if expanded.is_absolute() else origin.parent / expanded
+                ).absolute()
+            origin_aliases[reported] = include
             if key == "include.path":
                 unconditional_includes.add(include)
     # Existing active conditional includes appear as file origins. A missing
@@ -649,9 +701,12 @@ def _visibility_inputs(
     entries: tuple[SurfaceEntry, ...],
     core_excludes: Path | None,
 ) -> _VisibilityState:
-    gitignore_paths, active_directories = _active_gitignore_paths(
-        target, entries, core_excludes
-    )
+    (
+        gitignore_paths,
+        active_directories,
+        embedded_repositories,
+        repository_markers,
+    ) = _active_gitignore_paths(target, entries, core_excludes)
     items = [_fingerprint_visibility("gitignore", path) for path in gitignore_paths]
     info_exclude = _absolute_git_path(
         target, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"
@@ -663,17 +718,75 @@ def _visibility_inputs(
     inputs = tuple(
         sorted(items, key=lambda item: (order[item.origin], item.path.as_posix()))
     )
-    stamp_paths = active_directories | {item.path for item in inputs}
+    stamp_paths = (
+        active_directories | repository_markers | {item.path for item in inputs}
+    )
     stamps = tuple(_node_stamp(path) for path in sorted(stamp_paths))
-    return _VisibilityState(inputs, stamps)
+    return _VisibilityState(
+        inputs,
+        stamps,
+        tuple(sorted(embedded_repositories, key=lambda path: path.as_posix())),
+        tuple(sorted(repository_markers, key=lambda path: path.as_posix())),
+    )
+
+
+def _valid_git_directory_marker(target: Path, marker: Path) -> bool:
+    """Validate a nested marker through outer Git without loading child config."""
+
+    result = _run_git(
+        target,
+        "rev-parse",
+        "--resolve-git-dir",
+        str(marker),
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _validate_embedded_repository_entries(
+    target: Path,
+    entries: tuple[SurfaceEntry, ...],
+    repository_markers: tuple[Path, ...],
+) -> None:
+    """Require Git records to match the observed opaque-repository boundaries."""
+
+    by_rel = {entry.rel: entry for entry in entries}
+    root_marker = target / ".git"
+    boundaries = {
+        marker.parent.relative_to(target)
+        for marker in repository_markers
+        if marker != root_marker and _valid_git_directory_marker(target, marker)
+    }
+    for boundary in boundaries:
+        entry = by_rel.get(boundary)
+        if entry is None or entry.worktree_kind != "directory":
+            raise SafetyError(
+                f"embedded repository record changed during capture: {boundary}"
+            )
+        if entry.tracked and entry.index_kind != "gitlink":
+            raise SafetyError(
+                f"tracked non-gitlink contains repository marker: {boundary}"
+            )
+        if any(other != boundary and boundary in other.parents for other in by_rel):
+            raise SafetyError(
+                f"Git enumerated descendants of embedded repository {boundary}"
+            )
+    for entry in entries:
+        if (
+            not entry.tracked
+            and entry.worktree_kind == "directory"
+            and entry.rel not in boundaries
+        ):
+            raise SafetyError(
+                f"untracked directory record is not an embedded repository: {entry.rel}"
+            )
 
 
 def capture_surface_snapshot(target: Path) -> SurfaceSnapshot:
     """Capture two equal candidates or refuse a changing external target."""
 
     target = target.absolute()
-    seed_entries = _enumerate_index_entries(target)
-    first = _capture_candidate(target, seed_entries)
+    first = _capture_candidate(target)
     second = _capture_candidate(target, first.entries)
     if first != second:
         raise SafetyError("Git surface or visibility changed during capture")
@@ -703,30 +816,27 @@ def _enumerate_entries(
     )
 
 
-def _enumerate_index_entries(target: Path) -> tuple[SurfaceEntry, ...]:
-    """Learn tracked kinds, especially opaque gitlink directory boundaries."""
-
-    result = _run_git(target, "ls-files", "-z", "-t", "--stage", "--cached")
-    return tuple(
-        SurfaceEntry(rel, tracked, index_kind, _worktree_kind(target, rel))
-        for rel, tracked, index_kind in parse_ls_files(result.stdout)
-    )
-
-
 def _capture_candidate(
-    target: Path, seed_entries: tuple[SurfaceEntry, ...]
+    target: Path, seed_entries: tuple[SurfaceEntry, ...] | None = None
 ) -> SurfaceSnapshot:
     """One coherent candidate; the public capture compares two candidates."""
 
     config_before = _config_source_state(target)
     core_excludes_before = _core_excludes_path(target)
+    if seed_entries is None:
+        seed_entries = _enumerate_entries(target, core_excludes_before)
     visibility_before = _visibility_inputs(target, seed_entries, core_excludes_before)
     entries = _enumerate_entries(target, core_excludes_before)
     core_excludes_after = _core_excludes_path(target)
     visibility_after = _visibility_inputs(target, entries, core_excludes_after)
+    _validate_embedded_repository_entries(
+        target, entries, visibility_after.repository_markers
+    )
     config_after = _config_source_state(target)
     if config_before != config_after or core_excludes_before != core_excludes_after:
         raise SafetyError("Git config or index inputs changed during capture")
+    if seed_entries != entries:
+        raise SafetyError("Git surface changed during capture")
     if visibility_before != visibility_after:
         raise SafetyError("Git visibility changed during capture")
     return SurfaceSnapshot(entries, visibility_after.inputs)

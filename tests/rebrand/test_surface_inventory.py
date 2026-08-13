@@ -255,6 +255,123 @@ def test_ls_files_parser_round_trips_non_utf8_and_combined_record_shapes() -> No
     assert [item[0].as_posix() for item in parsed] == sorted(by_path)
 
 
+def test_ls_files_parser_accepts_untracked_embedded_repository_record() -> None:
+    assert parse_ls_files(b"? nested/\0") == [(Path("nested"), False, None)]
+
+
+def test_snapshot_classifies_untracked_embedded_repository_as_directory(
+    src_target: Path,
+) -> None:
+    nested = src_target / "nested"
+    nested.mkdir()
+    _git(nested, "init", "-q")
+
+    assert _entries(src_target)["nested"] == SurfaceEntry(
+        rel=Path("nested"),
+        tracked=False,
+        index_kind=None,
+        worktree_kind="directory",
+    )
+
+
+@pytest.mark.parametrize("marker_kind", ["file", "directory"])
+def test_invalid_nested_git_marker_does_not_hide_gitignore_input(
+    src_target: Path, marker_kind: str
+) -> None:
+    nested = src_target / "nested"
+    nested.mkdir()
+    marker = nested / ".git"
+    if marker_kind == "file":
+        marker.write_text("not a gitfile\n", encoding="utf-8")
+    else:
+        marker.mkdir()
+    inner_ignore = nested / ".gitignore"
+    inner_ignore.write_text("hidden.txt\n", encoding="utf-8")
+    (nested / "hidden.txt").write_text("hidden\n", encoding="utf-8")
+    (nested / "visible.txt").write_text("visible\n", encoding="utf-8")
+
+    snapshot = capture_surface_snapshot(src_target)
+
+    assert inner_ignore in {item.path for item in snapshot.visibility_inputs}
+    assert "nested/hidden.txt" not in {
+        entry.rel.as_posix() for entry in snapshot.entries
+    }
+    assert "nested/visible.txt" in {entry.rel.as_posix() for entry in snapshot.entries}
+
+
+def test_capture_refuses_embedded_repository_marker_removed_during_enumeration(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nested = src_target / "nested"
+    nested.mkdir()
+    _git(nested, "init", "-q")
+    (nested / ".gitignore").write_text("hidden.txt\n", encoding="utf-8")
+    (nested / "hidden.txt").write_text("hidden\n", encoding="utf-8")
+    (nested / "visible.txt").write_text("visible\n", encoding="utf-8")
+    marker = nested / ".git"
+    displaced = tmp_path / "nested-git"
+    real_enumerate = inventory._enumerate_entries
+
+    def enumerate_without_marker(
+        target: Path, core_excludes: Path | None
+    ) -> tuple[SurfaceEntry, ...]:
+        marker.rename(displaced)
+        try:
+            return real_enumerate(target, core_excludes)
+        finally:
+            displaced.rename(marker)
+
+    monkeypatch.setattr(inventory, "_enumerate_entries", enumerate_without_marker)
+
+    with pytest.raises(SafetyError, match=r"changed during capture"):
+        capture_surface_snapshot(src_target)
+
+
+@posix_only
+def test_embedded_repository_config_is_never_opened(
+    src_target: Path,
+) -> None:
+    nested = src_target / "nested"
+    nested.mkdir()
+    _git(nested, "init", "-q")
+    config = nested / ".git" / "config"
+    config.unlink()
+    os.mkfifo(config)
+
+    snapshot = capture_surface_snapshot(src_target)
+
+    assert next(entry for entry in snapshot.entries if entry.rel == Path("nested"))
+
+
+def test_capture_refuses_embedded_head_corrupted_during_enumeration(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nested = src_target / "nested"
+    nested.mkdir()
+    _git(nested, "init", "-q")
+    (nested / ".gitignore").write_text("hidden.txt\n", encoding="utf-8")
+    (nested / "visible.txt").write_text("visible\n", encoding="utf-8")
+    head = nested / ".git" / "HEAD"
+    original = head.read_bytes()
+    original_times = os.stat(head).st_atime_ns, os.stat(head).st_mtime_ns
+    real_enumerate = inventory._enumerate_entries
+
+    def enumerate_with_invalid_head(
+        target: Path, core_excludes: Path | None
+    ) -> tuple[SurfaceEntry, ...]:
+        head.write_text("garbage\n", encoding="utf-8")
+        try:
+            return real_enumerate(target, core_excludes)
+        finally:
+            head.write_bytes(original)
+            os.utime(head, ns=original_times)
+
+    monkeypatch.setattr(inventory, "_enumerate_entries", enumerate_with_invalid_head)
+
+    with pytest.raises(SafetyError, match=r"embedded repository.*capture"):
+        capture_surface_snapshot(src_target)
+
+
 @pytest.mark.parametrize("unsafe", [b"../outside", b".git/config", b".GIT/config"])
 def test_ls_files_parser_rejects_unsafe_git_paths(unsafe: bytes) -> None:
     with pytest.raises(ValueError):
@@ -470,6 +587,40 @@ def test_exact_prefix_token_is_a_literal_relative_include(src_target: Path) -> N
     snapshot = capture_surface_snapshot(src_target)
 
     assert snapshot.entries
+
+
+@requires_symlink
+def test_prefix_alias_propagates_to_nested_relative_include(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    physical_prefix = tmp_path / "Cellar" / "git" / "1.0"
+    physical_prefix.mkdir(parents=True)
+    logical_prefix = tmp_path / "opt" / "git"
+    logical_prefix.parent.mkdir()
+    logical_prefix.symlink_to(physical_prefix, target_is_directory=True)
+    main = physical_prefix / "main"
+    child = physical_prefix / "child"
+    main.write_text("[include]\n\tpath = child\n", encoding="utf-8")
+    child.write_text("[user]\n\tname = test\n", encoding="utf-8")
+    records = (
+        f"file:{src_target / '.git' / 'config'}\0"
+        "include.path\n%(prefix)/main\0"
+        f"file:{logical_prefix / 'main'}\0include.path\nchild\0"
+        f"file:{logical_prefix / 'child'}\0user.name\ntest\0"
+    ).encode()
+    monkeypatch.setattr(inventory, "_git_exec_prefix", lambda _target: logical_prefix)
+    monkeypatch.setattr(
+        inventory,
+        "_run_git",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, records, b""),
+    )
+
+    sources, includes = inventory._config_source_paths(src_target)
+
+    assert main in sources
+    assert child in sources
+    assert main in includes
+    assert child in includes
 
 
 def test_inventory_ignores_ambient_xdg_and_command_scope_excludes(
@@ -722,7 +873,7 @@ def test_capture_refuses_ignore_policy_changed_during_enumeration(
 
     monkeypatch.setattr(inventory, "_run_git", mutate_after_listing)
 
-    with pytest.raises(SafetyError, match="visibility changed during capture"):
+    with pytest.raises(SafetyError, match=r"changed during capture"):
         capture_surface_snapshot(src_target)
 
 
@@ -1105,6 +1256,35 @@ def test_visibility_walk_does_not_descend_into_checked_out_gitlink(
     )
     sub = src_target / "sub"
     sub.mkdir()
+    _git(sub, "init", "-q")
+    inner_ignore = sub / ".gitignore"
+    inner_ignore.write_text("hidden.txt\n", encoding="utf-8")
+
+    snapshot = capture_surface_snapshot(src_target)
+
+    assert inner_ignore not in {item.path for item in snapshot.visibility_inputs}
+
+
+def test_visibility_walk_prunes_case_variant_gitlink_directory(
+    src_target: Path,
+) -> None:
+    head = subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "rev-parse", "HEAD"],  # noqa: S607
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    sub = src_target / "vendor"
+    sub.mkdir()
+    _git(
+        src_target,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{head},Vendor",
+    )
+    if not (src_target / "Vendor").is_dir():
+        pytest.skip("worktree filesystem is case-sensitive")
     inner_ignore = sub / ".gitignore"
     inner_ignore.write_text("hidden.txt\n", encoding="utf-8")
 
