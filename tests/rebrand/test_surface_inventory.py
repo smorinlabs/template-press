@@ -716,6 +716,30 @@ def test_inventory_pins_case_sensitive_ignore_matching(src_target: Path) -> None
     assert "foo" in rels
 
 
+def test_capture_refuses_repeated_core_excludes_config_transition(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ignore_a = src_target / "ignore-a"
+    ignore_b = src_target / "ignore-b"
+    ignore_a.write_text("hide-a\n", encoding="utf-8")
+    ignore_b.write_text("hide-b\n", encoding="utf-8")
+    (src_target / "hide-a").write_text("visible under B\n", encoding="utf-8")
+    (src_target / "hide-b").write_text("hidden under B\n", encoding="utf-8")
+    _git(src_target, "config", "core.excludesFile", ignore_b.name)
+    real_resolver = inventory._core_excludes_path
+
+    def repeat_transition(target: Path) -> Path | None:
+        _git(target, "config", "core.excludesFile", ignore_a.name)
+        resolved = real_resolver(target)
+        _git(target, "config", "core.excludesFile", ignore_b.name)
+        return resolved
+
+    monkeypatch.setattr(inventory, "_core_excludes_path", repeat_transition)
+
+    with pytest.raises(SafetyError, match=r"config.*changed during capture"):
+        capture_surface_snapshot(src_target)
+
+
 @posix_only
 @requires_symlink
 def test_visibility_read_refuses_ancestor_swap_at_descriptor_open(
