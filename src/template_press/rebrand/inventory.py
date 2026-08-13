@@ -96,11 +96,12 @@ class _ConfigSourceStamp:
 
 @dataclass(frozen=True)
 class _ConfigSourceState:
-    """Config files and parent directories that make includes observable."""
+    """Finite Git inputs that must remain stable through enumeration."""
 
     sources: tuple[_ConfigSourceStamp, ...]
     include_parents: tuple[_NodeStamp, ...]
     condition_inputs: tuple[_NodeStamp, ...]
+    index_inputs: tuple[_NodeStamp, ...]
 
 
 def _run_git(
@@ -502,10 +503,24 @@ def _config_source_state(target: Path) -> _ConfigSourceState:
         head,
         head.parent,
     }
+    index = _absolute_git_path(
+        target, "rev-parse", "--path-format=absolute", "--git-path", "index"
+    )
+    shared_result = _run_git(target, "rev-parse", "--shared-index-path")
+    if shared_result.stdout and not shared_result.stdout.endswith(b"\n"):
+        raise SafetyError("malformed newline-terminated shared-index path")
+    shared_raw = shared_result.stdout[:-1] if shared_result.stdout else b""
+    shared_text = shared_raw.decode("utf-8", "surrogateescape")
+    index_paths = {index, index.parent}
+    if shared_text:
+        shared = Path(shared_text)
+        shared = shared if shared.is_absolute() else target / shared
+        index_paths.update((shared, shared.parent))
     return _ConfigSourceState(
         tuple(_config_source_stamp(path) for path in sources),
         tuple(_node_stamp(path) for path in sorted(parents)),
         tuple(_node_stamp(path) for path in sorted(condition_paths)),
+        tuple(_node_stamp(path) for path in sorted(index_paths)),
     )
 
 
@@ -662,7 +677,7 @@ def _capture_candidate(
     visibility_after = _visibility_inputs(target, entries, core_excludes_after)
     config_after = _config_source_state(target)
     if config_before != config_after or core_excludes_before != core_excludes_after:
-        raise SafetyError("Git config sources changed during capture")
+        raise SafetyError("Git config or index inputs changed during capture")
     if visibility_before != visibility_after:
         raise SafetyError("Git visibility changed during capture")
     return SurfaceSnapshot(entries, visibility_after.inputs)

@@ -865,6 +865,45 @@ def test_capture_refuses_temporary_linked_worktree_gitdir_redirect(
         capture_surface_snapshot(linked)
 
 
+def test_capture_refuses_temporary_alternate_git_index(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = src_target / "secret.txt"
+    secret.write_text("tracked and ignored\n", encoding="utf-8")
+    (src_target / ".gitignore").write_text("secret.txt\n", encoding="utf-8")
+    _git(src_target, "add", "-f", secret.name)
+    _git(src_target, "add", ".gitignore")
+    _git(src_target, "commit", "-q", "-m", "track ignored secret")
+
+    index = src_target / ".git" / "index"
+    original_index = index.read_bytes()
+    alternate_index = tmp_path / "alternate-index"
+    env = dict(os.environ)
+    env["GIT_INDEX_FILE"] = str(alternate_index)
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "read-tree", "HEAD^"],  # noqa: S607
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+    alternate_bytes = alternate_index.read_bytes()
+    real_run_git = inventory._run_git
+
+    def temporary_index(target: Path, *args: str, **kwargs):
+        if "ls-files" not in args:
+            return real_run_git(target, *args, **kwargs)
+        index.write_bytes(alternate_bytes)
+        try:
+            return real_run_git(target, *args, **kwargs)
+        finally:
+            index.write_bytes(original_index)
+
+    monkeypatch.setattr(inventory, "_run_git", temporary_index)
+
+    with pytest.raises(SafetyError, match="changed during capture"):
+        capture_surface_snapshot(src_target)
+
+
 @posix_only
 @requires_symlink
 def test_visibility_read_refuses_ancestor_swap_at_descriptor_open(
