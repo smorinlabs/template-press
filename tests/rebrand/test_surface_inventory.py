@@ -255,7 +255,7 @@ def test_ls_files_parser_round_trips_non_utf8_and_combined_record_shapes() -> No
     assert [item[0].as_posix() for item in parsed] == sorted(by_path)
 
 
-@pytest.mark.parametrize("unsafe", [b"../outside", b".git/config"])
+@pytest.mark.parametrize("unsafe", [b"../outside", b".git/config", b".GIT/config"])
 def test_ls_files_parser_rejects_unsafe_git_paths(unsafe: bytes) -> None:
     with pytest.raises(ValueError):
         parse_ls_files(b"? " + unsafe + b"\0")

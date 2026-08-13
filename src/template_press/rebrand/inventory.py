@@ -157,7 +157,7 @@ def _git_rel_path(path_text: str) -> Path:
     parts = path_text.split("/")
     if any(part in ("", ".", "..") for part in parts):
         raise UnsafePathError(f"unsafe Git path component: {path_text!r}")
-    if any(part == ".git" for part in parts):
+    if any(part.casefold() == ".git" for part in parts):
         raise UnsafePathError(f"'.git' component not allowed: {path_text!r}")
     rel = Path(*parts)
     if os.fsencode(rel.as_posix()) != path_text.encode("utf-8", "surrogateescape"):

@@ -143,7 +143,7 @@ class SafeRelPath:
                 )
             if part in (".", ".."):
                 raise UnsafePathError(f"'.'/'..' component not allowed: {text!r}")
-            if part == ".git" if literal_posix_path else _is_dotgit(part):
+            if _is_dotgit(part):
                 raise UnsafePathError(f"'.git' component not allowed: {text!r}")
         self._parts: tuple[str, ...] = tuple(parts)
 
@@ -365,6 +365,8 @@ def read_regular_nofollow(path: Path) -> bytes:
         and hasattr(os, "O_NOFOLLOW")
         and hasattr(os, "O_DIRECTORY")
         and os.open in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.stat in os.supports_follow_symlinks
     ):
         return _read_regular_openat(absolute)
     return _read_regular_checked_path(absolute)
@@ -424,6 +426,7 @@ def readlink_nofollow(path: Path) -> str:
         and hasattr(os, "O_DIRECTORY")
         and os.open in os.supports_dir_fd
         and os.readlink in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
         and os.stat in os.supports_follow_symlinks
     ):
         return _readlink_openat(absolute)

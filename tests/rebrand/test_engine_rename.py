@@ -265,6 +265,19 @@ def test_replace_refuses_symlinked_ancestor_no_external_write(tmp_path: Path):
 
 
 @requires_symlink
+def test_rename_ignores_other_entries_under_excluded_directory(tmp_path: Path):
+    """Containment validation applies only to paths the rename pass may touch."""
+
+    target, _external = _diverged_symlink_ancestor_repo(tmp_path, leaf="file.txt")
+    rules = _rules_with(exclude_dirs=DEFAULT_RULES.exclude_dirs | {"a"})
+
+    candidates = _rename_candidates(target, rules)
+
+    assert target / "keep.txt" in candidates
+    assert not any(path.relative_to(target).parts[0] == "a" for path in candidates)
+
+
+@requires_symlink
 def test_build_plan_refuses_ancestor_swap_after_inventory(
     src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -666,6 +679,40 @@ class TestRenameSeesSymlinkNames:
             )
         )
         plan = build_plan(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert any(
+            item.kind == "rename" and item.path == "plbp-link" for item in plan.items
+        )
+
+    @requires_symlink
+    def test_build_plan_accepts_stable_symlink_with_checked_read_fallback(
+        self, src_target: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The non-openat reader must retain stable symlink compatibility."""
+
+        import template_press.rebrand.safety as safety_module
+
+        link = src_target / "plbp-link"
+        os.symlink("nowhere", link)
+        _git_add(src_target)
+        monkeypatch.setattr(safety_module.os, "supports_dir_fd", frozenset())
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-link",
+                    reason="checked-path symlink compatibility",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+
+        plan = build_plan(
+            src_target,
+            _identity(),
+            _identity(app_name="acme"),
+            rules,
+        )
+
         assert any(
             item.kind == "rename" and item.path == "plbp-link" for item in plan.items
         )

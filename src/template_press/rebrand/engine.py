@@ -249,7 +249,12 @@ def _rename_candidates(target: Path, rules: Rules) -> list[Path]:
     # without traversal by the raw inventory. Do not silently drop it from the
     # mutating path: preserve the existing fail-closed containment refusal.
     for entry in snapshot.entries:
-        if entry.worktree_kind == "other":
+        if (
+            entry.worktree_kind == "other"
+            and entry.index_kind != "gitlink"
+            and entry.rel.as_posix() not in ROOT_CONTROL
+            and not _is_excluded(entry.rel, rules)
+        ):
             assert_ancestors_real(target / entry.rel, target)
     entries = select_rename_entries(
         snapshot,
@@ -618,6 +623,14 @@ def _read_text(path: Path) -> str | None:
         return read_regular_nofollow(path).decode("utf-8")
     except (UnicodeDecodeError, OSError):
         return None  # binary or unreadable — never a rewrite candidate
+    except SafetyError:
+        # The checked-path fallback reports a stable symlink as a SafetyError,
+        # whereas POSIX O_NOFOLLOW reports it as an OSError above. Preserve the
+        # cross-platform skip contract only after a second no-follow operation
+        # proves that the leaf is still a symlink. Every other safety refusal
+        # remains fail-closed.
+        readlink_nofollow(path)
+        return None
 
 
 def _renamed_rel(

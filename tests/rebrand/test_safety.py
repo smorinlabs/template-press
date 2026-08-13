@@ -92,6 +92,19 @@ def test_saferelpath_accepts_bare_git_dir_without_dot() -> None:
     assert SafeRelPath("docs/git/usage.md").as_posix() == "docs/git/usage.md"
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [Path("sub/.GIT/x"), Path("a/.git./b"), Path("x/git~1/y")],
+)
+def test_saferelpath_pathlike_preserves_dotgit_normalization(raw: Path) -> None:
+    """PathLike POSIX names must not weaken the control-directory gate."""
+
+    from template_press.rebrand.safety import SafeRelPath
+
+    with pytest.raises(UnsafePathError):
+        SafeRelPath(raw)
+
+
 def test_saferelpath_normalizes_windows_separators() -> None:
     # The tool's own Path constants render with "\" on Windows; a Windows-style
     # relative path is accepted and normalized to posix (the cross-platform fix).
@@ -551,6 +564,44 @@ def test_read_regular_refuses_path_replaced_during_descriptor_read(
     with pytest.raises(SafetyError, match="changed while reading"):
         safety.read_regular_nofollow(source)
     assert source.read_text(encoding="utf-8") == "live replacement\n"
+
+
+def test_read_regular_uses_fallback_without_stat_dirfd_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    monkeypatch.setattr(safety.os, "supports_dir_fd", {safety.os.open})
+    monkeypatch.setattr(safety.os, "supports_follow_symlinks", {safety.os.stat})
+    monkeypatch.setattr(
+        safety,
+        "_read_regular_openat",
+        lambda _path: pytest.fail("unsupported openat path selected"),
+    )
+    monkeypatch.setattr(safety, "_read_regular_checked_path", lambda _path: b"fallback")
+
+    assert safety.read_regular_nofollow(tmp_path / "leaf") == b"fallback"
+
+
+def test_readlink_uses_fallback_without_stat_dirfd_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    monkeypatch.setattr(
+        safety.os,
+        "supports_dir_fd",
+        {safety.os.open, safety.os.readlink},
+    )
+    monkeypatch.setattr(safety.os, "supports_follow_symlinks", {safety.os.stat})
+    monkeypatch.setattr(
+        safety,
+        "_readlink_openat",
+        lambda _path: pytest.fail("unsupported openat path selected"),
+    )
+    monkeypatch.setattr(safety, "_readlink_checked_path", lambda _path: "fallback")
+
+    assert safety.readlink_nofollow(tmp_path / "leaf") == "fallback"
 
 
 @requires_symlink
