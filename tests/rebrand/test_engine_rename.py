@@ -318,6 +318,139 @@ def test_apply_refuses_visible_fifo_before_rewriting_other_files(
     assert ordinary.read_text(encoding="utf-8") == "demo_widget stays\n"
 
 
+def test_apply_refuses_embedded_repository_before_rewriting_other_files(
+    src_target: Path,
+) -> None:
+    ordinary = src_target / "ordinary.txt"
+    ordinary.write_text("demo_widget stays\n", encoding="utf-8")
+    nested = src_target / "nested"
+    nested.mkdir()
+    _git(nested, "init", "-q")
+
+    with pytest.raises(SafetyError, match="unscannable worktree entry"):
+        apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+    assert ordinary.read_text(encoding="utf-8") == "demo_widget stays\n"
+
+
+@pytest.mark.parametrize("replacement_kind", ["missing", "directory"])
+def test_rename_pass_refuses_source_changed_after_capture(
+    src_target: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement_kind: str,
+) -> None:
+    source = src_target / "demo_widget.txt"
+    source.write_text("clean\n", encoding="utf-8")
+    _git_add(src_target)
+    real_entries = engine_module._rename_candidate_entries
+    changed = False
+
+    def change_after_capture(target: Path, rules):
+        nonlocal changed
+        entries = real_entries(target, rules)
+        if not changed:
+            source.unlink()
+            if replacement_kind == "directory":
+                source.mkdir()
+            changed = True
+        return entries
+
+    monkeypatch.setattr(
+        engine_module,
+        "_rename_candidate_entries",
+        change_after_capture,
+    )
+    report = engine_module.ApplyReport()
+
+    with pytest.raises(SafetyError, match="rename source changed after capture"):
+        engine_module._rename_pass_once(
+            src_target,
+            [("package_name", "demo_widget", "potato_launcher")],
+            DEFAULT_RULES,
+            report,
+            [],
+        )
+
+    assert report.skipped == []
+
+
+def test_rename_pass_refuses_source_kind_swap_after_destination_checks(
+    src_target: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = src_target / "demo_widget.txt"
+    source.write_text("source\n", encoding="utf-8")
+    _git_add(src_target)
+    destination = src_target / "potato_launcher.txt"
+    displaced = src_target / "displaced.txt"
+    real_assert = engine_module.assert_ancestors_real
+    swapped = False
+
+    def swap_during_destination_check(path: Path, root: Path) -> None:
+        nonlocal swapped
+        real_assert(path, root)
+        if path == destination and not swapped:
+            source.rename(displaced)
+            source.mkdir()
+            (source / "child.txt").write_text("unauthorized\n", encoding="utf-8")
+            swapped = True
+
+    monkeypatch.setattr(
+        engine_module,
+        "assert_ancestors_real",
+        swap_during_destination_check,
+    )
+
+    with pytest.raises(SafetyError, match="rename source changed after capture"):
+        engine_module._rename_pass_once(
+            src_target,
+            [("package_name", "demo_widget", "potato_launcher")],
+            DEFAULT_RULES,
+            engine_module.ApplyReport(),
+            [],
+        )
+
+    assert source.is_dir()
+    assert not destination.exists()
+
+
+def test_rename_pass_atomically_refuses_destination_created_after_checks(
+    src_target: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = src_target / "demo_widget.txt"
+    source.write_text("source\n", encoding="utf-8")
+    _git_add(src_target)
+    destination = src_target / "potato_launcher.txt"
+    real_assert = engine_module.assert_ancestors_real
+    occupied = False
+
+    def occupy_before_move(path: Path, root: Path) -> None:
+        nonlocal occupied
+        real_assert(path, root)
+        if path == source and not occupied:
+            destination.write_text("do not overwrite\n", encoding="utf-8")
+            occupied = True
+
+    monkeypatch.setattr(
+        engine_module,
+        "assert_ancestors_real",
+        occupy_before_move,
+    )
+
+    with pytest.raises(SafetyError, match="destination appeared"):
+        engine_module._rename_pass_once(
+            src_target,
+            [("package_name", "demo_widget", "potato_launcher")],
+            DEFAULT_RULES,
+            engine_module.ApplyReport(),
+            [],
+        )
+
+    assert source.read_text(encoding="utf-8") == "source\n"
+    assert destination.read_text(encoding="utf-8") == "do not overwrite\n"
+
+
 @requires_symlink
 @pytest.mark.skipif(os.name == "nt", reason="descriptor-relative POSIX read")
 def test_read_text_refuses_regular_file_replaced_by_symlink_during_read(

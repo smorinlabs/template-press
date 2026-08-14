@@ -28,6 +28,7 @@ from template_press.rebrand.safety import (
     is_regular_lstat,
     owned_sandbox,
     refuse_unsafe_root,
+    rename_noreplace,
     safe_mkdir,
     safe_rename,
     safe_write,
@@ -184,6 +185,32 @@ def test_safe_rename_moves_within_root(tmp_path: Path) -> None:
     safe_rename(root, "src", "dst")
     assert (root / "dst" / "f").read_text(encoding="utf-8") == "x"
     assert not (root / "src").exists()
+
+
+def test_rename_noreplace_moves_directory_to_absent_path(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "file.txt").write_text("source\n", encoding="utf-8")
+
+    rename_noreplace(source, tmp_path / "destination")
+
+    assert (tmp_path / "destination" / "file.txt").read_text(
+        encoding="utf-8"
+    ) == "source\n"
+    assert not source.exists()
+
+
+def test_rename_noreplace_preserves_existing_destination(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("source\n", encoding="utf-8")
+    destination.write_text("destination\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        rename_noreplace(source, destination)
+
+    assert source.read_text(encoding="utf-8") == "source\n"
+    assert destination.read_text(encoding="utf-8") == "destination\n"
 
 
 @requires_symlink

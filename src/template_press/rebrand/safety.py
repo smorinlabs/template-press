@@ -39,9 +39,11 @@ closing it would need ``openat``/``dir_fd`` no-follow handles.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -62,6 +64,7 @@ __all__ = [
     "read_regular_nofollow",
     "readlink_nofollow",
     "refuse_unsafe_root",
+    "rename_noreplace",
     "safe_mkdir",
     "safe_rename",
     "safe_write",
@@ -549,6 +552,47 @@ def safe_rename(
     assert_under_root(dst, root_r)
     os.makedirs(dst.parent, exist_ok=True)
     os.rename(src, dst)
+
+
+def rename_noreplace(src: Path, dst: Path) -> None:
+    """Atomically rename ``src`` to an absent ``dst`` without replacement.
+
+    Python's POSIX ``os.rename`` overwrites an existing destination. The
+    rebrand planner treats occupancy as a refusal, so use each supported
+    platform's atomic no-replace primitive and fail closed elsewhere.
+    """
+
+    if os.name == "nt":
+        # Windows os.rename already fails when the destination exists.
+        os.rename(src, dst)
+        return
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    src_bytes = os.fsencode(src)
+    dst_bytes = os.fsencode(dst)
+    if sys.platform == "darwin":
+        renamex_np = libc.renamex_np
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        result = renamex_np(src_bytes, dst_bytes, 0x00000004)  # RENAME_EXCL
+    elif sys.platform.startswith("linux"):
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            raise SafetyError("atomic no-replace rename is unavailable on this host")
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        result = renameat2(-100, src_bytes, -100, dst_bytes, 0x00000001)
+    else:
+        raise SafetyError(f"atomic no-replace rename is unsupported on {sys.platform}")
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), os.fspath(dst))
 
 
 # ---------------------------------------------------------------------------

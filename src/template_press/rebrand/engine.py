@@ -49,6 +49,7 @@ from template_press.rebrand.safety import (
     chmod_nofollow,
     read_regular_nofollow,
     readlink_nofollow,
+    rename_noreplace,
     safe_write,
 )
 
@@ -255,14 +256,13 @@ def _rename_candidate_entries(target: Path, rules: Rules) -> tuple[SurfaceEntry,
     # A tracked file replaced by a directory and any FIFO/socket/other leaf
     # would otherwise be omitted from this plan, allow unrelated writes, and
     # then make the post-mutation doctor fail.  A normal checked-out gitlink
-    # directory and an opaque untracked embedded repository remain allowed.
+    # directory remains opaque; an untracked embedded repository is a
+    # directory record and must be refused because the doctor cannot verify it.
     for entry in snapshot.entries:
         if entry.rel.as_posix() in ROOT_CONTROL or _is_excluded(entry.rel, rules):
             continue
         unscannable = entry.worktree_kind == "other" or (
-            entry.worktree_kind == "directory"
-            and entry.tracked
-            and entry.index_kind != "gitlink"
+            entry.worktree_kind == "directory" and entry.index_kind != "gitlink"
         )
         if not unscannable:
             continue
@@ -1064,9 +1064,9 @@ def _rename_pass_once(
     otherwise never reach this pass at all (`iter_target_files`'s
     `is_file()` filter follows the link and drops it).
     """
-    rename_map: dict[str, str] = {}
-    for path in _rename_candidates(target, rules):
-        rel = path.relative_to(target)
+    rename_map: dict[str, tuple[str, WorktreeKind]] = {}
+    for entry in _rename_candidate_entries(target, rules):
+        rel = entry.rel
         new_rel = _renamed_rel(rel, pairs, rendered, rules.substring_rewrite_fields)
         if new_rel == rel:
             continue
@@ -1079,18 +1079,15 @@ def _rename_pass_once(
                 # component — no root-press guard is needed here.
                 old_prefix = Path(*rel.parts[: i + 1]).as_posix()
                 new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
-                rename_map.setdefault(old_prefix, new_prefix)
+                expected_kind: WorktreeKind = (
+                    entry.worktree_kind if i == len(rel.parts) - 1 else "directory"
+                )
+                rename_map.setdefault(old_prefix, (new_prefix, expected_kind))
                 break
     performed = False
     for old in sorted(rename_map, key=lambda p: -len(Path(p).parts)):
-        src, dst = target / old, target / rename_map[old]
-        if not (src.exists() or src.is_symlink()):
-            # `Path.exists()` FOLLOWS symlinks — a DANGLING symlink at src
-            # reads as absent there too (Fix F2): without the `is_symlink()`
-            # fallback, a legitimate dangling-symlink rename candidate would
-            # be skipped as "missing" before ever reaching `src.rename(dst)`.
-            report.skipped.append(f"rename {old} (missing)")
-            continue
+        new, expected_kind = rename_map[old]
+        src, dst = target / old, target / new
         if dst.exists():
             report.skipped.append(f"rename {old} (destination exists)")
             continue
@@ -1106,11 +1103,38 @@ def _rename_pass_once(
         # symlink out of the target. Tolerates a token-bearing symlink LEAF
         # (renaming a symlink is legitimate); fails closed (propagates) on a
         # symlinked ancestor.
-        assert_ancestors_real(src, target)
         assert_ancestors_real(dst, target)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        src.rename(dst)
-        report.renamed.append((old, rename_map[old]))
+        # All destination preparation is complete. Revalidate the captured
+        # source kind as the final userspace check before the atomic move.
+        assert_ancestors_real(src, target)
+        try:
+            current = os.lstat(src)
+        except OSError as exc:
+            raise SafetyError(
+                f"rename source changed after capture: {old} (expected {expected_kind})"
+            ) from exc
+        current_kind: WorktreeKind
+        if stat.S_ISREG(current.st_mode):
+            current_kind = "file"
+        elif stat.S_ISLNK(current.st_mode):
+            current_kind = "symlink"
+        elif stat.S_ISDIR(current.st_mode):
+            current_kind = "directory"
+        else:
+            current_kind = "other"
+        if current_kind != expected_kind:
+            raise SafetyError(
+                f"rename source changed after capture: {old} "
+                f"(expected {expected_kind}, found {current_kind})"
+            )
+        try:
+            rename_noreplace(src, dst)
+        except FileExistsError as exc:
+            raise SafetyError(
+                f"rename destination appeared after validation: {new}"
+            ) from exc
+        report.renamed.append((old, new))
         performed = True
     return performed
 
