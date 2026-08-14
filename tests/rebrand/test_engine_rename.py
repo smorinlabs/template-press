@@ -349,6 +349,31 @@ def test_nested_token_bearing_paths_rename_fully(src_target: Path):
     assert ("src/demo_widget", "src/potato_launcher") in report.renamed
 
 
+def test_blocked_parent_rename_gates_later_intermediate_step(
+    src_target: Path,
+) -> None:
+    nested = src_target / "nested"
+    source = nested / "demo_widget"
+    source.mkdir(parents=True)
+    (source / "demo_widget.txt").write_text("source\n", encoding="utf-8")
+    occupied = nested / "potato_launcher"
+    occupied.mkdir()
+    unrelated = occupied / "demo_widget.txt"
+    unrelated.write_text("unrelated\n", encoding="utf-8")
+    rules = _rules_with(
+        exclude_files=DEFAULT_RULES.exclude_files
+        | frozenset({"nested/potato_launcher/demo_widget.txt"})
+    )
+    _git_add(src_target)
+
+    report = apply(src_target, SOURCE, DEST, rules)
+
+    assert unrelated.read_text(encoding="utf-8") == "unrelated\n"
+    assert not (occupied / "potato_launcher.txt").exists()
+    assert any("destination exists" in item for item in report.skipped)
+    assert any("predecessor did not execute" in item for item in report.skipped)
+
+
 @requires_symlink
 def test_apply_rewrites_in_repo_relative_symlink_target(src_target: Path):
     """An in-repo relative symlink target embedding identity is retargeted so a
@@ -415,6 +440,25 @@ def test_retarget_excludes_display_form_pairs_dangling_link_guard(src_target: Pa
     dst = _identity(app_name="acme", display_name="Acme Widget")
     apply(src_target, src, dst, DEFAULT_RULES)
     assert os.readlink(link) == "PyLaunchBlueprint/data"
+
+
+@requires_symlink
+def test_existing_link_target_is_not_retargeted_for_non_path_identity(
+    src_target: Path,
+) -> None:
+    target_dir = src_target / "Steve Morin"
+    target_dir.mkdir()
+    (target_dir / "profile.txt").write_text("profile\n", encoding="utf-8")
+    link = src_target / "profile-link"
+    os.symlink("Steve Morin/profile.txt", link)
+    _git_add(src_target)
+    destination = dataclasses.replace(SOURCE, author="Potato Farmer")
+
+    apply(src_target, SOURCE, destination, DEFAULT_RULES)
+
+    assert os.readlink(link) == "Steve Morin/profile.txt"
+    assert link.read_text(encoding="utf-8") == "profile\n"
+    assert not (src_target / "Potato Farmer").exists()
 
 
 def test_app_name_upper_renamed(src_target: Path):
@@ -719,16 +763,16 @@ def test_build_plan_refuses_ancestor_swap_after_inventory(
     external = tmp_path / "external-plan"
     external.mkdir()
     (external / "file.txt").write_text("external demo_widget\n", encoding="utf-8")
-    real_candidates = engine_module._rename_candidate_entries
+    real_candidates = engine_module.select_content_rewrite_entries
 
-    def swap_after_inventory(target: Path, rules):
-        paths = real_candidates(target, rules)
-        shutil.rmtree(target / "race")
-        os.symlink(external, target / "race")
+    def swap_after_inventory(snapshot, **kwargs):
+        paths = real_candidates(snapshot, **kwargs)
+        shutil.rmtree(src_target / "race")
+        os.symlink(external, src_target / "race")
         return paths
 
     monkeypatch.setattr(
-        engine_module, "_rename_candidate_entries", swap_after_inventory
+        engine_module, "select_content_rewrite_entries", swap_after_inventory
     )
 
     with pytest.raises(ContainmentError):
@@ -749,16 +793,16 @@ def test_apply_refuses_ancestor_swap_after_inventory(
     outside = external / "file.txt"
     outside.write_text("external demo_widget\n", encoding="utf-8")
     outside_before = outside.read_bytes()
-    real_iter = engine_module._content_candidate_entries
+    real_iter = engine_module.select_content_rewrite_entries
 
-    def swap_after_inventory(target: Path, rules):
-        paths = real_iter(target, rules)
-        shutil.rmtree(target / "race")
-        os.symlink(external, target / "race")
+    def swap_after_inventory(snapshot, **kwargs):
+        paths = real_iter(snapshot, **kwargs)
+        shutil.rmtree(src_target / "race")
+        os.symlink(external, src_target / "race")
         return paths
 
     monkeypatch.setattr(
-        engine_module, "_content_candidate_entries", swap_after_inventory
+        engine_module, "select_content_rewrite_entries", swap_after_inventory
     )
 
     with pytest.raises(ContainmentError):

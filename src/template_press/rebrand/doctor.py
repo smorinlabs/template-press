@@ -39,6 +39,13 @@ from template_press.rebrand.safety import (
     read_regular_nofollow,
     readlink_nofollow,
 )
+from template_press.rebrand.substitutions import (
+    HuntPolicy,
+    RenderedSubstitution,
+    SubstitutionTable,
+    hunt_occurs,
+    row_matches_scope,
+)
 
 PATH_FIELDS: tuple[str, ...] = (
     "package_name",
@@ -114,6 +121,159 @@ def _rule_scope_hits(
     )
 
 
+def _table_scope_hits(
+    row: RenderedSubstitution,
+    current: str,
+    table: SubstitutionTable,
+    executed: frozenset[str],
+) -> bool:
+    source = table.rename_plan.reverse_translate(
+        current,
+        executed_step_ids=executed,
+    )
+    return row_matches_scope(row, current) or row_matches_scope(row, source)
+
+
+def _table_symlink_scope_hits(
+    row: RenderedSubstitution,
+    current_target: str,
+    table: SubstitutionTable,
+    executed: frozenset[str],
+) -> bool:
+    if _table_scope_hits(row, current_target, table, executed):
+        return True
+    source_target = table.rename_plan.reverse_translate(
+        current_target,
+        executed_step_ids=executed,
+    )
+    for step in table.rename_plan.steps:
+        if step.step_id not in executed or row.row_id not in step.row_ids:
+            continue
+        if (
+            source_target == step.old_prefix
+            or source_target.startswith(f"{step.old_prefix}/")
+            or current_target == step.new_prefix
+            or current_target.startswith(f"{step.new_prefix}/")
+        ):
+            return True
+    return False
+
+
+def _leak_field(row: RenderedSubstitution, policy: HuntPolicy) -> str:
+    if row.provenance[0].kind == "replace_rule":
+        return "replace_rule"
+    return policy.matcher.identity_field or row.provenance[0].name
+
+
+def _find_table_leaks(
+    target: Path,
+    rules: Rules,
+    table: SubstitutionTable,
+    renamed: list[tuple[str, str]],
+) -> list[Leak]:
+    """Scan inline-doctor surfaces from compiled doctor hunt policies."""
+
+    executed = table.rename_plan.executed_ids_for(renamed)
+    doctor_hunts = tuple(
+        (row, policy)
+        for row in table.rows
+        for policy in row.hunts
+        if policy.consumer == "doctor"
+    )
+    snapshot = capture_surface_snapshot(target)
+    entries = select_inline_doctor_entries(
+        snapshot,
+        built_in_exclude_files=DEFAULT_RULES.exclude_files,
+        built_in_exclude_dirs=DEFAULT_RULES.exclude_dirs,
+        verify_ignore=rules.verify_ignore,
+        root_control=ROOT_CONTROL,
+    )
+    leaks: list[Leak] = []
+    for entry in entries:
+        if entry.worktree_kind == "missing" and entry.index_kind != "gitlink":
+            continue
+        rel = entry.rel
+        posix = rel.as_posix()
+        path = target / rel
+        for index, component in enumerate(rel.parts):
+            if _is_root_press(rel, index):
+                continue
+            for row, policy in doctor_hunts:
+                if (
+                    "path" in policy.surfaces
+                    and _table_scope_hits(row, posix, table, executed)
+                    and hunt_occurs(row, policy, component)
+                ):
+                    leaks.append(
+                        Leak(
+                            posix,
+                            _leak_field(row, policy),
+                            row.from_value,
+                            "path",
+                        )
+                    )
+        if entry.index_kind == "gitlink" and entry.worktree_kind in (
+            "directory",
+            "missing",
+        ):
+            continue
+        if entry.worktree_kind == "other":
+            leaks.append(Leak(posix, "io", "unreadable", "unverifiable"))
+            continue
+        try:
+            assert_ancestors_real(path, target)
+        except SafetyError:
+            leaks.append(Leak(posix, "io", "unreadable", "unverifiable"))
+            continue
+        if entry.worktree_kind == "symlink":
+            try:
+                link = readlink_nofollow(path)
+            except (OSError, SafetyError):
+                leaks.append(Leak(posix, "io", "unreadable", "unverifiable"))
+                continue
+            link_target = symlink_target_posix(rel, link)
+            for row, policy in doctor_hunts:
+                if (
+                    "symlink" in policy.surfaces
+                    and _table_symlink_scope_hits(row, link_target, table, executed)
+                    and hunt_occurs(row, policy, link)
+                ):
+                    leaks.append(
+                        Leak(
+                            posix,
+                            _leak_field(row, policy),
+                            row.from_value,
+                            "symlink",
+                        )
+                    )
+            continue
+        if entry.worktree_kind != "file":
+            leaks.append(Leak(posix, "io", "unreadable", "unverifiable"))
+            continue
+        try:
+            text = _read_for_scan(path)
+        except (OSError, SafetyError):
+            leaks.append(Leak(posix, "io", "unreadable", "unverifiable"))
+            continue
+        if text is None:
+            continue
+        for row, policy in doctor_hunts:
+            if (
+                "content" in policy.surfaces
+                and _table_scope_hits(row, posix, table, executed)
+                and hunt_occurs(row, policy, text)
+            ):
+                leaks.append(
+                    Leak(
+                        posix,
+                        _leak_field(row, policy),
+                        row.from_value,
+                        "content",
+                    )
+                )
+    return leaks
+
+
 def find_leaks(
     target: Path,
     source: Identity,
@@ -123,6 +283,7 @@ def find_leaks(
     substring_fields: Collection[str] = frozenset(),
     rendered_rules: list[tuple[ReplaceRule, str, str]] | None = None,
     renamed: list[tuple[str, str]] | None = None,
+    table: SubstitutionTable | None = None,
 ) -> list[Leak]:
     """Scan for surviving source-identity tokens.
 
@@ -158,8 +319,10 @@ def find_leaks(
     path components only; symlink leaves contribute path components and link
     text; regular files additionally contribute content.
     """
-    rendered_rules = rendered_rules or []
     renamed = renamed or []
+    if table is not None:
+        return _find_table_leaks(target, rules, table, renamed)
+    rendered_rules = rendered_rules or []
     leaks: list[Leak] = []
     fields = source.as_dict()
     if "display_name" in fields:

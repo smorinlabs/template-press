@@ -4,15 +4,16 @@ heart of the no-leak gate (Task 7).
 Unlike `doctor.find_leaks` (presence/absence only), `scan` returns one
 `Finding` per OCCURRENCE — with line/column for content matches — so a
 caller (Task 8) can report exactly where and how many times a source
-identity value survives. This module COMPOSES existing primitives rather
-than reinventing them:
+identity value survives. This module composes neutral primitives without
+importing table consumers:
 
 - `matcher.find_occurrences` (Task 5) — boundary-aware occurrence search,
   with an opt-in `substring` escape hatch per field.
-- `engine.scan_paths` / `PathEntry` / `_is_root_press` (Task 6 / Task 2) —
-  the no-leak scan's candidate inventory (type-tagged `file|symlink|
-  gitlink`, already excluding regenerable lockfiles / `ROOT_CONTROL` /
-  `verify_ignore`) and the protected-root `press/` component skip.
+- `inventory.SurfaceSnapshot` and its selectors — the kind-tagged candidate
+  inventory and pre-press source facts used to derive scoped path-rule
+  ancestor triggers independently.
+- `pathing` — neutral path translation, rule-scope, root-protection, and
+  symlink-target helpers.
 - `safety.is_regular_lstat` (Task 0.5) — a no-follow regular-file guard so
   content is never read through a link.
 
@@ -35,15 +36,28 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from template_press.rebrand.doctor import _rule_scope_hits
-from template_press.rebrand.engine import (
-    _is_root_press,
-    scan_paths,
+from template_press.rebrand.identity import Identity
+from template_press.rebrand.inventory import (
+    SurfaceSnapshot,
+    capture_surface_snapshot,
+    select_rename_entries,
+    select_verifier_entries,
+)
+from template_press.rebrand.matcher import find_occurrences
+from template_press.rebrand.pathing import (
+    ROOT_CONTROL,
+    exempt_regenerated_paths,
+    is_root_press,
+    reverse_renamed_path,
+    rule_scope_hits,
     symlink_target_posix,
 )
-from template_press.rebrand.identity import Identity
-from template_press.rebrand.matcher import find_occurrences
-from template_press.rebrand.rules import ReplaceRule, Rules
+from template_press.rebrand.rules import (
+    ReplaceRule,
+    Rules,
+    render_replace_pattern,
+    rule_matches_path,
+)
 from template_press.rebrand.safety import (
     SafetyError,
     assert_ancestors_real,
@@ -78,6 +92,68 @@ class Finding:
     line: int | None
     col: int | None
     context: str
+
+
+@dataclass(frozen=True)
+class _ScanEntry:
+    """Verifier-local view of one neutral inventory entry."""
+
+    rel: Path
+    kind: str
+
+
+@dataclass(frozen=True)
+class _RuleScanSpec:
+    """One independently rendered rule plus its source ancestor triggers."""
+
+    rule: ReplaceRule
+    from_value: str
+    to_value: str
+    trigger_prefixes: tuple[str, ...]
+
+
+def _rule_scan_specs(
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    source_snapshot: SurfaceSnapshot,
+) -> tuple[_RuleScanSpec, ...]:
+    """Render rules and derive path triggers from the neutral source snapshot."""
+
+    rename_entries = select_rename_entries(
+        source_snapshot,
+        exclude_files=rules.exclude_files,
+        exclude_dirs=rules.exclude_dirs,
+        root_control=ROOT_CONTROL,
+    )
+    specs: list[_RuleScanSpec] = []
+    for rule in rules.replace:
+        from_value = render_replace_pattern(rule.pattern, source)
+        to_value = render_replace_pattern(rule.pattern, dest)
+        if from_value == to_value:
+            continue
+        trigger_prefixes: set[str] = set()
+        if rule.paths:
+            for entry in rename_entries:
+                posix = entry.rel.as_posix()
+                if not rule_matches_path(rule, posix):
+                    continue
+                for index, component in enumerate(entry.rel.parts):
+                    if is_root_press(entry.rel, index):
+                        continue
+                    if component.replace(from_value, to_value) == component:
+                        continue
+                    trigger_prefixes.add(Path(*entry.rel.parts[: index + 1]).as_posix())
+                    break
+        specs.append(
+            _RuleScanSpec(
+                rule=rule,
+                from_value=from_value,
+                to_value=to_value,
+                trigger_prefixes=tuple(sorted(trigger_prefixes)),
+            )
+        )
+    return tuple(specs)
 
 
 def _changed_fields(
@@ -118,19 +194,40 @@ def _substring_occurrences(text: str, needle: str) -> list[tuple[int, int]]:
 
 def _rule_path_matches(
     posix: str,
-    rendered_rules: Sequence[tuple[ReplaceRule, str, str]],
+    rule_specs: Sequence[_RuleScanSpec],
     renamed: list[tuple[str, str]],
     *,
     paths: bool,
-) -> list[tuple[ReplaceRule, str]]:
-    """``(rule, frm)`` pairs whose scope (``rule.paths``/``rule.content``,
-    plus the pre-rename reverse-mapped ``files`` glob) hits ``posix`` —
-    mirroring `doctor._rule_scope_hits` exactly."""
+) -> list[_RuleScanSpec]:
+    """Independently rendered rules whose declared scope includes a path."""
+
     return [
-        (rule, frm)
-        for rule, frm, _to in rendered_rules
-        if (rule.paths if paths else rule.content)
-        and _rule_scope_hits(rule, posix, renamed)
+        spec
+        for spec in rule_specs
+        if (spec.rule.paths if paths else spec.rule.content)
+        and rule_scope_hits(spec.rule, posix, renamed)
+    ]
+
+
+def _rule_symlink_matches(
+    target_posix: str,
+    rule_specs: Sequence[_RuleScanSpec],
+    renamed: list[tuple[str, str]],
+) -> list[_RuleScanSpec]:
+    """Select path rules by direct scope or a source ancestor trigger."""
+
+    source_target = reverse_renamed_path(target_posix, renamed)
+    return [
+        spec
+        for spec in rule_specs
+        if spec.rule.paths
+        and (
+            rule_scope_hits(spec.rule, target_posix, renamed)
+            or any(
+                source_target == prefix or source_target.startswith(f"{prefix}/")
+                for prefix in spec.trigger_prefixes
+            )
+        )
     ]
 
 
@@ -139,7 +236,7 @@ def _scan_path_components(
     posix: str,
     changed: list[tuple[str, str]],
     substring_fields: Collection[str],
-    rendered_rules: Sequence[tuple[ReplaceRule, str, str]],
+    rule_specs: Sequence[_RuleScanSpec],
     renamed: list[tuple[str, str]],
 ) -> list[Finding]:
     """Every path component (all kinds) — a hit on the LAST part is a
@@ -148,19 +245,27 @@ def _scan_path_components(
     """
     findings: list[Finding] = []
     last_index = len(rel.parts) - 1
-    path_rules = _rule_path_matches(posix, rendered_rules, renamed, paths=True)
+    path_rules = _rule_path_matches(posix, rule_specs, renamed, paths=True)
     for i, comp in enumerate(rel.parts):
-        if _is_root_press(rel, i):
+        if is_root_press(rel, i):
             continue
         where = "filename" if i == last_index else "dirname"
         for f, value in changed:
             substring = f in substring_fields
             for _start, _end in find_occurrences(comp, f, value, substring=substring):
                 findings.append(Finding(posix, f, value, where, None, None, comp))
-        for _rule, frm in path_rules:
-            for _start, _end in _substring_occurrences(comp, frm):
+        for spec in path_rules:
+            for _start, _end in _substring_occurrences(comp, spec.from_value):
                 findings.append(
-                    Finding(posix, "replace_rule", frm, where, None, None, comp)
+                    Finding(
+                        posix,
+                        "replace_rule",
+                        spec.from_value,
+                        where,
+                        None,
+                        None,
+                        comp,
+                    )
                 )
     return findings
 
@@ -171,7 +276,7 @@ def _scan_symlink(
     posix: str,
     changed: list[tuple[str, str]],
     substring_fields: Collection[str],
-    rendered_rules: Sequence[tuple[ReplaceRule, str, str]],
+    rule_specs: Sequence[_RuleScanSpec],
     renamed: list[tuple[str, str]],
 ) -> list[Finding]:
     """Scan the symlink's `readlink` STRING only — never the destination.
@@ -195,13 +300,19 @@ def _scan_symlink(
     # Rule scope for symlink text is the link's TARGET, normalized — mirroring
     # `_retarget_symlinks`/`doctor.find_leaks` — never the link's own location.
     link_target_posix = symlink_target_posix(rel, link)
-    rule_hits = _rule_path_matches(
-        link_target_posix, rendered_rules, renamed, paths=True
-    )
-    for _rule, frm in rule_hits:
-        for _start, _end in _substring_occurrences(link, frm):
+    rule_hits = _rule_symlink_matches(link_target_posix, rule_specs, renamed)
+    for spec in rule_hits:
+        for _start, _end in _substring_occurrences(link, spec.from_value):
             findings.append(
-                Finding(posix, "replace_rule", frm, "symlink", None, None, link)
+                Finding(
+                    posix,
+                    "replace_rule",
+                    spec.from_value,
+                    "symlink",
+                    None,
+                    None,
+                    link,
+                )
             )
     return findings
 
@@ -211,14 +322,14 @@ def _scan_content(
     posix: str,
     changed: list[tuple[str, str]],
     substring_fields: Collection[str],
-    rendered_rules: Sequence[tuple[ReplaceRule, str, str]],
+    rule_specs: Sequence[_RuleScanSpec],
     renamed: list[tuple[str, str]],
 ) -> list[Finding]:
     """Line-by-line content scan; two matches on one line yield two findings
     with distinct ``col`` (the span start, `find_occurrences` is already
     non-overlapping)."""
     findings: list[Finding] = []
-    content_rules = _rule_path_matches(posix, rendered_rules, renamed, paths=False)
+    content_rules = _rule_path_matches(posix, rule_specs, renamed, paths=False)
     for lineno, line in enumerate(text.splitlines(), start=1):
         for f, value in changed:
             substring = f in substring_fields
@@ -226,10 +337,18 @@ def _scan_content(
                 findings.append(
                     Finding(posix, f, value, "content", lineno, start, line)
                 )
-        for _rule, frm in content_rules:
-            for start, _end in _substring_occurrences(line, frm):
+        for spec in content_rules:
+            for start, _end in _substring_occurrences(line, spec.from_value):
                 findings.append(
-                    Finding(posix, "replace_rule", frm, "content", lineno, start, line)
+                    Finding(
+                        posix,
+                        "replace_rule",
+                        spec.from_value,
+                        "content",
+                        lineno,
+                        start,
+                        line,
+                    )
                 )
     return findings
 
@@ -290,7 +409,7 @@ def _scan_file(
     posix: str,
     changed: list[tuple[str, str]],
     substring_fields: Collection[str],
-    rendered_rules: Sequence[tuple[ReplaceRule, str, str]],
+    rule_specs: Sequence[_RuleScanSpec],
     renamed: list[tuple[str, str]],
 ) -> list[Finding]:
     path = target / rel
@@ -317,9 +436,7 @@ def _scan_file(
         # binary bytes is not attempted (mirrors `doctor.find_leaks`, which
         # only rule-scans `_read_for_scan`-returned TEXT).
         return _scan_binary(data, posix, changed, substring_fields)
-    return _scan_content(
-        text, posix, changed, substring_fields, rendered_rules, renamed
-    )
+    return _scan_content(text, posix, changed, substring_fields, rule_specs, renamed)
 
 
 def scan(
@@ -330,21 +447,21 @@ def scan(
     fields: Sequence[str],
     substring_fields: Collection[str],
     rules: Rules,
-    rendered_rules: list[tuple[ReplaceRule, str, str]] | None = None,
     renamed: list[tuple[str, str]] | None = None,
+    source_snapshot: SurfaceSnapshot | None = None,
 ) -> list[Finding]:
     """Occurrence-level scan of ``target`` for surviving SOURCE identity.
 
     Changed-fields only (see `_changed_fields`); scans the SOURCE value.
-    Iterates `scan_paths(target, rules)`. For every entry, ALL kinds get a
+    Iterates a neutral verifier selection. For every entry, ALL kinds get a
     path-component scan (`_scan_path_components`); a `gitlink` entry gets
     nothing more (submodule boundary — no content/byte read); a `symlink`
     entry additionally gets its `readlink` text scanned
     (`_scan_symlink` — never the destination); a `file` entry additionally
     gets its content or bytes scanned (`_scan_file`).
 
-    ``rendered_rules`` (rule, FROM, TO) triples from
-    ``engine.rendered_replace_rules`` — a rule-only matcher for a
+    Declared rules are rendered independently from ``source``, ``dest``, and
+    ``rules``. Their exact source literals provide a rule-only matcher for a
     boundary-unmatched rendered FROM literal that survives an unrewriteable
     spot (an escaping symlink target the retarget pass refuses to touch, a
     stale filename left by 0008's rewrite-side scope-migration limitation)
@@ -354,31 +471,60 @@ def scan(
     (glob-scoped via ``rule_matches_path`` against the file's own rel
     posix), and paths rules against PATH COMPONENTS (glob-scoped the same
     way) and SYMLINK text (scoped against the link TARGET's normalized rel
-    path via ``engine.symlink_target_posix``). ``renamed`` (``ApplyReport.
+    path via ``pathing.symlink_target_posix``). ``renamed`` (``ApplyReport.
     renamed`` — available at the verify sandbox's press call site) lets
     each scope check recover a scanned path/symlink-target's PRE-rename
     original before testing ``rule.files``, exactly as
-    ``doctor._rule_scope_hits`` does; omitted, this degrades to
-    current-path-only scoping. Findings carry ``field="replace_rule",
-    value=frm``.
+    ``pathing.rule_scope_hits`` does; omitted, this degrades to
+    current-path-only scoping. ``source_snapshot`` is the neutral pre-press
+    inventory used to derive scoped ancestor triggers independently from the
+    table's rename plan. Findings carry ``field="replace_rule"``.
 
     Raw findings only — no ignoring, no deduping (Task 8's job). Order is
-    stable: `scan_paths` is already sorted by path, and within one path,
-    findings are emitted in scan order (path components, then
-    symlink/content/binary).
+    stable by selected path and then scan order (path components followed by
+    symlink, content, or binary evidence).
     """
     changed = _changed_fields(source, dest, fields)
-    rendered_rules = rendered_rules or []
     renamed = renamed or []
     findings: list[Finding] = []
     # `renamed` also drives the regeneration exemption (P04 D3): declared
     # source-coordinate outputs are exempt at their POST-rename locations.
-    for entry in scan_paths(target, rules, renamed):
+    exempt_paths = frozenset(
+        path for path, _reason in exempt_regenerated_paths(rules, renamed)
+    )
+    snapshot = capture_surface_snapshot(target)
+    rule_specs = _rule_scan_specs(
+        source,
+        dest,
+        rules,
+        source_snapshot or snapshot,
+    )
+    selected = select_verifier_entries(
+        snapshot,
+        verify_ignore=rules.verify_ignore,
+        root_control=ROOT_CONTROL,
+        exempt_paths=exempt_paths,
+    )
+    entries: list[_ScanEntry] = []
+    for entry in selected:
+        if entry.worktree_kind == "symlink":
+            kind = "symlink"
+        elif entry.worktree_kind == "file":
+            kind = "file"
+        elif entry.index_kind == "gitlink" and entry.worktree_kind in (
+            "directory",
+            "missing",
+        ):
+            kind = "gitlink"
+        else:
+            kind = "unscannable"
+        entries.append(_ScanEntry(entry.rel, kind))
+    for entry in entries:
         rel = entry.rel
         posix = rel.as_posix()
         findings.extend(
             _scan_path_components(
-                rel, posix, changed, substring_fields, rendered_rules, renamed
+                rel, posix, changed, substring_fields, rule_specs, renamed
             )
         )
         if entry.kind == "gitlink":
@@ -391,7 +537,7 @@ def scan(
                     posix,
                     changed,
                     substring_fields,
-                    rendered_rules,
+                    rule_specs,
                     renamed,
                 )
             )
@@ -411,7 +557,7 @@ def scan(
             continue
         findings.extend(
             _scan_file(
-                target, rel, posix, changed, substring_fields, rendered_rules, renamed
+                target, rel, posix, changed, substring_fields, rule_specs, renamed
             )
         )
     return findings

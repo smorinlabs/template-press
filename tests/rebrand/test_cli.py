@@ -690,9 +690,9 @@ def test_symlink_to_ignored_existing_pair_target_not_silently_redirected(
     a plain identity-FIELD pair (no [[replace]] rule involved at all)
     predates this branch — `link -> press_guide` boundary-matches app_name
     "press" exactly like any ordinary token (underscore is a separator on
-    its right), so gating only the rule loop and leaving the pair loop
-    unguarded would still silently repoint the link at a pre-existing
-    `potato_guide` the rename pass never touched."""
+    its right). P06 now refuses earlier because that same substitution would
+    mutate `.gitignore` and invalidate the frozen inventory; the link must
+    remain unchanged and no receipt may be written."""
     write_source_config(src_target)
     (src_target / ".gitignore").write_text(
         "press_guide\npotato_guide\n", encoding="utf-8"
@@ -704,7 +704,7 @@ def test_symlink_to_ignored_existing_pair_target_not_silently_redirected(
     code = main(
         ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
     )
-    assert code == 1
+    assert code == 2
     assert not (src_target / RECEIPT_REL).exists()
     assert os.readlink(src_target / "link") == "press_guide"  # unchanged
 

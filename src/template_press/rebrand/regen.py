@@ -53,6 +53,10 @@ from template_press.rebrand.safety import (
     safe_write,
     scrubbed_git_env,
 )
+from template_press.rebrand.substitutions import (
+    SubstitutionTable,
+    matching_hunts,
+)
 
 # The deny-by-default child environment's fixed base (P04 D1, decided
 # 2026-07-26): a minimal, PLATFORM-SPECIFIC set — the Unix base is wrong on
@@ -64,6 +68,46 @@ COMMAND_ENV_BASE: tuple[str, ...] = (
     if os.name == "nt"
     else ("PATH", "HOME", "LANG", "TMPDIR")
 )
+
+
+def _executed_step_ids(
+    table: SubstitutionTable,
+    renames: Mapping[str, str],
+) -> frozenset[str]:
+    """Resolve an apply report's executed pairs to the table's step IDs."""
+
+    return table.rename_plan.executed_ids_for(tuple(renames.items()))
+
+
+def _translate_output_path(
+    rel: str,
+    renames: Mapping[str, str],
+    table: SubstitutionTable | None,
+) -> str:
+    """Translate a declared source path through the executed lifecycle view."""
+
+    if table is None:
+        return translate_path(rel, renames)
+    return table.rename_plan.translate(
+        rel,
+        executed_step_ids=_executed_step_ids(table, renames),
+    )
+
+
+def _reverse_output_path(
+    rel: str,
+    renames: Mapping[str, str],
+    table: SubstitutionTable | None,
+) -> str:
+    """Recover a declared source coordinate from the executed lifecycle view."""
+
+    if table is None:
+        reverse = {new: old for old, new in renames.items()}
+        return translate_path(rel, reverse)
+    return table.rename_plan.reverse_translate(
+        rel,
+        executed_step_ids=_executed_step_ids(table, renames),
+    )
 
 
 def command_env(
@@ -208,6 +252,7 @@ def execute_regenerations(
     dest: Identity,
     rules: Rules,
     rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
+    table: SubstitutionTable | None = None,
 ) -> list[str]:
     """Run each declared command (D1's execution contract); return FAILED files.
 
@@ -229,7 +274,7 @@ def execute_regenerations(
     renames = dict(renamed)
     for plan in plans:
         rule = plan.rule
-        out_rel = translate_path(rule.file, renames)
+        out_rel = _translate_output_path(rule.file, renames, table)
         out_path = target / out_rel
         try:
             assert_under_root(out_path, target)
@@ -278,6 +323,7 @@ def execute_regenerations(
             rules=rules,
             renames=renames,
             rendered_rules=rendered_rules,
+            table=table,
         )
         if problems:
             report.skipped.extend(
@@ -461,6 +507,7 @@ def scan_regenerated_output(
     rules: Rules,
     renames: Mapping[str, str],
     rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
+    table: SubstitutionTable | None = None,
 ) -> list[str]:
     """Paranoid changed-fields scan of one produced output (D3).
 
@@ -475,6 +522,45 @@ def scan_regenerated_output(
     output is excluded from the rename pass).
     """
     problems: list[str] = []
+    source_scope = _reverse_output_path(translated_rel, renames, table)
+    if table is not None:
+        for row, policy in matching_hunts(
+            table,
+            consumer="regeneration",
+            surface="content",
+            text=text,
+            source_scope_path=source_scope,
+        ):
+            if row.provenance[0].kind == "replace_rule":
+                problems.append(
+                    f"output contains rendered [[replace]] literal "
+                    f"{row.from_value!r} ({row.provenance[0].reason})"
+                )
+            else:
+                field = policy.matcher.identity_field or row.provenance[0].name
+                problems.append(
+                    f"output still carries source {field} {row.from_value!r}"
+                )
+        for row, policy in matching_hunts(
+            table,
+            consumer="regeneration",
+            surface="path",
+            text=translated_rel,
+            source_scope_path=source_scope,
+        ):
+            if row.provenance[0].kind == "replace_rule":
+                problems.append(
+                    f"its path ({translated_rel}) carries rendered [[replace]] "
+                    f"literal {row.from_value!r} ({row.provenance[0].reason})"
+                )
+            else:
+                field = policy.matcher.identity_field or row.provenance[0].name
+                problems.append(
+                    f"its path ({translated_rel}) carries source {field} "
+                    f"{row.from_value!r} — downstream inventories never look "
+                    f"at an excluded filename"
+                )
+        return problems
     for field, value in changed_identity_pairs(source, dest):
         substring = field in rules.substring_rewrite_fields
         spans = find_occurrences(text, field, value, substring=substring)
@@ -489,8 +575,6 @@ def scan_regenerated_output(
                 f"{value!r} — downstream inventories never look at an "
                 f"excluded filename"
             )
-    reverse = {new: old for old, new in renames.items()}
-    source_scope = translate_path(translated_rel, reverse)
     effective_rules = (
         rendered_replace_rules(rules, source, dest)
         if rendered_rules is None
@@ -522,6 +606,7 @@ def _postcondition_problems(
     rules: Rules,
     renames: Mapping[str, str],
     rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
+    table: SubstitutionTable | None = None,
 ) -> list[str]:
     """Existence, type, containment, UTF-8, and the paranoid scan — what a
     command must leave behind to have regenerated anything at all (D3)."""
@@ -553,6 +638,7 @@ def _postcondition_problems(
         rules=rules,
         renames=renames,
         rendered_rules=rendered_rules,
+        table=table,
     )
 
 
@@ -566,6 +652,7 @@ def final_validation_pass(
     dest: Identity,
     rules: Rules,
     rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
+    table: SubstitutionTable | None = None,
 ) -> list[str]:
     """After the LAST declared command: re-validate EVERY output and reset
     stub (D3). Per-command postconditions are not enough once a target
@@ -576,7 +663,7 @@ def final_validation_pass(
     """
     problems: list[str] = []
     for plan in plans:
-        translated = translate_path(plan.rule.file, renames)
+        translated = _translate_output_path(plan.rule.file, renames, table)
         for problem in _postcondition_problems(
             target,
             translated,
@@ -585,6 +672,7 @@ def final_validation_pass(
             rules=rules,
             renames=renames,
             rendered_rules=rendered_rules,
+            table=table,
         ):
             problems.append(f"final pass: {plan.rule.file}: {problem}")
     for rule, stub in resets:
@@ -594,7 +682,7 @@ def final_validation_pass(
         # full guard set runs BEFORE the content compare: stub equality
         # alone would follow a symlink a later command planted and accept
         # matching outside content.
-        translated = translate_path(rule.file, dict(renames))
+        translated = _translate_output_path(rule.file, renames, table)
         path = target / translated
         prefix = f"final pass: reset {rule.file}: "
         try:

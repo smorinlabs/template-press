@@ -20,7 +20,7 @@ from template_press.rebrand.pipeline import (
 )
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, ResetRule, Rules
 
-from .conftest import SOURCE, requires_symlink
+from .conftest import DEST, SOURCE, requires_symlink
 
 
 def _candidate(
@@ -963,17 +963,23 @@ def test_disabled_spaced_display_form_is_not_a_destination_stability_sink(
     build_plan(src_target, source, destination, rules)
 
 
-def test_equal_identity_values_keep_distinct_matcher_semantics(src_target) -> None:
+def test_equal_identity_values_keep_first_matcher_and_all_provenance(
+    src_target,
+) -> None:
     source = _identity(app_name="foo", owner="foo", author="_foo owner")
     destination = _identity(app_name="bar", owner="bar", author="_foo owner")
 
-    with pytest.raises(ValidationError) as exc_info:
-        build_plan(src_target, source, destination, DEFAULT_RULES)
+    plan = build_plan(src_target, source, destination, DEFAULT_RULES)
+    assert plan.table is not None
+    row = next(
+        item
+        for item in plan.table.rows
+        if item.from_value == "foo" and item.to_value == "bar"
+    )
 
-    message = str(exc_info.value)
-    assert "identity:app_name" in message
-    assert "identity:owner" in message
-    assert "destination:author" in message
+    assert row.row_id == "identity:app_name"
+    assert row.matcher == MatcherSpec("conservative", "app_name", False)
+    assert [item.name for item in row.provenance] == ["app_name", "owner"]
 
 
 def test_duplicate_identity_provenance_survives_shared_validation(src_target) -> None:
@@ -985,7 +991,7 @@ def test_duplicate_identity_provenance_survives_shared_validation(src_target) ->
 
     message = str(exc_info.value)
     assert "identity:package_name" in message
-    assert "identity:repo_name" in message
+    assert "repo_name" in message
     assert "identity:owner" in message
 
 
@@ -1071,6 +1077,8 @@ def test_press_returns_partial_outcome_for_validation_error_after_reset(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     reset = ResetRule(file="README.md", stub="reset\n")
+    plan = build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+    assert plan.table is not None
 
     def fail_validation(*_args, **_kwargs):
         raise ValidationError("apply-time target paths changed")
@@ -1079,12 +1087,13 @@ def test_press_returns_partial_outcome_for_validation_error_after_reset(
 
     outcome = cli_module._press(
         src_target,
-        _identity(),
-        _identity(app_name="new"),
+        SOURCE,
+        DEST,
         DEFAULT_RULES,
         [],
         [(reset, "reset\n")],
-        rendered_rules=[],
+        rendered_rules=plan.rendered_rules,
+        table=plan.table,
     )
 
     assert outcome.env_error == "apply-time target paths changed"

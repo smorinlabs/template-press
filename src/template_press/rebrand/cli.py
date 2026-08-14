@@ -70,6 +70,12 @@ from template_press.rebrand.safety import (
     scrubbed_git_env,
     write_control,
 )
+from template_press.rebrand.substitutions import (
+    SubstitutionTable,
+    declared_rule_triples,
+    revalidate_substitution_table,
+    validate_reset_visibility,
+)
 
 
 def _fail(msg: str) -> int:
@@ -240,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
         plan = build_plan(target, source, dest, rules)
         rename_preflight = preflight_rename_noreplace(
             target,
-            plan.renames,
+            plan.table.rename_plan if plan.table is not None else plan.renames,
             allow_unsafe=True,
             operational=not args.dry_run,
         )
@@ -290,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
             dest=dest,
             renames=plan.renames,
             rendered_rules=plan.rendered_rules,
+            table=plan.table,
         )
         gate_problems += reset_problems
         if gate_problems:
@@ -348,6 +355,7 @@ def main(argv: list[str] | None = None) -> int:
         rename_preflight=rename_preflight,
         allow_unsafe_rename=args.force,
         rendered_rules=plan.rendered_rules,
+        table=plan.table,
     )
     return 1 if (outcome.env_error is not None or outcome.leaked) else 0
 
@@ -377,10 +385,13 @@ def _press(
     rename_preflight: RenamePreflight | None = None,
     allow_unsafe_rename: bool = False,
     rendered_rules: list[tuple[ReplaceRule, str, str]] | None = None,
+    table: SubstitutionTable | None = None,
 ) -> PressOutcome:
-    if rendered_rules is None:
+    if table is None:
         try:
-            rendered_rules = build_plan(target, source, dest, rules).rendered_rules
+            fallback_plan = build_plan(target, source, dest, rules)
+            rendered_rules = fallback_plan.rendered_rules
+            table = fallback_plan.table
         except (
             ValidationError,
             OSError,
@@ -389,8 +400,18 @@ def _press(
         ) as exc:
             print(f"error: {exc} — nothing applied", file=sys.stderr)
             return PressOutcome(False, [], [], env_error=str(exc))
+    elif rendered_rules is None:
+        rendered_rules = declared_rule_triples(table)
     report = None
     try:
+        if table is None:
+            raise SafetyError("substitution table is unavailable at mutation boundary")
+        revalidate_substitution_table(target, table)
+        validate_reset_visibility(
+            target,
+            table.rename_plan,
+            tuple((rule.file, stub) for rule, stub in resets),
+        )
         # Reset takes position ZERO (P05 D5): declared paths are consumed in
         # SOURCE coordinates before the rename pass moves anything. A raise
         # here aborts the press (no receipt) — git is the undo button.
@@ -402,6 +423,7 @@ def _press(
             rules,
             allow_unsafe_rename=allow_unsafe_rename,
             rename_preflight=rename_preflight,
+            table=table,
         )
         report.reset.extend(reset_done)
         # Declared commands run against the FINAL tree: declared paths are
@@ -419,6 +441,7 @@ def _press(
             dest=dest,
             rules=rules,
             rendered_rules=rendered_rules,
+            table=table,
         )
         if failed_locks:
             # A failed command must not leave a tampered/planted control
@@ -453,6 +476,7 @@ def _press(
                 dest=dest,
                 rules=rules,
                 rendered_rules=rendered_rules,
+                table=table,
             )
             post_problems += validate_control_files(target, control_snapshot)
             if post_problems:
@@ -489,6 +513,7 @@ def _press(
             substring_fields=rules.substring_rewrite_fields,
             rendered_rules=rendered_rules,
             renamed=report.renamed,
+            table=table,
         )
         if leaks:
             print(render_leak_report(leaks), file=sys.stderr)
