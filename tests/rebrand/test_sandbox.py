@@ -19,10 +19,10 @@ from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.safety import ContainmentError
+from template_press.rebrand.safety import ContainmentError, SafetyError
 from template_press.rebrand.sandbox import Sandbox, make_sandbox
 
-from .conftest import make_target, requires_symlink
+from .conftest import make_target, posix_only, requires_symlink
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -101,6 +101,60 @@ def test_force_added_gitignored_file_in_commit(tmp_path: Path) -> None:
     assert "secret.env" in _committed_paths(result.path)
 
 
+def test_present_unmaterializable_node_refuses_sandbox(tmp_path: Path) -> None:
+    target = make_target(tmp_path)
+    occupied = target / "occupied"
+    occupied.write_text("tracked file\n", encoding="utf-8")
+    _git(target, "add", occupied.name)
+    _git(target, "commit", "-q", "-m", "add occupied")
+    occupied.unlink()
+    occupied.mkdir()
+
+    with pytest.raises(SafetyError, match="cannot materialize"):
+        make_sandbox(target, _dest_root(tmp_path))
+
+
+def test_file_changed_to_directory_after_copy_inventory_refuses_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import template_press.rebrand.sandbox as sandbox_mod
+
+    target = make_target(tmp_path)
+    source = target / "source.txt"
+    source.write_text("tracked file\n", encoding="utf-8")
+    _git(target, "add", source.name)
+    _git(target, "commit", "-q", "-m", "add source")
+    displaced = target / "displaced.txt"
+    real_copy_paths = sandbox_mod.copy_paths
+
+    def capture_then_replace(repo: Path):
+        entries = real_copy_paths(repo)
+        source.rename(displaced)
+        source.mkdir()
+        return entries
+
+    monkeypatch.setattr(sandbox_mod, "copy_paths", capture_then_replace)
+
+    with pytest.raises(SafetyError, match="not regular"):
+        make_sandbox(target, _dest_root(tmp_path))
+
+
+@posix_only
+def test_sandbox_preserves_legal_posix_punctuation_names(tmp_path: Path) -> None:
+    target = make_target(tmp_path)
+    names = ("colon:name.txt", "back\\slash.txt")
+    for name in names:
+        (target / name).write_text("content\n", encoding="utf-8")
+    _git(target, "add", "--", *names)
+    _git(target, "commit", "-q", "-m", "add punctuation names")
+
+    result = make_sandbox(target, _dest_root(tmp_path))
+
+    for name in names:
+        assert (result.path / name).read_text(encoding="utf-8") == "content\n"
+    assert not (result.path / "back" / "slash.txt").exists()
+
+
 # ---------------------------------------------------------------------------
 # (c) a gitlink path is scannable-by-name AND recorded unavailable
 # ---------------------------------------------------------------------------
@@ -131,6 +185,16 @@ def test_gitlink_scannable_and_recorded_unavailable(tmp_path: Path) -> None:
     assert placeholder.is_file()
     assert "sub/.press-submodule-unavailable" in _committed_paths(result.path)
     assert "sub" in result.unavailable_submodules
+
+
+@posix_only
+def test_dirty_gitlink_fifo_refuses_sandbox(tmp_path: Path) -> None:
+    target = make_target(tmp_path)
+    _add_gitlink(target, tmp_path)
+    os.mkfifo(target / "sub")
+
+    with pytest.raises(SafetyError, match="cannot materialize"):
+        make_sandbox(target, _dest_root(tmp_path))
 
 
 # ---------------------------------------------------------------------------

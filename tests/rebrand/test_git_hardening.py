@@ -24,7 +24,7 @@ import subprocess
 from pathlib import Path
 
 from template_press.rebrand import cli as cli_mod
-from template_press.rebrand import discovery, engine
+from template_press.rebrand import discovery, engine, inventory
 from template_press.rebrand.rules import DEFAULT_RULES
 
 
@@ -79,6 +79,26 @@ def test_engine_gitlink_rels_does_not_trigger_hostile_fsmonitor(
     assert not sentinel.exists()
 
 
+def test_inventory_scrubs_ambient_git_config_location(
+    src_target: Path, tmp_path: Path, monkeypatch
+) -> None:
+    ambient_ignore = tmp_path / "ambient-ignore"
+    ambient_ignore.write_text("secret.txt\n", encoding="utf-8")
+    ambient_config = tmp_path / "ambient-config"
+    ambient_config.write_text(
+        f"[core]\n\texcludesFile = {ambient_ignore}\n", encoding="utf-8"
+    )
+    (src_target / "secret.txt").write_text("must stay visible\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG", str(ambient_config))
+
+    snapshot = inventory.capture_surface_snapshot(src_target)
+
+    assert "secret.txt" in {entry.rel.as_posix() for entry in snapshot.entries}
+    assert not any(
+        item.origin == "core_excludes_file" for item in snapshot.visibility_inputs
+    )
+
+
 def test_discovery_origin_does_not_trigger_hostile_fsmonitor(
     src_target: Path, tmp_path: Path
 ) -> None:
@@ -100,10 +120,11 @@ def test_cli_dirty_check_does_not_trigger_hostile_fsmonitor(
 
 # ---------------------------------------------------------------------------
 # Belt-and-suspenders: assert `-c core.fsmonitor=` is literally in argv for
-# every one of the four calls (a passing sentinel test could in principle be
-# a false green if the hook simply never ran for an unrelated reason).
+# every Git subprocess reached by these entry points. The shared P06 inventory
+# performs one surface enumeration plus visibility-path discovery, so call
+# count is intentionally no longer coupled to the old private walkers.
 # ---------------------------------------------------------------------------
-def test_all_four_call_sites_pass_core_fsmonitor_hardening_flag(
+def test_all_on_target_call_sites_pass_core_fsmonitor_hardening_flag(
     src_target: Path, monkeypatch
 ) -> None:
     calls: list[list[str]] = []
@@ -120,6 +141,6 @@ def test_all_four_call_sites_pass_core_fsmonitor_hardening_flag(
     discovery._origin(src_target)
     cli_mod.check_preconditions(src_target, force=False, allow_dirty=False)
 
-    assert len(calls) == 4
+    assert calls
     for cmd in calls:
         assert "core.fsmonitor=" in cmd, cmd

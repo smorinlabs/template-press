@@ -31,7 +31,6 @@ scanned. Raw findings only — no ignoring, no deduping (Task 8's job); no
 
 from __future__ import annotations
 
-import os
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,7 +44,13 @@ from template_press.rebrand.engine import (
 from template_press.rebrand.identity import Identity
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.rules import ReplaceRule, Rules
-from template_press.rebrand.safety import is_regular_lstat
+from template_press.rebrand.safety import (
+    SafetyError,
+    assert_ancestors_real,
+    is_regular_lstat,
+    read_regular_nofollow,
+    readlink_nofollow,
+)
 
 
 @dataclass(frozen=True)
@@ -176,8 +181,8 @@ def _scan_symlink(
     it is) is irrelevant to this scan.
     """
     try:
-        link = os.readlink(target / rel)
-    except OSError:
+        link = readlink_nofollow(target / rel)
+    except (OSError, SafetyError):
         # `scan_paths` tagged this entry "symlink" from an earlier lstat that
         # may be stale by now (TOCTOU), or a transient I/O error prevents the
         # read. Never guess — flag it unscannable, mirroring `_scan_file`.
@@ -289,6 +294,10 @@ def _scan_file(
     renamed: list[tuple[str, str]],
 ) -> list[Finding]:
     path = target / rel
+    try:
+        assert_ancestors_real(path, target)
+    except SafetyError:
+        return [Finding(posix, "io", "unreadable", "unscannable", None, None, "")]
     if not is_regular_lstat(path):
         # Defense-in-depth TOCTOU guard: `scan_paths` tagged this entry
         # "file" from an earlier lstat that may be stale by now (or, in
@@ -296,8 +305,8 @@ def _scan_file(
         # never guess — flag it unscannable rather than silently skip.
         return [Finding(posix, "io", "unreadable", "unscannable", None, None, "")]
     try:
-        data = path.read_bytes()
-    except OSError:
+        data = read_regular_nofollow(path)
+    except (OSError, SafetyError):
         # `where="unscannable"` is reserved for real I/O errors ONLY.
         return [Finding(posix, "io", "unreadable", "unscannable", None, None, "")]
     try:
@@ -384,6 +393,19 @@ def scan(
                     substring_fields,
                     rendered_rules,
                     renamed,
+                )
+            )
+            continue
+        if entry.kind == "unscannable":
+            findings.append(
+                Finding(
+                    posix,
+                    "io",
+                    "unreadable",
+                    "unscannable",
+                    None,
+                    None,
+                    "",
                 )
             )
             continue

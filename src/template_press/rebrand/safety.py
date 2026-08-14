@@ -27,8 +27,9 @@ Guards implemented here (see the plan's Defensive Hardening section):
   ``git status`` where feasible.
 * **G6** ``owned_sandbox`` / ``refuse_unsafe_root`` — a ``mkdtemp`` 0700 root,
   disjoint from the target, cleaned up as the only owned child.
-* **G8** ``is_regular_lstat`` — scan only ``lstat``-regular files (no
-  FIFO/socket/device hang, no symlink follow).
+* **G8** ``read_regular_nofollow`` / ``is_regular_lstat`` — scan only regular
+  files through descriptor-relative, no-follow reads on POSIX (no
+  FIFO/socket/device hang, no symlink or swapped-ancestor traversal).
 
 The concurrent-local ancestor-swap TOCTOU (between the lstat-walk and
 ``os.replace``/``os.rename``) is a documented residual: leaf writes are atomic
@@ -38,17 +39,22 @@ closing it would need ``openat``/``dir_fd`` no-follow handles.
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 __all__ = [
+    "AtomicRenameUnavailableError",
     "ContainmentError",
     "HardlinkError",
+    "NonRegularFileError",
     "SafeRelPath",
     "SafetyError",
     "UnsafePathError",
@@ -57,7 +63,13 @@ __all__ = [
     "git_hardening_args",
     "is_regular_lstat",
     "owned_sandbox",
+    "read_regular_nofollow",
+    "readlink_nofollow",
     "refuse_unsafe_root",
+    "rename_noreplace",
+    "rename_noreplace_best_effort",
+    "require_rename_noreplace_host_support",
+    "require_rename_noreplace_support",
     "safe_mkdir",
     "safe_rename",
     "safe_write",
@@ -70,6 +82,10 @@ class SafetyError(Exception):
     """Base class for every containment / safe-I/O violation."""
 
 
+class AtomicRenameUnavailableError(SafetyError):
+    """The host or target filesystem lacks the required rename guarantee."""
+
+
 class UnsafePathError(SafetyError, ValueError):
     """A relative path failed the ``SafeRelPath`` gate (G2 / G2+)."""
 
@@ -80,6 +96,10 @@ class ContainmentError(SafetyError, ValueError):
 
 class HardlinkError(SafetyError, ValueError):
     """A tracked/target sink has ``st_nlink > 1`` (G3 / G3+ / G5)."""
+
+
+class NonRegularFileError(SafetyError):
+    """A no-follow read observed a non-regular leaf before opening it."""
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +132,7 @@ class SafeRelPath:
     __slots__ = ("_parts",)
 
     def __init__(self, raw: str | os.PathLike[str]) -> None:
+        literal_posix_path = os.name != "nt" and not isinstance(raw, str)
         text = os.fspath(raw)
         if not isinstance(text, str):  # pragma: no cover - defensive
             raise UnsafePathError(f"path must be str-like: {raw!r}")
@@ -125,8 +146,9 @@ class SafeRelPath:
         # normalized text: ``\\server\share`` -> ``//server/share`` (absolute),
         # ``C:\x`` -> ``C:/x`` (colon), ``..\x`` -> ``../x`` (dotdot),
         # ``a\.git\b`` -> ``a/.git/b`` (.git).
-        text = text.replace("\\", "/")
-        if ":" in text:
+        if not literal_posix_path:
+            text = text.replace("\\", "/")
+        if not literal_posix_path and ":" in text:
             raise UnsafePathError(f"drive/colon not allowed: {text!r}")
         if text.startswith("/"):
             raise UnsafePathError(f"absolute/rooted path not allowed: {text!r}")
@@ -248,6 +270,187 @@ def _reject_hardlink(path: Path) -> None:
         )
 
 
+def _read_descriptor(descriptor: int) -> bytes:
+    data = bytearray()
+    while chunk := os.read(descriptor, 1024 * 1024):
+        data.extend(chunk)
+    return bytes(data)
+
+
+def _lstat_absolute_nofollow(path: Path) -> os.stat_result:
+    """Fresh literal stat through no-follow directory descriptors."""
+
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    directory_flags = flags | os.O_DIRECTORY
+    parts = path.parts
+    if len(parts) < 2:
+        raise SafetyError(f"no-follow stat requires a leaf path: {path}")
+    parent_fd = os.open(path.anchor, directory_flags)
+    try:
+        for part in parts[1:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = next_fd
+        return os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+    finally:
+        os.close(parent_fd)
+
+
+def _read_regular_openat(path: Path) -> bytes:
+    """Read an absolute POSIX path through no-follow directory descriptors."""
+
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    directory_flags = flags | os.O_DIRECTORY
+    parts = path.parts
+    if len(parts) < 2:
+        raise SafetyError(f"regular-file read requires a leaf path: {path}")
+    parent_fd = os.open(path.anchor, directory_flags)
+    try:
+        for part in parts[1:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = next_fd
+        leaf_flags = flags | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(parts[-1], leaf_flags, dir_fd=parent_fd)
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode):
+                raise SafetyError(f"no-follow read source is not regular: {path}")
+            data = _read_descriptor(descriptor)
+            try:
+                current = _lstat_absolute_nofollow(path)
+            except OSError as exc:
+                raise SafetyError(f"read source changed while reading: {path}") from exc
+            if not stat.S_ISREG(current.st_mode) or not os.path.samestat(
+                opened, current
+            ):
+                raise SafetyError(f"read source changed while reading: {path}")
+            return data
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(parent_fd)
+
+
+def _read_regular_checked_path(path: Path) -> bytes:
+    """Fallback for platforms without descriptor-relative ``open`` support.
+
+    The handle is validated against a fresh literal ``lstat`` after bytes are
+    consumed. A concurrent pathname change makes the read refuse.
+    """
+
+    _assert_absolute_ancestors_real(path)
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode):
+        raise NonRegularFileError(f"no-follow read source is not regular: {path}")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        data = _read_descriptor(descriptor)
+        _assert_absolute_ancestors_real(path)
+        after = os.lstat(path)
+        if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(opened, after):
+            raise SafetyError(f"read source changed while reading: {path}")
+        return data
+    finally:
+        os.close(descriptor)
+
+
+def _assert_absolute_ancestors_real(path: Path) -> None:
+    """Refuse a symlink or non-directory in an absolute path's ancestors."""
+
+    current = Path(path.anchor)
+    for part in path.parts[1:-1]:
+        current /= part
+        info = os.lstat(current)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise SafetyError(f"non-real ancestor in read source: {current}")
+
+
+def read_regular_nofollow(path: Path) -> bytes:
+    """Read one regular file without following a leaf or ancestor symlink.
+
+    POSIX walks from the filesystem root with ``openat``-style ``dir_fd``
+    calls and ``O_NOFOLLOW`` on every component. Other platforms use a
+    checked-handle fallback and refuse if the opened handle no longer matches
+    the literal leaf.
+    """
+
+    absolute = path.absolute()
+    if (
+        os.name != "nt"
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+        and os.open in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.stat in os.supports_follow_symlinks
+    ):
+        return _read_regular_openat(absolute)
+    return _read_regular_checked_path(absolute)
+
+
+def _readlink_openat(path: Path) -> str:
+    """Read one POSIX symlink through a no-follow parent descriptor."""
+
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    directory_flags = flags | os.O_DIRECTORY
+    parts = path.parts
+    if len(parts) < 2:
+        raise SafetyError(f"no-follow readlink requires a leaf path: {path}")
+    parent_fd = os.open(path.anchor, directory_flags)
+    try:
+        for part in parts[1:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = next_fd
+        before = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISLNK(before.st_mode):
+            raise SafetyError(f"no-follow readlink source is not a symlink: {path}")
+        link = os.readlink(parts[-1], dir_fd=parent_fd)
+        try:
+            current = _lstat_absolute_nofollow(path)
+        except OSError as exc:
+            raise SafetyError(f"readlink source changed while reading: {path}") from exc
+        if not stat.S_ISLNK(current.st_mode) or not os.path.samestat(before, current):
+            raise SafetyError(f"readlink source changed while reading: {path}")
+        return link
+    finally:
+        os.close(parent_fd)
+
+
+def _readlink_checked_path(path: Path) -> str:
+    """Checked fallback for platforms without descriptor-relative readlink."""
+
+    _assert_absolute_ancestors_real(path)
+    before = os.lstat(path)
+    if not stat.S_ISLNK(before.st_mode):
+        raise SafetyError(f"no-follow readlink source is not a symlink: {path}")
+    link = os.readlink(path)
+    _assert_absolute_ancestors_real(path)
+    after = os.lstat(path)
+    if not stat.S_ISLNK(after.st_mode) or not os.path.samestat(before, after):
+        raise SafetyError(f"readlink source changed while reading: {path}")
+    return link
+
+
+def readlink_nofollow(path: Path) -> str:
+    """Read one symlink string without following its leaf or ancestors."""
+
+    absolute = path.absolute()
+    if (
+        os.name != "nt"
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+        and os.open in os.supports_dir_fd
+        and os.readlink in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.stat in os.supports_follow_symlinks
+    ):
+        return _readlink_openat(absolute)
+    return _readlink_checked_path(absolute)
+
+
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write ``data`` to ``path`` via temp + ``os.replace`` (new inode).
 
@@ -287,7 +490,7 @@ def safe_write(
     ancestor/leaf, refuses a hardlinked target (``st_nlink > 1``) unless
     ``refuse_hardlink=False``, then writes a new inode via temp + rename.
     """
-    rel_sp = rel if isinstance(rel, SafeRelPath) else SafeRelPath(os.fspath(rel))
+    rel_sp = rel if isinstance(rel, SafeRelPath) else SafeRelPath(rel)
     root_r = root.resolve()
     path = root_r / Path(*rel_sp.parts)
     assert_under_root(path, root_r)
@@ -331,7 +534,7 @@ def write_control(
 
 def safe_mkdir(root: Path, rel: str | os.PathLike[str] | SafeRelPath) -> Path:
     """Create ``root/rel`` (with parents) under full containment (G3)."""
-    rel_sp = rel if isinstance(rel, SafeRelPath) else SafeRelPath(os.fspath(rel))
+    rel_sp = rel if isinstance(rel, SafeRelPath) else SafeRelPath(rel)
     root_r = root.resolve()
     path = root_r / Path(*rel_sp.parts)
     assert_under_root(path, root_r)
@@ -349,18 +552,180 @@ def safe_rename(
     Both endpoints are validated and checked for symlink ancestors; the
     destination's parent is created (contained) before ``os.rename``.
     """
-    src_sp = (
-        src_rel if isinstance(src_rel, SafeRelPath) else SafeRelPath(os.fspath(src_rel))
-    )
-    dst_sp = (
-        dst_rel if isinstance(dst_rel, SafeRelPath) else SafeRelPath(os.fspath(dst_rel))
-    )
+    src_sp = src_rel if isinstance(src_rel, SafeRelPath) else SafeRelPath(src_rel)
+    dst_sp = dst_rel if isinstance(dst_rel, SafeRelPath) else SafeRelPath(dst_rel)
     root_r = root.resolve()
     src = root_r / Path(*src_sp.parts)
     dst = root_r / Path(*dst_sp.parts)
     assert_under_root(src, root_r)
     assert_under_root(dst, root_r)
     os.makedirs(dst.parent, exist_ok=True)
+    os.rename(src, dst)
+
+
+def _rename_noreplace_unchecked(src: Path, dst: Path) -> None:
+    """Invoke the host primitive without first probing its filesystem."""
+
+    if os.name == "nt":
+        # Windows os.rename already fails when the destination exists.
+        os.rename(src, dst)
+        return
+    libc = ctypes.CDLL(None, use_errno=True)
+    src_bytes = os.fsencode(src)
+    dst_bytes = os.fsencode(dst)
+    if sys.platform == "darwin":
+        renamex_np = getattr(libc, "renamex_np", None)
+        if renamex_np is None:
+            raise AtomicRenameUnavailableError(
+                f"atomic no-replace rename is unsupported on {sys.platform}"
+            )
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        result = renamex_np(src_bytes, dst_bytes, 0x00000004)  # RENAME_EXCL
+    elif sys.platform.startswith("linux"):
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            raise AtomicRenameUnavailableError(
+                "atomic no-replace rename is unavailable on this host"
+            )
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        result = renameat2(-100, src_bytes, -100, dst_bytes, 0x00000001)
+    else:
+        raise AtomicRenameUnavailableError(
+            f"atomic no-replace rename is unsupported on {sys.platform}"
+        )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), os.fspath(dst))
+
+
+def require_rename_noreplace_host_support() -> None:
+    """Check for a host primitive without touching the target filesystem."""
+
+    if os.name == "nt":
+        return
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin" and getattr(libc, "renamex_np", None) is not None:
+        return
+    if (
+        sys.platform.startswith("linux")
+        and getattr(libc, "renameat2", None) is not None
+    ):
+        return
+    raise AtomicRenameUnavailableError(
+        f"atomic no-replace rename is unsupported on {sys.platform}"
+    )
+
+
+def _probe_rename_noreplace_call(src: Path, dst: Path, source: Path) -> None:
+    """Run one native probe move and classify only capability-related errors."""
+
+    try:
+        _rename_noreplace_unchecked(src, dst)
+    except AtomicRenameUnavailableError:
+        raise
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        unsupported_errors = {
+            errno.EINVAL,
+            errno.ENOSYS,
+            errno.ENOTSUP,
+            getattr(errno, "EOPNOTSUPP", errno.ENOTSUP),
+        }
+        error_type = (
+            AtomicRenameUnavailableError
+            if exc.errno in unsupported_errors
+            else SafetyError
+        )
+        raise error_type(
+            f"atomic no-replace rename probe failed for {source}: {exc}"
+        ) from exc
+
+
+def require_rename_noreplace_support(source: Path) -> None:
+    """Probe atomic no-replacement rename beside ``source`` and clean up."""
+
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".press-rename-probe-", dir=source.parent
+        ) as raw_probe:
+            probe = Path(raw_probe)
+            probe_source = probe / "source"
+            probe_destination = probe / "destination"
+            probe_source.write_bytes(b"source\n")
+            _probe_rename_noreplace_call(probe_source, probe_destination, source)
+            if (
+                probe_source.exists()
+                or probe_source.is_symlink()
+                or read_regular_nofollow(probe_destination) != b"source\n"
+            ):
+                raise AtomicRenameUnavailableError(
+                    f"atomic no-replace rename probe produced an invalid result "
+                    f"beside {source}"
+                )
+
+            occupied_source = probe / "occupied-source"
+            occupied_source.write_bytes(b"new source\n")
+            try:
+                _probe_rename_noreplace_call(occupied_source, probe_destination, source)
+            except FileExistsError:
+                pass
+            else:
+                raise AtomicRenameUnavailableError(
+                    f"atomic no-replace rename probe replaced an occupied "
+                    f"destination beside {source}"
+                )
+            if (
+                read_regular_nofollow(occupied_source) != b"new source\n"
+                or read_regular_nofollow(probe_destination) != b"source\n"
+            ):
+                raise AtomicRenameUnavailableError(
+                    f"atomic no-replace rename probe changed protected content "
+                    f"beside {source}"
+                )
+    except AtomicRenameUnavailableError:
+        raise
+    except SafetyError:
+        raise
+    except OSError as exc:
+        raise SafetyError(
+            f"atomic no-replace rename probe failed for {source}: {exc}"
+        ) from exc
+
+
+def rename_noreplace(src: Path, dst: Path) -> None:
+    """Atomically rename ``src`` to an absent ``dst`` without replacement.
+
+    Python's POSIX ``os.rename`` overwrites an existing destination. The
+    rebrand planner treats occupancy as a refusal, so use each supported
+    platform's atomic no-replace primitive and fail closed elsewhere.
+    """
+
+    _rename_noreplace_unchecked(src, dst)
+
+
+def rename_noreplace_best_effort(src: Path, dst: Path) -> None:
+    """Rename after an immediate occupancy check, without atomic protection.
+
+    On POSIX, another process can create ``dst`` between ``lstat`` and
+    ``os.rename``; the rename may then replace it. Callers must expose that
+    risk and require an explicit safety override before using this fallback.
+    """
+
+    try:
+        os.lstat(dst)
+    except FileNotFoundError:
+        pass
+    else:
+        raise FileExistsError(f"rename destination already exists: {dst}")
     os.rename(src, dst)
 
 
@@ -373,7 +738,11 @@ GIT_ENV_UNSET: tuple[str, ...] = (
     "GIT_INDEX_FILE",
     "GIT_OBJECT_DIRECTORY",
     "GIT_COMMON_DIR",
+    "GIT_EXEC_PATH",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
 )
 
 
@@ -388,6 +757,9 @@ def scrubbed_git_env(
     env = dict(os.environ if base is None else base)
     for key in GIT_ENV_UNSET:
         env.pop(key, None)
+    for key in tuple(env):
+        if key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
+            env.pop(key, None)
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"

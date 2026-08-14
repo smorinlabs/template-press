@@ -3,12 +3,14 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import apply
 from template_press.rebrand.identity import Identity
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, Rules
 
-from .conftest import DEST, SOURCE, requires_symlink
+from .conftest import DEST, SOURCE, posix_only, requires_symlink
 
 
 def _identity(**overrides):
@@ -50,6 +52,24 @@ def test_path_leak_detected(src_target: Path):
     (src_target / "demo_widget_old.txt").write_text("x", encoding="utf-8")
     leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
     assert any(e.where == "path" for e in leaks)
+
+
+@posix_only
+def test_doctor_scans_legal_backslash_filename(src_target: Path):
+    rel = "leak\\name.txt"
+    (src_target / rel).write_text("demo_widget survived\n", encoding="utf-8")
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "--", rel],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+
+    leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+
+    assert any(
+        leak.path == rel and leak.field == "package_name" and leak.where == "content"
+        for leak in leaks
+    )
 
 
 def test_english_press_words_are_not_leaks(src_target: Path):
@@ -159,6 +179,82 @@ def test_symlink_to_file_leak_not_double_reported(src_target: Path):
         if e.path == "link.txt" and e.where == "symlink" and e.field == "package_name"
     ]
     assert len(symlink_hits) == 1
+
+
+@requires_symlink
+def test_doctor_honors_verify_ignore_for_every_symlink_shape(
+    src_target: Path, monkeypatch
+):
+    ignored = src_target / "legacy"
+    ignored.mkdir()
+    (ignored / "file-link").symlink_to("../README.md")
+    (ignored / "dir-link").symlink_to("../src", target_is_directory=True)
+    (ignored / "dangling-link").symlink_to("missing/demo_widget")
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    rules = dataclasses.replace(
+        DEFAULT_RULES,
+        exclude_dirs=DEFAULT_RULES.exclude_dirs | {"legacy"},
+        verify_ignore=frozenset({"legacy"}),
+    )
+    from template_press.rebrand import inventory
+
+    calls = 0
+    real_run = inventory.subprocess.run
+
+    def spy(cmd, *args, **kwargs):
+        nonlocal calls
+        if "ls-files" in cmd:
+            calls += 1
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(inventory.subprocess, "run", spy)
+
+    leaks = find_leaks(src_target, SOURCE, rules)
+
+    assert not any(leak.path.startswith("legacy/") for leak in leaks)
+    assert calls == 3
+
+
+@requires_symlink
+def test_doctor_does_not_read_through_ancestor_swapped_after_snapshot(
+    src_target: Path, tmp_path: Path, monkeypatch
+):
+    nested = src_target / "swap" / "leaf.txt"
+    nested.parent.mkdir()
+    nested.write_text("clean\n", encoding="utf-8")
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "swap/leaf.txt"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "leaf.txt").write_text("demo_widget outside\n", encoding="utf-8")
+    from template_press.rebrand import doctor
+
+    real_capture = doctor.capture_surface_snapshot
+
+    def capture_then_swap(target: Path):
+        snapshot = real_capture(target)
+        nested.unlink()
+        nested.parent.rmdir()
+        nested.parent.symlink_to(outside, target_is_directory=True)
+        return snapshot
+
+    monkeypatch.setattr(doctor, "capture_surface_snapshot", capture_then_swap)
+
+    leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+
+    assert not any(
+        leak.path == "swap/leaf.txt" and leak.field == "package_name" for leak in leaks
+    )
+    assert any(
+        leak.path == "swap/leaf.txt" and leak.where == "unverifiable" for leak in leaks
+    )
 
 
 @requires_symlink
@@ -571,6 +667,78 @@ class TestGitlinkLeaks:
         src = _identity()
         leaks = find_leaks(src_target, src, DEFAULT_RULES)
         assert not any(lk.path == "vendor_lib" for lk in leaks)
+
+    def test_dirty_gitlink_replaced_by_file_is_scanned(self, src_target: Path):
+        self._add_gitlink(src_target, "sub")
+        dirty = src_target / "sub"
+        dirty.write_text("demo_widget survives\n", encoding="utf-8")
+
+        leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+
+        assert any(
+            leak.path == "sub"
+            and leak.field == "package_name"
+            and leak.where == "content"
+            for leak in leaks
+        )
+
+    def test_clean_dirty_gitlink_file_replacement_is_not_a_leak(self, src_target: Path):
+        self._add_gitlink(src_target, "sub")
+        (src_target / "sub").write_text("clean replacement\n", encoding="utf-8")
+
+        leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+
+        assert not any(leak.path == "sub" for leak in leaks)
+
+    def test_apply_rewrites_dirty_gitlink_file_replacement(self, src_target: Path):
+        self._add_gitlink(src_target, "sub")
+        dirty = src_target / "sub"
+        dirty.write_text("demo_widget survives\n", encoding="utf-8")
+
+        apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+        assert dirty.read_text(encoding="utf-8") == "potato_launcher survives\n"
+
+
+@requires_symlink
+def test_doctor_leaf_swap_at_read_is_unverifiable(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import doctor
+
+    leaf = src_target / "leaf.txt"
+    leaf.write_text("clean\n", encoding="utf-8")
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", leaf.name],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "commit", "-q", "-m", "add clean leaf"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    outside = tmp_path / "outside-doctor.txt"
+    outside.write_text("demo_widget outside\n", encoding="utf-8")
+    real_read = doctor._read_for_scan
+    swapped = False
+
+    def swap_then_read(path: Path):
+        nonlocal swapped
+        if path == leaf and not swapped:
+            swapped = True
+            path.unlink()
+            path.symlink_to(outside)
+        return real_read(path)
+
+    monkeypatch.setattr(doctor, "_read_for_scan", swap_then_read)
+
+    leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+
+    assert not any(leak.path == leaf.name and leak.where == "content" for leak in leaks)
+    assert any(
+        leak.path == leaf.name and leak.where == "unverifiable" for leak in leaks
+    )
 
 
 class TestRuleScopeMigratedByAncestorRename:

@@ -1,4 +1,5 @@
 import dataclasses
+import errno
 import os
 import shutil
 import subprocess
@@ -6,15 +7,22 @@ from pathlib import Path
 
 import pytest
 
+import template_press.rebrand.engine as engine_module
 from template_press.rebrand.engine import (
+    RenamePreflight,
     _rename_candidates,
     apply,
     build_plan,
+    preflight_rename_noreplace,
     translate_path,
 )
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
-from template_press.rebrand.safety import ContainmentError, SafetyError
+from template_press.rebrand.safety import (
+    ContainmentError,
+    SafetyError,
+    UnsafePathError,
+)
 
 from .conftest import DEST, SOURCE, requires_symlink
 
@@ -100,6 +108,229 @@ def test_app_token_filename_renamed(src_target: Path):
     apply(src_target, SOURCE, DEST, DEFAULT_RULES)
     assert (src_target / "potato_config.toml").is_file()
     assert not (src_target / "press_config.toml").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="simulates another POSIX platform")
+def test_preflight_refuses_unsupported_posix_when_rename_required(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    monkeypatch.setattr(safety.sys, "platform", "freebsd14")
+    plan = build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+    with pytest.raises(
+        SafetyError, match="atomic no-replace rename is unsupported on freebsd14"
+    ):
+        preflight_rename_noreplace(src_target, plan.renames)
+
+
+def test_preflight_rejects_hostile_rename_source_before_probe(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        engine_module,
+        "require_rename_noreplace_support",
+        lambda _source: pytest.fail("unsafe source reached probe"),
+    )
+
+    with pytest.raises(UnsafePathError):
+        preflight_rename_noreplace(
+            src_target,
+            {"../outside/demo_widget": "potato_launcher"},
+            allow_unsafe=True,
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="simulates another POSIX platform")
+def test_apply_refuses_unsupported_posix_before_writes(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    ordinary = src_target / "ordinary.txt"
+    ordinary.write_text("demo_widget content\n", encoding="utf-8")
+    _git_add(src_target)
+    source_path = src_target / "src" / "demo_widget"
+    destination_path = src_target / "src" / "potato_launcher"
+    monkeypatch.setattr(safety.sys, "platform", "freebsd14")
+
+    with pytest.raises(
+        SafetyError, match="atomic no-replace rename is unsupported on freebsd14"
+    ):
+        apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+    assert ordinary.read_text(encoding="utf-8") == "demo_widget content\n"
+    assert source_path.is_dir()
+    assert not destination_path.exists()
+
+
+@pytest.mark.parametrize("error", [errno.ENOSYS, errno.ENOTSUP, errno.EINVAL])
+def test_apply_refuses_unsupported_rename_filesystem_before_writes(
+    error: int, src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    ordinary = src_target / "ordinary.txt"
+    ordinary.write_text("demo_widget content\n", encoding="utf-8")
+    _git_add(src_target)
+    source_path = src_target / "src" / "demo_widget"
+    destination_path = src_target / "src" / "potato_launcher"
+
+    def reject_atomic_rename(_source: Path, _destination: Path) -> None:
+        raise OSError(error, os.strerror(error))
+
+    monkeypatch.setattr(safety, "_rename_noreplace_unchecked", reject_atomic_rename)
+
+    with pytest.raises(SafetyError, match="atomic no-replace rename probe failed"):
+        apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+    assert ordinary.read_text(encoding="utf-8") == "demo_widget content\n"
+    assert source_path.is_dir()
+    assert not destination_path.exists()
+    assert not list(src_target.rglob(".press-rename-probe-*"))
+
+
+def test_apply_force_uses_best_effort_rename_when_atomic_support_is_unavailable(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    ordinary = src_target / "ordinary.txt"
+    ordinary.write_text("demo_widget content\n", encoding="utf-8")
+    _git_add(src_target)
+    source_path = src_target / "src" / "demo_widget"
+    destination_path = src_target / "src" / "potato_launcher"
+
+    def reject_atomic_rename(_source: Path, _destination: Path) -> None:
+        raise OSError(errno.ENOTSUP, os.strerror(errno.ENOTSUP))
+
+    monkeypatch.setattr(safety, "_rename_noreplace_unchecked", reject_atomic_rename)
+
+    report = apply(
+        src_target,
+        SOURCE,
+        DEST,
+        DEFAULT_RULES,
+        allow_unsafe_rename=True,
+    )
+
+    assert ordinary.read_text(encoding="utf-8") == "potato_launcher content\n"
+    assert not source_path.exists()
+    assert destination_path.is_dir()
+    assert ("src/demo_widget", "src/potato_launcher") in report.renamed
+
+
+def test_apply_force_does_not_override_probe_permission_failure(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    before = (src_target / "README.md").read_bytes()
+
+    def reject_atomic_rename(_source: Path, _destination: Path) -> None:
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES))
+
+    monkeypatch.setattr(safety, "_rename_noreplace_unchecked", reject_atomic_rename)
+
+    with pytest.raises(SafetyError, match="atomic no-replace rename probe failed"):
+        apply(
+            src_target,
+            SOURCE,
+            DEST,
+            DEFAULT_RULES,
+            allow_unsafe_rename=True,
+        )
+
+    assert (src_target / "README.md").read_bytes() == before
+
+
+def test_apply_force_does_not_override_probe_setup_failure(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    before = (src_target / "README.md").read_bytes()
+
+    def reject_probe_setup(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EINVAL, "injected probe setup failure")
+
+    monkeypatch.setattr(safety.tempfile, "TemporaryDirectory", reject_probe_setup)
+
+    with pytest.raises(SafetyError, match="injected probe setup failure"):
+        apply(
+            src_target,
+            SOURCE,
+            DEST,
+            DEFAULT_RULES,
+            allow_unsafe_rename=True,
+        )
+
+    assert (src_target / "README.md").read_bytes() == before
+
+
+def test_apply_rejects_preflight_policy_from_an_unrecognized_filesystem(
+    src_target: Path,
+) -> None:
+    before = (src_target / "README.md").read_bytes()
+    stale_preflight = RenamePreflight(
+        checked_devices=frozenset({-1}),
+        unsafe_devices=frozenset({-1}),
+    )
+
+    with pytest.raises(
+        SafetyError, match="rename filesystem changed after capability preflight"
+    ):
+        apply(
+            src_target,
+            SOURCE,
+            DEST,
+            DEFAULT_RULES,
+            allow_unsafe_rename=True,
+            rename_preflight=stale_preflight,
+        )
+
+    assert (src_target / "README.md").read_bytes() == before
+
+
+def test_apply_force_keeps_atomic_rename_on_supported_filesystem(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_rename = engine_module.rename_noreplace
+    atomic_calls: list[tuple[Path, Path]] = []
+
+    def record_atomic_rename(source: Path, destination: Path) -> None:
+        atomic_calls.append((source, destination))
+        real_rename(source, destination)
+
+    monkeypatch.setattr(engine_module, "rename_noreplace", record_atomic_rename)
+
+    apply(
+        src_target,
+        SOURCE,
+        DEST,
+        DEFAULT_RULES,
+        allow_unsafe_rename=True,
+    )
+
+    assert atomic_calls
+
+
+def test_apply_skips_rename_preflight_for_content_only_rebrand(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    monkeypatch.setattr(
+        safety,
+        "_rename_noreplace_unchecked",
+        lambda _source, _destination: pytest.fail("unexpected rename probe"),
+    )
+    content_only_dest = dataclasses.replace(SOURCE, author="Potato Farmer")
+
+    report = apply(src_target, SOURCE, content_only_dest, DEFAULT_RULES)
+
+    assert report.renamed == []
 
 
 def test_nested_token_bearing_paths_rename_fully(src_target: Path):
@@ -261,6 +492,310 @@ def test_replace_refuses_symlinked_ancestor_no_external_write(tmp_path: Path):
     assert (ext / "file.txt").is_file()
     assert os.lstat(ext / "file.txt").st_ino == ext_inode_before
     assert (ext / "file.txt").read_text(encoding="utf-8") == ext_content_before
+
+
+@requires_symlink
+def test_rename_ignores_other_entries_under_excluded_directory(tmp_path: Path):
+    """Containment validation applies only to paths the rename pass may touch."""
+
+    target, _external = _diverged_symlink_ancestor_repo(tmp_path, leaf="file.txt")
+    rules = _rules_with(exclude_dirs=DEFAULT_RULES.exclude_dirs | {"a"})
+
+    candidates = _rename_candidates(target, rules)
+
+    assert target / "keep.txt" in candidates
+    assert not any(path.relative_to(target).parts[0] == "a" for path in candidates)
+
+
+def test_build_plan_refuses_tracked_file_replaced_by_directory(
+    src_target: Path,
+) -> None:
+    replaced = src_target / "README.md"
+    replaced.unlink()
+    replaced.mkdir()
+
+    with pytest.raises(SafetyError, match="unscannable worktree entry"):
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="mkfifo POSIX-only")
+def test_build_plan_refuses_visible_fifo(src_target: Path) -> None:
+    fifo = src_target / "events.pipe"
+    fifo.write_text("tracked\n", encoding="utf-8")
+    _git_add(src_target)
+    fifo.unlink()
+    os.mkfifo(fifo)
+
+    with pytest.raises(SafetyError, match="unscannable worktree entry"):
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="mkfifo POSIX-only")
+def test_apply_refuses_visible_fifo_before_rewriting_other_files(
+    src_target: Path,
+) -> None:
+    ordinary = src_target / "ordinary.txt"
+    ordinary.write_text("demo_widget stays\n", encoding="utf-8")
+    fifo = src_target / "events.pipe"
+    fifo.write_text("tracked\n", encoding="utf-8")
+    _git_add(src_target)
+    fifo.unlink()
+    os.mkfifo(fifo)
+
+    with pytest.raises(SafetyError, match="unscannable worktree entry"):
+        apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+    assert ordinary.read_text(encoding="utf-8") == "demo_widget stays\n"
+
+
+def test_apply_refuses_embedded_repository_before_rewriting_other_files(
+    src_target: Path,
+) -> None:
+    ordinary = src_target / "ordinary.txt"
+    ordinary.write_text("demo_widget stays\n", encoding="utf-8")
+    nested = src_target / "nested"
+    nested.mkdir()
+    _git(nested, "init", "-q")
+
+    with pytest.raises(SafetyError, match="unscannable worktree entry"):
+        apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+    assert ordinary.read_text(encoding="utf-8") == "demo_widget stays\n"
+
+
+@pytest.mark.parametrize("replacement_kind", ["missing", "directory"])
+def test_rename_pass_refuses_source_changed_after_capture(
+    src_target: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement_kind: str,
+) -> None:
+    source = src_target / "demo_widget.txt"
+    source.write_text("clean\n", encoding="utf-8")
+    _git_add(src_target)
+    real_entries = engine_module._rename_candidate_entries
+    changed = False
+
+    def change_after_capture(target: Path, rules):
+        nonlocal changed
+        entries = real_entries(target, rules)
+        if not changed:
+            source.unlink()
+            if replacement_kind == "directory":
+                source.mkdir()
+            changed = True
+        return entries
+
+    monkeypatch.setattr(
+        engine_module,
+        "_rename_candidate_entries",
+        change_after_capture,
+    )
+    report = engine_module.ApplyReport()
+
+    with pytest.raises(SafetyError, match="rename source changed after capture"):
+        engine_module._rename_pass_once(
+            src_target,
+            [("package_name", "demo_widget", "potato_launcher")],
+            DEFAULT_RULES,
+            report,
+            [],
+        )
+
+    assert report.skipped == []
+
+
+def test_rename_pass_refuses_source_kind_swap_after_destination_checks(
+    src_target: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = src_target / "demo_widget.txt"
+    source.write_text("source\n", encoding="utf-8")
+    _git_add(src_target)
+    destination = src_target / "potato_launcher.txt"
+    displaced = src_target / "displaced.txt"
+    real_assert = engine_module.assert_ancestors_real
+    swapped = False
+
+    def swap_during_destination_check(path: Path, root: Path) -> None:
+        nonlocal swapped
+        real_assert(path, root)
+        if path == destination and not swapped:
+            source.rename(displaced)
+            source.mkdir()
+            (source / "child.txt").write_text("unauthorized\n", encoding="utf-8")
+            swapped = True
+
+    monkeypatch.setattr(
+        engine_module,
+        "assert_ancestors_real",
+        swap_during_destination_check,
+    )
+
+    with pytest.raises(SafetyError, match="rename source changed after capture"):
+        engine_module._rename_pass_once(
+            src_target,
+            [("package_name", "demo_widget", "potato_launcher")],
+            DEFAULT_RULES,
+            engine_module.ApplyReport(),
+            [],
+        )
+
+    assert source.is_dir()
+    assert not destination.exists()
+
+
+def test_rename_pass_atomically_refuses_destination_created_after_checks(
+    src_target: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = src_target / "demo_widget.txt"
+    source.write_text("source\n", encoding="utf-8")
+    _git_add(src_target)
+    destination = src_target / "potato_launcher.txt"
+    real_assert = engine_module.assert_ancestors_real
+    occupied = False
+
+    def occupy_before_move(path: Path, root: Path) -> None:
+        nonlocal occupied
+        real_assert(path, root)
+        if path == source and not occupied:
+            destination.write_text("do not overwrite\n", encoding="utf-8")
+            occupied = True
+
+    monkeypatch.setattr(
+        engine_module,
+        "assert_ancestors_real",
+        occupy_before_move,
+    )
+
+    with pytest.raises(SafetyError, match="destination appeared"):
+        engine_module._rename_pass_once(
+            src_target,
+            [("package_name", "demo_widget", "potato_launcher")],
+            DEFAULT_RULES,
+            engine_module.ApplyReport(),
+            [],
+        )
+
+    assert source.read_text(encoding="utf-8") == "source\n"
+    assert destination.read_text(encoding="utf-8") == "do not overwrite\n"
+
+
+@requires_symlink
+@pytest.mark.skipif(os.name == "nt", reason="descriptor-relative POSIX read")
+def test_read_text_refuses_regular_file_replaced_by_symlink_during_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mid-read type change is not the stable-symlink compatibility case."""
+
+    import template_press.rebrand.safety as safety_module
+
+    source = tmp_path / "source.txt"
+    source.write_text("captured bytes\n", encoding="utf-8")
+    displaced = tmp_path / "displaced.txt"
+    real_read = safety_module._read_descriptor
+
+    def replace_with_symlink(descriptor: int) -> bytes:
+        data = real_read(descriptor)
+        source.rename(displaced)
+        source.symlink_to("missing-target")
+        return data
+
+    monkeypatch.setattr(safety_module, "_read_descriptor", replace_with_symlink)
+
+    with pytest.raises(SafetyError, match="changed while reading"):
+        engine_module._read_text(source)
+
+
+@requires_symlink
+def test_build_plan_refuses_ancestor_swap_after_inventory(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A selected file must not be read after its ancestor becomes a link."""
+    tracked = src_target / "race" / "file.txt"
+    tracked.parent.mkdir()
+    tracked.write_text("mentions demo_widget\n", encoding="utf-8")
+    _git_add(src_target)
+    external = tmp_path / "external-plan"
+    external.mkdir()
+    (external / "file.txt").write_text("external demo_widget\n", encoding="utf-8")
+    real_candidates = engine_module._rename_candidate_entries
+
+    def swap_after_inventory(target: Path, rules):
+        paths = real_candidates(target, rules)
+        shutil.rmtree(target / "race")
+        os.symlink(external, target / "race")
+        return paths
+
+    monkeypatch.setattr(
+        engine_module, "_rename_candidate_entries", swap_after_inventory
+    )
+
+    with pytest.raises(ContainmentError):
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+
+@requires_symlink
+def test_apply_refuses_ancestor_swap_after_inventory(
+    src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The content pass rechecks ancestors immediately before reading."""
+    tracked = src_target / "race" / "file.txt"
+    tracked.parent.mkdir()
+    tracked.write_text("mentions demo_widget\n", encoding="utf-8")
+    _git_add(src_target)
+    external = tmp_path / "external-apply"
+    external.mkdir()
+    outside = external / "file.txt"
+    outside.write_text("external demo_widget\n", encoding="utf-8")
+    outside_before = outside.read_bytes()
+    real_iter = engine_module._content_candidate_entries
+
+    def swap_after_inventory(target: Path, rules):
+        paths = real_iter(target, rules)
+        shutil.rmtree(target / "race")
+        os.symlink(external, target / "race")
+        return paths
+
+    monkeypatch.setattr(
+        engine_module, "_content_candidate_entries", swap_after_inventory
+    )
+
+    with pytest.raises(ContainmentError):
+        apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+    assert outside.read_bytes() == outside_before
+
+
+@requires_symlink
+@pytest.mark.parametrize("operation", ["plan", "apply"])
+def test_content_pass_refuses_file_replaced_by_symlink_before_open(
+    src_target: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    tracked = src_target / "leaf.txt"
+    tracked.write_text("mentions demo_widget\n", encoding="utf-8")
+    _git_add(src_target)
+    displaced = tmp_path / f"displaced-{operation}.txt"
+    real_read = engine_module.read_regular_nofollow
+    swapped = False
+
+    def swap_before_open(path: Path) -> bytes:
+        nonlocal swapped
+        if path == tracked and not swapped:
+            swapped = True
+            tracked.rename(displaced)
+            tracked.symlink_to("missing-target")
+        return real_read(path)
+
+    monkeypatch.setattr(engine_module, "read_regular_nofollow", swap_before_open)
+
+    with pytest.raises(SafetyError, match="selected regular file changed"):
+        if operation == "plan":
+            build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+        else:
+            apply(src_target, SOURCE, DEST, DEFAULT_RULES)
 
 
 class TestRulePathRenames:
@@ -610,6 +1145,40 @@ class TestRenameSeesSymlinkNames:
             )
         )
         plan = build_plan(src_target, _identity(), _identity(app_name="acme"), rules)
+        assert any(
+            item.kind == "rename" and item.path == "plbp-link" for item in plan.items
+        )
+
+    @requires_symlink
+    def test_build_plan_accepts_stable_symlink_with_checked_read_fallback(
+        self, src_target: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The non-openat reader must retain stable symlink compatibility."""
+
+        import template_press.rebrand.safety as safety_module
+
+        link = src_target / "plbp-link"
+        os.symlink("nowhere", link)
+        _git_add(src_target)
+        monkeypatch.setattr(safety_module.os, "supports_dir_fd", frozenset())
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-link",
+                    reason="checked-path symlink compatibility",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+
+        plan = build_plan(
+            src_target,
+            _identity(),
+            _identity(app_name="acme"),
+            rules,
+        )
+
         assert any(
             item.kind == "rename" and item.path == "plbp-link" for item in plan.items
         )

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import stat
-import subprocess  # nosec B404 — git ls-files enumerates the target
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +23,17 @@ from template_press.rebrand.identity import (
     replace_token,
     token_occurs,
 )
+from template_press.rebrand.inventory import (
+    SurfaceEntry,
+    WorktreeKind,
+    capture_surface_snapshot,
+    gitlink_path_strings,
+    listed_paths,
+    select_content_rewrite_entries,
+    select_copy_entries,
+    select_rename_entries,
+    select_verifier_entries,
+)
 from template_press.rebrand.rules import (
     ReplaceRule,
     Rules,
@@ -31,14 +41,21 @@ from template_press.rebrand.rules import (
     rule_matches_path,
 )
 from template_press.rebrand.safety import (
+    AtomicRenameUnavailableError,
     ContainmentError,
+    NonRegularFileError,
+    SafeRelPath,
     SafetyError,
     assert_ancestors_real,
     assert_under_root,
     chmod_nofollow,
-    git_hardening_args,
+    read_regular_nofollow,
+    readlink_nofollow,
+    rename_noreplace,
+    rename_noreplace_best_effort,
+    require_rename_noreplace_host_support,
+    require_rename_noreplace_support,
     safe_write,
-    scrubbed_git_env,
 )
 
 RENAME_FIELDS: tuple[str, ...] = (
@@ -84,8 +101,8 @@ REGENERATE_EXEMPTIBLE: frozenset[str] = frozenset({"uv.lock", "bun.lock"})
 class PathEntry:
     """A ``copy_paths``/``scan_paths`` entry: a relative path plus its kind.
 
-    ``kind`` is ``"file" | "symlink" | "gitlink"``, determined without
-    following links — this is the interface Task 7's scanner consumes.
+    ``kind`` is ``"file" | "symlink" | "gitlink" | "unscannable"``,
+    determined without following links.
     """
 
     rel: Path
@@ -123,6 +140,22 @@ class Plan:
         return out
 
 
+@dataclass(frozen=True)
+class RenamePreflight:
+    """Result of checking the planned rename filesystems."""
+
+    checked_devices: frozenset[int] = frozenset()
+    unsafe_devices: frozenset[int] = frozenset()
+    problems: tuple[str, ...] = ()
+    operational: bool = True
+
+    @property
+    def atomic(self) -> bool:
+        """Whether every planned rename filesystem passed the probe."""
+
+        return not self.unsafe_devices
+
+
 def _is_excluded(rel: Path, rules: Rules) -> bool:
     if rel.as_posix() in rules.exclude_files:
         return True
@@ -130,37 +163,9 @@ def _is_excluded(rel: Path, rules: Rules) -> bool:
 
 
 def _git_listed(target: Path) -> list[Path]:
-    """Relative paths git reports (tracked+untracked), honoring .gitignore.
+    """Compatibility adapter over the one raw surface inventory."""
 
-    Uses `git ls-files --cached --others --exclude-standard`. This is a
-    working-tree-scanning read on an untrusted target (a hostile
-    `.git/config` is attacker input), so it is scrubbed-env + hardening-args
-    protected (G5+) exactly like the sandbox's on-target git calls: no
-    identity is needed for a read.
-    """
-    result = subprocess.run(  # noqa: S603 # nosec B603 B607
-        [  # noqa: S607
-            "git",
-            "-C",
-            str(target),
-            *git_hardening_args(),
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-        ],
-        check=True,
-        capture_output=True,
-        # Capture raw BYTES (no encoding=): a git path is any byte except NUL,
-        # so a non-UTF-8 filename would raise UnicodeDecodeError under a strict
-        # text decode and crash enumeration. Decode UTF-8 with surrogateescape
-        # so arbitrary bytes round-trip to str (and back, via os.fsencode) —
-        # this also avoids the Windows locale-codepage mojibake text=True gives.
-        env=scrubbed_git_env(),
-    )
-    stdout = result.stdout.decode("utf-8", "surrogateescape")
-    return [Path(line) for line in stdout.split("\0") if line]
+    return list(listed_paths(capture_surface_snapshot(target)))
 
 
 def _press_dirs(files: list[Path]) -> set[str]:
@@ -208,6 +213,33 @@ def stray_press_dirs(target: Path) -> list[str]:
     return sorted(_press_dirs(files) - _control_press_dirs(target, files))
 
 
+def _content_candidate_entries(target: Path, rules: Rules) -> tuple[SurfaceEntry, ...]:
+    """Snapshot-backed regular-file and symlink rewrite candidates."""
+
+    snapshot = capture_surface_snapshot(target)
+    entries = select_content_rewrite_entries(
+        snapshot,
+        exclude_files=rules.exclude_files,
+        exclude_dirs=rules.exclude_dirs,
+        root_control=ROOT_CONTROL,
+    )
+    # Preserve the compatibility adapter's observable symlink skip reporting
+    # without recovering membership through ``Path.is_file()``, which would
+    # follow the link or one of its ancestors. All symlink leaves are safe for
+    # ``_read_text``: it refuses them before reading bytes.
+    symlinks = tuple(
+        entry
+        for entry in select_rename_entries(
+            snapshot,
+            exclude_files=rules.exclude_files,
+            exclude_dirs=rules.exclude_dirs,
+            root_control=ROOT_CONTROL,
+        )
+        if entry.worktree_kind == "symlink"
+    )
+    return tuple(sorted((*entries, *symlinks), key=lambda item: item.rel.as_posix()))
+
+
 def iter_target_files(target: Path, rules: Rules) -> list[Path]:
     """All non-excluded tracked+untracked files under target, sorted.
 
@@ -215,57 +247,17 @@ def iter_target_files(target: Path, rules: Rules) -> list[Path]:
     artifacts in ROOT_CONTROL. Everything else under a press/ dir — root or
     nested — is ordinary content: scanned and rewritten like any file.
     """
-    files = _git_listed(target)
-    out: list[Path] = []
-    for rel in files:
-        if _is_excluded(rel, rules):
-            continue
-        if rel.as_posix() in ROOT_CONTROL:
-            continue
-        path = target / rel
-        if path.is_file():
-            out.append(path)
-    return sorted(out)
+    return [target / entry.rel for entry in _content_candidate_entries(target, rules)]
 
 
 def _gitlink_rels(target: Path) -> frozenset[str]:
-    """POSIX rel paths of index entries whose mode is a gitlink (160000).
+    """Compatibility adapter for gitlink index paths."""
 
-    Reads the index directly (``git ls-files --stage``), so a submodule
-    that isn't checked out is still correctly identified — no working-tree
-    directory needs to exist. Scrubbed-env + hardening-args protected (G5+):
-    the target's own ``.git/config`` is attacker input.
-    """
-    result = subprocess.run(  # noqa: S603 # nosec B603 B607
-        [  # noqa: S607
-            "git",
-            "-C",
-            str(target),
-            *git_hardening_args(),
-            "ls-files",
-            "--stage",
-            "-z",
-        ],
-        check=True,
-        capture_output=True,
-        # Raw bytes + surrogateescape decode (see _git_listed): a gitlink whose
-        # path carries a non-UTF-8 byte must not crash enumeration.
-        env=scrubbed_git_env(),
-    )
-    stdout = result.stdout.decode("utf-8", "surrogateescape")
-    rels: set[str] = set()
-    for entry in stdout.split("\0"):
-        if not entry:
-            continue
-        meta, _, rel = entry.partition("\t")
-        mode = meta.split(" ", 1)[0]
-        if mode == "160000":
-            rels.add(rel)
-    return frozenset(rels)
+    return gitlink_path_strings(capture_surface_snapshot(target))
 
 
-def _rename_candidates(target: Path, rules: Rules) -> list[Path]:
-    """Rename-pass candidates: every eligible path, symlink LEAVES included.
+def _rename_candidate_entries(target: Path, rules: Rules) -> tuple[SurfaceEntry, ...]:
+    """Snapshot-backed rename candidates, with their expected leaf kinds.
 
     Mirrors ``iter_target_files``'s exclusion filtering (``_is_excluded`` +
     ``ROOT_CONTROL``), but enumerates by no-follow ``is_symlink()`` in
@@ -280,44 +272,72 @@ def _rename_candidates(target: Path, rules: Rules) -> list[Path]:
     excluded outright: a submodule mount point must never be renamed by
     this pass.
     """
-    gitlinks = _gitlink_rels(target)
-    out: list[Path] = []
-    for rel in _git_listed(target):
-        if _is_excluded(rel, rules):
+    snapshot = capture_surface_snapshot(target)
+    # Refuse any selected, present node that the later doctor cannot scan.
+    # A tracked file replaced by a directory and any FIFO/socket/other leaf
+    # would otherwise be omitted from this plan, allow unrelated writes, and
+    # then make the post-mutation doctor fail.  A normal checked-out gitlink
+    # directory remains opaque; an untracked embedded repository is a
+    # directory record and must be refused because the doctor cannot verify it.
+    for entry in snapshot.entries:
+        if entry.rel.as_posix() in ROOT_CONTROL or _is_excluded(entry.rel, rules):
             continue
-        posix = rel.as_posix()
-        if posix in ROOT_CONTROL:
+        unscannable = entry.worktree_kind == "other" or (
+            entry.worktree_kind == "directory" and entry.index_kind != "gitlink"
+        )
+        if not unscannable:
             continue
-        if posix in gitlinks:
-            continue
-        path = target / rel
-        if path.is_file() or path.is_symlink():
-            out.append(path)
-    return sorted(out)
+        if entry.worktree_kind == "other" and entry.index_kind != "gitlink":
+            # Preserve the more specific containment refusal for a tracked
+            # path hidden behind a symlink ancestor.
+            assert_ancestors_real(target / entry.rel, target)
+        raise SafetyError(
+            f"unscannable worktree entry must be resolved before rebrand: "
+            f"{entry.rel.as_posix()} ({entry.worktree_kind})"
+        )
+    entries = select_rename_entries(
+        snapshot,
+        exclude_files=rules.exclude_files,
+        exclude_dirs=rules.exclude_dirs,
+        root_control=ROOT_CONTROL,
+    )
+    return entries
+
+
+def _rename_candidates(target: Path, rules: Rules) -> list[Path]:
+    """Rename-pass candidate paths; compatibility view over raw entries."""
+
+    return [target / entry.rel for entry in _rename_candidate_entries(target, rules)]
 
 
 def copy_paths(target: Path) -> list[PathEntry]:
-    """Everything git lists (tracked + non-ignored untracked), minus ``.git``.
+    """Present Git-listed nodes plus opaque gitlink placeholders.
 
     RETAINS symlinks and gitlinks — never filters on ``is_file()``, which
     would drop a symlink-to-dir/dangling symlink and hide gitlinks. ``kind``
     is determined without following links: a gitlink is detected via the
     index mode (``_gitlink_rels``); otherwise an ``lstat``-based
-    ``is_symlink()`` check on the (possibly not-checked-out) path decides
-    "symlink" vs "file". Sorted, deterministic.
+    snapshot kind decides ``file``/``symlink``/``gitlink``/``unscannable``.
+    Sorted, deterministic. The sandbox refuses ``unscannable`` rather than
+    silently certifying an incomplete copy.
     """
-    gitlinks = _gitlink_rels(target)
     entries: list[PathEntry] = []
-    for rel in _git_listed(target):
+    snapshot = capture_surface_snapshot(target)
+    for entry in select_copy_entries(snapshot):
+        rel = entry.rel
         if ".git" in rel.parts:
             continue
-        posix = rel.as_posix()
-        if posix in gitlinks:
-            kind = "gitlink"
-        elif (target / rel).is_symlink():
+        if entry.worktree_kind == "symlink":
             kind = "symlink"
-        else:
+        elif entry.worktree_kind == "file":
             kind = "file"
+        elif entry.index_kind == "gitlink" and entry.worktree_kind in (
+            "directory",
+            "missing",
+        ):
+            kind = "gitlink"
+        else:
+            kind = "unscannable"
         entries.append(PathEntry(rel, kind))
     return sorted(entries, key=lambda e: e.rel.as_posix())
 
@@ -390,16 +410,27 @@ def scan_paths(
     without the translation (P04 D3).
     """
     exempt_lockfiles = {p for p, _ in exempt_regenerated_paths(rules, renamed)}
+    snapshot = capture_surface_snapshot(target)
+    selected = select_verifier_entries(
+        snapshot,
+        verify_ignore=rules.verify_ignore,
+        root_control=ROOT_CONTROL,
+        exempt_paths=frozenset(exempt_lockfiles),
+    )
     out: list[PathEntry] = []
-    for entry in copy_paths(target):
-        posix = entry.rel.as_posix()
-        if posix in ROOT_CONTROL:
-            continue
-        if posix in exempt_lockfiles:
-            continue
-        if any(part in rules.verify_ignore for part in entry.rel.parts):
-            continue
-        out.append(entry)
+    for entry in selected:
+        if entry.worktree_kind == "symlink":
+            kind = "symlink"
+        elif entry.worktree_kind == "file":
+            kind = "file"
+        elif entry.index_kind == "gitlink" and entry.worktree_kind in (
+            "directory",
+            "missing",
+        ):
+            kind = "gitlink"
+        else:
+            kind = "unscannable"
+        out.append(PathEntry(entry.rel, kind))
     return out
 
 
@@ -632,13 +663,34 @@ def symlink_target_posix(rel: Path, link: str) -> str:
     return Path(os.path.normpath(os.path.join(rel.parent.as_posix(), link))).as_posix()
 
 
-def _read_text(path: Path) -> str | None:
-    if path.is_symlink():
-        return None  # never follow a link: writes must stay inside the target
+def _read_text(path: Path, *, expected_kind: WorktreeKind | None = None) -> str | None:
+    if expected_kind == "symlink":
+        # A stable selected symlink remains a non-content candidate. If the
+        # pathname changed to any other kind, the no-follow readlink refuses.
+        readlink_nofollow(path)
+        return None
     try:
-        return path.read_text(encoding="utf-8")
-    except (UnicodeDecodeError, OSError):
-        return None  # binary or unreadable — never a rewrite candidate
+        return read_regular_nofollow(path).decode("utf-8")
+    except UnicodeDecodeError:
+        return None  # binary — never a rewrite candidate
+    except OSError as exc:
+        if expected_kind == "file":
+            raise SafetyError(
+                f"selected regular file changed before read: {path}"
+            ) from exc
+        return None  # compatibility path for an unclassified unreadable leaf
+    except NonRegularFileError as exc:
+        if expected_kind == "file":
+            raise SafetyError(
+                f"selected regular file changed before read: {path}"
+            ) from exc
+        # The checked-path fallback reports an initially non-regular leaf with
+        # this dedicated exception, whereas POSIX O_NOFOLLOW reports a symlink
+        # as an OSError above. Preserve the cross-platform skip contract only
+        # after a second no-follow operation proves that the leaf is still a
+        # symlink. Every change-detection safety refusal remains fail-closed.
+        readlink_nofollow(path)
+        return None
 
 
 def _renamed_rel(
@@ -690,6 +742,31 @@ def _renamed_rel(
     return Path(*parts)
 
 
+def _rename_prefix_map(
+    entries: Collection[SurfaceEntry],
+    pairs: list[tuple[str, str, str]],
+    rendered: list[tuple[ReplaceRule, str, str]],
+    substring_fields: Collection[str],
+) -> dict[str, str]:
+    """Collapse selected path rewrites to their shallowest rename prefixes."""
+
+    rename_map: dict[str, str] = {}
+    for entry in entries:
+        rel = entry.rel
+        new_rel = _renamed_rel(rel, pairs, rendered, substring_fields)
+        if new_rel == rel:
+            continue
+        for i, (old_part, new_part) in enumerate(
+            zip(rel.parts, new_rel.parts, strict=True)
+        ):
+            if old_part != new_part:
+                old_prefix = Path(*rel.parts[: i + 1]).as_posix()
+                new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
+                rename_map.setdefault(old_prefix, new_prefix)
+                break
+    return rename_map
+
+
 def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> Plan:
     """Resolve what apply() would do; executes nothing."""
     source.validate()
@@ -697,15 +774,17 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
     plan = Plan()
     pairs = replacement_pairs(source, dest, rules.display_forms)
     rendered = rendered_replace_rules(rules, source, dest)
-    rename_map: dict[str, str] = {}
     # `_rename_candidates` (not `iter_target_files`): rename-plan parity with
     # `_rename_pass_once` (Fix F2) — a symlink LEAF (dir/dangling) must be a
     # rename candidate here too, or the plan silently omits it. `_read_text`
     # still returns None for a symlink, so the content-plan branch below is
     # unaffected — this only widens what the rename-plan branch below it sees.
-    for path in _rename_candidates(target, rules):
-        rel = path.relative_to(target)
-        text = _read_text(path)
+    rename_entries = _rename_candidate_entries(target, rules)
+    for entry in rename_entries:
+        path = target / entry.rel
+        rel = entry.rel
+        assert_ancestors_real(path, target)
+        text = _read_text(path, expected_kind=entry.worktree_kind)
         if text is not None:
             for rule, frm, to in rendered:
                 if rule.content and rule_matches_path(rule, rel.as_posix()):
@@ -728,24 +807,51 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                 plan.items.append(
                     PlanItem("replace", rel.as_posix(), f"fields={hit_fields}")
                 )
-        new_rel = _renamed_rel(rel, pairs, rendered, rules.substring_rewrite_fields)
-        if new_rel != rel:
-            # collapse to the shallowest differing ancestor (dir rename)
-            for i, (old_part, new_part) in enumerate(
-                zip(rel.parts, new_rel.parts, strict=True)
-            ):
-                if old_part != new_part:
-                    # The root 'press' component never differs (protected in
-                    # _renamed_rel), so the first diff is always a renamable
-                    # component — no root-press guard is needed here.
-                    old_prefix = Path(*rel.parts[: i + 1]).as_posix()
-                    new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
-                    rename_map.setdefault(old_prefix, new_prefix)
-                    break
+    rename_map = _rename_prefix_map(
+        rename_entries, pairs, rendered, rules.substring_rewrite_fields
+    )
     for old, new in sorted(rename_map.items()):
         plan.items.append(PlanItem("rename", old, f"→ {new}"))
     plan.renames.update(rename_map)
     return plan
+
+
+def preflight_rename_noreplace(
+    target: Path,
+    renames: Mapping[str, str],
+    *,
+    allow_unsafe: bool = False,
+    operational: bool = True,
+) -> RenamePreflight:
+    """Check planned rename filesystems; optionally permit a risky fallback."""
+
+    checked_devices: set[int] = set()
+    unsafe_devices: set[int] = set()
+    problems: list[str] = []
+    for old in sorted(renames):
+        safe_old = SafeRelPath(old)
+        source = target / Path(*safe_old.parts)
+        assert_ancestors_real(source, target)
+        device = os.lstat(source.parent).st_dev
+        if device in checked_devices:
+            continue
+        checked_devices.add(device)
+        try:
+            if operational:
+                require_rename_noreplace_support(source)
+            else:
+                require_rename_noreplace_host_support()
+        except AtomicRenameUnavailableError as exc:
+            if not allow_unsafe:
+                raise
+            unsafe_devices.add(device)
+            problems.append(str(exc))
+    return RenamePreflight(
+        checked_devices=frozenset(checked_devices),
+        unsafe_devices=frozenset(unsafe_devices),
+        problems=tuple(problems),
+        operational=operational,
+    )
 
 
 def translate_path(posix: str, renames: Mapping[str, str]) -> str:
@@ -808,9 +914,11 @@ def _apply_replacements(
     report: ApplyReport,
     rendered: list[tuple[ReplaceRule, str, str]],
 ) -> None:
-    for path in iter_target_files(target, rules):
-        rel = path.relative_to(target).as_posix()
-        text = _read_text(path)
+    for entry in _content_candidate_entries(target, rules):
+        path = target / entry.rel
+        rel = entry.rel.as_posix()
+        assert_ancestors_real(path, target)
+        text = _read_text(path, expected_kind=entry.worktree_kind)
         if text is None:
             kind = "symlink" if path.is_symlink() else "binary"
             report.skipped.append(f"replace {rel} ({kind})")
@@ -842,7 +950,12 @@ def _apply_replacements(
             # permission bits are restored afterwards — a rewritten 0755
             # helper must not come out non-executable (P04 D1).
             mode = stat.S_IMODE(os.lstat(path).st_mode)
-            safe_write(target, rel, new_text, refuse_hardlink=False)
+            safe_write(
+                target,
+                path.relative_to(target),
+                new_text,
+                refuse_hardlink=False,
+            )
             chmod_nofollow(path, mode)
             report.replaced.append(rel)
 
@@ -919,11 +1032,13 @@ def _retarget_symlinks(
     cands = {
         p.relative_to(target).as_posix() for p in _rename_candidates(target, rules)
     }
-    for rel in _git_listed(target):
-        path = target / rel
-        if not path.is_symlink():
+    snapshot = capture_surface_snapshot(target)
+    for entry in snapshot.entries:
+        if entry.worktree_kind != "symlink":
             continue
-        link = os.readlink(path)
+        rel = entry.rel
+        path = target / rel
+        link = readlink_nofollow(path)
         if os.path.isabs(link):
             continue  # never rewrite or follow an absolute target
         new_link = link
@@ -978,13 +1093,45 @@ def _retarget_symlinks(
         report.replaced.append(rel.as_posix())
 
 
-def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> ApplyReport:
+def apply(
+    target: Path,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    *,
+    allow_unsafe_rename: bool = False,
+    rename_preflight: RenamePreflight | None = None,
+) -> ApplyReport:
     """Execute the rebrand: replace pass, symlink-retarget pass, rename pass."""
     source.validate()
     dest.validate()
-    report = ApplyReport()
     pairs = replacement_pairs(source, dest, rules.display_forms)
     rendered = rendered_replace_rules(rules, source, dest)
+    # Validate every selected present node before the first content write.
+    # Later phases recapture their own candidates to fail closed on races.
+    rename_entries = _rename_candidate_entries(target, rules)
+    rename_map = _rename_prefix_map(
+        rename_entries, pairs, rendered, rules.substring_rewrite_fields
+    )
+    # Direct callers bypass the CLI preflight, so probe each source filesystem
+    # before replacements can partially rewrite the target.
+    if rename_preflight is None:
+        rename_preflight = preflight_rename_noreplace(
+            target, rename_map, allow_unsafe=allow_unsafe_rename
+        )
+    elif not rename_preflight.operational:
+        raise SafetyError("rename execution requires an operational preflight")
+    elif not rename_preflight.atomic and not allow_unsafe_rename:
+        raise SafetyError(
+            "non-atomic rename fallback requires allow_unsafe_rename=True"
+        )
+    current_devices = frozenset(
+        os.lstat((target / Path(*SafeRelPath(old).parts)).parent).st_dev
+        for old in rename_map
+    )
+    if not current_devices <= rename_preflight.checked_devices:
+        raise SafetyError("rename filesystem changed after capability preflight")
+    report = ApplyReport()
     _apply_replacements(target, pairs, rules, report, rendered)
     # Symlink text must only be rewritten where the rename pass would move
     # the target — display forms never rename paths (not in RENAME_FIELDS),
@@ -997,7 +1144,14 @@ def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> Apply
     _retarget_symlinks(
         target, symlink_pairs, rules, report, rendered, rules.substring_rewrite_fields
     )
-    _apply_renames(target, pairs, rules, report, rendered)
+    _apply_renames(
+        target,
+        pairs,
+        rules,
+        report,
+        rendered,
+        rename_preflight=rename_preflight,
+    )
     return report
 
 
@@ -1007,6 +1161,8 @@ def _rename_pass_once(
     rules: Rules,
     report: ApplyReport,
     rendered: list[tuple[ReplaceRule, str, str]],
+    *,
+    rename_preflight: RenamePreflight | None = None,
 ) -> bool:
     """Run one shallowest-prefix rename pass; return True if any rename ran.
 
@@ -1019,9 +1175,9 @@ def _rename_pass_once(
     otherwise never reach this pass at all (`iter_target_files`'s
     `is_file()` filter follows the link and drops it).
     """
-    rename_map: dict[str, str] = {}
-    for path in _rename_candidates(target, rules):
-        rel = path.relative_to(target)
+    rename_map: dict[str, tuple[str, WorktreeKind]] = {}
+    for entry in _rename_candidate_entries(target, rules):
+        rel = entry.rel
         new_rel = _renamed_rel(rel, pairs, rendered, rules.substring_rewrite_fields)
         if new_rel == rel:
             continue
@@ -1034,18 +1190,15 @@ def _rename_pass_once(
                 # component — no root-press guard is needed here.
                 old_prefix = Path(*rel.parts[: i + 1]).as_posix()
                 new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
-                rename_map.setdefault(old_prefix, new_prefix)
+                expected_kind: WorktreeKind = (
+                    entry.worktree_kind if i == len(rel.parts) - 1 else "directory"
+                )
+                rename_map.setdefault(old_prefix, (new_prefix, expected_kind))
                 break
     performed = False
     for old in sorted(rename_map, key=lambda p: -len(Path(p).parts)):
-        src, dst = target / old, target / rename_map[old]
-        if not (src.exists() or src.is_symlink()):
-            # `Path.exists()` FOLLOWS symlinks — a DANGLING symlink at src
-            # reads as absent there too (Fix F2): without the `is_symlink()`
-            # fallback, a legitimate dangling-symlink rename candidate would
-            # be skipped as "missing" before ever reaching `src.rename(dst)`.
-            report.skipped.append(f"rename {old} (missing)")
-            continue
+        new, expected_kind = rename_map[old]
+        src, dst = target / old, target / new
         if dst.exists():
             report.skipped.append(f"rename {old} (destination exists)")
             continue
@@ -1061,11 +1214,50 @@ def _rename_pass_once(
         # symlink out of the target. Tolerates a token-bearing symlink LEAF
         # (renaming a symlink is legitimate); fails closed (propagates) on a
         # symlinked ancestor.
-        assert_ancestors_real(src, target)
         assert_ancestors_real(dst, target)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        src.rename(dst)
-        report.renamed.append((old, rename_map[old]))
+        # All destination preparation is complete. Revalidate the captured
+        # source kind as the final userspace check before the atomic move.
+        assert_ancestors_real(src, target)
+        try:
+            current = os.lstat(src)
+        except OSError as exc:
+            raise SafetyError(
+                f"rename source changed after capture: {old} (expected {expected_kind})"
+            ) from exc
+        current_kind: WorktreeKind
+        if stat.S_ISREG(current.st_mode):
+            current_kind = "file"
+        elif stat.S_ISLNK(current.st_mode):
+            current_kind = "symlink"
+        elif stat.S_ISDIR(current.st_mode):
+            current_kind = "directory"
+        else:
+            current_kind = "other"
+        if current_kind != expected_kind:
+            raise SafetyError(
+                f"rename source changed after capture: {old} "
+                f"(expected {expected_kind}, found {current_kind})"
+            )
+        try:
+            device = os.lstat(src.parent).st_dev
+            if rename_preflight is not None and device not in (
+                rename_preflight.checked_devices
+            ):
+                raise SafetyError(
+                    "rename filesystem changed after capability preflight"
+                )
+            if rename_preflight is not None and device in (
+                rename_preflight.unsafe_devices
+            ):
+                rename_noreplace_best_effort(src, dst)
+            else:
+                rename_noreplace(src, dst)
+        except FileExistsError as exc:
+            raise SafetyError(
+                f"rename destination appeared after validation: {new}"
+            ) from exc
+        report.renamed.append((old, new))
         performed = True
     return performed
 
@@ -1076,6 +1268,8 @@ def _apply_renames(
     rules: Rules,
     report: ApplyReport,
     rendered: list[tuple[ReplaceRule, str, str]],
+    *,
+    rename_preflight: RenamePreflight,
 ) -> None:
     """Rename tracked paths whose components carry identity tokens.
 
@@ -1102,7 +1296,14 @@ def _apply_renames(
     would otherwise propagate past ``_press`` as an uncaught traceback.
     """
     for _ in range(32):
-        if not _rename_pass_once(target, pairs, rules, report, rendered):
+        if not _rename_pass_once(
+            target,
+            pairs,
+            rules,
+            report,
+            rendered,
+            rename_preflight=rename_preflight,
+        ):
             return
     raise SafetyError(
         "rename passes did not reach a fixpoint after 32 iterations — a "

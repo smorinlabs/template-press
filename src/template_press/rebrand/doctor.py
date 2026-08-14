@@ -8,18 +8,13 @@ no receipt. Port of init_doctor.check_no_identity_leftover, generalized to
 
 from __future__ import annotations
 
-import os
 from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 
 from template_press.rebrand.engine import (
     ROOT_CONTROL,
-    _git_listed,
-    _gitlink_rels,
-    _is_excluded,
     _is_root_press,
-    iter_target_files,
     symlink_target_posix,
 )
 from template_press.rebrand.identity import (
@@ -28,7 +23,22 @@ from template_press.rebrand.identity import (
     display_forms,
     occurs,
 )
-from template_press.rebrand.rules import ReplaceRule, Rules, rule_matches_path
+from template_press.rebrand.inventory import (
+    capture_surface_snapshot,
+    select_inline_doctor_entries,
+)
+from template_press.rebrand.rules import (
+    DEFAULT_RULES,
+    ReplaceRule,
+    Rules,
+    rule_matches_path,
+)
+from template_press.rebrand.safety import (
+    SafetyError,
+    assert_ancestors_real,
+    read_regular_nofollow,
+    readlink_nofollow,
+)
 
 PATH_FIELDS: tuple[str, ...] = (
     "package_name",
@@ -52,10 +62,8 @@ def _read_for_scan(path: Path) -> str | None:
     Unlike the engine's lenient reader, the doctor must NOT silently skip an
     unreadable file — a file it cannot scan is a file it cannot certify.
     """
-    if path.is_symlink():
-        return None  # content lives outside the target; the name is scanned
     try:
-        return path.read_text(encoding="utf-8")
+        return read_regular_nofollow(path).decode("utf-8")
     except UnicodeDecodeError:
         return None  # binary: the rewrite pass cannot alter it either
 
@@ -146,12 +154,9 @@ def find_leaks(
     check would miss entirely (a receipt/verify contradiction). Omitted
     (``None``/empty), this degrades to the prior current-path-only behavior.
 
-    A third, GITLINK pass (Fix F2) scans every submodule index entry's PATH
-    COMPONENTS the same way — ``_gitlink_rels`` reads the index directly, so
-    an uninitialized/uncheckoutable submodule is still covered. Neither of
-    the two passes above ever reaches a gitlink: pass 1 filters on
-    ``Path.is_file()`` and pass 2 on ``Path.is_symlink()``, both False for a
-    submodule mount point with no working-tree materialization.
+    One shared surface snapshot drives every node kind. Gitlinks contribute
+    path components only; symlink leaves contribute path components and link
+    text; regular files additionally contribute content.
     """
     rendered_rules = rendered_rules or []
     renamed = renamed or []
@@ -179,36 +184,62 @@ def find_leaks(
         *PATH_FIELDS,
         *(f"display_name_{form}" for form in display_form_names),
     )
-    covered_symlinks: set[str] = set()
-    for path in iter_target_files(target, rules):
-        rel = path.relative_to(target)
+    snapshot = capture_surface_snapshot(target)
+    entries = select_inline_doctor_entries(
+        snapshot,
+        built_in_exclude_files=DEFAULT_RULES.exclude_files,
+        built_in_exclude_dirs=DEFAULT_RULES.exclude_dirs,
+        verify_ignore=rules.verify_ignore,
+        root_control=ROOT_CONTROL,
+    )
+    for entry in entries:
+        if entry.worktree_kind == "missing" and entry.index_kind != "gitlink":
+            # Apply renames the worktree before updating Git's index. The old
+            # tracked source coordinate is therefore expected to be listed as
+            # missing; no node survives there to scan.
+            continue
+        rel = entry.rel
         rel_posix = rel.as_posix()
-        try:
-            text = _read_for_scan(path)
-        except OSError:
-            leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
-            text = None
-        if text is not None:
-            for field_name, value in fields.items():
-                if occurs(text, field_name, value, substring_fields):
-                    leaks.append(Leak(rel_posix, field_name, value, "content"))
-            for rule, frm, _to in rendered_rules:
-                if (
-                    rule.content
-                    and _rule_scope_hits(rule, rel_posix, renamed)
-                    and frm in text
+        path = target / rel
+        path_rules = [
+            (rule, frm)
+            for rule, frm, _to in rendered_rules
+            if rule.paths and _rule_scope_hits(rule, rel_posix, renamed)
+        ]
+        for i, component in enumerate(rel.parts):
+            if _is_root_press(rel, i):
+                continue
+            for field_name in path_fields:
+                value = fields.get(field_name)
+                if value is not None and occurs(
+                    component, field_name, value, substring_fields
                 ):
-                    leaks.append(Leak(rel_posix, "replace_rule", frm, "content"))
-        if path.is_symlink():
-            # A symlink's bytes are its target string, not file content — an
-            # identity token embedded there would dangle/leak in a pressed fork.
-            covered_symlinks.add(rel_posix)
-            link = os.readlink(path)
+                    leaks.append(Leak(rel_posix, field_name, value, "path"))
+            for _rule, frm in path_rules:
+                if frm in component:
+                    leaks.append(Leak(rel_posix, "replace_rule", frm, "path"))
+        if entry.index_kind == "gitlink" and entry.worktree_kind in (
+            "directory",
+            "missing",
+        ):
+            continue
+        if entry.worktree_kind == "other":
+            leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
+            continue
+        try:
+            assert_ancestors_real(path, target)
+        except SafetyError:
+            leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
+            continue
+        if entry.worktree_kind == "symlink":
+            try:
+                link = readlink_nofollow(path)
+            except (OSError, SafetyError):
+                leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
+                continue
             for field_name, value in fields.items():
                 if occurs(link, field_name, value, substring_fields):
                     leaks.append(Leak(rel_posix, field_name, value, "symlink"))
-            # Rule scope for symlink text is the link's TARGET, normalized —
-            # mirroring _retarget_symlinks — never the link's own location.
             link_target_posix = symlink_target_posix(rel, link)
             for rule, frm, _to in rendered_rules:
                 if (
@@ -217,103 +248,30 @@ def find_leaks(
                     and frm in link
                 ):
                     leaks.append(Leak(rel_posix, "replace_rule", frm, "symlink"))
-        path_rules = [
-            (rule, frm)
-            for rule, frm, _to in rendered_rules
-            if rule.paths and _rule_scope_hits(rule, rel_posix, renamed)
-        ]
-        for i, component in enumerate(rel.parts):
-            if _is_root_press(rel, i):
-                continue
-            for field_name in path_fields:
-                value = fields.get(field_name)
-                if value is not None and occurs(
-                    component, field_name, value, substring_fields
-                ):
-                    leaks.append(Leak(rel_posix, field_name, value, "path"))
-            for _rule, frm in path_rules:
-                if frm in component:
-                    leaks.append(Leak(rel_posix, "replace_rule", frm, "path"))
-    # DIRECTORY and DANGLING symlinks never reach the loop above:
-    # `iter_target_files` keeps only `is_file()` paths, and `is_file()` FOLLOWS
-    # the link — so a symlink to a dir (or to nothing) is dropped, and a source
-    # token embedded in its link string would slip the gate. Scan every
-    # git-listed symlink's `readlink` STRING here (never the destination),
-    # deduping the symlink-to-file links the loop already covered.
-    for rel in _git_listed(target):
-        rel_posix = rel.as_posix()
-        if rel_posix in covered_symlinks:
             continue
-        path = target / rel
-        if not path.is_symlink():
-            continue
-        # The NAME of a dir/dangling symlink is never scanned by the main loop
-        # (iter_target_files drops non-is_file paths), so scan its path
-        # components here exactly as Pass 1 does — a source token in the link's
-        # OWN name would otherwise slip the gate. (symlink-to-file names are
-        # already covered above via covered_symlinks.)
-        path_rules = [
-            (rule, frm)
-            for rule, frm, _to in rendered_rules
-            if rule.paths and _rule_scope_hits(rule, rel_posix, renamed)
-        ]
-        for i, component in enumerate(rel.parts):
-            if _is_root_press(rel, i):
-                continue
-            for field_name in path_fields:
-                value = fields.get(field_name)
-                if value is not None and occurs(
-                    component, field_name, value, substring_fields
-                ):
-                    leaks.append(Leak(rel_posix, field_name, value, "path"))
-            for _rule, frm in path_rules:
-                if frm in component:
-                    leaks.append(Leak(rel_posix, "replace_rule", frm, "path"))
-        try:
-            link = os.readlink(path)
-        except OSError:
+        if entry.worktree_kind != "file":
             leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
             continue
+        if path.is_symlink():
+            leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
+            continue
+        try:
+            text = _read_for_scan(path)
+        except (OSError, SafetyError):
+            leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
+            continue
+        if text is None:
+            continue
         for field_name, value in fields.items():
-            if occurs(link, field_name, value, substring_fields):
-                leaks.append(Leak(rel_posix, field_name, value, "symlink"))
-        link_target_posix = symlink_target_posix(rel, link)
+            if occurs(text, field_name, value, substring_fields):
+                leaks.append(Leak(rel_posix, field_name, value, "content"))
         for rule, frm, _to in rendered_rules:
             if (
-                rule.paths
-                and _rule_scope_hits(rule, link_target_posix, renamed)
-                and frm in link
+                rule.content
+                and _rule_scope_hits(rule, rel_posix, renamed)
+                and frm in text
             ):
-                leaks.append(Leak(rel_posix, "replace_rule", frm, "symlink"))
-    # GITLINK (submodule) index entries reach NEITHER pass above (Fix F2):
-    # pass 1 filters on `is_file()` and pass 2 on `is_symlink()`, both False
-    # for a submodule mount point (no working-tree materialization needed —
-    # a gitlink is a pointer, not a checkout). Scan each gitlink's PATH
-    # COMPONENTS only — no content read, no readlink — exactly like the
-    # other two path-component loops, honoring the same exclusion posture
-    # pass 1 uses (`_is_excluded` + `ROOT_CONTROL`; pass 2's unfiltered gap
-    # is a known, separate limitation, not mirrored here).
-    for rel_posix in sorted(_gitlink_rels(target)):
-        rel = Path(rel_posix)
-        if _is_excluded(rel, rules) or rel_posix in ROOT_CONTROL:
-            continue
-        path_rules = [
-            (rule, frm)
-            for rule, frm, _to in rendered_rules
-            if rule.paths and _rule_scope_hits(rule, rel_posix, renamed)
-        ]
-        for i, component in enumerate(rel.parts):
-            if _is_root_press(rel, i):
-                continue
-            for field_name in path_fields:
-                value = fields.get(field_name)
-                if value is not None and occurs(
-                    component, field_name, value, substring_fields
-                ):
-                    leaks.append(Leak(rel_posix, field_name, value, "path"))
-            for _rule, frm in path_rules:
-                if frm in component:
-                    leaks.append(Leak(rel_posix, "replace_rule", frm, "path"))
+                leaks.append(Leak(rel_posix, "replace_rule", frm, "content"))
     return leaks
 
 

@@ -1,3 +1,4 @@
+import errno
 import os
 import subprocess
 import sys
@@ -923,6 +924,114 @@ def test_accept_discovery_bad_rules_toml_leaves_no_source_config(
     )
     assert code == 2
     assert not (src_target / SOURCE_CONFIG_REL).exists()
+
+
+def test_accept_discovery_rename_preflight_failure_leaves_no_writes(
+    src_target: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from template_press.rebrand import safety
+
+    before = (src_target / "README.md").read_bytes()
+
+    def reject_atomic_rename(_source: Path, _destination: Path) -> None:
+        raise OSError(errno.ENOTSUP, os.strerror(errno.ENOTSUP))
+
+    monkeypatch.setattr(safety, "_rename_noreplace_unchecked", reject_atomic_rename)
+    answers = write_answers(tmp_path)
+
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--accept-discovery",
+        ]
+    )
+
+    assert code == 2
+    assert (src_target / "README.md").read_bytes() == before
+    assert not (src_target / SOURCE_CONFIG_REL).exists()
+    assert not list(src_target.rglob(".press-rename-probe-*"))
+    stderr = capsys.readouterr().err
+    assert "warning: planned path renames cannot use atomic" in stderr
+    assert "re-run with --force" in stderr
+
+
+def test_force_warns_and_uses_nonatomic_rename_fallback(
+    src_target: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from template_press.rebrand import safety
+
+    def reject_atomic_rename(_source: Path, _destination: Path) -> None:
+        raise OSError(errno.ENOTSUP, os.strerror(errno.ENOTSUP))
+
+    monkeypatch.setattr(safety, "_rename_noreplace_unchecked", reject_atomic_rename)
+    answers = write_answers(tmp_path)
+
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--accept-discovery",
+            "--force",
+        ]
+    )
+
+    assert code == 0
+    assert not (src_target / "src" / "demo_widget").exists()
+    assert (src_target / "src" / "potato_launcher").is_dir()
+    stderr = capsys.readouterr().err
+    assert "proceeding because --force" in stderr
+    assert "destination created during the final race window may be overwritten" in (
+        stderr
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="simulates another POSIX platform")
+def test_dry_run_warns_but_does_not_require_force_for_nonatomic_rename(
+    src_target: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from template_press.rebrand import safety
+
+    monkeypatch.setattr(safety.sys, "platform", "freebsd14")
+    monkeypatch.setattr(
+        safety,
+        "_rename_noreplace_unchecked",
+        lambda _source, _destination: pytest.fail(
+            "dry-run executed the target-filesystem probe"
+        ),
+    )
+    answers = write_answers(tmp_path)
+
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--accept-discovery",
+            "--dry-run",
+        ]
+    )
+
+    assert code == 0
+    assert (src_target / "src" / "demo_widget").is_dir()
+    assert not (src_target / "src" / "potato_launcher").exists()
+    captured = capsys.readouterr()
+    assert "(dry run — nothing applied)" in captured.out
+    assert "a real apply requires --force" in captured.err
 
 
 def test_press_outcome_env_error_on_regen_failure(tmp_path: Path, monkeypatch):

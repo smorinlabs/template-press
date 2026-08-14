@@ -28,6 +28,8 @@ from template_press.rebrand.safety import (
     is_regular_lstat,
     owned_sandbox,
     refuse_unsafe_root,
+    rename_noreplace,
+    rename_noreplace_best_effort,
     safe_mkdir,
     safe_rename,
     safe_write,
@@ -90,6 +92,19 @@ def test_saferelpath_accepts_bare_git_dir_without_dot() -> None:
     from template_press.rebrand.safety import SafeRelPath
 
     assert SafeRelPath("docs/git/usage.md").as_posix() == "docs/git/usage.md"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [Path("sub/.GIT/x"), Path("a/.git./b"), Path("x/git~1/y")],
+)
+def test_saferelpath_pathlike_preserves_dotgit_normalization(raw: Path) -> None:
+    """PathLike POSIX names must not weaken the control-directory gate."""
+
+    from template_press.rebrand.safety import SafeRelPath
+
+    with pytest.raises(UnsafePathError):
+        SafeRelPath(raw)
 
 
 def test_saferelpath_normalizes_windows_separators() -> None:
@@ -171,6 +186,93 @@ def test_safe_rename_moves_within_root(tmp_path: Path) -> None:
     safe_rename(root, "src", "dst")
     assert (root / "dst" / "f").read_text(encoding="utf-8") == "x"
     assert not (root / "src").exists()
+
+
+def test_rename_noreplace_moves_directory_to_absent_path(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "file.txt").write_text("source\n", encoding="utf-8")
+
+    rename_noreplace(source, tmp_path / "destination")
+
+    assert (tmp_path / "destination" / "file.txt").read_text(
+        encoding="utf-8"
+    ) == "source\n"
+    assert not source.exists()
+
+
+def test_rename_noreplace_preserves_existing_destination(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("source\n", encoding="utf-8")
+    destination.write_text("destination\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        rename_noreplace(source, destination)
+
+    assert source.read_text(encoding="utf-8") == "source\n"
+    assert destination.read_text(encoding="utf-8") == "destination\n"
+
+
+def test_rename_noreplace_executes_without_capability_reprobe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("source\n", encoding="utf-8")
+    monkeypatch.setattr(
+        safety,
+        "require_rename_noreplace_support",
+        lambda _source: pytest.fail("execution repeated capability probe"),
+    )
+
+    rename_noreplace(source, destination)
+
+    assert destination.read_text(encoding="utf-8") == "source\n"
+    assert not source.exists()
+
+
+def test_best_effort_rename_preserves_existing_destination(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("source\n", encoding="utf-8")
+    destination.write_text("destination\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        rename_noreplace_best_effort(source, destination)
+
+    assert source.read_text(encoding="utf-8") == "source\n"
+    assert destination.read_text(encoding="utf-8") == "destination\n"
+
+
+def test_best_effort_rename_detects_destination_injected_before_final_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("source\n", encoding="utf-8")
+    real_lstat = safety.os.lstat
+    injected = False
+
+    def inject_destination(path: Path) -> os.stat_result:
+        nonlocal injected
+        if Path(path) == destination and not injected:
+            destination.write_text("destination\n", encoding="utf-8")
+            injected = True
+        return real_lstat(path)
+
+    monkeypatch.setattr(safety.os, "lstat", inject_destination)
+
+    with pytest.raises(FileExistsError):
+        rename_noreplace_best_effort(source, destination)
+
+    assert injected
+    assert source.read_text(encoding="utf-8") == "source\n"
+    assert destination.read_text(encoding="utf-8") == "destination\n"
 
 
 @requires_symlink
@@ -275,6 +377,11 @@ def test_scrubbed_git_env_clears_git_dir(tmp_path: Path, src_target: Path) -> No
         check=True,
     )
     assert Path(resolved.stdout.strip()).resolve() == (src_target / ".git").resolve()
+
+
+def test_scrubbed_git_env_clears_git_exec_path() -> None:
+    env = scrubbed_git_env({"GIT_EXEC_PATH": "/outside/git-core"})
+    assert "GIT_EXEC_PATH" not in env
 
 
 def test_git_hardening_args_override_on_target_hookspath(src_target: Path) -> None:
@@ -516,6 +623,129 @@ def test_gitlink_submodule_dir_is_not_a_regular_file(tmp_path: Path) -> None:
     # A submodule/gitlink is a directory -> not a regular file, so the scanner
     # sees it by path name only and never recurses into a nested .git.
     assert is_regular_lstat(sub) is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="descriptor-relative POSIX read")
+def test_read_regular_refuses_path_replaced_during_descriptor_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    source = tmp_path / "source.txt"
+    source.write_text("captured bytes\n", encoding="utf-8")
+    replacement = tmp_path / "replacement.txt"
+    replacement.write_text("live replacement\n", encoding="utf-8")
+    displaced = tmp_path / "displaced.txt"
+    real_read = safety._read_descriptor
+    swapped = False
+
+    def swap_path_after_read(descriptor: int) -> bytes:
+        nonlocal swapped
+        data = real_read(descriptor)
+        if not swapped:
+            source.rename(displaced)
+            replacement.rename(source)
+            swapped = True
+        return data
+
+    monkeypatch.setattr(safety, "_read_descriptor", swap_path_after_read)
+
+    with pytest.raises(SafetyError, match="changed while reading"):
+        safety.read_regular_nofollow(source)
+    assert source.read_text(encoding="utf-8") == "live replacement\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="descriptor-relative POSIX read")
+def test_read_regular_opens_fifo_leaf_without_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    fifo = tmp_path / "shared-index"
+    os.mkfifo(fifo)
+    real_open = safety.os.open
+
+    def guarded_open(path, flags, mode=0o777, *, dir_fd=None):
+        if path == fifo.name and dir_fd is not None:
+            assert flags & os.O_NONBLOCK
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(safety.os, "open", guarded_open)
+
+    with pytest.raises(SafetyError, match="not regular"):
+        safety._read_regular_openat(fifo)
+
+
+def test_read_regular_uses_fallback_without_stat_dirfd_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    monkeypatch.setattr(safety.os, "supports_dir_fd", {safety.os.open})
+    monkeypatch.setattr(safety.os, "supports_follow_symlinks", {safety.os.stat})
+    monkeypatch.setattr(
+        safety,
+        "_read_regular_openat",
+        lambda _path: pytest.fail("unsupported openat path selected"),
+    )
+    monkeypatch.setattr(safety, "_read_regular_checked_path", lambda _path: b"fallback")
+
+    assert safety.read_regular_nofollow(tmp_path / "leaf") == b"fallback"
+
+
+def test_readlink_uses_fallback_without_stat_dirfd_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    monkeypatch.setattr(
+        safety.os,
+        "supports_dir_fd",
+        {safety.os.open, safety.os.readlink},
+    )
+    monkeypatch.setattr(safety.os, "supports_follow_symlinks", {safety.os.stat})
+    monkeypatch.setattr(
+        safety,
+        "_readlink_openat",
+        lambda _path: pytest.fail("unsupported openat path selected"),
+    )
+    monkeypatch.setattr(safety, "_readlink_checked_path", lambda _path: "fallback")
+
+    assert safety.readlink_nofollow(tmp_path / "leaf") == "fallback"
+
+
+@requires_symlink
+@pytest.mark.skipif(os.name == "nt", reason="descriptor-relative POSIX readlink")
+def test_readlink_refuses_ancestor_replaced_during_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    inside = tmp_path / "inside"
+    inside.mkdir()
+    link = inside / "link"
+    link.symlink_to("clean-target")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "link").symlink_to("demo_widget-target")
+    displaced = tmp_path / "displaced"
+    real_lstat = safety._lstat_absolute_nofollow
+    swapped = False
+
+    def swap_ancestor_before_revalidation(path: Path) -> os.stat_result:
+        nonlocal swapped
+        if not swapped:
+            inside.rename(displaced)
+            inside.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return real_lstat(path)
+
+    monkeypatch.setattr(
+        safety, "_lstat_absolute_nofollow", swap_ancestor_before_revalidation
+    )
+
+    with pytest.raises(SafetyError, match="changed while reading"):
+        safety.readlink_nofollow(link)
 
 
 # ---------------------------------------------------------------------------

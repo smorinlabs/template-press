@@ -24,7 +24,7 @@ In a development checkout, run it through uv: `uv run press rebrand …`
 | `--source-config PATH` | Override the target's committed `press/press-source.toml` (the **source** identity). |
 | `--accept-discovery` | When the target has no source-config, write one from discovery and proceed. |
 | `--dry-run` | Print the plan and exit without touching the target. |
-| `--force` | Re-press a target that already has a receipt. The prior receipt is removed once the plan gates pass, before the first write — a failed forced re-press cannot leave a stale receipt advertising a verified press. |
+| `--force` | Override a safety guard. It permits re-pressing a target that already has a receipt and, when atomic no-replacement rename is unavailable, permits a warned non-atomic fallback. The fallback checks the destination immediately before each move, but a destination created in the remaining race window may be overwritten. |
 | `--allow-dirty` | Allow a target whose working tree is not clean. |
 
 ### Exit codes
@@ -35,9 +35,9 @@ The exit code is the contract — scripts and CI can branch on it:
 |------|---------|
 | `0` | Verified: the rebrand completed and no source identity remains; a receipt was written. |
 | `1` | Leaks found after applying — a partial/incorrect rebrand. **No receipt** is written; the target is left rewritten (restore with `git -C <target> checkout . && git clean -fd`). |
-| `2` | Precondition or configuration error (missing target, dirty tree, source/target identity mismatch, an existing receipt without `--force`). **Nothing is written.** |
+| `2` | Precondition or configuration error (missing target, dirty tree, source/target identity mismatch, an existing receipt without `--force`, or unavailable atomic rename without `--force`). **Nothing is written.** |
 
-`--dry-run` exits `0` after printing the plan — it is a preview and writes nothing (no receipt). Plan-time refusals (a missing declared tool, a stale argv, an undeclared excluded file) exit `2` before the plan renders, exactly as they would without `--dry-run`.
+`--dry-run` exits `0` after printing the plan — it is a preview and writes nothing (no receipt). It performs a read-only host check; a statically unsupported host produces a warning that real apply requires `--force`. The target filesystem's operational atomic-rename capability is probed only during real apply. Other plan-time refusals (a missing declared tool, a stale argv, an undeclared excluded file) exit `2` before the plan renders, exactly as they would without `--dry-run`.
 
 ### The ignore set
 
