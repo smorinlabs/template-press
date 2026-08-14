@@ -577,7 +577,7 @@ def test_verify_ignore_is_the_sanctioned_ignore_set(src_target: Path, tmp_path: 
     assert "demo_widget" in text  # deliberately preserved
 
 
-def test_rule_scope_migrated_by_ancestor_rename_exits_1_no_receipt(
+def test_rule_scope_migrated_by_ancestor_rename_exits_2_no_receipt(
     src_target: Path, tmp_path: Path
 ):
     """F1 e2e: a paths=true [[replace]] rule scoped `files=["press_docs/**"]`
@@ -587,9 +587,8 @@ def test_rule_scope_migrated_by_ancestor_rename_exits_1_no_receipt(
     lands on pass 1 and the rule's own `files` scope no longer matches by
     the time the SAME rule gets to re-evaluate against the file on pass 2 —
     the rule never fires and the file keeps its stale name (0008's
-    documented rewrite-side scope-migration limitation, not fixed here).
-    The doctor must catch that leftover instead of certifying a false
-    receipt (a receipt/verify contradiction)."""
+    former rewrite-side scope-migration limitation). P06's shared validator
+    now refuses that order-dependent pipeline before any target write."""
     write_source_config(src_target)
     docs = src_target / "press_docs"
     docs.mkdir()
@@ -607,10 +606,11 @@ def test_rule_scope_migrated_by_ancestor_rename_exits_1_no_receipt(
     code = main(
         ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
     )
-    assert code == 1
+    assert code == 2
     assert not (src_target / RECEIPT_REL).exists()
-    # the exact leftover shape: dir renamed, file inside kept its stale name
-    assert (src_target / "potato_docs" / "_press_guide.md").exists()
+    # The new refusal is pre-write: both source coordinates remain intact.
+    assert (src_target / "press_docs" / "_press_guide.md").exists()
+    assert not (src_target / "potato_docs").exists()
 
 
 def test_rule_scope_stable_dir_no_ancestor_rename_still_receipts(
@@ -1196,18 +1196,19 @@ class TestDisplayNameGate:
 
 
 class TestCollisionsCoverDerivedDisplayForms:
-    """F3: `_collisions` compared raw identity values, but replacement uses
-    derived display forms — a destination display name whose derived form
-    embeds a changed source token slipped through. Repro: source app_name
-    "plbp" + source display "Py Launch Blueprint" + dest display "Plbp" ->
-    camel("Plbp") == "plbp", the very (changed) source app_name token."""
+    """Destination stability includes enabled derived display forms."""
 
-    def test_derived_camel_form_embedding_changed_app_name_is_a_collision(self):
-        from template_press.rebrand.cli import _collisions
+    def test_derived_camel_form_embedding_changed_app_name_is_a_collision(
+        self, src_target: Path
+    ):
+        from template_press.rebrand.engine import build_plan
+        from template_press.rebrand.identity import ValidationError
+        from template_press.rebrand.rules import DEFAULT_RULES
 
         source = _identity(display_name="Py Launch Blueprint")
         dest = _identity(app_name="acme", display_name="Plbp")
-        assert _collisions(source, dest) != []
+        with pytest.raises(ValidationError, match="ordered content dependency"):
+            build_plan(src_target, source, dest, DEFAULT_RULES)
 
     def test_end_to_end_main_exits_2(self, tmp_path: Path):
         target = tmp_path / "plbp-repo"
@@ -1287,21 +1288,29 @@ class TestCollisionsCoverDerivedDisplayForms:
 
 
 class TestSubstringAwareCollisionPreflight:
-    """F4: with a field opted into ``[rules] substring_rewrite_fields``, the
-    engine rewrites that field SUBSTRING-wide — so ``_collisions`` must catch
-    a destination value that embeds the source token WITHOUT a word boundary
-    too, not just the boundary-guarded default posture."""
+    """Destination stability uses each field's configured matcher."""
 
-    def test_substring_field_embedded_without_boundary_is_a_collision(self):
-        from template_press.rebrand.cli import _collisions
+    def test_substring_field_embedded_without_boundary_is_a_collision(
+        self, src_target: Path
+    ):
+        from dataclasses import replace
+
+        from template_press.rebrand.engine import build_plan
+        from template_press.rebrand.identity import ValidationError
+        from template_press.rebrand.rules import DEFAULT_RULES
 
         source = _identity(app_name="press")
         dest = _identity(app_name="tool", repo_name="mypress-tools")
         # Boundary mode: "press" preceded by alnum "y" in "mypress-tools" is
         # NOT a token match — no collision without substring mode.
-        assert _collisions(source, dest) == []
+        build_plan(src_target, source, dest, DEFAULT_RULES)
         # Substring mode for app_name: the embedded literal IS a collision.
-        assert _collisions(source, dest, substring_fields=frozenset({"app_name"})) != []
+        rules = replace(
+            DEFAULT_RULES,
+            substring_rewrite_fields=frozenset({"app_name"}),
+        )
+        with pytest.raises(ValidationError, match="ordered content dependency"):
+            build_plan(src_target, source, dest, rules)
 
     def test_end_to_end_substring_collision_exits_2(
         self, src_target: Path, tmp_path: Path, capsys

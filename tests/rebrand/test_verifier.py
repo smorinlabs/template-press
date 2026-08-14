@@ -18,7 +18,6 @@ import os
 import subprocess
 from pathlib import Path
 
-from template_press.rebrand.engine import apply
 from template_press.rebrand.identity import Identity
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 from template_press.rebrand.verifier import Finding, scan
@@ -584,18 +583,15 @@ class TestRenderedRuleFindings:
         assert not any(f.field == "app_name" for f in hits)
 
     def test_renamed_threading_recovers_pre_rename_scope(self, src_target: Path):
-        """Mirrors `doctor.TestRuleScopeMigratedByAncestorRename`: a
-        `files`-scoped paths rule guarding a filename under a directory the
-        ORDINARY rename pass ALSO renames leaves a stale name behind
-        (0008's documented rewrite-side scope-migration limitation) — the
-        rule's OWN scope check must still catch it when `renamed` is
-        threaded through, recovering the file's pre-rename path. The index
-        is re-staged after `apply()` (mirroring `verify_cli._restage_
-        sandbox`'s `git add -A -f`) so `scan_paths` reflects only the
-        POST-rename tree — without a re-stage, git's still-cached OLD path
-        would itself literally satisfy the rule's `files` glob and mask
-        whether `renamed` threading is actually doing anything (see the RED
-        test below)."""
+        """The independent verifier can still diagnose a legacy residual.
+
+        P06 refuses this order-dependent path pipeline before any write, so
+        seed the former post-rename shape directly. The index is re-staged
+        after the move (mirroring `verify_cli._restage_sandbox`'s
+        `git add -A -f`) so `scan_paths` reflects only the POST-rename tree.
+        Without a re-stage, git's cached OLD path would itself satisfy the
+        rule's `files` glob and mask whether `renamed` is load-bearing.
+        """
         docs = src_target / "press_docs"
         docs.mkdir()
         (docs / "_press_guide.md").write_text("x\n", encoding="utf-8")
@@ -607,13 +603,7 @@ class TestRenderedRuleFindings:
             paths=True,
             content=False,
         )
-        rules = DEFAULT_RULES.__class__(
-            exclude_dirs=DEFAULT_RULES.exclude_dirs,
-            exclude_files=DEFAULT_RULES.exclude_files,
-            regenerate=DEFAULT_RULES.regenerate,
-            replace=(rule,),
-        )
-        report = apply(src_target, SOURCE, DEST, rules)
+        docs.rename(src_target / "potato_docs")
         assert (src_target / "potato_docs" / "_press_guide.md").exists()
         _git_add_all(src_target)
         findings = scan(
@@ -624,7 +614,7 @@ class TestRenderedRuleFindings:
             substring_fields=NO_SUBSTRING,
             rules=DEFAULT_RULES,
             rendered_rules=[(rule, "_press_guide.md", "_potato_guide.md")],
-            renamed=report.renamed,
+            renamed=[("press_docs", "potato_docs")],
         )
         hits = [
             f
@@ -638,10 +628,7 @@ class TestRenderedRuleFindings:
         )
 
     def test_renamed_omitted_misses_the_same_leak_red_evidence(self, src_target: Path):
-        """RED: the exact same leftover (index re-staged, so the stale
-        pre-rename path is gone from `scan_paths` too), scanned WITHOUT
-        `renamed` threaded through, is invisible — proving `renamed` is
-        load-bearing, not just harmless plumbing."""
+        """RED: the same seeded residual is invisible without `renamed`."""
         docs = src_target / "press_docs"
         docs.mkdir()
         (docs / "_press_guide.md").write_text("x\n", encoding="utf-8")
@@ -653,13 +640,7 @@ class TestRenderedRuleFindings:
             paths=True,
             content=False,
         )
-        rules = DEFAULT_RULES.__class__(
-            exclude_dirs=DEFAULT_RULES.exclude_dirs,
-            exclude_files=DEFAULT_RULES.exclude_files,
-            regenerate=DEFAULT_RULES.regenerate,
-            replace=(rule,),
-        )
-        apply(src_target, SOURCE, DEST, rules)
+        docs.rename(src_target / "potato_docs")
         _git_add_all(src_target)
         findings = scan(
             src_target,

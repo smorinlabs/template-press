@@ -39,6 +39,7 @@ from template_press.rebrand.inventory import (
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.rules import (
     RegenerateRule,
+    ReplaceRule,
     ResetRule,
     Rules,
     rule_matches_path,
@@ -206,6 +207,7 @@ def execute_regenerations(
     source: Identity,
     dest: Identity,
     rules: Rules,
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
 ) -> list[str]:
     """Run each declared command (D1's execution contract); return FAILED files.
 
@@ -275,6 +277,7 @@ def execute_regenerations(
             dest=dest,
             rules=rules,
             renames=renames,
+            rendered_rules=rendered_rules,
         )
         if problems:
             report.skipped.extend(
@@ -457,6 +460,7 @@ def scan_regenerated_output(
     dest: Identity,
     rules: Rules,
     renames: Mapping[str, str],
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
 ) -> list[str]:
     """Paranoid changed-fields scan of one produced output (D3).
 
@@ -487,7 +491,12 @@ def scan_regenerated_output(
             )
     reverse = {new: old for old, new in renames.items()}
     source_scope = translate_path(translated_rel, reverse)
-    for rule, frm, _to in rendered_replace_rules(rules, source, dest):
+    effective_rules = (
+        rendered_replace_rules(rules, source, dest)
+        if rendered_rules is None
+        else rendered_rules
+    )
+    for rule, frm, _to in effective_rules:
         if rule.content and rule_matches_path(rule, source_scope) and frm in text:
             problems.append(
                 f"output contains rendered [[replace]] literal {frm!r} ({rule.reason})"
@@ -512,6 +521,7 @@ def _postcondition_problems(
     dest: Identity,
     rules: Rules,
     renames: Mapping[str, str],
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
 ) -> list[str]:
     """Existence, type, containment, UTF-8, and the paranoid scan — what a
     command must leave behind to have regenerated anything at all (D3)."""
@@ -542,6 +552,7 @@ def _postcondition_problems(
         dest=dest,
         rules=rules,
         renames=renames,
+        rendered_rules=rendered_rules,
     )
 
 
@@ -554,6 +565,7 @@ def final_validation_pass(
     source: Identity,
     dest: Identity,
     rules: Rules,
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
 ) -> list[str]:
     """After the LAST declared command: re-validate EVERY output and reset
     stub (D3). Per-command postconditions are not enough once a target
@@ -572,6 +584,7 @@ def final_validation_pass(
             dest=dest,
             rules=rules,
             renames=renames,
+            rendered_rules=rendered_rules,
         ):
             problems.append(f"final pass: {plan.rule.file}: {problem}")
     for rule, stub in resets:

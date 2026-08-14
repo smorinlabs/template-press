@@ -547,6 +547,37 @@ def test_rule_rendered_to_stability_check_exits_2_not_traceback(
     assert verify_command(["--target", str(repo)]) == 2
 
 
+def test_verify_accepts_target_proven_disjoint_path_rule_scopes(tmp_path: Path) -> None:
+    repo = make_pressable(
+        tmp_path,
+        identity={"package_name": "oo", "repo_name": "foo", "app_name": "foo"},
+    )
+    left = repo / "a" / "foo" / "left.txt"
+    right = repo / "b" / "foo" / "right.txt"
+    left.parent.mkdir(parents=True)
+    right.parent.mkdir(parents=True)
+    left.write_text("clean\n", encoding="utf-8")
+    right.write_text("clean\n", encoding="utf-8")
+    (repo / "press" / "press-rules.toml").write_text(
+        "[[replace]]\n"
+        'pattern = "{app_name}"\n'
+        'reason = "left path"\n'
+        'files = ["a/foo/left.txt"]\n'
+        "paths = true\n"
+        "content = false\n\n"
+        "[[replace]]\n"
+        'pattern = "f{package_name}"\n'
+        'reason = "right path"\n'
+        'files = ["b/foo/right.txt"]\n'
+        "paths = true\n"
+        "content = false\n",
+        encoding="utf-8",
+    )
+    _commit(repo)
+
+    assert verify_command(["--target", str(repo)]) == 0
+
+
 def test_verify_never_mutates_real_target_exit_0_and_1(tmp_path: Path) -> None:
     # exit-0: a clean template (uv.lock DECLARED for regeneration → exempt).
     clean = make_pressable(tmp_path / "clean")

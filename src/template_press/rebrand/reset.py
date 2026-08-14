@@ -25,7 +25,12 @@ from template_press.rebrand.regen import (
     has_uncommitted_changes,
     tracked_paths,
 )
-from template_press.rebrand.rules import ResetRule, Rules, rule_matches_path
+from template_press.rebrand.rules import (
+    ReplaceRule,
+    ResetRule,
+    Rules,
+    rule_matches_path,
+)
 from template_press.rebrand.safety import (
     ContainmentError,
     SafetyError,
@@ -101,6 +106,7 @@ def scan_stub_text(
     source: Identity,
     dest: Identity,
     rules: Rules,
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
 ) -> list[str]:
     """Problems where the stub would RESTORE identity its reset removes.
 
@@ -120,7 +126,12 @@ def scan_stub_text(
                 f"({len(spans)} occurrence(s)) — a stub may not restore the "
                 f"identity its reset removes"
             )
-    for replace_rule, frm, _to in rendered_replace_rules(rules, source, dest):
+    effective_rules = (
+        rendered_replace_rules(rules, source, dest)
+        if rendered_rules is None
+        else rendered_rules
+    )
+    for replace_rule, frm, _to in effective_rules:
         if not replace_rule.content:
             continue
         if not rule_matches_path(replace_rule, rel):
@@ -140,6 +151,7 @@ def scan_reset_path(
     source: Identity,
     dest: Identity,
     rules: Rules,
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
 ) -> list[str]:
     """The planned reset-path identity scan (wave-3 3654059289).
 
@@ -164,7 +176,12 @@ def scan_reset_path(
                 f"filename is invisible to every downstream inventory; "
                 f"rename the file or route it through verify_ignore"
             )
-    for replace_rule, frm, _to in rendered_replace_rules(rules, source, dest):
+    effective_rules = (
+        rendered_replace_rules(rules, source, dest)
+        if rendered_rules is None
+        else rendered_rules
+    )
+    for replace_rule, frm, _to in effective_rules:
         if (
             replace_rule.paths
             and rule_matches_path(replace_rule, rel)
@@ -197,6 +214,7 @@ def preflight_reset_targets(
     source: Identity,
     dest: Identity,
     renames: Mapping[str, str],
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
 ) -> tuple[list[ResetPreview], list[str]]:
     """Validate every reset target at plan time (D5) and build previews.
 
@@ -245,7 +263,14 @@ def preflight_reset_targets(
             problems.append(str(exc))
             continue
         problems.extend(
-            scan_stub_text(stub, rel=rule.file, source=source, dest=dest, rules=rules)
+            scan_stub_text(
+                stub,
+                rel=rule.file,
+                source=source,
+                dest=dest,
+                rules=rules,
+                rendered_rules=rendered_rules,
+            )
         )
         problems.extend(
             scan_reset_path(
@@ -254,6 +279,7 @@ def preflight_reset_targets(
                 source=source,
                 dest=dest,
                 rules=rules,
+                rendered_rules=rendered_rules,
             )
         )
         lines = text.splitlines()

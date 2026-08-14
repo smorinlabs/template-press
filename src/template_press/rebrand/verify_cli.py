@@ -46,8 +46,8 @@ from template_press.rebrand.config import SOURCE_CONFIG_REL, load_source_config
 from template_press.rebrand.discovery import Discovered, discover, mismatches
 from template_press.rebrand.engine import (
     apply,
+    build_plan,
     exempt_regenerated_paths,
-    rendered_replace_rules,
     scan_paths,
     translate_path,
 )
@@ -409,7 +409,7 @@ def verify_command(argv: list[str] | None = None) -> int:
         # an unrewriteable spot (an escaping symlink target, a stale filename
         # left by 0008's rewrite-side scope-migration limitation) is scanned
         # for below (Fix F1), mirroring `doctor.find_leaks`'s `rendered_rules`.
-        rendered_rules = rendered_replace_rules(rules, source, synth)
+        rendered_rules = build_plan(target, source, synth, rules).rendered_rules
         with owned_sandbox(target) as dest_root:
             sandbox = make_sandbox(target, dest_root)
             try:
