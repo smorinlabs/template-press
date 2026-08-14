@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import stat
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from template_press.rebrand.identity import (
@@ -639,22 +639,14 @@ def _pipeline_inputs(
             )
         )
 
-    identity_candidate_by_values: dict[tuple[str, str], int] = {}
-    for index, pair in enumerate(
-        _raw_replacement_pairs(source, dest, rules.display_forms), start=1
-    ):
+    raw_pairs = _raw_replacement_pairs(source, dest, rules.display_forms)
+    provenance_by_values: dict[tuple[str, str], list[str]] = {}
+    for tag, cur, repl in raw_pairs:
+        provenance_by_values.setdefault((cur, repl), []).append(f"identity:{tag}")
+    for index, pair in enumerate(raw_pairs, start=1):
         tag, cur, repl = pair
-        duplicate_index = identity_candidate_by_values.get((cur, repl))
-        if duplicate_index is not None:
-            prior = candidates[duplicate_index]
-            candidates[duplicate_index] = replace(
-                prior,
-                provenance=(*prior.provenance, f"identity:{tag}"),
-            )
-            continue
         row_id = f"identity:{index}:{tag}"
         pair_by_id[row_id] = pair
-        identity_candidate_by_values[(cur, repl)] = len(candidates)
         identity_surfaces = {"content"}
         if tag in RENAME_FIELDS:
             identity_surfaces.add("path")
@@ -669,7 +661,7 @@ def _pipeline_inputs(
                 matcher=MatcherSpec(
                     "conservative", tag, tag in rules.substring_rewrite_fields
                 ),
-                provenance=(f"identity:{tag}",),
+                provenance=tuple(provenance_by_values[(cur, repl)]),
                 ambiguity_family=(
                     "display_name" if tag.startswith("display_name_") else None
                 ),
@@ -688,6 +680,7 @@ def _validated_replacements(
     candidates, pair_by_id, rule_by_id = _pipeline_inputs(source, dest, rules)
     destination_values = dest.as_dict()
     if dest.display_name is not None:
+        destination_values.pop("display_name")
         rendered_display_forms = display_forms(dest.display_name)
         destination_values.update(
             {
@@ -739,7 +732,18 @@ def replacement_pairs(
         verify_ignore=frozenset(),
     )
     pairs, _rendered = _validated_replacements(source, dest, rules)
-    return pairs
+    # Preserve the compatibility API's historical one-row representation for
+    # equal executable values. Internal build/apply paths consume
+    # _validated_replacements directly and retain semantically distinct rows.
+    deduped: list[tuple[str, str, str]] = []
+    seen_values: set[tuple[str, str]] = set()
+    for pair in pairs:
+        values = pair[1:]
+        if values in seen_values:
+            continue
+        seen_values.add(values)
+        deduped.append(pair)
+    return deduped
 
 
 def rendered_replace_rules(

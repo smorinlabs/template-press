@@ -534,6 +534,7 @@ def _press(
         OSError,
         subprocess.CalledProcessError,
         SafetyError,
+        ValidationError,
     ) as exc:
         # Exit 2 (main's pre-_press gate) means "nothing applied"; a
         # mid-mutation failure here is not that — target may be PARTIALLY

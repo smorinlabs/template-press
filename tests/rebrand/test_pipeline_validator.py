@@ -18,7 +18,7 @@ from template_press.rebrand.pipeline import (
     StabilitySink,
     validate_pipeline,
 )
-from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, Rules
+from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, ResetRule, Rules
 
 from .conftest import SOURCE, requires_symlink
 
@@ -632,6 +632,25 @@ def test_leaf_scopes_cannot_assign_one_ancestor_two_destinations() -> None:
     assert "right" in message and "rule:right" in message
 
 
+def test_build_plan_rejects_distinct_prefixes_converging_on_one_destination(
+    src_target,
+) -> None:
+    package_path = src_target / "oldpkg" / "package.txt"
+    app_path = src_target / "oldapp" / "app.txt"
+    package_path.parent.mkdir()
+    app_path.parent.mkdir()
+    package_path.write_text("package\n", encoding="utf-8")
+    app_path.write_text("app\n", encoding="utf-8")
+    source = _identity(package_name="oldpkg", app_name="oldapp")
+    destination = _identity(package_name="new", app_name="new")
+
+    with pytest.raises(ValidationError, match="converging path prefixes"):
+        build_plan(src_target, source, destination, DEFAULT_RULES)
+
+    assert package_path.is_file()
+    assert app_path.is_file()
+
+
 def test_disjoint_rewrite_surfaces_do_not_conflict() -> None:
     content = _candidate("content", "old", "one")
     path = _candidate("path", "old", "two", surfaces=frozenset({"path"}))
@@ -891,6 +910,34 @@ def test_disabled_display_form_is_not_a_destination_stability_sink(
     build_plan(src_target, source, destination, rules)
 
 
+def test_disabled_spaced_display_form_is_not_a_destination_stability_sink(
+    src_target,
+) -> None:
+    source = _identity(owner="foo", display_name="Source Suite")
+    destination = _identity(owner="bar", display_name="foo suite")
+    rules = Rules(
+        exclude_dirs=DEFAULT_RULES.exclude_dirs,
+        exclude_files=DEFAULT_RULES.exclude_files,
+        regenerate=DEFAULT_RULES.regenerate,
+        display_forms=("camel",),
+    )
+
+    build_plan(src_target, source, destination, rules)
+
+
+def test_equal_identity_values_keep_distinct_matcher_semantics(src_target) -> None:
+    source = _identity(app_name="foo", owner="foo", author="_foo owner")
+    destination = _identity(app_name="bar", owner="bar", author="_foo owner")
+
+    with pytest.raises(ValidationError) as exc_info:
+        build_plan(src_target, source, destination, DEFAULT_RULES)
+
+    message = str(exc_info.value)
+    assert "identity:app_name" in message
+    assert "identity:owner" in message
+    assert "destination:author" in message
+
+
 def test_duplicate_identity_provenance_survives_shared_validation(src_target) -> None:
     source = _identity(package_name="foo", repo_name="foo", owner="foo")
     destination = _identity(package_name="bar", repo_name="bar", owner="baz")
@@ -978,6 +1025,33 @@ def test_press_fallback_returns_validation_error_before_writes(
     assert outcome.renamed == []
     assert (src_target / "README.md").read_text(encoding="utf-8") == before
     assert "nothing applied" in capsys.readouterr().err
+
+
+def test_press_returns_partial_outcome_for_validation_error_after_reset(
+    src_target,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    reset = ResetRule(file="README.md", stub="reset\n")
+
+    def fail_validation(*_args, **_kwargs):
+        raise ValidationError("apply-time target paths changed")
+
+    monkeypatch.setattr(cli_module, "apply", fail_validation)
+
+    outcome = cli_module._press(
+        src_target,
+        _identity(),
+        _identity(app_name="new"),
+        DEFAULT_RULES,
+        [],
+        [(reset, "reset\n")],
+        rendered_rules=[],
+    )
+
+    assert outcome.env_error == "apply-time target paths changed"
+    assert (src_target / "README.md").read_text(encoding="utf-8") == "reset\n"
+    assert "target may be PARTIALLY rewritten" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

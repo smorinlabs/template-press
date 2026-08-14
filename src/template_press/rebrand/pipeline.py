@@ -422,6 +422,7 @@ def _validate_target_paths(
 
     for _pass_index in range(MAX_RENAME_PASSES):
         pass_moves: dict[str, tuple[str, list[PipelineCandidate]]] = {}
+        pass_destinations: dict[str, tuple[str, PipelineCandidate]] = {}
         deferred_by_initial: dict[str, list[PipelineCandidate]] = {}
 
         for initial, current in sorted(
@@ -476,6 +477,20 @@ def _validate_target_paths(
                 (*original_parts[:shallowest], parts[shallowest])
             )
             applied_rows = change_rows[shallowest]
+
+            prior_source = pass_destinations.get(destination_prefix)
+            if prior_source is not None and prior_source[0] != source_prefix:
+                other_source, other_candidate = prior_source
+                raise ValidationError(
+                    f"converging path prefixes {other_source!r} from "
+                    f"{_describe(other_candidate)} and {source_prefix!r} from "
+                    f"{_describe(applied_rows[0])} both target "
+                    f"{destination_prefix!r} in one rename pass"
+                )
+            pass_destinations[destination_prefix] = (
+                source_prefix,
+                applied_rows[0],
+            )
 
             prior_assignment = assignments.get(source_prefix)
             if (
