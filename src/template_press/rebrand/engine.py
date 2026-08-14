@@ -676,6 +676,7 @@ def _validated_replacements(
     rules: Rules,
     *,
     initial_paths: tuple[str, ...] | None = None,
+    initial_symlink_paths: frozenset[str] = frozenset(),
 ) -> tuple[list[tuple[str, str, str]], list[tuple[ReplaceRule, str, str]]]:
     candidates, pair_by_id, rule_by_id = _pipeline_inputs(source, dest, rules)
     destination_values = dest.as_dict()
@@ -699,6 +700,7 @@ def _validated_replacements(
     normalized = validate_pipeline(
         candidates,
         initial_paths=initial_paths,
+        initial_symlink_paths=initial_symlink_paths,
         stability_sinks=stability_sinks,
     )
     pairs = [
@@ -883,6 +885,11 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
         dest,
         rules,
         initial_paths=tuple(entry.rel.as_posix() for entry in rename_entries),
+        initial_symlink_paths=frozenset(
+            entry.rel.as_posix()
+            for entry in rename_entries
+            if entry.worktree_kind == "symlink"
+        ),
     )
     plan.rendered_rules = rendered
     # `_rename_candidates` (not `iter_target_files`): rename-plan parity with
@@ -1223,6 +1230,11 @@ def apply(
         dest,
         rules,
         initial_paths=tuple(entry.rel.as_posix() for entry in rename_entries),
+        initial_symlink_paths=frozenset(
+            entry.rel.as_posix()
+            for entry in rename_entries
+            if entry.worktree_kind == "symlink"
+        ),
     )
     rename_map = _rename_prefix_map(
         rename_entries, pairs, rendered, rules.substring_rewrite_fields

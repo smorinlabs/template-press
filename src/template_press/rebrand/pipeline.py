@@ -404,7 +404,9 @@ def _validate_stability_sinks(
 
 
 def _validate_target_paths(
-    candidates: tuple[PipelineCandidate, ...], initial_paths: tuple[str, ...]
+    candidates: tuple[PipelineCandidate, ...],
+    initial_paths: tuple[str, ...],
+    initial_symlink_paths: frozenset[str],
 ) -> None:
     path_rows = tuple(item for item in candidates if "path" in item.rewrite_surfaces)
     if not path_rows:
@@ -549,6 +551,20 @@ def _validate_target_paths(
                     ):
                         movers_by_initial[initial].append(row)
 
+        destination_initial_by_path: dict[str, str] = {}
+        for initial, current in current_by_initial.items():
+            prior_initial = destination_initial_by_path.setdefault(current, initial)
+            if prior_initial != initial:
+                stationary_symlink = (
+                    prior_initial == current and prior_initial in initial_symlink_paths
+                ) or (initial == current and initial in initial_symlink_paths)
+                if stationary_symlink:
+                    continue
+                raise ValidationError(
+                    f"converging target paths {prior_initial!r} and "
+                    f"{initial!r} both target {current!r}"
+                )
+
         for initial, deferred_rows in deferred_by_initial.items():
             current = current_by_initial[initial]
             for deferred in deferred_rows:
@@ -580,6 +596,7 @@ def validate_pipeline(
     candidates: tuple[PipelineCandidate, ...],
     *,
     initial_paths: tuple[str, ...] | None = None,
+    initial_symlink_paths: frozenset[str] = frozenset(),
     stability_sinks: tuple[StabilitySink, ...] = (),
 ) -> tuple[PipelineCandidate, ...]:
     """Normalize candidates and reject every unstable ordered pipeline.
@@ -587,6 +604,8 @@ def validate_pipeline(
     ``None`` means no target-path evidence is available, so path-scope
     relationships fail closed. An explicit tuple, including an empty tuple,
     is an authoritative target inventory and enables target-aware proofs.
+    ``initial_symlink_paths`` identifies occupied symlink destinations that
+    the runtime deliberately preserves by skipping the corresponding move.
     """
 
     normalized = _normalize(candidates)
@@ -595,6 +614,6 @@ def validate_pipeline(
     _validate_ambiguity(normalized, target_paths_known=target_paths_known)
     _validate_dependencies(normalized, target_paths_known=target_paths_known)
     _validate_stability_sinks(normalized, stability_sinks)
-    _validate_target_paths(normalized, target_paths)
+    _validate_target_paths(normalized, target_paths, initial_symlink_paths)
     _validate_symlink_dependencies(normalized)
     return normalized

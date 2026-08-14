@@ -651,6 +651,27 @@ def test_build_plan_rejects_distinct_prefixes_converging_on_one_destination(
     assert app_path.is_file()
 
 
+def test_path_move_cannot_overwrite_unchanged_target() -> None:
+    mover = _candidate(
+        "move",
+        "a",
+        "b",
+        surfaces=frozenset({"path"}),
+    )
+
+    with pytest.raises(ValidationError, match="converging target paths"):
+        validate_pipeline(
+            (mover,),
+            initial_paths=("a/file.txt", "b/file.txt"),
+        )
+
+    assert validate_pipeline(
+        (mover,),
+        initial_paths=("a/file.txt", "b/file.txt"),
+        initial_symlink_paths=frozenset({"b/file.txt"}),
+    ) == (mover,)
+
+
 def test_disjoint_rewrite_surfaces_do_not_conflict() -> None:
     content = _candidate("content", "old", "one")
     path = _candidate("path", "old", "two", surfaces=frozenset({"path"}))
@@ -692,16 +713,32 @@ def test_build_plan_calls_the_shared_pipeline_validator(
         tuple[
             tuple[PipelineCandidate, ...],
             tuple[str, ...],
+            frozenset[str],
             tuple[StabilitySink, ...],
         ]
     ] = []
     real_validator = engine.validate_pipeline
 
-    def recording_validator(candidates, *, initial_paths=(), stability_sinks=()):
-        calls.append((tuple(candidates), tuple(initial_paths), tuple(stability_sinks)))
+    def recording_validator(
+        candidates,
+        *,
+        initial_paths=None,
+        initial_symlink_paths=frozenset(),
+        stability_sinks=(),
+    ):
+        assert isinstance(initial_paths, tuple)
+        calls.append(
+            (
+                tuple(candidates),
+                initial_paths,
+                initial_symlink_paths,
+                tuple(stability_sinks),
+            )
+        )
         return real_validator(
             candidates,
             initial_paths=initial_paths,
+            initial_symlink_paths=initial_symlink_paths,
             stability_sinks=stability_sinks,
         )
 
@@ -723,7 +760,7 @@ def test_build_plan_calls_the_shared_pipeline_validator(
     )
 
     assert len(calls) == 1
-    candidates, initial_paths, stability_sinks = calls[0]
+    candidates, initial_paths, initial_symlink_paths, stability_sinks = calls[0]
     owner = next(
         item
         for item in candidates
@@ -738,6 +775,7 @@ def test_build_plan_calls_the_shared_pipeline_validator(
     assert declared.matcher == MatcherSpec("literal", None, False)
     assert declared.files == ("README.md",)
     assert "README.md" in initial_paths
+    assert initial_symlink_paths == frozenset()
     assert any(sink.sink_id == "destination:author" for sink in stability_sinks)
 
 
