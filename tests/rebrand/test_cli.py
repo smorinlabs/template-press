@@ -577,7 +577,7 @@ def test_verify_ignore_is_the_sanctioned_ignore_set(src_target: Path, tmp_path: 
     assert "demo_widget" in text  # deliberately preserved
 
 
-def test_rule_scope_migrated_by_ancestor_rename_exits_1_no_receipt(
+def test_rule_scope_migrated_by_ancestor_rename_exits_2_no_receipt(
     src_target: Path, tmp_path: Path
 ):
     """F1 e2e: a paths=true [[replace]] rule scoped `files=["press_docs/**"]`
@@ -587,9 +587,8 @@ def test_rule_scope_migrated_by_ancestor_rename_exits_1_no_receipt(
     lands on pass 1 and the rule's own `files` scope no longer matches by
     the time the SAME rule gets to re-evaluate against the file on pass 2 —
     the rule never fires and the file keeps its stale name (0008's
-    documented rewrite-side scope-migration limitation, not fixed here).
-    The doctor must catch that leftover instead of certifying a false
-    receipt (a receipt/verify contradiction)."""
+    former rewrite-side scope-migration limitation). P06's shared validator
+    now refuses that order-dependent pipeline before any target write."""
     write_source_config(src_target)
     docs = src_target / "press_docs"
     docs.mkdir()
@@ -607,10 +606,11 @@ def test_rule_scope_migrated_by_ancestor_rename_exits_1_no_receipt(
     code = main(
         ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
     )
-    assert code == 1
+    assert code == 2
     assert not (src_target / RECEIPT_REL).exists()
-    # the exact leftover shape: dir renamed, file inside kept its stale name
-    assert (src_target / "potato_docs" / "_press_guide.md").exists()
+    # The new refusal is pre-write: both source coordinates remain intact.
+    assert (src_target / "press_docs" / "_press_guide.md").exists()
+    assert not (src_target / "potato_docs").exists()
 
 
 def test_rule_scope_stable_dir_no_ancestor_rename_still_receipts(

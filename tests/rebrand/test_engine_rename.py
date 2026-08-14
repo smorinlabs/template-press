@@ -925,7 +925,8 @@ class TestRenameFixpointExhaustion:
         rules = _rules_with(substring_rewrite_fields=frozenset({"app_name"}))
         source = _identity(app_name="ax")
         dest = _identity(app_name="axx")
-        with pytest.raises(SafetyError):
+        # P06 validates path-pipeline termination before any target write.
+        with pytest.raises(ValidationError, match="stale-source emission"):
             apply(src_target, source, dest, rules)
 
 

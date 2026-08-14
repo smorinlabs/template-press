@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import stat
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from template_press.rebrand.identity import (
@@ -19,7 +19,6 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
     display_forms,
-    occurs,
     replace_token,
     token_occurs,
 )
@@ -33,6 +32,13 @@ from template_press.rebrand.inventory import (
     select_copy_entries,
     select_rename_entries,
     select_verifier_entries,
+)
+from template_press.rebrand.pipeline import (
+    MAX_RENAME_PASSES,
+    MatcherSpec,
+    PipelineCandidate,
+    StabilitySink,
+    validate_pipeline,
 )
 from template_press.rebrand.rules import (
     ReplaceRule,
@@ -127,6 +133,7 @@ class Plan:
     # (stale-argv membership, reset-path translation), so nothing parses it
     # back out of rendered PlanItem strings.
     renames: dict[str, str] = field(default_factory=dict)
+    rendered_rules: list[tuple[ReplaceRule, str, str]] = field(default_factory=list)
 
     def render(self) -> str:
         if not self.items:
@@ -434,7 +441,7 @@ def scan_paths(
     return out
 
 
-def replacement_pairs(
+def _raw_replacement_pairs(
     source: Identity,
     dest: Identity,
     display_form_names: tuple[str, ...] = DISPLAY_FORM_NAMES,
@@ -494,26 +501,25 @@ def replacement_pairs(
     seen: dict[str, tuple[str, str]] = {}  # cur -> (tag, repl)
     for tag, cur, repl in pairs:
         if cur in seen:
-            other_tag, other_repl = seen[cur]
-            if other_repl != repl:
-                raise ValidationError(
-                    f"replacement source {cur!r} is ambiguous: {other_tag!r} "
-                    f"maps it to {other_repl!r} but {tag!r} maps it to "
-                    f"{repl!r} — the engine cannot know which identity an "
-                    f"occurrence of {cur!r} represents; press in two steps via "
-                    f"an intermediate identity, or align the two destination "
-                    f"values"
-                )
-            continue  # same cur, same repl — harmless duplicate, drop it
+            _other_tag, other_repl = seen[cur]
+            if other_repl == repl:
+                # Keep the declaration until the shared-validator adapter can
+                # merge its field provenance onto the first executable row.
+                deduped.append((tag, cur, repl))
+                continue
+            # Preserve the ambiguity for the one shared validator.  Keeping
+            # both candidates is what lets it report both field provenances.
+            deduped.append((tag, cur, repl))
+            continue
         seen[cur] = (tag, repl)
         deduped.append((tag, cur, repl))
     deduped.sort(key=lambda t: -len(t[1]))
     return deduped
 
 
-def rendered_replace_rules(
+def _rendered_replace_declarations(
     rules: Rules, source: Identity, dest: Identity
-) -> list[tuple[ReplaceRule, str, str]]:
+) -> list[tuple[int, ReplaceRule, str, str]]:
     """(rule, FROM, TO) with both sides rendered; identical sides dropped.
 
     Rendering raises ValidationError when a pattern references a field this
@@ -582,72 +588,161 @@ def rendered_replace_rules(
     keyed dedupe would silently drop the second rule's SCOPE from both the
     rewrite and the scan (a missed rewrite plus a false-clean receipt).
     """
-    out: list[tuple[ReplaceRule, str, str]] = []
-    pairs = (
-        replacement_pairs(source, dest, rules.display_forms) if rules.replace else []
-    )
-    for rule in rules.replace:
+    out: list[tuple[int, ReplaceRule, str, str]] = []
+    for declaration_index, rule in enumerate(rules.replace, start=1):
         frm = render_replace_pattern(rule.pattern, source)
         to = render_replace_pattern(rule.pattern, dest)
         if frm == to:
             continue
-        for tag, cur, _repl in pairs:
-            if occurs(to, tag, cur, rules.substring_rewrite_fields):
-                raise ValidationError(
-                    f"[[replace]] pattern {rule.pattern!r} renders TO {to!r}, "
-                    f"which still contains the CHANGING {tag} value {cur!r} "
-                    f"— the token pass runs AFTER this rule and would "
-                    f"re-rewrite the rule's own rendered output; use the "
-                    f"{{{tag}}} placeholder in the pattern instead of literal "
-                    f"text, or press in two steps via an intermediate "
-                    f"identity"
-                )
-        if rule.paths and any(sep in frm or sep in to for sep in ("/", "\\")):
-            raise ValidationError(
-                f"[[replace]] pattern {rule.pattern!r} has paths=true but its "
-                f"rendered value contains a path separator ('/' or '\\'), "
-                f"which can never match (or would corrupt) a single path "
-                f"component: FROM {frm!r} TO {to!r}"
-            )
-        if rule.paths and frm in to:
-            raise ValidationError(
-                f"[[replace]] pattern {rule.pattern!r} has paths=true but its "
-                f"rendered TO {to!r} still contains its rendered FROM {frm!r} "
-                f"— this rule would re-match its own output on every rename "
-                f"pass and never reach a fixpoint"
-            )
-        out.append((rule, frm, to))
+        out.append((declaration_index, rule, frm, to))
+    return out
 
-    deduped: list[tuple[ReplaceRule, str, str]] = []
-    for entry in out:
-        if any(entry[0] == seen[0] for seen in deduped):
+
+def _pipeline_inputs(
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+) -> tuple[
+    tuple[PipelineCandidate, ...],
+    dict[str, tuple[str, str, str]],
+    dict[str, tuple[ReplaceRule, str, str]],
+]:
+    """Adapt current identity/rule tuples to the pure validator contract."""
+
+    pair_by_id: dict[str, tuple[str, str, str]] = {}
+    rule_by_id: dict[str, tuple[ReplaceRule, str, str]] = {}
+    candidates: list[PipelineCandidate] = []
+
+    rendered = _rendered_replace_declarations(rules, source, dest)
+    for declaration_index, rule, frm, to in rendered:
+        row_id = f"replace:{declaration_index}"
+        rule_by_id[row_id] = (rule, frm, to)
+        surfaces = frozenset(
+            surface
+            for surface, enabled in (("content", rule.content), ("path", rule.paths))
+            if enabled
+        )
+        candidates.append(
+            PipelineCandidate(
+                row_id=row_id,
+                from_value=frm,
+                to_value=to,
+                rewrite_surfaces=surfaces,
+                matcher=MatcherSpec("literal", None, False),
+                files=rule.files,
+                provenance=(
+                    f"replace[{declaration_index}] pattern={rule.pattern!r} "
+                    f"reason={rule.reason!r}",
+                ),
+            )
+        )
+
+    identity_candidate_by_values: dict[tuple[str, str], int] = {}
+    for index, pair in enumerate(
+        _raw_replacement_pairs(source, dest, rules.display_forms), start=1
+    ):
+        tag, cur, repl = pair
+        duplicate_index = identity_candidate_by_values.get((cur, repl))
+        if duplicate_index is not None:
+            prior = candidates[duplicate_index]
+            candidates[duplicate_index] = replace(
+                prior,
+                provenance=(*prior.provenance, f"identity:{tag}"),
+            )
             continue
-        deduped.append(entry)
+        row_id = f"identity:{index}:{tag}"
+        pair_by_id[row_id] = pair
+        identity_candidate_by_values[(cur, repl)] = len(candidates)
+        candidates.append(
+            PipelineCandidate(
+                row_id=row_id,
+                from_value=cur,
+                to_value=repl,
+                rewrite_surfaces=frozenset(
+                    {"content", "path"} if tag in RENAME_FIELDS else {"content"}
+                ),
+                matcher=MatcherSpec(
+                    "conservative", tag, tag in rules.substring_rewrite_fields
+                ),
+                provenance=(f"identity:{tag}",),
+                ambiguity_family=(
+                    "display_name" if tag.startswith("display_name_") else None
+                ),
+            )
+        )
+    return tuple(candidates), pair_by_id, rule_by_id
 
-    by_from: dict[str, list[tuple[ReplaceRule, str, str]]] = {}
-    for entry in deduped:
-        by_from.setdefault(entry[1], []).append(entry)
-    for frm, entries in by_from.items():
-        for i, (rule_a, _frm_a, to_a) in enumerate(entries):
-            for rule_b, _frm_b, to_b in entries[i + 1 :]:
-                if to_a == to_b:
-                    continue
-                overlaps = (rule_a.content and rule_b.content) or (
-                    rule_a.paths and rule_b.paths
-                )
-                if overlaps:
-                    raise ValidationError(
-                        f"[[replace]] patterns {rule_a.pattern!r} and "
-                        f"{rule_b.pattern!r} both render FROM {frm!r} but to "
-                        f"DIFFERENT values ({to_a!r} vs {to_b!r}) on "
-                        f"overlapping surfaces — the first rendered rule "
-                        f"would silently win and the second would never "
-                        f"apply; rename one pattern's rendered form, scope "
-                        f"the rules to disjoint files, or restrict them to "
-                        f"disjoint surfaces (one content-only, one "
-                        f"paths-only)"
-                    )
-    return deduped
+
+def _validated_replacements(
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    *,
+    initial_paths: tuple[str, ...] = (),
+) -> tuple[list[tuple[str, str, str]], list[tuple[ReplaceRule, str, str]]]:
+    candidates, pair_by_id, rule_by_id = _pipeline_inputs(source, dest, rules)
+    destination_values = dest.as_dict()
+    if dest.display_name is not None:
+        destination_values.update(
+            {
+                f"display_name_{form}": value
+                for form, value in display_forms(dest.display_name).items()
+            }
+        )
+    stability_sinks = tuple(
+        StabilitySink(
+            sink_id=f"destination:{field}",
+            value=value,
+            provenance=(f"destination identity field:{field}",),
+        )
+        for field, value in destination_values.items()
+    )
+    normalized = validate_pipeline(
+        candidates,
+        initial_paths=initial_paths,
+        stability_sinks=stability_sinks,
+    )
+    pairs = [
+        pair_by_id[item.row_id] for item in normalized if item.row_id in pair_by_id
+    ]
+    rendered = [
+        rule_by_id[item.row_id] for item in normalized if item.row_id in rule_by_id
+    ]
+    return pairs, rendered
+
+
+def replacement_pairs(
+    source: Identity,
+    dest: Identity,
+    display_form_names: tuple[str, ...] = DISPLAY_FORM_NAMES,
+) -> list[tuple[str, str, str]]:
+    """Return normalized identity triples after shared pipeline validation."""
+
+    # The compatibility API has no declared rules or target paths.  Construct
+    # a rules view that changes only the enabled display forms.
+    from template_press.rebrand.rules import DEFAULT_RULES
+
+    rules = Rules(
+        exclude_dirs=DEFAULT_RULES.exclude_dirs,
+        exclude_files=DEFAULT_RULES.exclude_files,
+        replace=(),
+        regenerate=(),
+        reset=(),
+        substring_rewrite_fields=frozenset(),
+        display_forms=display_form_names,
+        verify_ignore=frozenset(),
+    )
+    pairs, _rendered = _validated_replacements(source, dest, rules)
+    return pairs
+
+
+def rendered_replace_rules(
+    rules: Rules, source: Identity, dest: Identity
+) -> list[tuple[ReplaceRule, str, str]]:
+    """Return normalized declared-rule triples after shared validation."""
+
+    _pairs, rendered = _validated_replacements(source, dest, rules)
+    return rendered
 
 
 def symlink_target_posix(rel: Path, link: str) -> str:
@@ -772,14 +867,19 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
     source.validate()
     dest.validate()
     plan = Plan()
-    pairs = replacement_pairs(source, dest, rules.display_forms)
-    rendered = rendered_replace_rules(rules, source, dest)
+    rename_entries = _rename_candidate_entries(target, rules)
+    pairs, rendered = _validated_replacements(
+        source,
+        dest,
+        rules,
+        initial_paths=tuple(entry.rel.as_posix() for entry in rename_entries),
+    )
+    plan.rendered_rules = rendered
     # `_rename_candidates` (not `iter_target_files`): rename-plan parity with
     # `_rename_pass_once` (Fix F2) — a symlink LEAF (dir/dangling) must be a
     # rename candidate here too, or the plan silently omits it. `_read_text`
     # still returns None for a symlink, so the content-plan branch below is
     # unaffected — this only widens what the rename-plan branch below it sees.
-    rename_entries = _rename_candidate_entries(target, rules)
     for entry in rename_entries:
         path = target / entry.rel
         rel = entry.rel
@@ -1105,11 +1205,15 @@ def apply(
     """Execute the rebrand: replace pass, symlink-retarget pass, rename pass."""
     source.validate()
     dest.validate()
-    pairs = replacement_pairs(source, dest, rules.display_forms)
-    rendered = rendered_replace_rules(rules, source, dest)
     # Validate every selected present node before the first content write.
     # Later phases recapture their own candidates to fail closed on races.
     rename_entries = _rename_candidate_entries(target, rules)
+    pairs, rendered = _validated_replacements(
+        source,
+        dest,
+        rules,
+        initial_paths=tuple(entry.rel.as_posix() for entry in rename_entries),
+    )
     rename_map = _rename_prefix_map(
         rename_entries, pairs, rendered, rules.substring_rewrite_fields
     )
@@ -1295,7 +1399,7 @@ def _apply_renames(
     message) only catches ``SafetyError`` — not ``ValidationError``, which
     would otherwise propagate past ``_press`` as an uncaught traceback.
     """
-    for _ in range(32):
+    for _ in range(MAX_RENAME_PASSES):
         if not _rename_pass_once(
             target,
             pairs,
@@ -1306,7 +1410,8 @@ def _apply_renames(
         ):
             return
     raise SafetyError(
-        "rename passes did not reach a fixpoint after 32 iterations — a "
+        f"rename passes did not reach a fixpoint after {MAX_RENAME_PASSES} "
+        "iterations — a "
         "path component keeps changing on every pass (a self-reapplying "
         "[[replace]] rule or substring-mode identity field); the target is "
         "PARTIALLY rewritten"

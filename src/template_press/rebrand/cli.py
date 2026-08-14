@@ -28,7 +28,6 @@ from template_press.rebrand.engine import (
     apply,
     build_plan,
     preflight_rename_noreplace,
-    rendered_replace_rules,
     stray_press_dirs,
 )
 from template_press.rebrand.identity import (
@@ -61,7 +60,13 @@ from template_press.rebrand.reset import (
     preflight_reset_targets,
     render_reset_plan,
 )
-from template_press.rebrand.rules import DEFAULT_RULES, ResetRule, Rules, load_rules
+from template_press.rebrand.rules import (
+    DEFAULT_RULES,
+    ReplaceRule,
+    ResetRule,
+    Rules,
+    load_rules,
+)
 from template_press.rebrand.safety import (
     SafetyError,
     git_hardening_args,
@@ -298,26 +303,10 @@ def main(argv: list[str] | None = None) -> int:
             return _fail(
                 "source and destination identities are identical — nothing to press"
             )
-        # Loaded before the collision preflight (Fix F4): substring_rewrite_fields
-        # changes what counts as a collision (a boundary-free embedded token is
-        # only a problem for a field the engine will actually rewrite
-        # substring-wide) — pure reading, no side effect, so moving it earlier
-        # is safe.
+        # Pipeline stability, ambiguity, and termination are validated together
+        # by build_plan before any write.  Keeping the target rules here ensures
+        # the adapter preserves each field's effective substring posture.
         rules = load_rules(target)
-        collisions = _collisions(
-            source, dest, substring_fields=rules.substring_rewrite_fields
-        )
-        if collisions:
-            print(
-                "error: destination identity embeds source tokens — a single "
-                "press cannot produce a verifiable result; press in two steps "
-                "via an intermediate identity:",
-                file=sys.stderr,
-            )
-            for c in collisions:
-                print(f"  {c}", file=sys.stderr)
-            return 2
-
         plan = build_plan(target, source, dest, rules)
         rename_preflight = preflight_rename_noreplace(
             target,
@@ -365,7 +354,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         gate_problems += plan_problems
         reset_previews, reset_problems = preflight_reset_targets(
-            target, rules, source=source, dest=dest, renames=plan.renames
+            target,
+            rules,
+            source=source,
+            dest=dest,
+            renames=plan.renames,
+            rendered_rules=plan.rendered_rules,
         )
         gate_problems += reset_problems
         if gate_problems:
@@ -423,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
         [(preview.rule, preview.stub_text) for preview in reset_previews],
         rename_preflight=rename_preflight,
         allow_unsafe_rename=args.force,
+        rendered_rules=plan.rendered_rules,
     )
     return 1 if (outcome.env_error is not None or outcome.leaked) else 0
 
@@ -451,9 +446,12 @@ def _press(
     *,
     rename_preflight: RenamePreflight | None = None,
     allow_unsafe_rename: bool = False,
+    rendered_rules: list[tuple[ReplaceRule, str, str]] | None = None,
 ) -> PressOutcome:
     report = None
     try:
+        if rendered_rules is None:
+            rendered_rules = build_plan(target, source, dest, rules).rendered_rules
         # Reset takes position ZERO (P05 D5): declared paths are consumed in
         # SOURCE coordinates before the rename pass moves anything. A raise
         # here aborts the press (no receipt) — git is the undo button.
@@ -481,6 +479,7 @@ def _press(
             source=source,
             dest=dest,
             rules=rules,
+            rendered_rules=rendered_rules,
         )
         if failed_locks:
             # A failed command must not leave a tampered/planted control
@@ -514,6 +513,7 @@ def _press(
                 source=source,
                 dest=dest,
                 rules=rules,
+                rendered_rules=rendered_rules,
             )
             post_problems += validate_control_files(target, control_snapshot)
             if post_problems:
@@ -548,7 +548,7 @@ def _press(
             dest=dest,
             display_form_names=rules.display_forms,
             substring_fields=rules.substring_rewrite_fields,
-            rendered_rules=rendered_replace_rules(rules, source, dest),
+            rendered_rules=rendered_rules,
             renamed=report.renamed,
         )
         if leaks:

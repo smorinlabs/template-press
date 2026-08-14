@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import pytest
-from template_press.rebrand.pipeline import (
-    MatcherSpec,
-    PipelineCandidate,
-    validate_pipeline,
-)
 
+from template_press.rebrand import cli as cli_module
 from template_press.rebrand import engine
 from template_press.rebrand.cli import main
 from template_press.rebrand.config import SOURCE_CONFIG_REL, render_source_config
 from template_press.rebrand.engine import build_plan, rendered_replace_rules
 from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.pipeline import (
+    MatcherSpec,
+    PipelineCandidate,
+    StabilitySink,
+    validate_pipeline,
+)
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, Rules
+
+from .conftest import SOURCE
 
 
 def _candidate(
@@ -55,8 +59,8 @@ def _identity(**overrides: str) -> Identity:
 
 def _rules(*replace: ReplaceRule) -> Rules:
     return Rules(
-        extra_exclude_dirs=DEFAULT_RULES.extra_exclude_dirs,
-        extra_exclude_files=DEFAULT_RULES.extra_exclude_files,
+        exclude_dirs=DEFAULT_RULES.exclude_dirs,
+        exclude_files=DEFAULT_RULES.exclude_files,
         replace=replace,
         regenerate=DEFAULT_RULES.regenerate,
         reset=DEFAULT_RULES.reset,
@@ -120,6 +124,28 @@ def test_hunt_only_row_does_not_create_rewrite_conflicts() -> None:
     assert validate_pipeline((rewrite, hunt)) == (rewrite, hunt)
 
 
+def test_destination_stability_sink_rejects_changed_token_in_unchanged_field() -> None:
+    app = _candidate(
+        "identity:app_name",
+        "foo",
+        "bar",
+        matcher=MatcherSpec("conservative", "app_name", False),
+        provenance=("identity:app_name",),
+    )
+    author = StabilitySink(
+        "destination:author",
+        "foo owner",
+        provenance=("destination identity field:author",),
+    )
+
+    with pytest.raises(ValidationError) as exc_info:
+        validate_pipeline((app,), stability_sinks=(author,))
+
+    message = str(exc_info.value)
+    assert "identity:app_name" in message
+    assert "destination:author" in message
+
+
 def test_same_source_different_destinations_reports_both_provenances() -> None:
     first = _candidate("first", "old", "one", provenance=("identity:app",))
     second = _candidate("second", "old", "two", provenance=("rule:owned",))
@@ -139,6 +165,34 @@ def test_same_source_different_destinations_accepts_disjoint_exact_content_scope
     second = _candidate("second", "old", "two", files=("b.txt",))
 
     assert validate_pipeline((first, second)) == (first, second)
+
+
+def test_same_exact_path_scope_cannot_choose_two_destinations() -> None:
+    first = _candidate(
+        "first",
+        "old",
+        "one",
+        surfaces=frozenset({"path"}),
+        files=("old/file.txt",),
+    )
+    second = _candidate(
+        "second",
+        "old",
+        "two",
+        surfaces=frozenset({"path"}),
+        files=("old/file.txt",),
+    )
+
+    with pytest.raises(ValidationError) as exc_info:
+        validate_pipeline(
+            (first, second),
+            initial_paths=("old/file.txt",),
+        )
+
+    message = str(exc_info.value)
+    assert "different destinations" in message
+    assert "first" in message and "test:first" in message
+    assert "second" in message and "test:second" in message
 
 
 def test_wildcard_content_scopes_remain_conservatively_overlapping() -> None:
@@ -418,6 +472,93 @@ def test_path_scope_reachability_error_names_rows_and_provenance() -> None:
     assert "move-leaf" in message and "rule:leaf" in message
 
 
+def test_sibling_move_into_opposing_scope_is_rejected_as_cycle() -> None:
+    forward = _candidate(
+        "forward",
+        "xold",
+        "xnew",
+        surfaces=frozenset({"path"}),
+        files=("xold/a.txt",),
+        provenance=("rule:forward",),
+    )
+    backward = _candidate(
+        "backward",
+        "xnew",
+        "xold",
+        surfaces=frozenset({"path"}),
+        files=("xnew/b.txt",),
+        provenance=("rule:backward",),
+    )
+
+    with pytest.raises(ValidationError) as exc_info:
+        validate_pipeline(
+            (forward, backward),
+            initial_paths=("xold/a.txt", "xold/b.txt"),
+        )
+
+    message = str(exc_info.value)
+    assert "path dependency" in message or "cycle" in message
+    assert "forward" in message and "rule:forward" in message
+    assert "backward" in message and "rule:backward" in message
+
+
+@pytest.mark.parametrize("inert_scope", (("new/b.txt",), ("new/*.txt",)))
+def test_sibling_move_into_inert_scope_remains_stable(
+    inert_scope: tuple[str, ...],
+) -> None:
+    mover = _candidate(
+        "mover",
+        "old",
+        "new",
+        surfaces=frozenset({"path"}),
+        files=("old/a.txt",),
+    )
+    inert = _candidate(
+        "inert",
+        "never",
+        "changed",
+        surfaces=frozenset({"path"}),
+        files=inert_scope,
+    )
+
+    assert validate_pipeline(
+        (mover, inert),
+        initial_paths=("old/a.txt", "old/b.txt"),
+    ) == (mover, inert)
+
+
+def test_build_plan_rejects_sibling_move_into_opposing_scope(src_target) -> None:
+    first = src_target / "xold" / "a.txt"
+    second = src_target / "xold" / "b.txt"
+    first.parent.mkdir()
+    first.write_text("clean\n", encoding="utf-8")
+    second.write_text("clean\n", encoding="utf-8")
+    rules = _rules(
+        ReplaceRule(
+            pattern="x{owner}",
+            reason="move sibling parent forward",
+            files=("xold/a.txt",),
+            paths=True,
+            content=False,
+        ),
+        ReplaceRule(
+            pattern="{author}",
+            reason="move sibling parent backward",
+            files=("xnew/b.txt",),
+            paths=True,
+            content=False,
+        ),
+    )
+    source = _identity(owner="old", author="xnew")
+    destination = _identity(owner="new", author="xold")
+
+    with pytest.raises(ValidationError, match=r"path dependency|cycle"):
+        build_plan(src_target, source, destination, rules)
+
+    assert first.is_file()
+    assert second.is_file()
+
+
 def test_leaf_scopes_cannot_assign_one_ancestor_two_destinations() -> None:
     first = _candidate(
         "left",
@@ -485,12 +626,22 @@ def test_issue_45_disjoint_rendered_rule_scopes_are_accepted(src_target) -> None
 def test_build_plan_calls_the_shared_pipeline_validator(
     src_target, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[tuple[tuple[PipelineCandidate, ...], tuple[str, ...]]] = []
+    calls: list[
+        tuple[
+            tuple[PipelineCandidate, ...],
+            tuple[str, ...],
+            tuple[StabilitySink, ...],
+        ]
+    ] = []
     real_validator = engine.validate_pipeline
 
-    def recording_validator(candidates, *, initial_paths=()):
-        calls.append((tuple(candidates), tuple(initial_paths)))
-        return real_validator(candidates, initial_paths=initial_paths)
+    def recording_validator(candidates, *, initial_paths=(), stability_sinks=()):
+        calls.append((tuple(candidates), tuple(initial_paths), tuple(stability_sinks)))
+        return real_validator(
+            candidates,
+            initial_paths=initial_paths,
+            stability_sinks=stability_sinks,
+        )
 
     monkeypatch.setattr(engine, "validate_pipeline", recording_validator)
     rules = _rules(
@@ -509,7 +660,7 @@ def test_build_plan_calls_the_shared_pipeline_validator(
     )
 
     assert len(calls) == 1
-    candidates, initial_paths = calls[0]
+    candidates, initial_paths, stability_sinks = calls[0]
     owner = next(
         item
         for item in candidates
@@ -523,6 +674,7 @@ def test_build_plan_calls_the_shared_pipeline_validator(
     assert owner.matcher == MatcherSpec("conservative", "owner", False)
     assert declared.matcher == MatcherSpec("literal", None, False)
     assert "README.md" in initial_paths
+    assert any(sink.sink_id == "destination:author" for sink in stability_sinks)
 
 
 def test_build_plan_rejects_scoped_path_reachability(src_target) -> None:
@@ -552,21 +704,175 @@ def test_build_plan_rejects_scoped_path_reachability(src_target) -> None:
         build_plan(src_target, source, destination, rules)
 
 
+def test_independent_path_rows_on_one_path_are_stable(src_target) -> None:
+    nested = src_target / "old" / "file.txt"
+    nested.parent.mkdir()
+    nested.write_text("fixture\n", encoding="utf-8")
+    parent = _candidate(
+        "parent",
+        "old",
+        "new",
+        surfaces=frozenset({"path"}),
+    )
+    leaf = _candidate(
+        "leaf",
+        "file",
+        "doc",
+        surfaces=frozenset({"path"}),
+    )
+
+    assert validate_pipeline((parent, leaf), initial_paths=("old/file.txt",)) == (
+        parent,
+        leaf,
+    )
+
+    source = _identity(repo_name="old", app_name="file")
+    destination = _identity(repo_name="new", app_name="doc")
+    build_plan(src_target, source, destination, DEFAULT_RULES)
+
+
+def test_one_stable_row_can_rewrite_every_repeated_path_component() -> None:
+    row = _candidate(
+        "repeat",
+        "old",
+        "new",
+        surfaces=frozenset({"path"}),
+    )
+
+    assert validate_pipeline((row,), initial_paths=("old/old/old/old.txt",)) == (row,)
+
+
+def test_path_pipeline_accepts_fixpoint_on_runtime_pass_32() -> None:
+    row = _candidate(
+        "repeat",
+        "old",
+        "new",
+        surfaces=frozenset({"path"}),
+    )
+    path = "/".join((*(("old",) * 31), "leaf.txt"))
+
+    assert validate_pipeline((row,), initial_paths=(path,)) == (row,)
+
+
+def test_path_pipeline_refuses_32_mutations_without_runtime_fixpoint() -> None:
+    row = _candidate(
+        "repeat",
+        "old",
+        "new",
+        surfaces=frozenset({"path"}),
+    )
+    path = "/".join((*(("old",) * 32), "leaf.txt"))
+
+    with pytest.raises(ValidationError, match="did not terminate"):
+        validate_pipeline((row,), initial_paths=(path,))
+
+
 def test_build_plan_rejects_identity_output_emitting_earlier_rule_source(
     src_target,
 ) -> None:
     rules = _rules(
         ReplaceRule(
-            pattern="legacy-{app_name}",
+            pattern="legacy_{app_name}",
             reason="earlier declared source",
             paths=False,
         )
     )
     source = _identity(app_name="old")
-    destination = _identity(app_name="legacy-old")
+    destination = _identity(app_name="legacy_old")
 
     with pytest.raises(ValidationError, match="stale-source emission"):
         build_plan(src_target, source, destination, rules)
+
+
+def test_build_plan_rejects_token_in_unchanged_destination_field(src_target) -> None:
+    source = _identity(app_name="foo", author="foo owner")
+    destination = _identity(app_name="bar", author="foo owner")
+
+    with pytest.raises(ValidationError) as exc_info:
+        build_plan(src_target, source, destination, DEFAULT_RULES)
+
+    message = str(exc_info.value)
+    assert "identity:app_name" in message
+    assert "destination:author" in message
+
+
+def test_build_plan_rejects_token_in_derived_destination_field(src_target) -> None:
+    source = _identity(app_name="foo", owner="FOO")
+    destination = _identity(app_name="foo", owner="BAR")
+
+    with pytest.raises(ValidationError) as exc_info:
+        build_plan(src_target, source, destination, DEFAULT_RULES)
+
+    message = str(exc_info.value)
+    assert "identity:owner" in message
+    assert "destination:app_name_upper" in message
+
+
+def test_duplicate_identity_provenance_survives_shared_validation(src_target) -> None:
+    source = _identity(package_name="foo", repo_name="foo", owner="foo")
+    destination = _identity(package_name="bar", repo_name="bar", owner="baz")
+
+    with pytest.raises(ValidationError) as exc_info:
+        build_plan(src_target, source, destination, DEFAULT_RULES)
+
+    message = str(exc_info.value)
+    assert "identity:package_name" in message
+    assert "identity:repo_name" in message
+    assert "identity:owner" in message
+
+
+def test_duplicate_rule_provenance_survives_shared_validation(src_target) -> None:
+    duplicate = ReplaceRule(pattern="{app_name}", reason="same declaration")
+    rules = _rules(
+        duplicate,
+        duplicate,
+        ReplaceRule(pattern="f{package_name}", reason="conflict"),
+    )
+    source = _identity(app_name="foo", package_name="oo")
+    destination = _identity(app_name="bar", package_name="zz")
+
+    with pytest.raises(ValidationError) as exc_info:
+        build_plan(src_target, source, destination, rules)
+
+    message = str(exc_info.value)
+    assert "replace[1]" in message
+    assert "replace[2]" in message
+    assert "replace[3]" in message
+
+
+def test_press_reuses_target_validated_disjoint_path_rules(
+    src_target,
+) -> None:
+    left = src_target / "a" / "foo" / "left.txt"
+    right = src_target / "b" / "foo" / "right.txt"
+    left.parent.mkdir(parents=True)
+    right.parent.mkdir(parents=True)
+    left.write_text("clean\n", encoding="utf-8")
+    right.write_text("clean\n", encoding="utf-8")
+    rules = _rules(
+        ReplaceRule(
+            pattern="{app_name}",
+            reason="left path",
+            files=("a/foo/left.txt",),
+            paths=True,
+            content=False,
+        ),
+        ReplaceRule(
+            pattern="f{package_name}",
+            reason="right path",
+            files=("b/foo/right.txt",),
+            paths=True,
+            content=False,
+        ),
+    )
+    source = _identity(app_name="foo", package_name="oo")
+    destination = _identity(app_name="one", package_name="zz")
+
+    outcome = cli_module._press(src_target, source, destination, rules, [], [])
+
+    assert outcome.env_error is None
+    assert (src_target / "a" / "one" / "left.txt").is_file()
+    assert (src_target / "b" / "fzz" / "right.txt").is_file()
 
 
 @pytest.mark.parametrize(
@@ -628,8 +934,8 @@ def test_legacy_refusal_families_route_through_shared_validator(
 def test_cli_collision_preflight_routes_through_shared_validator(
     src_target, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source = _identity(app_name="press")
-    destination = _identity(app_name="press_two")
+    source = SOURCE
+    destination = Identity(**{**SOURCE.as_dict_prompted(), "app_name": "press_two"})
     source_path = src_target / SOURCE_CONFIG_REL
     source_path.parent.mkdir(exist_ok=True)
     source_path.write_text(render_source_config(source), encoding="utf-8")
