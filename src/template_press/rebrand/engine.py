@@ -683,10 +683,11 @@ def _validated_replacements(
     candidates, pair_by_id, rule_by_id = _pipeline_inputs(source, dest, rules)
     destination_values = dest.as_dict()
     if dest.display_name is not None:
+        rendered_display_forms = display_forms(dest.display_name)
         destination_values.update(
             {
-                f"display_name_{form}": value
-                for form, value in display_forms(dest.display_name).items()
+                f"display_name_{form}": rendered_display_forms[form]
+                for form in rules.display_forms
             }
         )
     stability_sinks = tuple(

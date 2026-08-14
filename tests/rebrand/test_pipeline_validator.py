@@ -808,6 +808,21 @@ def test_build_plan_rejects_token_in_derived_destination_field(src_target) -> No
     assert "destination:app_name_upper" in message
 
 
+def test_disabled_display_form_is_not_a_destination_stability_sink(
+    src_target,
+) -> None:
+    source = _identity(author="fooBar", display_name="Source Name")
+    destination = _identity(author="Bar Author", display_name="Foo bar")
+    rules = Rules(
+        exclude_dirs=DEFAULT_RULES.exclude_dirs,
+        exclude_files=DEFAULT_RULES.exclude_files,
+        regenerate=DEFAULT_RULES.regenerate,
+        display_forms=("spaced",),
+    )
+
+    build_plan(src_target, source, destination, rules)
+
+
 def test_duplicate_identity_provenance_survives_shared_validation(src_target) -> None:
     source = _identity(package_name="foo", repo_name="foo", owner="foo")
     destination = _identity(package_name="bar", repo_name="bar", owner="baz")
