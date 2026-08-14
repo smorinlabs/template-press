@@ -40,6 +40,7 @@ closing it would need ``openat``/``dir_fd`` no-follow handles.
 from __future__ import annotations
 
 import ctypes
+import errno
 import os
 import shutil
 import stat
@@ -50,6 +51,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 __all__ = [
+    "AtomicRenameUnavailableError",
     "ContainmentError",
     "HardlinkError",
     "NonRegularFileError",
@@ -65,6 +67,9 @@ __all__ = [
     "readlink_nofollow",
     "refuse_unsafe_root",
     "rename_noreplace",
+    "rename_noreplace_best_effort",
+    "require_rename_noreplace_host_support",
+    "require_rename_noreplace_support",
     "safe_mkdir",
     "safe_rename",
     "safe_write",
@@ -75,6 +80,10 @@ __all__ = [
 
 class SafetyError(Exception):
     """Base class for every containment / safe-I/O violation."""
+
+
+class AtomicRenameUnavailableError(SafetyError):
+    """The host or target filesystem lacks the required rename guarantee."""
 
 
 class UnsafePathError(SafetyError, ValueError):
@@ -554,31 +563,31 @@ def safe_rename(
     os.rename(src, dst)
 
 
-def rename_noreplace(src: Path, dst: Path) -> None:
-    """Atomically rename ``src`` to an absent ``dst`` without replacement.
-
-    Python's POSIX ``os.rename`` overwrites an existing destination. The
-    rebrand planner treats occupancy as a refusal, so use each supported
-    platform's atomic no-replace primitive and fail closed elsewhere.
-    """
+def _rename_noreplace_unchecked(src: Path, dst: Path) -> None:
+    """Invoke the host primitive without first probing its filesystem."""
 
     if os.name == "nt":
         # Windows os.rename already fails when the destination exists.
         os.rename(src, dst)
         return
-
     libc = ctypes.CDLL(None, use_errno=True)
     src_bytes = os.fsencode(src)
     dst_bytes = os.fsencode(dst)
     if sys.platform == "darwin":
-        renamex_np = libc.renamex_np
+        renamex_np = getattr(libc, "renamex_np", None)
+        if renamex_np is None:
+            raise AtomicRenameUnavailableError(
+                f"atomic no-replace rename is unsupported on {sys.platform}"
+            )
         renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
         renamex_np.restype = ctypes.c_int
         result = renamex_np(src_bytes, dst_bytes, 0x00000004)  # RENAME_EXCL
     elif sys.platform.startswith("linux"):
         renameat2 = getattr(libc, "renameat2", None)
         if renameat2 is None:
-            raise SafetyError("atomic no-replace rename is unavailable on this host")
+            raise AtomicRenameUnavailableError(
+                "atomic no-replace rename is unavailable on this host"
+            )
         renameat2.argtypes = [
             ctypes.c_int,
             ctypes.c_char_p,
@@ -589,10 +598,135 @@ def rename_noreplace(src: Path, dst: Path) -> None:
         renameat2.restype = ctypes.c_int
         result = renameat2(-100, src_bytes, -100, dst_bytes, 0x00000001)
     else:
-        raise SafetyError(f"atomic no-replace rename is unsupported on {sys.platform}")
+        raise AtomicRenameUnavailableError(
+            f"atomic no-replace rename is unsupported on {sys.platform}"
+        )
     if result != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), os.fspath(dst))
+
+
+def require_rename_noreplace_host_support() -> None:
+    """Check for a host primitive without touching the target filesystem."""
+
+    if os.name == "nt":
+        return
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin" and getattr(libc, "renamex_np", None) is not None:
+        return
+    if (
+        sys.platform.startswith("linux")
+        and getattr(libc, "renameat2", None) is not None
+    ):
+        return
+    raise AtomicRenameUnavailableError(
+        f"atomic no-replace rename is unsupported on {sys.platform}"
+    )
+
+
+def _probe_rename_noreplace_call(src: Path, dst: Path, source: Path) -> None:
+    """Run one native probe move and classify only capability-related errors."""
+
+    try:
+        _rename_noreplace_unchecked(src, dst)
+    except AtomicRenameUnavailableError:
+        raise
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        unsupported_errors = {
+            errno.EINVAL,
+            errno.ENOSYS,
+            errno.ENOTSUP,
+            getattr(errno, "EOPNOTSUPP", errno.ENOTSUP),
+        }
+        error_type = (
+            AtomicRenameUnavailableError
+            if exc.errno in unsupported_errors
+            else SafetyError
+        )
+        raise error_type(
+            f"atomic no-replace rename probe failed for {source}: {exc}"
+        ) from exc
+
+
+def require_rename_noreplace_support(source: Path) -> None:
+    """Probe atomic no-replacement rename beside ``source`` and clean up."""
+
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".press-rename-probe-", dir=source.parent
+        ) as raw_probe:
+            probe = Path(raw_probe)
+            probe_source = probe / "source"
+            probe_destination = probe / "destination"
+            probe_source.write_bytes(b"source\n")
+            _probe_rename_noreplace_call(probe_source, probe_destination, source)
+            if (
+                probe_source.exists()
+                or probe_source.is_symlink()
+                or read_regular_nofollow(probe_destination) != b"source\n"
+            ):
+                raise AtomicRenameUnavailableError(
+                    f"atomic no-replace rename probe produced an invalid result "
+                    f"beside {source}"
+                )
+
+            occupied_source = probe / "occupied-source"
+            occupied_source.write_bytes(b"new source\n")
+            try:
+                _probe_rename_noreplace_call(occupied_source, probe_destination, source)
+            except FileExistsError:
+                pass
+            else:
+                raise AtomicRenameUnavailableError(
+                    f"atomic no-replace rename probe replaced an occupied "
+                    f"destination beside {source}"
+                )
+            if (
+                read_regular_nofollow(occupied_source) != b"new source\n"
+                or read_regular_nofollow(probe_destination) != b"source\n"
+            ):
+                raise AtomicRenameUnavailableError(
+                    f"atomic no-replace rename probe changed protected content "
+                    f"beside {source}"
+                )
+    except AtomicRenameUnavailableError:
+        raise
+    except SafetyError:
+        raise
+    except OSError as exc:
+        raise SafetyError(
+            f"atomic no-replace rename probe failed for {source}: {exc}"
+        ) from exc
+
+
+def rename_noreplace(src: Path, dst: Path) -> None:
+    """Atomically rename ``src`` to an absent ``dst`` without replacement.
+
+    Python's POSIX ``os.rename`` overwrites an existing destination. The
+    rebrand planner treats occupancy as a refusal, so use each supported
+    platform's atomic no-replace primitive and fail closed elsewhere.
+    """
+
+    _rename_noreplace_unchecked(src, dst)
+
+
+def rename_noreplace_best_effort(src: Path, dst: Path) -> None:
+    """Rename after an immediate occupancy check, without atomic protection.
+
+    On POSIX, another process can create ``dst`` between ``lstat`` and
+    ``os.rename``; the rename may then replace it. Callers must expose that
+    risk and require an explicit safety override before using this fallback.
+    """
+
+    try:
+        os.lstat(dst)
+    except FileNotFoundError:
+        pass
+    else:
+        raise FileExistsError(f"rename destination already exists: {dst}")
+    os.rename(src, dst)
 
 
 # ---------------------------------------------------------------------------

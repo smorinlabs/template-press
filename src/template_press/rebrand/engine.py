@@ -41,8 +41,10 @@ from template_press.rebrand.rules import (
     rule_matches_path,
 )
 from template_press.rebrand.safety import (
+    AtomicRenameUnavailableError,
     ContainmentError,
     NonRegularFileError,
+    SafeRelPath,
     SafetyError,
     assert_ancestors_real,
     assert_under_root,
@@ -50,6 +52,9 @@ from template_press.rebrand.safety import (
     read_regular_nofollow,
     readlink_nofollow,
     rename_noreplace,
+    rename_noreplace_best_effort,
+    require_rename_noreplace_host_support,
+    require_rename_noreplace_support,
     safe_write,
 )
 
@@ -133,6 +138,22 @@ class Plan:
         for i in self.items:
             out[i.kind] = out.get(i.kind, 0) + 1
         return out
+
+
+@dataclass(frozen=True)
+class RenamePreflight:
+    """Result of checking the planned rename filesystems."""
+
+    checked_devices: frozenset[int] = frozenset()
+    unsafe_devices: frozenset[int] = frozenset()
+    problems: tuple[str, ...] = ()
+    operational: bool = True
+
+    @property
+    def atomic(self) -> bool:
+        """Whether every planned rename filesystem passed the probe."""
+
+        return not self.unsafe_devices
 
 
 def _is_excluded(rel: Path, rules: Rules) -> bool:
@@ -721,6 +742,31 @@ def _renamed_rel(
     return Path(*parts)
 
 
+def _rename_prefix_map(
+    entries: Collection[SurfaceEntry],
+    pairs: list[tuple[str, str, str]],
+    rendered: list[tuple[ReplaceRule, str, str]],
+    substring_fields: Collection[str],
+) -> dict[str, str]:
+    """Collapse selected path rewrites to their shallowest rename prefixes."""
+
+    rename_map: dict[str, str] = {}
+    for entry in entries:
+        rel = entry.rel
+        new_rel = _renamed_rel(rel, pairs, rendered, substring_fields)
+        if new_rel == rel:
+            continue
+        for i, (old_part, new_part) in enumerate(
+            zip(rel.parts, new_rel.parts, strict=True)
+        ):
+            if old_part != new_part:
+                old_prefix = Path(*rel.parts[: i + 1]).as_posix()
+                new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
+                rename_map.setdefault(old_prefix, new_prefix)
+                break
+    return rename_map
+
+
 def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> Plan:
     """Resolve what apply() would do; executes nothing."""
     source.validate()
@@ -728,13 +774,13 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
     plan = Plan()
     pairs = replacement_pairs(source, dest, rules.display_forms)
     rendered = rendered_replace_rules(rules, source, dest)
-    rename_map: dict[str, str] = {}
     # `_rename_candidates` (not `iter_target_files`): rename-plan parity with
     # `_rename_pass_once` (Fix F2) — a symlink LEAF (dir/dangling) must be a
     # rename candidate here too, or the plan silently omits it. `_read_text`
     # still returns None for a symlink, so the content-plan branch below is
     # unaffected — this only widens what the rename-plan branch below it sees.
-    for entry in _rename_candidate_entries(target, rules):
+    rename_entries = _rename_candidate_entries(target, rules)
+    for entry in rename_entries:
         path = target / entry.rel
         rel = entry.rel
         assert_ancestors_real(path, target)
@@ -761,24 +807,51 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                 plan.items.append(
                     PlanItem("replace", rel.as_posix(), f"fields={hit_fields}")
                 )
-        new_rel = _renamed_rel(rel, pairs, rendered, rules.substring_rewrite_fields)
-        if new_rel != rel:
-            # collapse to the shallowest differing ancestor (dir rename)
-            for i, (old_part, new_part) in enumerate(
-                zip(rel.parts, new_rel.parts, strict=True)
-            ):
-                if old_part != new_part:
-                    # The root 'press' component never differs (protected in
-                    # _renamed_rel), so the first diff is always a renamable
-                    # component — no root-press guard is needed here.
-                    old_prefix = Path(*rel.parts[: i + 1]).as_posix()
-                    new_prefix = Path(*new_rel.parts[: i + 1]).as_posix()
-                    rename_map.setdefault(old_prefix, new_prefix)
-                    break
+    rename_map = _rename_prefix_map(
+        rename_entries, pairs, rendered, rules.substring_rewrite_fields
+    )
     for old, new in sorted(rename_map.items()):
         plan.items.append(PlanItem("rename", old, f"→ {new}"))
     plan.renames.update(rename_map)
     return plan
+
+
+def preflight_rename_noreplace(
+    target: Path,
+    renames: Mapping[str, str],
+    *,
+    allow_unsafe: bool = False,
+    operational: bool = True,
+) -> RenamePreflight:
+    """Check planned rename filesystems; optionally permit a risky fallback."""
+
+    checked_devices: set[int] = set()
+    unsafe_devices: set[int] = set()
+    problems: list[str] = []
+    for old in sorted(renames):
+        safe_old = SafeRelPath(old)
+        source = target / Path(*safe_old.parts)
+        assert_ancestors_real(source, target)
+        device = os.lstat(source.parent).st_dev
+        if device in checked_devices:
+            continue
+        checked_devices.add(device)
+        try:
+            if operational:
+                require_rename_noreplace_support(source)
+            else:
+                require_rename_noreplace_host_support()
+        except AtomicRenameUnavailableError as exc:
+            if not allow_unsafe:
+                raise
+            unsafe_devices.add(device)
+            problems.append(str(exc))
+    return RenamePreflight(
+        checked_devices=frozenset(checked_devices),
+        unsafe_devices=frozenset(unsafe_devices),
+        problems=tuple(problems),
+        operational=operational,
+    )
 
 
 def translate_path(posix: str, renames: Mapping[str, str]) -> str:
@@ -1020,16 +1093,45 @@ def _retarget_symlinks(
         report.replaced.append(rel.as_posix())
 
 
-def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> ApplyReport:
+def apply(
+    target: Path,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    *,
+    allow_unsafe_rename: bool = False,
+    rename_preflight: RenamePreflight | None = None,
+) -> ApplyReport:
     """Execute the rebrand: replace pass, symlink-retarget pass, rename pass."""
     source.validate()
     dest.validate()
-    # Validate every selected present node before the first content write.
-    # Later phases recapture their own candidates to fail closed on races.
-    _rename_candidate_entries(target, rules)
-    report = ApplyReport()
     pairs = replacement_pairs(source, dest, rules.display_forms)
     rendered = rendered_replace_rules(rules, source, dest)
+    # Validate every selected present node before the first content write.
+    # Later phases recapture their own candidates to fail closed on races.
+    rename_entries = _rename_candidate_entries(target, rules)
+    rename_map = _rename_prefix_map(
+        rename_entries, pairs, rendered, rules.substring_rewrite_fields
+    )
+    # Direct callers bypass the CLI preflight, so probe each source filesystem
+    # before replacements can partially rewrite the target.
+    if rename_preflight is None:
+        rename_preflight = preflight_rename_noreplace(
+            target, rename_map, allow_unsafe=allow_unsafe_rename
+        )
+    elif not rename_preflight.operational:
+        raise SafetyError("rename execution requires an operational preflight")
+    elif not rename_preflight.atomic and not allow_unsafe_rename:
+        raise SafetyError(
+            "non-atomic rename fallback requires allow_unsafe_rename=True"
+        )
+    current_devices = frozenset(
+        os.lstat((target / Path(*SafeRelPath(old).parts)).parent).st_dev
+        for old in rename_map
+    )
+    if not current_devices <= rename_preflight.checked_devices:
+        raise SafetyError("rename filesystem changed after capability preflight")
+    report = ApplyReport()
     _apply_replacements(target, pairs, rules, report, rendered)
     # Symlink text must only be rewritten where the rename pass would move
     # the target — display forms never rename paths (not in RENAME_FIELDS),
@@ -1042,7 +1144,14 @@ def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> Apply
     _retarget_symlinks(
         target, symlink_pairs, rules, report, rendered, rules.substring_rewrite_fields
     )
-    _apply_renames(target, pairs, rules, report, rendered)
+    _apply_renames(
+        target,
+        pairs,
+        rules,
+        report,
+        rendered,
+        rename_preflight=rename_preflight,
+    )
     return report
 
 
@@ -1052,6 +1161,8 @@ def _rename_pass_once(
     rules: Rules,
     report: ApplyReport,
     rendered: list[tuple[ReplaceRule, str, str]],
+    *,
+    rename_preflight: RenamePreflight | None = None,
 ) -> bool:
     """Run one shallowest-prefix rename pass; return True if any rename ran.
 
@@ -1129,7 +1240,19 @@ def _rename_pass_once(
                 f"(expected {expected_kind}, found {current_kind})"
             )
         try:
-            rename_noreplace(src, dst)
+            device = os.lstat(src.parent).st_dev
+            if rename_preflight is not None and device not in (
+                rename_preflight.checked_devices
+            ):
+                raise SafetyError(
+                    "rename filesystem changed after capability preflight"
+                )
+            if rename_preflight is not None and device in (
+                rename_preflight.unsafe_devices
+            ):
+                rename_noreplace_best_effort(src, dst)
+            else:
+                rename_noreplace(src, dst)
         except FileExistsError as exc:
             raise SafetyError(
                 f"rename destination appeared after validation: {new}"
@@ -1145,6 +1268,8 @@ def _apply_renames(
     rules: Rules,
     report: ApplyReport,
     rendered: list[tuple[ReplaceRule, str, str]],
+    *,
+    rename_preflight: RenamePreflight,
 ) -> None:
     """Rename tracked paths whose components carry identity tokens.
 
@@ -1171,7 +1296,14 @@ def _apply_renames(
     would otherwise propagate past ``_press`` as an uncaught traceback.
     """
     for _ in range(32):
-        if not _rename_pass_once(target, pairs, rules, report, rendered):
+        if not _rename_pass_once(
+            target,
+            pairs,
+            rules,
+            report,
+            rendered,
+            rename_preflight=rename_preflight,
+        ):
             return
     raise SafetyError(
         "rename passes did not reach a fixpoint after 32 iterations — a "

@@ -1,4 +1,5 @@
 import dataclasses
+import errno
 import os
 import shutil
 import subprocess
@@ -8,14 +9,20 @@ import pytest
 
 import template_press.rebrand.engine as engine_module
 from template_press.rebrand.engine import (
+    RenamePreflight,
     _rename_candidates,
     apply,
     build_plan,
+    preflight_rename_noreplace,
     translate_path,
 )
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
-from template_press.rebrand.safety import ContainmentError, SafetyError
+from template_press.rebrand.safety import (
+    ContainmentError,
+    SafetyError,
+    UnsafePathError,
+)
 
 from .conftest import DEST, SOURCE, requires_symlink
 
@@ -101,6 +108,229 @@ def test_app_token_filename_renamed(src_target: Path):
     apply(src_target, SOURCE, DEST, DEFAULT_RULES)
     assert (src_target / "potato_config.toml").is_file()
     assert not (src_target / "press_config.toml").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="simulates another POSIX platform")
+def test_preflight_refuses_unsupported_posix_when_rename_required(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    monkeypatch.setattr(safety.sys, "platform", "freebsd14")
+    plan = build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+    with pytest.raises(
+        SafetyError, match="atomic no-replace rename is unsupported on freebsd14"
+    ):
+        preflight_rename_noreplace(src_target, plan.renames)
+
+
+def test_preflight_rejects_hostile_rename_source_before_probe(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        engine_module,
+        "require_rename_noreplace_support",
+        lambda _source: pytest.fail("unsafe source reached probe"),
+    )
+
+    with pytest.raises(UnsafePathError):
+        preflight_rename_noreplace(
+            src_target,
+            {"../outside/demo_widget": "potato_launcher"},
+            allow_unsafe=True,
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="simulates another POSIX platform")
+def test_apply_refuses_unsupported_posix_before_writes(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    ordinary = src_target / "ordinary.txt"
+    ordinary.write_text("demo_widget content\n", encoding="utf-8")
+    _git_add(src_target)
+    source_path = src_target / "src" / "demo_widget"
+    destination_path = src_target / "src" / "potato_launcher"
+    monkeypatch.setattr(safety.sys, "platform", "freebsd14")
+
+    with pytest.raises(
+        SafetyError, match="atomic no-replace rename is unsupported on freebsd14"
+    ):
+        apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+    assert ordinary.read_text(encoding="utf-8") == "demo_widget content\n"
+    assert source_path.is_dir()
+    assert not destination_path.exists()
+
+
+@pytest.mark.parametrize("error", [errno.ENOSYS, errno.ENOTSUP, errno.EINVAL])
+def test_apply_refuses_unsupported_rename_filesystem_before_writes(
+    error: int, src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    ordinary = src_target / "ordinary.txt"
+    ordinary.write_text("demo_widget content\n", encoding="utf-8")
+    _git_add(src_target)
+    source_path = src_target / "src" / "demo_widget"
+    destination_path = src_target / "src" / "potato_launcher"
+
+    def reject_atomic_rename(_source: Path, _destination: Path) -> None:
+        raise OSError(error, os.strerror(error))
+
+    monkeypatch.setattr(safety, "_rename_noreplace_unchecked", reject_atomic_rename)
+
+    with pytest.raises(SafetyError, match="atomic no-replace rename probe failed"):
+        apply(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+    assert ordinary.read_text(encoding="utf-8") == "demo_widget content\n"
+    assert source_path.is_dir()
+    assert not destination_path.exists()
+    assert not list(src_target.rglob(".press-rename-probe-*"))
+
+
+def test_apply_force_uses_best_effort_rename_when_atomic_support_is_unavailable(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    ordinary = src_target / "ordinary.txt"
+    ordinary.write_text("demo_widget content\n", encoding="utf-8")
+    _git_add(src_target)
+    source_path = src_target / "src" / "demo_widget"
+    destination_path = src_target / "src" / "potato_launcher"
+
+    def reject_atomic_rename(_source: Path, _destination: Path) -> None:
+        raise OSError(errno.ENOTSUP, os.strerror(errno.ENOTSUP))
+
+    monkeypatch.setattr(safety, "_rename_noreplace_unchecked", reject_atomic_rename)
+
+    report = apply(
+        src_target,
+        SOURCE,
+        DEST,
+        DEFAULT_RULES,
+        allow_unsafe_rename=True,
+    )
+
+    assert ordinary.read_text(encoding="utf-8") == "potato_launcher content\n"
+    assert not source_path.exists()
+    assert destination_path.is_dir()
+    assert ("src/demo_widget", "src/potato_launcher") in report.renamed
+
+
+def test_apply_force_does_not_override_probe_permission_failure(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    before = (src_target / "README.md").read_bytes()
+
+    def reject_atomic_rename(_source: Path, _destination: Path) -> None:
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES))
+
+    monkeypatch.setattr(safety, "_rename_noreplace_unchecked", reject_atomic_rename)
+
+    with pytest.raises(SafetyError, match="atomic no-replace rename probe failed"):
+        apply(
+            src_target,
+            SOURCE,
+            DEST,
+            DEFAULT_RULES,
+            allow_unsafe_rename=True,
+        )
+
+    assert (src_target / "README.md").read_bytes() == before
+
+
+def test_apply_force_does_not_override_probe_setup_failure(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    before = (src_target / "README.md").read_bytes()
+
+    def reject_probe_setup(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EINVAL, "injected probe setup failure")
+
+    monkeypatch.setattr(safety.tempfile, "TemporaryDirectory", reject_probe_setup)
+
+    with pytest.raises(SafetyError, match="injected probe setup failure"):
+        apply(
+            src_target,
+            SOURCE,
+            DEST,
+            DEFAULT_RULES,
+            allow_unsafe_rename=True,
+        )
+
+    assert (src_target / "README.md").read_bytes() == before
+
+
+def test_apply_rejects_preflight_policy_from_an_unrecognized_filesystem(
+    src_target: Path,
+) -> None:
+    before = (src_target / "README.md").read_bytes()
+    stale_preflight = RenamePreflight(
+        checked_devices=frozenset({-1}),
+        unsafe_devices=frozenset({-1}),
+    )
+
+    with pytest.raises(
+        SafetyError, match="rename filesystem changed after capability preflight"
+    ):
+        apply(
+            src_target,
+            SOURCE,
+            DEST,
+            DEFAULT_RULES,
+            allow_unsafe_rename=True,
+            rename_preflight=stale_preflight,
+        )
+
+    assert (src_target / "README.md").read_bytes() == before
+
+
+def test_apply_force_keeps_atomic_rename_on_supported_filesystem(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_rename = engine_module.rename_noreplace
+    atomic_calls: list[tuple[Path, Path]] = []
+
+    def record_atomic_rename(source: Path, destination: Path) -> None:
+        atomic_calls.append((source, destination))
+        real_rename(source, destination)
+
+    monkeypatch.setattr(engine_module, "rename_noreplace", record_atomic_rename)
+
+    apply(
+        src_target,
+        SOURCE,
+        DEST,
+        DEFAULT_RULES,
+        allow_unsafe_rename=True,
+    )
+
+    assert atomic_calls
+
+
+def test_apply_skips_rename_preflight_for_content_only_rebrand(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    monkeypatch.setattr(
+        safety,
+        "_rename_noreplace_unchecked",
+        lambda _source, _destination: pytest.fail("unexpected rename probe"),
+    )
+    content_only_dest = dataclasses.replace(SOURCE, author="Potato Farmer")
+
+    report = apply(src_target, SOURCE, content_only_dest, DEFAULT_RULES)
+
+    assert report.renamed == []
 
 
 def test_nested_token_bearing_paths_rename_fully(src_target: Path):

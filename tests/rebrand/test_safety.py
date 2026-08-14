@@ -29,6 +29,7 @@ from template_press.rebrand.safety import (
     owned_sandbox,
     refuse_unsafe_root,
     rename_noreplace,
+    rename_noreplace_best_effort,
     safe_mkdir,
     safe_rename,
     safe_write,
@@ -209,6 +210,67 @@ def test_rename_noreplace_preserves_existing_destination(tmp_path: Path) -> None
     with pytest.raises(FileExistsError):
         rename_noreplace(source, destination)
 
+    assert source.read_text(encoding="utf-8") == "source\n"
+    assert destination.read_text(encoding="utf-8") == "destination\n"
+
+
+def test_rename_noreplace_executes_without_capability_reprobe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("source\n", encoding="utf-8")
+    monkeypatch.setattr(
+        safety,
+        "require_rename_noreplace_support",
+        lambda _source: pytest.fail("execution repeated capability probe"),
+    )
+
+    rename_noreplace(source, destination)
+
+    assert destination.read_text(encoding="utf-8") == "source\n"
+    assert not source.exists()
+
+
+def test_best_effort_rename_preserves_existing_destination(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("source\n", encoding="utf-8")
+    destination.write_text("destination\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        rename_noreplace_best_effort(source, destination)
+
+    assert source.read_text(encoding="utf-8") == "source\n"
+    assert destination.read_text(encoding="utf-8") == "destination\n"
+
+
+def test_best_effort_rename_detects_destination_injected_before_final_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from template_press.rebrand import safety
+
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("source\n", encoding="utf-8")
+    real_lstat = safety.os.lstat
+    injected = False
+
+    def inject_destination(path: Path) -> os.stat_result:
+        nonlocal injected
+        if Path(path) == destination and not injected:
+            destination.write_text("destination\n", encoding="utf-8")
+            injected = True
+        return real_lstat(path)
+
+    monkeypatch.setattr(safety.os, "lstat", inject_destination)
+
+    with pytest.raises(FileExistsError):
+        rename_noreplace_best_effort(source, destination)
+
+    assert injected
     assert source.read_text(encoding="utf-8") == "source\n"
     assert destination.read_text(encoding="utf-8") == "destination\n"
 

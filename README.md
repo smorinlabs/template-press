@@ -82,9 +82,9 @@ The exit code is the contract:
 |------|---------|
 | `0` | Verified — rebrand complete, no source identity remains, receipt written. |
 | `1` | Leaks found after applying. No receipt; restore with `git -C <target> checkout . && git clean -fd`. |
-| `2` | Precondition/config error (missing target, dirty tree, identity mismatch, existing receipt without `--force`). Nothing written. |
+| `2` | Precondition/config error (missing target, dirty tree, identity mismatch, existing receipt without `--force`, or unavailable atomic rename without `--force`). Nothing written. |
 
-`--dry-run` exits `0` after printing the plan without touching the target (no receipt).
+`--dry-run` exits `0` after printing the plan without touching the target (no receipt). It warns on a statically unsupported host; target-filesystem capability is probed only during real apply. Forced apply uses a guarded non-atomic fallback and warns about its destination-overwrite race.
 
 ## Documentation
 

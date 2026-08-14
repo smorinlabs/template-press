@@ -24,8 +24,10 @@ from template_press.rebrand.config import (
 from template_press.rebrand.discovery import discover, mismatches
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import (
+    RenamePreflight,
     apply,
     build_plan,
+    preflight_rename_noreplace,
     rendered_replace_rules,
     stray_press_dirs,
 )
@@ -249,7 +251,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-config", type=Path, dest="source_config")
     parser.add_argument("--accept-discovery", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "override safety guards, including an existing receipt or "
+            "unavailable atomic rename support"
+        ),
+    )
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument(
         "--verbose",
@@ -310,6 +319,39 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         plan = build_plan(target, source, dest, rules)
+        rename_preflight = preflight_rename_noreplace(
+            target,
+            plan.renames,
+            allow_unsafe=True,
+            operational=not args.dry_run,
+        )
+        if not rename_preflight.atomic:
+            print(
+                "warning: planned path renames cannot use atomic "
+                "no-replacement protection",
+                file=sys.stderr,
+            )
+            for problem in rename_preflight.problems:
+                print(f"  {problem}", file=sys.stderr)
+            if args.dry_run:
+                print(
+                    "warning: dry-run remains read-only; a real apply requires "
+                    "--force to accept the overwrite risk",
+                    file=sys.stderr,
+                )
+            elif args.force:
+                print(
+                    "warning: proceeding because --force permits a guarded "
+                    "non-atomic fallback; a destination created during the "
+                    "final race window may be overwritten",
+                    file=sys.stderr,
+                )
+            else:
+                return _fail(
+                    "refusing a non-atomic rename; re-run with --force only "
+                    "if you accept the risk that a concurrently created "
+                    "destination may be overwritten"
+                )
         # Plan-time gates for both declared mechanisms (P04 D1/D2/D5, P05
         # D5): output/target state, stale path-bearing argv against THIS
         # plan's rename set, executable resolution under the deny-by-default
@@ -379,6 +421,8 @@ def main(argv: list[str] | None = None) -> int:
         rules,
         regen_plans,
         [(preview.rule, preview.stub_text) for preview in reset_previews],
+        rename_preflight=rename_preflight,
+        allow_unsafe_rename=args.force,
     )
     return 1 if (outcome.env_error is not None or outcome.leaked) else 0
 
@@ -404,6 +448,9 @@ def _press(
     rules: Rules,
     regen_plans: list[RegenerationPlan],
     resets: list[tuple[ResetRule, str]],
+    *,
+    rename_preflight: RenamePreflight | None = None,
+    allow_unsafe_rename: bool = False,
 ) -> PressOutcome:
     report = None
     try:
@@ -411,7 +458,14 @@ def _press(
         # SOURCE coordinates before the rename pass moves anything. A raise
         # here aborts the press (no receipt) — git is the undo button.
         reset_done = apply_resets(target, resets)
-        report = apply(target, source, dest, rules)
+        report = apply(
+            target,
+            source,
+            dest,
+            rules,
+            allow_unsafe_rename=allow_unsafe_rename,
+            rename_preflight=rename_preflight,
+        )
         report.reset.extend(reset_done)
         # Declared commands run against the FINAL tree: declared paths are
         # translated through the apply-time rename report (P04 D1). The
