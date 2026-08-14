@@ -7,7 +7,7 @@ import pytest
 
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import apply
-from template_press.rebrand.identity import Identity
+from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, Rules
 
 from .conftest import DEST, SOURCE, posix_only, requires_symlink
@@ -776,31 +776,32 @@ class TestRuleScopeMigratedByAncestorRename:
         rules = _rules_with(replace=(rule,))
         return rule, rules
 
-    def test_apply_leaves_stale_filename_after_ancestor_renamed_first(
+    def test_apply_refuses_scope_migration_before_ancestor_rename(
         self, src_target: Path
     ):
-        """Establishes the precondition (0008 limitation, unfixed): the dir
-        renames on pass 1, the file's rule-driven rename is missed, and
-        `report.renamed` records the ancestor rename that caused it."""
+        """P06 rejects the formerly accepted order-dependent pipeline."""
         _rule, rules = self._seed(src_target)
         src = _identity()
         dst = _identity(app_name="acme")
-        report = apply(src_target, src, dst, rules)
-        assert (src_target / "acme_docs" / "_plbp_guide.md").exists()
-        assert ("plbp_docs", "acme_docs") in report.renamed
+
+        with pytest.raises(ValidationError, match="path dependency"):
+            apply(src_target, src, dst, rules)
+
+        assert (src_target / "plbp_docs" / "_plbp_guide.md").exists()
+        assert not (src_target / "acme_docs").exists()
 
     def test_leak_detected_when_renamed_is_threaded_through(self, src_target: Path):
-        rule, rules = self._seed(src_target)
+        rule, _rules = self._seed(src_target)
         src = _identity()
         dst = _identity(app_name="acme")
-        report = apply(src_target, src, dst, rules)
+        (src_target / "plbp_docs").rename(src_target / "acme_docs")
         leaks = find_leaks(
             src_target,
             src,
             DEFAULT_RULES,
             dest=dst,
             rendered_rules=[(rule, "_plbp_guide.md", "_acme_guide.md")],
-            renamed=report.renamed,
+            renamed=[("plbp_docs", "acme_docs")],
         )
         assert any(
             lk.path == "acme_docs/_plbp_guide.md"
@@ -814,10 +815,10 @@ class TestRuleScopeMigratedByAncestorRename:
         """RED: the exact same leftover, scanned WITHOUT `renamed` threaded
         through, is invisible — proving `renamed` is load-bearing, not just
         harmless plumbing."""
-        rule, rules = self._seed(src_target)
+        rule, _rules = self._seed(src_target)
         src = _identity()
         dst = _identity(app_name="acme")
-        apply(src_target, src, dst, rules)
+        (src_target / "plbp_docs").rename(src_target / "acme_docs")
         leaks = find_leaks(
             src_target,
             src,
