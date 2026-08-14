@@ -106,7 +106,7 @@ def _is_exact_scope(files: tuple[str, ...]) -> bool:
     )
 
 
-def _content_scopes_overlap(left: PipelineCandidate, right: PipelineCandidate) -> bool:
+def _rewrite_scopes_overlap(left: PipelineCandidate, right: PipelineCandidate) -> bool:
     if not left.files or not right.files:
         return True
     if not (_is_exact_scope(left.files) and _is_exact_scope(right.files)):
@@ -198,7 +198,7 @@ def _normalize(
 
 
 def _validate_ambiguity(
-    candidates: tuple[PipelineCandidate, ...], *, has_initial_paths: bool
+    candidates: tuple[PipelineCandidate, ...], *, target_paths_known: bool
 ) -> None:
     for index, left in enumerate(candidates):
         for right in candidates[index + 1 :]:
@@ -217,11 +217,11 @@ def _validate_ambiguity(
                 "replace:"
             ):
                 continue
-            if shared == frozenset({"content"}) and not _content_scopes_overlap(
+            if shared == frozenset({"content"}) and not _rewrite_scopes_overlap(
                 left, right
             ):
                 continue
-            if "path" in shared and has_initial_paths:
+            if "path" in shared and target_paths_known:
                 # Exact target paths provide the stronger shared-prefix and
                 # reachability proof below.  Defer scoped path candidates so
                 # disjoint leaves are not rejected from glob syntax alone.
@@ -239,7 +239,7 @@ def _validate_ambiguity(
 
 
 def _path_graph(
-    candidates: tuple[PipelineCandidate, ...], *, has_initial_paths: bool
+    candidates: tuple[PipelineCandidate, ...], *, target_paths_known: bool
 ) -> dict[int, set[int]]:
     graph = {index: set() for index in range(len(candidates))}
     for producer_index, producer in enumerate(candidates):
@@ -249,7 +249,7 @@ def _path_graph(
             if "path" not in receiver.rewrite_surfaces:
                 continue
             if (
-                has_initial_paths
+                target_paths_known
                 and _is_exact_scope(producer.files)
                 and _is_exact_scope(receiver.files)
                 and set(producer.files).isdisjoint(receiver.files)
@@ -292,7 +292,7 @@ def _find_cycle(graph: dict[int, set[int]]) -> tuple[int, ...] | None:
 
 
 def _validate_dependencies(
-    candidates: tuple[PipelineCandidate, ...], *, has_initial_paths: bool
+    candidates: tuple[PipelineCandidate, ...], *, target_paths_known: bool
 ) -> None:
     for producer_index, producer in enumerate(candidates):
         if "content" not in producer.rewrite_surfaces:
@@ -309,7 +309,7 @@ def _validate_dependencies(
                 or "content" not in receiver.rewrite_surfaces
             ):
                 continue
-            if not _content_scopes_overlap(producer, receiver):
+            if not _rewrite_scopes_overlap(producer, receiver):
                 continue
             if producer_index < receiver_index and _matches(
                 receiver, producer.to_value
@@ -329,7 +329,7 @@ def _validate_dependencies(
                     "intermediate identity"
                 )
 
-    graph = _path_graph(candidates, has_initial_paths=has_initial_paths)
+    graph = _path_graph(candidates, target_paths_known=target_paths_known)
     cycle = _find_cycle(graph)
     if cycle is not None:
         details = " -> ".join(_describe(candidates[index]) for index in cycle)
@@ -343,6 +343,47 @@ def _validate_dependencies(
             f"{candidates[producer_index].to_value!r}, which is consumed by "
             f"{_describe(candidates[receiver_index])}"
         )
+
+
+def _validate_symlink_dependencies(
+    candidates: tuple[PipelineCandidate, ...],
+) -> None:
+    """Reject ordered dependencies in relative symlink target text."""
+
+    # Relative symlink targets are a third ordered rewrite surface. Runtime
+    # applies paths=true declared rules first, then every non-display identity
+    # row to the same link text. Model that order independently from content
+    # and pathname-component rewriting so those rows cannot silently consume
+    # one another's output. Pathname diagnostics stay first for configurations
+    # already refused by the pre-existing path model.
+    for producer_index, producer in enumerate(candidates):
+        if "symlink" not in producer.rewrite_surfaces:
+            continue
+        for receiver_index, receiver in enumerate(candidates):
+            if (
+                receiver_index == producer_index
+                or "symlink" not in receiver.rewrite_surfaces
+            ):
+                continue
+            if not _rewrite_scopes_overlap(producer, receiver):
+                continue
+            if producer_index < receiver_index and _matches(
+                receiver, producer.to_value
+            ):
+                raise ValidationError(
+                    f"ordered symlink dependency: {_describe(producer)} emits "
+                    f"{producer.to_value!r}, which is consumed by "
+                    f"{_describe(receiver)}"
+                )
+            if producer_index > receiver_index and _matches(
+                receiver, producer.to_value
+            ):
+                raise ValidationError(
+                    f"stale-source emission in symlink targets: "
+                    f"{_describe(producer)} emits the earlier source of "
+                    f"{_describe(receiver)} in {producer.to_value!r}; press "
+                    "in two steps via an intermediate identity"
+                )
 
 
 def _validate_stability_sinks(
@@ -523,14 +564,22 @@ def _validate_target_paths(
 def validate_pipeline(
     candidates: tuple[PipelineCandidate, ...],
     *,
-    initial_paths: tuple[str, ...] = (),
+    initial_paths: tuple[str, ...] | None = None,
     stability_sinks: tuple[StabilitySink, ...] = (),
 ) -> tuple[PipelineCandidate, ...]:
-    """Normalize candidates and reject every unstable ordered pipeline."""
+    """Normalize candidates and reject every unstable ordered pipeline.
+
+    ``None`` means no target-path evidence is available, so path-scope
+    relationships fail closed. An explicit tuple, including an empty tuple,
+    is an authoritative target inventory and enables target-aware proofs.
+    """
 
     normalized = _normalize(candidates)
-    _validate_ambiguity(normalized, has_initial_paths=bool(initial_paths))
-    _validate_dependencies(normalized, has_initial_paths=bool(initial_paths))
+    target_paths_known = initial_paths is not None
+    target_paths = initial_paths or ()
+    _validate_ambiguity(normalized, target_paths_known=target_paths_known)
+    _validate_dependencies(normalized, target_paths_known=target_paths_known)
     _validate_stability_sinks(normalized, stability_sinks)
-    _validate_target_paths(normalized, initial_paths)
+    _validate_target_paths(normalized, target_paths)
+    _validate_symlink_dependencies(normalized)
     return normalized

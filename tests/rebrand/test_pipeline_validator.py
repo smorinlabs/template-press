@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from template_press.rebrand import cli as cli_module
@@ -18,7 +20,7 @@ from template_press.rebrand.pipeline import (
 )
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, Rules
 
-from .conftest import SOURCE
+from .conftest import SOURCE, requires_symlink
 
 
 def _candidate(
@@ -195,6 +197,27 @@ def test_same_exact_path_scope_cannot_choose_two_destinations() -> None:
     assert "second" in message and "test:second" in message
 
 
+def test_known_empty_target_allows_disjoint_exact_path_scopes() -> None:
+    first = _candidate(
+        "first",
+        "old",
+        "one",
+        surfaces=frozenset({"path"}),
+        files=("left/old.txt",),
+    )
+    second = _candidate(
+        "second",
+        "old",
+        "two",
+        surfaces=frozenset({"path"}),
+        files=("right/old.txt",),
+    )
+
+    with pytest.raises(ValidationError, match="different destinations"):
+        validate_pipeline((first, second))
+    assert validate_pipeline((first, second), initial_paths=()) == (first, second)
+
+
 def test_wildcard_content_scopes_remain_conservatively_overlapping() -> None:
     first = _candidate("first", "old", "one", files=("src/*.txt",))
     second = _candidate("second", "old", "two", files=("tests/*.txt",))
@@ -214,6 +237,26 @@ def test_ordered_content_output_dependency_is_rejected() -> None:
     assert "ordered content dependency" in message
     assert "first" in message and "rule:first" in message
     assert "second" in message and "rule:second" in message
+
+
+def test_ordered_symlink_output_dependency_is_rejected() -> None:
+    first = _candidate(
+        "first",
+        "alpha",
+        "bravo",
+        surfaces=frozenset({"symlink"}),
+        provenance=("rule:first",),
+    )
+    second = _candidate(
+        "second",
+        "bravo",
+        "charlie",
+        surfaces=frozenset({"symlink"}),
+        provenance=("identity:author",),
+    )
+
+    with pytest.raises(ValidationError, match="ordered symlink dependency"):
+        validate_pipeline((first, second))
 
 
 def test_content_output_cannot_emit_an_earlier_source() -> None:
@@ -648,6 +691,7 @@ def test_build_plan_calls_the_shared_pipeline_validator(
         ReplaceRule(
             pattern="{owner}-owned",
             reason="literal matcher probe",
+            files=["README.md"],
             paths=False,
         )
     )
@@ -673,6 +717,7 @@ def test_build_plan_calls_the_shared_pipeline_validator(
     )
     assert owner.matcher == MatcherSpec("conservative", "owner", False)
     assert declared.matcher == MatcherSpec("literal", None, False)
+    assert declared.files == ("README.md",)
     assert "README.md" in initial_paths
     assert any(sink.sink_id == "destination:author" for sink in stability_sinks)
 
@@ -784,6 +829,29 @@ def test_build_plan_rejects_identity_output_emitting_earlier_rule_source(
         build_plan(src_target, source, destination, rules)
 
 
+@requires_symlink
+def test_build_plan_rejects_rule_output_consumed_in_symlink_target(
+    src_target,
+) -> None:
+    link = src_target / "link"
+    os.symlink("xold", link)
+    rules = _rules(
+        ReplaceRule(
+            pattern="x{owner}",
+            reason="retarget dangling symlink",
+            paths=True,
+            content=False,
+        )
+    )
+    source = _identity(owner="old", author="xnew")
+    destination = _identity(owner="new", author="zed")
+
+    with pytest.raises(ValidationError, match="ordered symlink dependency"):
+        build_plan(src_target, source, destination, rules)
+
+    assert os.readlink(link) == "xold"
+
+
 def test_build_plan_rejects_token_in_unchanged_destination_field(src_target) -> None:
     source = _identity(app_name="foo", author="foo owner")
     destination = _identity(app_name="bar", author="foo owner")
@@ -888,6 +956,28 @@ def test_press_reuses_target_validated_disjoint_path_rules(
     assert outcome.env_error is None
     assert (src_target / "a" / "one" / "left.txt").is_file()
     assert (src_target / "b" / "fzz" / "right.txt").is_file()
+
+
+def test_press_fallback_returns_validation_error_before_writes(
+    src_target, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rules = _rules(
+        ReplaceRule(
+            pattern="legacy_{app_name}",
+            reason="earlier declared source",
+            paths=False,
+        )
+    )
+    source = _identity(app_name="old")
+    destination = _identity(app_name="legacy_old")
+    before = (src_target / "README.md").read_text(encoding="utf-8")
+
+    outcome = cli_module._press(src_target, source, destination, rules, [], [])
+
+    assert outcome.env_error is not None
+    assert outcome.renamed == []
+    assert (src_target / "README.md").read_text(encoding="utf-8") == before
+    assert "nothing applied" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

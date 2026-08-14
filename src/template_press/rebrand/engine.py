@@ -541,12 +541,10 @@ def _rendered_replace_declarations(
     on the very next pass (pattern ``"{app_name}x"`` with app_name ``a`` ->
     ``ax``: FROM ``"ax"`` is a substring of TO ``"axx"``, so ``a.txt`` ->
     ``ax.txt`` -> ``axx.txt`` -> ... never converges). Caught here at plan
-    time — mirrors the substring self-embedding collision guard (the CLI's
-    ``_collisions`` preflight) but for rule literals rather than identity
-    fields.
+    time through the shared validator, before any mutation.
 
-    A rule's rendered TO is checked for STABILITY against the later token
-    pass: ``[[replace]]`` rules run BEFORE the token pass
+    A rule's rendered TO is checked for STABILITY against later rows by the
+    shared pipeline validator: ``[[replace]]`` rules run BEFORE the token pass
     (``_apply_replacements``/``_renamed_rel``), so a rule's rendered output
     is itself subject to that later pass. The check inspects the FULL
     rendered TO — not just its static (non-placeholder) segments — because a
@@ -619,7 +617,11 @@ def _pipeline_inputs(
         rule_by_id[row_id] = (rule, frm, to)
         surfaces = frozenset(
             surface
-            for surface, enabled in (("content", rule.content), ("path", rule.paths))
+            for surface, enabled in (
+                ("content", rule.content),
+                ("path", rule.paths),
+                ("symlink", rule.paths),
+            )
             if enabled
         )
         candidates.append(
@@ -629,7 +631,7 @@ def _pipeline_inputs(
                 to_value=to,
                 rewrite_surfaces=surfaces,
                 matcher=MatcherSpec("literal", None, False),
-                files=rule.files,
+                files=tuple(rule.files),
                 provenance=(
                     f"replace[{declaration_index}] pattern={rule.pattern!r} "
                     f"reason={rule.reason!r}",
@@ -653,14 +655,17 @@ def _pipeline_inputs(
         row_id = f"identity:{index}:{tag}"
         pair_by_id[row_id] = pair
         identity_candidate_by_values[(cur, repl)] = len(candidates)
+        identity_surfaces = {"content"}
+        if tag in RENAME_FIELDS:
+            identity_surfaces.add("path")
+        if not tag.startswith("display_name_"):
+            identity_surfaces.add("symlink")
         candidates.append(
             PipelineCandidate(
                 row_id=row_id,
                 from_value=cur,
                 to_value=repl,
-                rewrite_surfaces=frozenset(
-                    {"content", "path"} if tag in RENAME_FIELDS else {"content"}
-                ),
+                rewrite_surfaces=frozenset(identity_surfaces),
                 matcher=MatcherSpec(
                     "conservative", tag, tag in rules.substring_rewrite_fields
                 ),
@@ -678,7 +683,7 @@ def _validated_replacements(
     dest: Identity,
     rules: Rules,
     *,
-    initial_paths: tuple[str, ...] = (),
+    initial_paths: tuple[str, ...] | None = None,
 ) -> tuple[list[tuple[str, str, str]], list[tuple[ReplaceRule, str, str]]]:
     candidates, pair_by_id, rule_by_id = _pipeline_inputs(source, dest, rules)
     destination_values = dest.as_dict()

@@ -31,11 +31,8 @@ from template_press.rebrand.engine import (
     stray_press_dirs,
 )
 from template_press.rebrand.identity import (
-    DISPLAY_FORM_NAMES,
     Identity,
     ValidationError,
-    display_forms,
-    token_occurs,
 )
 from template_press.rebrand.receipt import (
     RECEIPT_REL,
@@ -162,73 +159,6 @@ def _resolve_source(
             print(f"  {p}")
         return 2
     return source, write_pending
-
-
-def _expand_display_forms(values: dict[str, str]) -> dict[str, str]:
-    """Replace a raw ``display_name`` entry with its per-form expansions.
-
-    Mirrors ``replacement_pairs``' display-form handling (engine.py):
-    runtime pair tags are ``display_name_spaced/pascal/camel``, never bare
-    ``display_name``, so comparing raw dict values alone can miss a derived
-    form that embeds a changed source token. Uses the full
-    ``DISPLAY_FORM_NAMES`` set (not a rules-configured subset) — a subset
-    only narrows what gets REWRITTEN; this preflight stays conservative and
-    checks every form regardless.
-    """
-    if "display_name" not in values:
-        return values
-    expanded = {k: v for k, v in values.items() if k != "display_name"}
-    forms = display_forms(values["display_name"])
-    for form in DISPLAY_FORM_NAMES:
-        expanded[f"display_name_{form}"] = forms[form]
-    return expanded
-
-
-def _collisions(
-    source: Identity,
-    dest: Identity,
-    substring_fields: frozenset[str] = frozenset(),
-) -> list[str]:
-    """Destination values that embed a CHANGED source token.
-
-    Sequential substitution would re-rewrite such output (old app name
-    becoming the new package name chains two replacements), and the doctor
-    would flag correct output as a leak (press → press_two). Refusing up
-    front with guidance beats either silent corruption or a permanent
-    verification failure.
-
-    Both identities are expanded the same way ``replacement_pairs`` expands
-    them (Fix F3): a raw ``display_name`` entry is replaced by its exact
-    per-form values, so a destination display name whose DERIVED form (e.g.
-    the camel form of "Plbp" is "plbp") embeds a changed source token is
-    caught even though the raw display name never contains it verbatim.
-
-    ``substring_fields`` (Fix F4) — the target's ``[rules]
-    substring_rewrite_fields`` — mirrors what the engine will actually do to
-    a changed field opted into substring mode: it rewrites that field
-    SUBSTRING-wide, with no word-boundary guard, so a destination value that
-    embeds the source token WITHOUT a boundary (e.g. dest repo_name
-    "myfoo-tools" embedding source app_name "foo") is just as much a
-    collision as a boundary-guarded one — checked via plain ``in`` instead of
-    the boundary-guarded ``token_occurs``.
-    """
-    out: list[str] = []
-    src = _expand_display_forms(source.as_dict())
-    dst = _expand_display_forms(dest.as_dict())
-    changed = {f: v for f, v in src.items() if v != dst.get(f)}
-    for dest_field, dest_value in dst.items():
-        for src_field, src_value in changed.items():
-            hit = (
-                src_value in dest_value
-                if src_field in substring_fields
-                else token_occurs(dest_value, src_field, src_value)
-            )
-            if hit:
-                out.append(
-                    f"destination {dest_field}={dest_value!r} contains the "
-                    f"source {src_field} token {src_value!r}"
-                )
-    return out
 
 
 def display_name_problem(source: Identity, dest: Identity) -> str | None:
@@ -448,10 +378,19 @@ def _press(
     allow_unsafe_rename: bool = False,
     rendered_rules: list[tuple[ReplaceRule, str, str]] | None = None,
 ) -> PressOutcome:
+    if rendered_rules is None:
+        try:
+            rendered_rules = build_plan(target, source, dest, rules).rendered_rules
+        except (
+            ValidationError,
+            OSError,
+            subprocess.CalledProcessError,
+            SafetyError,
+        ) as exc:
+            print(f"error: {exc} — nothing applied", file=sys.stderr)
+            return PressOutcome(False, [], [], env_error=str(exc))
     report = None
     try:
-        if rendered_rules is None:
-            rendered_rules = build_plan(target, source, dest, rules).rendered_rules
         # Reset takes position ZERO (P05 D5): declared paths are consumed in
         # SOURCE coordinates before the rename pass moves anything. A raise
         # here aborts the press (no receipt) — git is the undo button.
