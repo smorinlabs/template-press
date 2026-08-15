@@ -1261,10 +1261,13 @@ def _retarget_planned_symlinks(
             link = readlink_nofollow(path)
         except OSError as exc:
             raise SafetyError(f"symlink changed after capture: {source_rel}") from exc
-        if link != expected_links[source_rel]:
+        expected_link = expected_links.get(source_rel)
+        if expected_link is None:
+            raise SafetyError(f"symlink was not captured during planning: {source_rel}")
+        if link != expected_link:
             raise SafetyError(
                 f"symlink changed after capture: {source_rel} "
-                f"(expected {expected_links[source_rel]!r}, found {link!r})"
+                f"(expected {expected_link!r}, found {link!r})"
             )
         if os.path.isabs(link):
             continue

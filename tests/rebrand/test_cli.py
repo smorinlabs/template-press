@@ -1106,6 +1106,41 @@ def test_press_outcome_env_error_on_apply_ioerror(tmp_path: Path, monkeypatch):
     assert code == 1
 
 
+def test_press_outcome_env_error_on_declared_rule_compilation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A supplied table's rendered-rule validation stays inside the CLI guard."""
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.identity import ValidationError
+    from template_press.rebrand.rules import load_rules
+
+    from .conftest import make_target
+
+    target = make_target(tmp_path / "direct", layout="src")
+    write_source_config(target)
+    rules = load_rules(target)
+    plan = cli_mod.build_plan(target, SOURCE, DEST, rules)
+    assert plan.table is not None
+
+    def reject(_table):
+        raise ValidationError("invalid rendered rule")
+
+    monkeypatch.setattr(cli_mod, "declared_rule_triples", reject)
+
+    outcome = cli_mod._press(
+        target,
+        SOURCE,
+        DEST,
+        rules,
+        [],
+        [],
+        table=plan.table,
+    )
+
+    assert outcome.env_error == "invalid rendered rule"
+    assert outcome.renamed == []
+
+
 def test_press_outcome_env_error_on_receipt_write_failure(tmp_path: Path, monkeypatch):
     """A post-verification receipt-write failure is still an env failure."""
     from template_press.rebrand import cli as cli_mod

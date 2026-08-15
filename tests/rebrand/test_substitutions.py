@@ -143,12 +143,14 @@ def test_substring_identity_hunts_preserve_the_effective_flag() -> None:
     row = _row(table, "app_name")
 
     assert row.matcher.substring is True
-    for policy in row.hunts:
-        if (
-            policy.matcher.algorithm == "paranoid"
-            and policy.matcher.identity_field == "app_name"
-        ):
-            assert policy.matcher.substring is True
+    paranoid_policies = tuple(
+        policy
+        for policy in row.hunts
+        if policy.matcher.algorithm == "paranoid"
+        and policy.matcher.identity_field == "app_name"
+    )
+    assert paranoid_policies
+    assert all(policy.matcher.substring is True for policy in paranoid_policies)
 
 
 def test_disabled_display_forms_have_hunts_but_no_rewrite_or_doctor_policy() -> None:

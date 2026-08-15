@@ -8,13 +8,23 @@ from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.engine import apply, build_plan
+from template_press.rebrand.engine import (
+    ApplyReport,
+    _retarget_planned_symlinks,
+    apply,
+    build_plan,
+)
+from template_press.rebrand.inventory import SurfaceEntry
 from template_press.rebrand.reset import preflight_reset_targets
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, ResetRule
 from template_press.rebrand.safety import SafetyError
-from template_press.rebrand.substitutions import validate_reset_visibility
+from template_press.rebrand.substitutions import (
+    RenamePlan,
+    SubstitutionTable,
+    validate_reset_visibility,
+)
 
-from .conftest import DEST, SOURCE
+from .conftest import DEST, SOURCE, requires_symlink
 
 
 def _git(target: Path, *args: str) -> str:
@@ -30,6 +40,30 @@ def _exclude_without_identity(target: Path, pattern: str) -> None:
     info_exclude = target / ".git" / "info" / "exclude"
     with info_exclude.open("a", encoding="utf-8") as stream:
         stream.write(f"\n{pattern}\n")
+
+
+@requires_symlink
+def test_retarget_refuses_symlink_missing_from_planning_inputs(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    link = target / "link"
+    link.symlink_to("destination")
+    table = SubstitutionTable(
+        rows=(),
+        rename_plan=RenamePlan(
+            source_entries=(
+                SurfaceEntry(
+                    rel=Path("link"),
+                    tracked=True,
+                    index_kind="symlink",
+                    worktree_kind="symlink",
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(SafetyError, match="not captured during planning"):
+        _retarget_planned_symlinks(target, table, ApplyReport())
 
 
 def test_prefix_closure_refuses_ignored_untracked_descendant(

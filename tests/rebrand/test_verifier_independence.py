@@ -49,10 +49,25 @@ def _local_imports(module: str) -> set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imports.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            imports.add(node.module)
-            if node.module == PACKAGE:
-                imports.update(f"{PACKAGE}.{alias.name}" for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported_module = node.module
+            if node.level:
+                package_parts = module.split(".")[:-1]
+                retained_parts = len(package_parts) - node.level + 1
+                if retained_parts <= 0:
+                    continue
+                relative_parts = (
+                    imported_module.split(".") if imported_module is not None else []
+                )
+                imported_module = ".".join(
+                    (*package_parts[:retained_parts], *relative_parts)
+                )
+            if imported_module is not None:
+                imports.add(imported_module)
+            if node.module is None or imported_module == PACKAGE:
+                imports.update(
+                    f"{imported_module}.{alias.name}" for alias in node.names
+                )
     return {name for name in imports if _module_path(name) is not None}
 
 
@@ -72,6 +87,19 @@ def test_verifier_import_closure_excludes_table_consumers() -> None:
     closure = _transitive_imports(f"{PACKAGE}.verifier")
 
     assert closure.isdisjoint(FORBIDDEN), sorted(closure & FORBIDDEN)
+
+
+def test_local_imports_resolves_relative_modules(tmp_path: Path, monkeypatch) -> None:
+    package_root = tmp_path / "rebrand"
+    package_root.mkdir()
+    (package_root / "verifier.py").write_text(
+        "from .substitutions import SubstitutionTable\n",
+        encoding="utf-8",
+    )
+    (package_root / "substitutions.py").write_text("", encoding="utf-8")
+    monkeypatch.setitem(globals(), "PACKAGE_ROOT", package_root)
+
+    assert _local_imports(f"{PACKAGE}.verifier") == {f"{PACKAGE}.substitutions"}
 
 
 def test_verifier_scan_boundary_rejects_precompiled_substitution_data() -> None:

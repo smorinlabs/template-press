@@ -387,21 +387,21 @@ def _press(
     rendered_rules: list[tuple[ReplaceRule, str, str]] | None = None,
     table: SubstitutionTable | None = None,
 ) -> PressOutcome:
-    if table is None:
-        try:
+    try:
+        if table is None:
             fallback_plan = build_plan(target, source, dest, rules)
             rendered_rules = fallback_plan.rendered_rules
             table = fallback_plan.table
-        except (
-            ValidationError,
-            OSError,
-            subprocess.CalledProcessError,
-            SafetyError,
-        ) as exc:
-            print(f"error: {exc} — nothing applied", file=sys.stderr)
-            return PressOutcome(False, [], [], env_error=str(exc))
-    elif rendered_rules is None:
-        rendered_rules = declared_rule_triples(table)
+        elif rendered_rules is None:
+            rendered_rules = declared_rule_triples(table)
+    except (
+        ValidationError,
+        OSError,
+        subprocess.CalledProcessError,
+        SafetyError,
+    ) as exc:
+        print(f"error: {exc} — nothing applied", file=sys.stderr)
+        return PressOutcome(False, [], [], env_error=str(exc))
     report = None
     try:
         if table is None:

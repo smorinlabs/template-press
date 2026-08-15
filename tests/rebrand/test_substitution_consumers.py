@@ -26,6 +26,7 @@ from template_press.rebrand.rules import (
     ReplaceRule,
     ResetRule,
 )
+from template_press.rebrand.substitutions import RenamePlan
 from template_press.rebrand.verifier import scan
 
 from .conftest import DEST, SOURCE, requires_symlink
@@ -88,6 +89,40 @@ def test_nested_reset_and_regeneration_paths_use_final_table_location(
         table=plan.table,
     )
     assert final_problems == []
+
+
+def test_doctor_reverse_translates_each_entry_once(
+    src_target: Path, monkeypatch
+) -> None:
+    plan = build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+    assert plan.table is not None
+    assert all(
+        entry.worktree_kind != "symlink"
+        for entry in plan.table.rename_plan.source_entries
+    )
+    real_reverse_translate = RenamePlan.reverse_translate
+    calls = 0
+
+    def counted_reverse_translate(self, posix, *, executed_step_ids=None):
+        nonlocal calls
+        calls += 1
+        return real_reverse_translate(
+            self,
+            posix,
+            executed_step_ids=executed_step_ids,
+        )
+
+    monkeypatch.setattr(RenamePlan, "reverse_translate", counted_reverse_translate)
+
+    find_leaks(
+        src_target,
+        SOURCE,
+        DEFAULT_RULES,
+        dest=DEST,
+        table=plan.table,
+    )
+
+    assert 0 < calls <= len(plan.table.rename_plan.source_entries)
 
 
 @requires_symlink
@@ -188,13 +223,17 @@ def test_new_declared_row_drives_doctor_reset_and_regeneration_hunts(
             table=plan.table,
         )
     )
-    assert scan_reset_path(
+    reset_path_problems = scan_reset_path(
         "docs/xpressowned.md",
         "docs/xpressowned.md",
         source=SOURCE,
         dest=DEST,
         rules=rules,
         table=plan.table,
+    )
+    assert any(
+        "rendered [[replace]] literal 'xpressowned'" in problem
+        for problem in reset_path_problems
     )
     regeneration_problems = scan_regenerated_output(
         "xpressowned\n",
@@ -253,7 +292,8 @@ def test_substring_identity_hunts_cover_reset_and_regeneration_surfaces(
         table=plan.table,
     )
     assert any(
-        "output still carries source app_name" in item for item in regeneration_problems
+        "output still carries source app_name 'press' (1 occurrence(s))" in item
+        for item in regeneration_problems
     )
     assert any(
         "its path" in item and "app_name" in item for item in regeneration_problems

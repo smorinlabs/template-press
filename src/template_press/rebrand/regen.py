@@ -538,8 +538,15 @@ def scan_regenerated_output(
                 )
             else:
                 field = policy.matcher.identity_field or row.provenance[0].name
+                spans = find_occurrences(
+                    text,
+                    field,
+                    row.from_value,
+                    substring=policy.matcher.substring,
+                )
                 problems.append(
-                    f"output still carries source {field} {row.from_value!r}"
+                    f"output still carries source {field} {row.from_value!r} "
+                    f"({len(spans)} occurrence(s))"
                 )
         for row, policy in matching_hunts(
             table,

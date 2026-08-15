@@ -195,15 +195,20 @@ def _find_table_leaks(
         rel = entry.rel
         posix = rel.as_posix()
         path = target / rel
+        source_posix = table.rename_plan.reverse_translate(
+            posix,
+            executed_step_ids=executed,
+        )
+        scoped_hunts = tuple(
+            (row, policy)
+            for row, policy in doctor_hunts
+            if row_matches_scope(row, posix) or row_matches_scope(row, source_posix)
+        )
         for index, component in enumerate(rel.parts):
             if _is_root_press(rel, index):
                 continue
-            for row, policy in doctor_hunts:
-                if (
-                    "path" in policy.surfaces
-                    and _table_scope_hits(row, posix, table, executed)
-                    and hunt_occurs(row, policy, component)
-                ):
+            for row, policy in scoped_hunts:
+                if "path" in policy.surfaces and hunt_occurs(row, policy, component):
                     leaks.append(
                         Leak(
                             posix,
@@ -257,12 +262,8 @@ def _find_table_leaks(
             continue
         if text is None:
             continue
-        for row, policy in doctor_hunts:
-            if (
-                "content" in policy.surfaces
-                and _table_scope_hits(row, posix, table, executed)
-                and hunt_occurs(row, policy, text)
-            ):
+        for row, policy in scoped_hunts:
+            if "content" in policy.surfaces and hunt_occurs(row, policy, text):
                 leaks.append(
                     Leak(
                         posix,
