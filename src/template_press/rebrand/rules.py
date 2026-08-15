@@ -327,9 +327,9 @@ def _declared_rel_path(context: str, value: object) -> str:
 
 
 def _reject_reserved(kind: str, file: str) -> None:
-    # Deferred import: engine imports this module at load time (ROOT_CONTROL
-    # cannot move here without dragging engine's consumers along).
-    from template_press.rebrand.engine import ROOT_CONTROL
+    # Deferred import avoids a module-load cycle: pathing imports Rules for
+    # neutral scope helpers, while this validator needs the control paths.
+    from template_press.rebrand.pathing import ROOT_CONTROL
 
     if file in ROOT_CONTROL:
         raise ValidationError(

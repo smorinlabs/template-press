@@ -46,13 +46,13 @@ from template_press.rebrand.config import SOURCE_CONFIG_REL, load_source_config
 from template_press.rebrand.discovery import Discovered, discover, mismatches
 from template_press.rebrand.engine import (
     apply,
-    build_plan,
     exempt_regenerated_paths,
     scan_paths,
     translate_path,
 )
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_map
+from template_press.rebrand.inventory import capture_surface_snapshot
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.reset import load_stub_content
 from template_press.rebrand.rules import RULES_REL, Rules, load_rules
@@ -404,12 +404,6 @@ def verify_command(argv: list[str] | None = None) -> int:
     exempt: list[tuple[str, str]] = []
     try:
         synth = synthesize_dest(source)
-        # Rendered against (source, synth) — the SYNTHETIC destination verify
-        # actually presses toward — so a rule-only source form that survives
-        # an unrewriteable spot (an escaping symlink target, a stale filename
-        # left by 0008's rewrite-side scope-migration limitation) is scanned
-        # for below (Fix F1), mirroring `doctor.find_leaks`'s `rendered_rules`.
-        rendered_rules = build_plan(target, source, synth, rules).rendered_rules
         with owned_sandbox(target) as dest_root:
             sandbox = make_sandbox(target, dest_root)
             try:
@@ -424,6 +418,7 @@ def verify_command(argv: list[str] | None = None) -> int:
                     (rule, load_stub_content(sandbox.path, rule))
                     for rule in rules.reset
                 ]
+                source_snapshot = capture_surface_snapshot(sandbox.path)
                 report = apply(sandbox.path, source, synth, rules)
                 for reset_rule, stub in reset_stubs:
                     rel = translate_path(reset_rule.file, dict(report.renamed))
@@ -440,7 +435,7 @@ def verify_command(argv: list[str] | None = None) -> int:
                 fields=scan_fields,
                 substring_fields=scan_substring,
                 rules=rules,
-                rendered_rules=rendered_rules,
+                source_snapshot=source_snapshot,
                 # `report.renamed` (Fix F1) is available right here — thread
                 # it through so a rule-literal scope check can recover a
                 # scanned path/symlink-target's PRE-rename original before

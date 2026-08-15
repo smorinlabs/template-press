@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 from template_press.rebrand.identity import Identity
@@ -250,16 +251,16 @@ def test_scan_does_not_read_through_ancestor_swapped_after_inventory(
     (outside / "leaf.txt").write_text("demo_widget outside\n", encoding="utf-8")
     from template_press.rebrand import verifier
 
-    real_scan_paths = verifier.scan_paths
+    real_select = verifier.select_verifier_entries
 
-    def inventory_then_swap(target: Path, rules, renamed=()):
-        entries = real_scan_paths(target, rules, renamed)
+    def inventory_then_swap(snapshot, **kwargs):
+        entries = real_select(snapshot, **kwargs)
         nested.unlink()
         nested.parent.rmdir()
         nested.parent.symlink_to(outside, target_is_directory=True)
         return entries
 
-    monkeypatch.setattr(verifier, "scan_paths", inventory_then_swap)
+    monkeypatch.setattr(verifier, "select_verifier_entries", inventory_then_swap)
 
     findings = scan(
         src_target,
@@ -475,8 +476,7 @@ class TestRenderedRuleFindings:
             DEST,
             fields=FIELDS,
             substring_fields=NO_SUBSTRING,
-            rules=DEFAULT_RULES,
-            rendered_rules=[(rule, "xpressowned", "xpotatoowned")],
+            rules=replace(DEFAULT_RULES, replace=(rule,)),
         )
         hits = [
             f
@@ -491,6 +491,39 @@ class TestRenderedRuleFindings:
             f.path == "conftest_extra.py" and f.field == "app_name" for f in findings
         )
 
+    def test_duplicate_behavioral_rules_emit_one_finding(self, src_target: Path):
+        rules = (
+            ReplaceRule(pattern="x{app_name}owned", reason="first declaration"),
+            ReplaceRule(pattern="x{app_name}owned", reason="second declaration"),
+        )
+        (src_target / "conftest_extra.py").write_text("xpressowned\n", encoding="utf-8")
+        _git_add_all(src_target)
+
+        findings = scan(
+            src_target,
+            SOURCE,
+            DEST,
+            fields=FIELDS,
+            substring_fields=NO_SUBSTRING,
+            rules=replace(DEFAULT_RULES, replace=rules),
+        )
+
+        assert [
+            finding
+            for finding in findings
+            if finding.path == "conftest_extra.py" and finding.field == "replace_rule"
+        ] == [
+            Finding(
+                "conftest_extra.py",
+                "replace_rule",
+                "xpressowned",
+                "content",
+                1,
+                0,
+                "xpressowned",
+            )
+        ]
+
     def test_content_rule_scoped_by_files_glob(self, src_target: Path):
         rule = ReplaceRule(
             pattern="x{app_name}owned", reason="test", files=("docs/**",)
@@ -503,8 +536,7 @@ class TestRenderedRuleFindings:
             DEST,
             fields=FIELDS,
             substring_fields=NO_SUBSTRING,
-            rules=DEFAULT_RULES,
-            rendered_rules=[(rule, "xpressowned", "xpotatoowned")],
+            rules=replace(DEFAULT_RULES, replace=(rule,)),
         )
         assert not any(f.field == "replace_rule" for f in findings)
 
@@ -520,8 +552,7 @@ class TestRenderedRuleFindings:
             DEST,
             fields=FIELDS,
             substring_fields=NO_SUBSTRING,
-            rules=DEFAULT_RULES,
-            rendered_rules=[(rule, "-press.md", "-potato.md")],
+            rules=replace(DEFAULT_RULES, replace=(rule,)),
         )
         hits = [
             f
@@ -545,8 +576,7 @@ class TestRenderedRuleFindings:
             DEST,
             fields=FIELDS,
             substring_fields=NO_SUBSTRING,
-            rules=DEFAULT_RULES,
-            rendered_rules=[(rule, "-press.md", "-potato.md")],
+            rules=replace(DEFAULT_RULES, replace=(rule,)),
         )
         assert not any(f.field == "replace_rule" for f in findings)
 
@@ -570,8 +600,7 @@ class TestRenderedRuleFindings:
             DEST,
             fields=FIELDS,
             substring_fields=NO_SUBSTRING,
-            rules=DEFAULT_RULES,
-            rendered_rules=[(rule, "xpressowned", "xpotatoowned")],
+            rules=replace(DEFAULT_RULES, replace=(rule,)),
         )
         hits = [f for f in findings if f.path == "escaping-link"]
         assert any(
@@ -612,8 +641,7 @@ class TestRenderedRuleFindings:
             DEST,
             fields=FIELDS,
             substring_fields=NO_SUBSTRING,
-            rules=DEFAULT_RULES,
-            rendered_rules=[(rule, "_press_guide.md", "_potato_guide.md")],
+            rules=replace(DEFAULT_RULES, replace=(rule,)),
             renamed=[("press_docs", "potato_docs")],
         )
         hits = [
@@ -648,7 +676,6 @@ class TestRenderedRuleFindings:
             DEST,
             fields=FIELDS,
             substring_fields=NO_SUBSTRING,
-            rules=DEFAULT_RULES,
-            rendered_rules=[(rule, "_press_guide.md", "_potato_guide.md")],
+            rules=replace(DEFAULT_RULES, replace=(rule,)),
         )
         assert not any(f.field == "replace_rule" for f in findings)

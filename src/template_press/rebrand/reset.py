@@ -40,6 +40,10 @@ from template_press.rebrand.safety import (
     is_regular_lstat,
     safe_write,
 )
+from template_press.rebrand.substitutions import (
+    SubstitutionTable,
+    matching_hunts,
+)
 
 # D2 (decided 2026-07-26): the verbose preview excerpt is bounded — the
 # motivating target is a release history running to thousands of lines.
@@ -107,6 +111,7 @@ def scan_stub_text(
     dest: Identity,
     rules: Rules,
     rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
+    table: SubstitutionTable | None = None,
 ) -> list[str]:
     """Problems where the stub would RESTORE identity its reset removes.
 
@@ -116,6 +121,33 @@ def scan_stub_text(
     sides (``rendered_replace_rules`` already drops FROM == TO pairs).
     """
     problems: list[str] = []
+    if table is not None:
+        for row, policy in matching_hunts(
+            table,
+            consumer="reset_stub",
+            surface="content",
+            text=text,
+            source_scope_path=rel,
+        ):
+            if row.provenance[0].kind == "replace_rule":
+                problems.append(
+                    f"stub for {rel} contains rendered [[replace]] literal "
+                    f"{row.from_value!r} ({row.provenance[0].reason})"
+                )
+                continue
+            field = policy.matcher.identity_field or row.provenance[0].name
+            spans = find_occurrences(
+                text,
+                field,
+                row.from_value,
+                substring=policy.matcher.substring,
+            )
+            problems.append(
+                f"stub for {rel} contains source {field} {row.from_value!r} "
+                f"({len(spans)} occurrence(s)) — a stub may not restore the "
+                f"identity its reset removes"
+            )
+        return problems
     for field, value in changed_identity_pairs(source, dest):
         spans = find_occurrences(
             text, field, value, substring=field in rules.substring_rewrite_fields
@@ -152,6 +184,7 @@ def scan_reset_path(
     dest: Identity,
     rules: Rules,
     rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
+    table: SubstitutionTable | None = None,
 ) -> list[str]:
     """The planned reset-path identity scan (wave-3 3654059289).
 
@@ -162,6 +195,29 @@ def scan_reset_path(
     writes; the final apply-time recheck is retained separately.
     """
     problems: list[str] = []
+    if table is not None:
+        for row, policy in matching_hunts(
+            table,
+            consumer="reset_path",
+            surface="path",
+            text=translated,
+            source_scope_path=rel,
+        ):
+            if row.provenance[0].kind == "replace_rule":
+                problems.append(
+                    f"reset {rel}: its path after this press ({translated}) "
+                    f"carries rendered [[replace]] literal {row.from_value!r} "
+                    f"({row.provenance[0].reason})"
+                )
+                continue
+            field = policy.matcher.identity_field or row.provenance[0].name
+            problems.append(
+                f"reset {rel}: its path after this press ({translated}) "
+                f"still carries source {field} {row.from_value!r} — an "
+                f"excluded filename is invisible to every downstream inventory; "
+                f"rename the file or route it through verify_ignore"
+            )
+        return problems
     for field, value in changed_identity_pairs(source, dest):
         spans = find_occurrences(
             translated,
@@ -215,6 +271,7 @@ def preflight_reset_targets(
     dest: Identity,
     renames: Mapping[str, str],
     rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
+    table: SubstitutionTable | None = None,
 ) -> tuple[list[ResetPreview], list[str]]:
     """Validate every reset target at plan time (D5) and build previews.
 
@@ -270,16 +327,22 @@ def preflight_reset_targets(
                 dest=dest,
                 rules=rules,
                 rendered_rules=rendered_rules,
+                table=table,
             )
         )
         problems.extend(
             scan_reset_path(
-                translate_path(rule.file, renames),
+                (
+                    table.rename_plan.translate(rule.file)
+                    if table is not None
+                    else translate_path(rule.file, renames)
+                ),
                 rule.file,
                 source=source,
                 dest=dest,
                 rules=rules,
                 rendered_rules=rendered_rules,
+                table=table,
             )
         )
         lines = text.splitlines()

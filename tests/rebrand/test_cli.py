@@ -104,6 +104,29 @@ def test_dry_run_prints_plan_and_writes_nothing(
     assert "demo-widget" in (src_target / "README.md").read_text(encoding="utf-8")
 
 
+def test_dry_run_refuses_reset_that_changes_git_visibility_input(
+    src_target: Path, tmp_path: Path, capsys
+) -> None:
+    write_source_config(src_target)
+    (src_target / "press" / "press-rules.toml").write_text(
+        '[rules]\nextra_exclude_files = [".gitignore"]\n'
+        '[[reset]]\nfile = ".gitignore"\nstub = "other\\n"\n',
+        encoding="utf-8",
+    )
+    _commit_all(src_target, "add visibility reset")
+    answers = write_answers(tmp_path)
+    before = (src_target / ".gitignore").read_bytes()
+
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+
+    assert code == 2
+    assert "reset would change Git visibility input '.gitignore'" in (
+        capsys.readouterr().err
+    )
+    assert (src_target / ".gitignore").read_bytes() == before
+    assert not (src_target / RECEIPT_REL).exists()
+
+
 def test_happy_path_presses_verifies_and_writes_receipt(
     src_target: Path, tmp_path: Path
 ):
@@ -690,9 +713,9 @@ def test_symlink_to_ignored_existing_pair_target_not_silently_redirected(
     a plain identity-FIELD pair (no [[replace]] rule involved at all)
     predates this branch — `link -> press_guide` boundary-matches app_name
     "press" exactly like any ordinary token (underscore is a separator on
-    its right), so gating only the rule loop and leaving the pair loop
-    unguarded would still silently repoint the link at a pre-existing
-    `potato_guide` the rename pass never touched."""
+    its right). P06 now refuses earlier because that same substitution would
+    mutate `.gitignore` and invalidate the frozen inventory; the link must
+    remain unchanged and no receipt may be written."""
     write_source_config(src_target)
     (src_target / ".gitignore").write_text(
         "press_guide\npotato_guide\n", encoding="utf-8"
@@ -704,7 +727,7 @@ def test_symlink_to_ignored_existing_pair_target_not_silently_redirected(
     code = main(
         ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
     )
-    assert code == 1
+    assert code == 2
     assert not (src_target / RECEIPT_REL).exists()
     assert os.readlink(src_target / "link") == "press_guide"  # unchanged
 
@@ -1104,6 +1127,41 @@ def test_press_outcome_env_error_on_apply_ioerror(tmp_path: Path, monkeypatch):
         ["--target", str(main_target), "--config", str(answers), "--allow-dirty"]
     )
     assert code == 1
+
+
+def test_press_outcome_env_error_on_declared_rule_compilation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A supplied table's rendered-rule validation stays inside the CLI guard."""
+    from template_press.rebrand import cli as cli_mod
+    from template_press.rebrand.identity import ValidationError
+    from template_press.rebrand.rules import load_rules
+
+    from .conftest import make_target
+
+    target = make_target(tmp_path / "direct", layout="src")
+    write_source_config(target)
+    rules = load_rules(target)
+    plan = cli_mod.build_plan(target, SOURCE, DEST, rules)
+    assert plan.table is not None
+
+    def reject(_table):
+        raise ValidationError("invalid rendered rule")
+
+    monkeypatch.setattr(cli_mod, "declared_rule_triples", reject)
+
+    outcome = cli_mod._press(
+        target,
+        SOURCE,
+        DEST,
+        rules,
+        [],
+        [],
+        table=plan.table,
+    )
+
+    assert outcome.env_error == "invalid rendered rule"
+    assert outcome.renamed == []
 
 
 def test_press_outcome_env_error_on_receipt_write_failure(tmp_path: Path, monkeypatch):

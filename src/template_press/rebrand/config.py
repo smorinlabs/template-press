@@ -11,13 +11,13 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from template_press.rebrand.engine import ROOT_CONTROL
 from template_press.rebrand.identity import (
     OPTIONAL_FIELDS,
     REQUIRED_FIELDS,
     Identity,
     ValidationError,
 )
+from template_press.rebrand.pathing import ROOT_CONTROL
 from template_press.rebrand.safety import ContainmentError, assert_under_root
 
 SOURCE_CONFIG_REL = Path("press") / "press-source.toml"
