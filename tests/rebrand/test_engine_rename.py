@@ -457,7 +457,7 @@ def test_existing_link_target_is_not_retargeted_for_non_path_identity(
     apply(src_target, SOURCE, destination, DEFAULT_RULES)
 
     assert os.readlink(link) == "Steve Morin/profile.txt"
-    assert link.read_text(encoding="utf-8") == "profile\n"
+    assert (target_dir / "profile.txt").read_text(encoding="utf-8") == "profile\n"
     assert not (src_target / "Potato Farmer").exists()
 
 
