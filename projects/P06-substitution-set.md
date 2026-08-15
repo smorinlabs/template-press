@@ -1,6 +1,7 @@
 # P06 — Derive checkers from one rendered substitution set
 
-- **Status:** `[ ]` ready
+- **Status:** `[x]` completed (2026-08-15) — implementation PRs #73, #75,
+  and #76; safety follow-ups #77 and #78
 
 One table the rewriter and inline checkers read; verify stays independent
 
@@ -166,39 +167,39 @@ of being silently redirected.
       `just check`, and `just matrix`; perform an adversarial architecture and
       defect review against design 0009, fix every reproduced in-scope defect,
       and rerun all gates before advancing.
-- [ ] [P06-TS04] Failing validator tests: same-source ambiguity, ordered
+- [x] [P06-TS04] Failing validator tests: same-source ambiguity, ordered
       content dependencies, stale-source emission, path dependencies and
       cycles across passes, path-component structural safety, shared-prefix
       conflicts, provenance-rich errors, and issue #45's sole intentional
       relaxation for demonstrably disjoint content scopes.
-- [ ] [P06-T05] Implement one pure pipeline-stability validator and replace the
+- [x] [P06-T05] Implement one pure pipeline-stability validator and replace the
       five accreted guards with it; preserve every existing stable output and
       refusal except issue #45's approved relaxation.
-- [ ] [P06-T06] PR 2 gate: run the focused validator and compatibility tests,
+- [x] [P06-T06] PR 2 gate: run the focused validator and compatibility tests,
       `just check`, and `just matrix`; perform an adversarial architecture and
       defect review against design 0009, fix every reproduced in-scope defect,
       and rerun all gates before advancing.
-- [ ] [P06-TS07] Failing table/compiler tests: field-aware matcher specs,
+- [x] [P06-TS07] Failing table/compiler tests: field-aware matcher specs,
       ordered provenance, compatible-row normalization, consumer-specific hunt
       policies, exact declared-rule matching, substring-aware paranoid hunts,
       fixed-point rename steps, virtual dangling-link translations, and
       source/current scope coordinates.
-- [ ] [P06-T08] Implement `substitutions.py`, compile the immutable
+- [x] [P06-T08] Implement `substitutions.py`, compile the immutable
       `SubstitutionTable` and target-specific `RenamePlan`, and make planning,
       application, path translation, and symlink retargeting consume the one
       ordered plan with predecessor gating.
-- [ ] [P06-TS09] Failing integration and architecture tests: table-derived
+- [x] [P06-TS09] Failing integration and architecture tests: table-derived
       doctor/reset/regeneration hunts; visibility-input mutation projection and
       pre-mutation revalidation; prefix closures that refuse ignored untracked
       descendants, empty directories, and gitlinks; live-plan divergence;
       nested two-pass translation; and direct/transitive verifier independence
       with rule and identity ablations.
-- [ ] [P06-T10] Migrate the rewriter, inline doctor, reset scans, regeneration
+- [x] [P06-T10] Migrate the rewriter, inline doctor, reset scans, regeneration
       scans, and final validation pass to the table; enforce visibility and
       prefix-closure guards at the top-level mutation boundary; keep
       `press verify` independently derived from `Identity`, `Rules`, and neutral
       inventory/safety helpers.
-- [ ] [P06-T11] PR 3 and project-completion gate: run every focused P06 test,
+- [x] [P06-T11] PR 3 and project-completion gate: run every focused P06 test,
       `just check`, and the R1a/R1b/R2/R3 `just matrix`; perform the final
       adversarial architecture, safety, and defect review; fix every reproduced
       in-scope defect; rerun all gates; then close issue #42 and mark P06
