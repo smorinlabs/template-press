@@ -602,6 +602,25 @@ def _virtual_path_translation(
     )
 
 
+def _path_occupant_nofollow(target: Path, posix: str) -> tuple[str, bool] | None:
+    """Return an occupied coordinate prefix and whether it is a symlink."""
+
+    parts = Path(posix).parts
+    current = target
+    prefix_parts: list[str] = []
+    for index, part in enumerate(parts):
+        prefix_parts.append(part)
+        current /= part
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            return None
+        if index < len(parts) - 1 and stat.S_ISDIR(mode):
+            continue
+        return "/".join(prefix_parts), stat.S_ISLNK(mode)
+    return posix, False
+
+
 def _compile_virtual_translations(
     target: Path | None,
     rows: tuple[RenderedSubstitution, ...],
@@ -620,8 +639,18 @@ def _compile_virtual_translations(
         ).as_posix()
         if target_posix == ".." or target_posix.startswith("../"):
             continue
-        if (target / target_posix).exists():
+        if os.path.lexists(target / target_posix):
             continue
+        occupant = _path_occupant_nofollow(target, target_posix)
+        if occupant is not None:
+            occupied_prefix, is_symlink = occupant
+            if (
+                occupied_prefix == target_posix
+                or not is_symlink
+                or _virtual_path_translation(occupied_prefix, path_rows)
+                != occupied_prefix
+            ):
+                continue
         translated = _virtual_path_translation(target_posix, path_rows)
         if translated != target_posix:
             translations.append((entry.rel.as_posix(), target_posix, translated))
