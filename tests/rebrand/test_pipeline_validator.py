@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 
 import pytest
 
@@ -783,6 +784,39 @@ def test_build_plan_rejects_scoped_path_reachability(src_target) -> None:
     nested = src_target / "old" / "file.txt"
     nested.parent.mkdir()
     nested.write_text("fixture\n", encoding="utf-8")
+    rules = _rules(
+        ReplaceRule(
+            pattern="{owner}",
+            reason="move parent",
+            files=("old/file.txt",),
+            paths=True,
+            content=False,
+        ),
+        ReplaceRule(
+            pattern="{author}",
+            reason="move leaf",
+            files=("new/file.txt",),
+            paths=True,
+            content=False,
+        ),
+    )
+    source = _identity(owner="old", author="file")
+    destination = _identity(owner="new", author="renamed")
+
+    with pytest.raises(ValidationError, match="path dependency"):
+        build_plan(src_target, source, destination, rules)
+
+
+@requires_symlink
+def test_build_plan_rejects_dangling_target_scoped_path_reachability(
+    src_target,
+) -> None:
+    os.symlink("old/file.txt", src_target / "link")
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "add", "-A"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
     rules = _rules(
         ReplaceRule(
             pattern="{owner}",

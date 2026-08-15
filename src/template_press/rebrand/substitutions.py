@@ -360,7 +360,7 @@ def _compile_rename_plan(
     kind_by_source = {
         entry.rel.as_posix(): entry.worktree_kind for entry in snapshot.entries
     }
-    last_step_by_source: dict[str, str] = {}
+    prior_step_ids_by_source: dict[str, list[str]] = {}
     steps: list[RenameStep] = []
 
     for pass_number in range(1, MAX_RENAME_PASSES + 1):
@@ -406,9 +406,9 @@ def _compile_rename_plan(
             new_prefix, row_ids, source_entries = group
             predecessors = tuple(
                 dict.fromkeys(
-                    last_step_by_source[source]
+                    step_id
                     for source in sorted(source_entries)
-                    if source in last_step_by_source
+                    for step_id in prior_step_ids_by_source.get(source, ())
                 )
             )
             exact_sources = [
@@ -442,7 +442,7 @@ def _compile_rename_plan(
                     continue
                 suffix = current[len(step.old_prefix) :]
                 current_by_source[source] = f"{step.new_prefix}{suffix}"
-                last_step_by_source[source] = step.step_id
+                prior_step_ids_by_source.setdefault(source, []).append(step.step_id)
         steps.extend(pass_steps)
 
     raise ValidationError(
@@ -1095,6 +1095,7 @@ def _validate_rows(
     rules: Rules,
     snapshot: SurfaceSnapshot,
     pipeline_validator: Callable[..., tuple[PipelineCandidate, ...]],
+    dangling_target_paths: tuple[str, ...] = (),
 ) -> None:
     candidates: list[PipelineCandidate] = []
     for row in rows:
@@ -1142,7 +1143,14 @@ def _validate_rows(
         )
     pipeline_validator(
         tuple(candidates),
-        initial_paths=tuple(entry.rel.as_posix() for entry in snapshot.entries),
+        initial_paths=tuple(
+            dict.fromkeys(
+                (
+                    *(entry.rel.as_posix() for entry in snapshot.entries),
+                    *dangling_target_paths,
+                )
+            )
+        ),
         initial_symlink_paths=frozenset(
             entry.rel.as_posix()
             for entry in snapshot.entries
@@ -1188,11 +1196,19 @@ def compile_substitution_table(
         ),
         visibility_inputs=snapshot.visibility_inputs,
     )
-    _validate_rows(rows, destination, rules, rename_snapshot, pipeline_validator)
+    virtual_translations = _compile_virtual_translations(target, rows, snapshot)
+    _validate_rows(
+        rows,
+        destination,
+        rules,
+        rename_snapshot,
+        pipeline_validator,
+        tuple(source for _link, source, _destination in virtual_translations),
+    )
     rename_plan = _compile_rename_plan(rows, rename_snapshot)
     rename_plan = replace(
         rename_plan,
-        virtual_translations=_compile_virtual_translations(target, rows, snapshot),
+        virtual_translations=virtual_translations,
         source_entries=snapshot.entries,
         symlink_inputs=_compile_symlink_inputs(target, snapshot),
     )

@@ -374,6 +374,49 @@ def test_blocked_parent_rename_gates_later_intermediate_step(
     assert any("predecessor did not execute" in item for item in report.skipped)
 
 
+def test_blocked_deep_rename_gates_step_after_successful_ancestor(
+    src_target: Path,
+) -> None:
+    source_file = src_target / "aa" / "mn" / "file.txt"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("source\n", encoding="utf-8")
+    carrier = src_target / "aa" / "carrier.txt"
+    carrier.write_text("carrier\n", encoding="utf-8")
+    occupied = src_target / "aa" / "zz" / "file.txt"
+    occupied.parent.mkdir()
+    occupied.write_text("unrelated\n", encoding="utf-8")
+    source = _identity(package_name="file", author="mn", owner="aa")
+    destination = _identity(package_name="renamed", author="zz", owner="bb")
+    rules = _rules_with(
+        exclude_files=DEFAULT_RULES.exclude_files | frozenset({"aa/zz/file.txt"}),
+        replace=(
+            ReplaceRule(
+                pattern="{author}",
+                reason="move the nested directory",
+                files=("aa/mn/file.txt",),
+                paths=True,
+                content=False,
+            ),
+            ReplaceRule(
+                pattern="{owner}",
+                reason="move the ancestor directory",
+                files=("aa/carrier.txt",),
+                paths=True,
+                content=False,
+            ),
+        ),
+    )
+    _git_add(src_target)
+
+    report = apply(src_target, source, destination, rules)
+
+    carried_occupied = src_target / "bb" / "zz" / "file.txt"
+    assert carried_occupied.read_text(encoding="utf-8") == "unrelated\n"
+    assert not (src_target / "bb" / "zz" / "renamed.txt").exists()
+    assert any("destination exists" in item for item in report.skipped)
+    assert any("predecessor did not execute" in item for item in report.skipped)
+
+
 @requires_symlink
 def test_apply_rewrites_in_repo_relative_symlink_target(src_target: Path):
     """An in-repo relative symlink target embedding identity is retargeted so a

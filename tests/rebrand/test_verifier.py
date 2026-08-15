@@ -491,6 +491,39 @@ class TestRenderedRuleFindings:
             f.path == "conftest_extra.py" and f.field == "app_name" for f in findings
         )
 
+    def test_duplicate_behavioral_rules_emit_one_finding(self, src_target: Path):
+        rules = (
+            ReplaceRule(pattern="x{app_name}owned", reason="first declaration"),
+            ReplaceRule(pattern="x{app_name}owned", reason="second declaration"),
+        )
+        (src_target / "conftest_extra.py").write_text("xpressowned\n", encoding="utf-8")
+        _git_add_all(src_target)
+
+        findings = scan(
+            src_target,
+            SOURCE,
+            DEST,
+            fields=FIELDS,
+            substring_fields=NO_SUBSTRING,
+            rules=replace(DEFAULT_RULES, replace=rules),
+        )
+
+        assert [
+            finding
+            for finding in findings
+            if finding.path == "conftest_extra.py" and finding.field == "replace_rule"
+        ] == [
+            Finding(
+                "conftest_extra.py",
+                "replace_rule",
+                "xpressowned",
+                "content",
+                1,
+                0,
+                "xpressowned",
+            )
+        ]
+
     def test_content_rule_scoped_by_files_glob(self, src_target: Path):
         rule = ReplaceRule(
             pattern="x{app_name}owned", reason="test", files=("docs/**",)

@@ -126,7 +126,7 @@ def _rule_scan_specs(
         exclude_dirs=rules.exclude_dirs,
         root_control=ROOT_CONTROL,
     )
-    specs: list[_RuleScanSpec] = []
+    specs: dict[tuple[str, str, frozenset[str], bool, bool], _RuleScanSpec] = {}
     for rule in rules.replace:
         from_value = render_replace_pattern(rule.pattern, source)
         to_value = render_replace_pattern(rule.pattern, dest)
@@ -145,15 +145,21 @@ def _rule_scan_specs(
                         continue
                     trigger_prefixes.add(Path(*entry.rel.parts[: index + 1]).as_posix())
                     break
-        specs.append(
-            _RuleScanSpec(
-                rule=rule,
-                from_value=from_value,
-                to_value=to_value,
-                trigger_prefixes=tuple(sorted(trigger_prefixes)),
-            )
+        spec = _RuleScanSpec(
+            rule=rule,
+            from_value=from_value,
+            to_value=to_value,
+            trigger_prefixes=tuple(sorted(trigger_prefixes)),
         )
-    return tuple(specs)
+        key = (
+            from_value,
+            to_value,
+            frozenset(rule.files),
+            rule.paths,
+            rule.content,
+        )
+        specs.setdefault(key, spec)
+    return tuple(specs.values())
 
 
 def _changed_fields(
