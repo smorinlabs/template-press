@@ -620,7 +620,7 @@ def _compile_virtual_translations(
         ).as_posix()
         if target_posix == ".." or target_posix.startswith("../"):
             continue
-        if (target / target_posix).exists():
+        if os.path.lexists(target / target_posix):
             continue
         translated = _virtual_path_translation(target_posix, path_rows)
         if translated != target_posix:

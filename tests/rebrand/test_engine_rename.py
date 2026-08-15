@@ -1160,6 +1160,42 @@ class TestRetargetOnlyWhenTargetMoves:
         assert not webdir.exists()
 
     @requires_symlink
+    def test_link_to_dangling_symlink_stays_put_when_rename_is_skipped(
+        self, src_target: Path
+    ) -> None:
+        source_link = src_target / "plbp-guide"
+        os.symlink("missing-target", source_link)
+        referring_link = src_target / "link"
+        os.symlink("plbp-guide", referring_link)
+        _git_add(src_target)
+        with (src_target / ".git" / "info" / "exclude").open(
+            "a", encoding="utf-8"
+        ) as stream:
+            stream.write("\nacme-guide\n")
+        occupied_destination = src_target / "acme-guide"
+        occupied_destination.write_text("operator data\n", encoding="utf-8")
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-guide",
+                    reason="occupied dangling-symlink rename destination",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+
+        report = apply(src_target, _identity(), _identity(app_name="acme"), rules)
+
+        assert source_link.is_symlink()
+        assert os.readlink(source_link) == "missing-target"
+        assert os.readlink(referring_link) == "plbp-guide"
+        assert occupied_destination.read_text(encoding="utf-8") == "operator data\n"
+        assert any(
+            "rename plbp-guide (destination exists)" in item for item in report.skipped
+        )
+
+    @requires_symlink
     def test_dangling_rule_target_still_retargets(self, src_target: Path):
         """The target never exists anywhere — nothing can break by
         rebranding the link text, so the dangling fallback
