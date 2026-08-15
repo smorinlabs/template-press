@@ -1197,6 +1197,31 @@ class TestRetargetOnlyWhenTargetMoves:
         )
 
     @requires_symlink
+    def test_missing_suffix_below_unrelated_dangling_symlink_retargets(
+        self, src_target: Path
+    ) -> None:
+        alias = src_target / "alias"
+        os.symlink("missing-dir", alias)
+        referring_link = src_target / "link"
+        os.symlink("alias/plbp-guide", referring_link)
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-guide",
+                    reason="missing suffix below unchanged dangling symlink",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+
+        assert os.readlink(alias) == "missing-dir"
+        assert os.readlink(referring_link) == "alias/acme-guide"
+
+    @requires_symlink
     def test_dangling_rule_target_still_retargets(self, src_target: Path):
         """The target never exists anywhere — nothing can break by
         rebranding the link text, so the dangling fallback
