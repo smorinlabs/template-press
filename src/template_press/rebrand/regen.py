@@ -33,6 +33,9 @@ from template_press.rebrand.identity import (
     display_forms,
 )
 from template_press.rebrand.inventory import (
+    GitConfigInput,
+    IndexKind,
+    VisibilityInput,
     capture_surface_snapshot,
     tracked_path_strings,
 )
@@ -710,6 +713,52 @@ def final_validation_pass(
                 f"the reset — a later command altered it"
             )
     return problems
+
+
+@dataclass(frozen=True)
+class GitVisibilityState:
+    """Git policy and index facts that determine the doctor's scan surface."""
+
+    exclusion_inputs: tuple[VisibilityInput, ...]
+    config_inputs: tuple[GitConfigInput, ...]
+    config_effective_sha256: str
+    index_entries: tuple[tuple[Path, IndexKind], ...]
+
+
+def snapshot_visibility_state(target: Path) -> GitVisibilityState:
+    """Fingerprint effective Git visibility before the first command runs."""
+
+    snapshot = capture_surface_snapshot(target)
+    index_entries = tuple(
+        (entry.rel, entry.index_kind)
+        for entry in snapshot.entries
+        if entry.tracked and entry.index_kind is not None
+    )
+    return GitVisibilityState(
+        snapshot.visibility_inputs,
+        snapshot.git_config_inputs,
+        snapshot.git_config_effective_sha256,
+        index_entries,
+    )
+
+
+def validate_visibility_state(target: Path, snapshot: GitVisibilityState) -> list[str]:
+    """Refuse command-phase changes to the Git visibility state."""
+
+    try:
+        current = snapshot_visibility_state(target)
+    except (OSError, subprocess.CalledProcessError, SafetyError) as exc:
+        return [
+            "effective Git visibility could not be revalidated after declared "
+            f"commands: {exc}"
+        ]
+    if current == snapshot:
+        return []
+    return [
+        "effective Git visibility changed during declared commands — restore the "
+        "target's ignore policy, repository config, and index before re-running. "
+        "Make intentional Git visibility changes in a separate commit"
+    ]
 
 
 def snapshot_control_files(target: Path) -> dict[str, bytes | None]:

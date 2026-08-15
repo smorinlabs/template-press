@@ -50,7 +50,9 @@ from template_press.rebrand.regen import (
     render_regenerate_plan,
     restore_control_files,
     snapshot_control_files,
+    snapshot_visibility_state,
     validate_control_files,
+    validate_visibility_state,
 )
 from template_press.rebrand.reset import (
     apply_resets,
@@ -440,10 +442,11 @@ def _press(
         report.reset.extend(reset_done)
         # Declared commands run against the FINAL tree: declared paths are
         # translated through the apply-time rename report (P04 D1). The
-        # press-owned control files are snapshotted before the first
-        # command and revalidated after the last (D1 reservation is not
-        # protection — a command can mutate arbitrary files).
+        # Press-owned control files and Git visibility inputs are snapshotted
+        # before the first command and revalidated after the last. Reservation
+        # alone is not protection because a command can mutate arbitrary files.
         control_snapshot = snapshot_control_files(target) if regen_plans else {}
+        visibility_snapshot = snapshot_visibility_state(target) if regen_plans else None
         failed_locks = execute_regenerations(
             target,
             regen_plans,
@@ -491,6 +494,8 @@ def _press(
                 table=table,
             )
             post_problems += validate_control_files(target, control_snapshot)
+            if visibility_snapshot is not None:
+                post_problems += validate_visibility_state(target, visibility_snapshot)
             if post_problems:
                 restore_control_files(target, control_snapshot)
                 print(

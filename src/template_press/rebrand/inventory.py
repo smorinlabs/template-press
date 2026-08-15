@@ -52,11 +52,22 @@ class VisibilityInput:
 
 
 @dataclass(frozen=True)
+class GitConfigInput:
+    """Content fingerprint of one active repository-config source."""
+
+    path: Path
+    kind: WorktreeKind
+    sha256: str | None
+
+
+@dataclass(frozen=True)
 class SurfaceSnapshot:
-    """Sorted raw target entries plus the ignore inputs that selected them."""
+    """Sorted target entries plus the Git inputs that selected them."""
 
     entries: tuple[SurfaceEntry, ...]
     visibility_inputs: tuple[VisibilityInput, ...]
+    git_config_inputs: tuple[GitConfigInput, ...] = ()
+    git_config_effective_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -112,6 +123,7 @@ class _ConfigSourceState:
     """Finite Git inputs that must remain stable through enumeration."""
 
     sources: tuple[_ConfigSourceStamp, ...]
+    effective_sha256: str
     include_parents: tuple[_NodeStamp, ...]
     condition_inputs: tuple[_NodeStamp, ...]
     index_inputs: tuple[_NodeStamp, ...]
@@ -545,7 +557,9 @@ def _resolve_config_include_path(value: str, origin: Path, target: Path) -> Path
     return (expanded if expanded.is_absolute() else origin.parent / expanded).absolute()
 
 
-def _config_source_paths(target: Path) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+def _config_source_paths(
+    target: Path,
+) -> tuple[tuple[Path, ...], tuple[Path, ...], str]:
     """Active file origins and every declared include target, including missing."""
 
     result = _run_git(
@@ -611,6 +625,7 @@ def _config_source_paths(target: Path) -> tuple[tuple[Path, ...], tuple[Path, ..
     return (
         tuple(sorted(all_sources, key=lambda path: path.as_posix())),
         tuple(sorted(includes, key=lambda path: path.as_posix())),
+        hashlib.sha256(result.stdout).hexdigest(),
     )
 
 
@@ -682,7 +697,7 @@ def _nearest_real_parent(path: Path) -> Path:
 
 
 def _config_source_state(target: Path) -> _ConfigSourceState:
-    sources, includes = _config_source_paths(target)
+    sources, includes, effective_sha256 = _config_source_paths(target)
     parents = {_nearest_real_parent(path) for path in includes}
     git_dir = _absolute_git_path(
         target, "rev-parse", "--path-format=absolute", "--git-dir"
@@ -720,6 +735,7 @@ def _config_source_state(target: Path) -> _ConfigSourceState:
         index_paths.add(shared.parent)
     return _ConfigSourceState(
         tuple(_config_source_stamp(path) for path in sources),
+        effective_sha256,
         tuple(_node_stamp(path) for path in sorted(parents)),
         tuple(_node_stamp(path) for path in sorted(condition_paths)),
         tuple(_node_stamp(path) for path in sorted(index_paths)),
@@ -941,7 +957,16 @@ def _capture_candidate(
         raise SafetyError("Git surface changed during capture")
     if visibility_before != visibility_after:
         raise SafetyError("Git visibility changed during capture")
-    return SurfaceSnapshot(entries, visibility_after.inputs)
+    config_inputs = tuple(
+        GitConfigInput(source.path, source.kind, source.sha256)
+        for source in config_after.sources
+    )
+    return SurfaceSnapshot(
+        entries,
+        visibility_after.inputs,
+        config_inputs,
+        config_after.effective_sha256,
+    )
 
 
 def listed_paths(snapshot: SurfaceSnapshot) -> tuple[Path, ...]:
