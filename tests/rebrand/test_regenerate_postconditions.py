@@ -30,9 +30,9 @@ from template_press.rebrand.regen import (
     final_validation_pass,
     preflight_regenerate_outputs,
     snapshot_control_files,
-    snapshot_visibility_inputs,
+    snapshot_visibility_state,
     validate_control_files,
-    validate_visibility_inputs,
+    validate_visibility_state,
 )
 from template_press.rebrand.rules import (
     DEFAULT_RULES,
@@ -482,21 +482,21 @@ class TestControlFileGuard:
 
 
 class TestVisibilityGuard:
-    def test_untouched_visibility_inputs_pass(self, src_target: Path):
-        snapshot = snapshot_visibility_inputs(src_target)
-        assert validate_visibility_inputs(src_target, snapshot) == []
+    def test_untouched_visibility_state_passes(self, src_target: Path):
+        snapshot = snapshot_visibility_state(src_target)
+        assert validate_visibility_state(src_target, snapshot) == []
 
     def test_recapture_failure_is_reported(self, src_target: Path, monkeypatch) -> None:
         from template_press.rebrand import regen as regen_mod
 
-        snapshot = snapshot_visibility_inputs(src_target)
+        snapshot = snapshot_visibility_state(src_target)
 
         def fail_capture(_target: Path):
             raise OSError("Git metadata unavailable")
 
         monkeypatch.setattr(regen_mod, "capture_surface_snapshot", fail_capture)
 
-        assert validate_visibility_inputs(src_target, snapshot) == [
+        assert validate_visibility_state(src_target, snapshot) == [
             "effective Git visibility could not be revalidated after declared "
             "commands: Git metadata unavailable"
         ]

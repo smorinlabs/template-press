@@ -33,6 +33,8 @@ from template_press.rebrand.identity import (
     display_forms,
 )
 from template_press.rebrand.inventory import (
+    GitConfigInput,
+    IndexKind,
     VisibilityInput,
     capture_surface_snapshot,
     tracked_path_strings,
@@ -713,20 +715,36 @@ def final_validation_pass(
     return problems
 
 
-def snapshot_visibility_inputs(target: Path) -> tuple[VisibilityInput, ...]:
-    """Fingerprint effective Git exclusions before the first command runs."""
+@dataclass(frozen=True)
+class GitVisibilityState:
+    """Git policy and index facts that determine the doctor's scan surface."""
 
-    return capture_surface_snapshot(target).visibility_inputs
+    exclusion_inputs: tuple[VisibilityInput, ...]
+    config_inputs: tuple[GitConfigInput, ...]
+    index_entries: tuple[tuple[Path, IndexKind], ...]
 
 
-def validate_visibility_inputs(
-    target: Path,
-    snapshot: tuple[VisibilityInput, ...],
-) -> list[str]:
-    """Refuse command-phase changes to the Git visibility policy."""
+def snapshot_visibility_state(target: Path) -> GitVisibilityState:
+    """Fingerprint effective Git visibility before the first command runs."""
+
+    snapshot = capture_surface_snapshot(target)
+    index_entries = tuple(
+        (entry.rel, entry.index_kind)
+        for entry in snapshot.entries
+        if entry.tracked and entry.index_kind is not None
+    )
+    return GitVisibilityState(
+        snapshot.visibility_inputs,
+        snapshot.git_config_inputs,
+        index_entries,
+    )
+
+
+def validate_visibility_state(target: Path, snapshot: GitVisibilityState) -> list[str]:
+    """Refuse command-phase changes to the Git visibility state."""
 
     try:
-        current = capture_surface_snapshot(target).visibility_inputs
+        current = snapshot_visibility_state(target)
     except (OSError, subprocess.CalledProcessError, SafetyError) as exc:
         return [
             "effective Git visibility could not be revalidated after declared "
@@ -735,9 +753,9 @@ def validate_visibility_inputs(
     if current == snapshot:
         return []
     return [
-        "effective Git visibility changed during declared commands — restore "
-        "the target and its ignore policy before re-running. Make intentional "
-        "ignore-policy changes in a separate commit"
+        "effective Git visibility changed during declared commands — restore the "
+        "target's ignore policy, repository config, and index before re-running. "
+        "Make intentional Git visibility changes in a separate commit"
     ]
 
 

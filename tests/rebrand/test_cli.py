@@ -307,15 +307,21 @@ def test_failed_lock_regeneration_exits_1_no_receipt(
 
 
 @pytest.mark.parametrize(
-    "visibility_input",
-    ["gitignore", "info_exclude", "core_excludes_file"],
+    "visibility_mutation",
+    [
+        "gitignore",
+        "info_exclude",
+        "core_excludes_file",
+        "core_ignore_case",
+        "index_membership",
+    ],
 )
 def test_declared_command_cannot_change_git_visibility_before_doctor(
     src_target: Path,
     tmp_path: Path,
     monkeypatch,
     capsys,
-    visibility_input: str,
+    visibility_mutation: str,
 ) -> None:
     """Issue #71: a command must not hide a leak from the final doctor."""
     import subprocess as sp
@@ -328,7 +334,7 @@ def test_declared_command_cannot_change_git_visibility_before_doctor(
         '[[regenerate]]\nfile = "uv.lock"\ncommand = ["uv", "lock"]\n',
         encoding="utf-8",
     )
-    if visibility_input == "core_excludes_file":
+    if visibility_mutation == "core_excludes_file":
         config_dir = src_target / "config"
         config_dir.mkdir()
         (config_dir / "excludes").write_text("# baseline\n", encoding="utf-8")
@@ -345,7 +351,53 @@ def test_declared_command_cannot_change_git_visibility_before_doctor(
             check=True,
             capture_output=True,
         )
+    elif visibility_mutation == "core_ignore_case":
+        (src_target / ".gitignore").write_text("HIDDEN/\n", encoding="utf-8")
+        sp.run(  # noqa: S603
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(src_target),
+                "config",
+                "--local",
+                "core.ignoreCase",
+                "false",
+            ],
+            check=True,
+            capture_output=True,
+        )
+    elif visibility_mutation == "index_membership":
+        (src_target / ".gitignore").write_text("hidden/\n", encoding="utf-8")
     write_source_config(src_target)
+    if visibility_mutation == "index_membership":
+        hidden = src_target / "hidden"
+        hidden.mkdir()
+        (hidden / "generated.txt").write_text("demo_widget\n", encoding="utf-8")
+        sp.run(  # noqa: S603
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(src_target),
+                "add",
+                "-f",
+                "hidden/generated.txt",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        sp.run(  # noqa: S603
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(src_target),
+                "commit",
+                "-q",
+                "-m",
+                "add tracked ignored fixture",
+            ],
+            check=True,
+            capture_output=True,
+        )
     real_run = sp.run
 
     def hide_leak_and_succeed(cmd, *args, **kwargs):
@@ -354,17 +406,17 @@ def test_declared_command_cannot_change_git_visibility_before_doctor(
                 "potato_launcher==1.0.0\n", encoding="utf-8"
             )
             hidden = src_target / "hidden"
-            hidden.mkdir()
+            hidden.mkdir(exist_ok=True)
             (hidden / "generated.txt").write_text("demo_widget\n", encoding="utf-8")
-            if visibility_input == "gitignore":
+            if visibility_mutation == "gitignore":
                 with (src_target / ".gitignore").open("a", encoding="utf-8") as fh:
                     fh.write("hidden/\n")
-            elif visibility_input == "info_exclude":
+            elif visibility_mutation == "info_exclude":
                 with (src_target / ".git" / "info" / "exclude").open(
                     "a", encoding="utf-8"
                 ) as fh:
                     fh.write("hidden/\n")
-            else:
+            elif visibility_mutation == "core_excludes_file":
                 changed = src_target / "config" / "command-excludes"
                 changed.write_text("hidden/\n", encoding="utf-8")
                 real_run(
@@ -376,6 +428,34 @@ def test_declared_command_cannot_change_git_visibility_before_doctor(
                         "--local",
                         "core.excludesFile",
                         "config/command-excludes",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+            elif visibility_mutation == "core_ignore_case":
+                real_run(
+                    [
+                        "git",
+                        "-C",
+                        str(src_target),
+                        "config",
+                        "--local",
+                        "core.ignoreCase",
+                        "true",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+            elif visibility_mutation == "index_membership":
+                real_run(
+                    [
+                        "git",
+                        "-C",
+                        str(src_target),
+                        "rm",
+                        "--cached",
+                        "-q",
+                        "hidden/generated.txt",
                     ],
                     check=True,
                     capture_output=True,

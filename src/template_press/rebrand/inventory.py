@@ -52,11 +52,21 @@ class VisibilityInput:
 
 
 @dataclass(frozen=True)
+class GitConfigInput:
+    """Content fingerprint of one active repository-config source."""
+
+    path: Path
+    kind: WorktreeKind
+    sha256: str | None
+
+
+@dataclass(frozen=True)
 class SurfaceSnapshot:
-    """Sorted raw target entries plus the ignore inputs that selected them."""
+    """Sorted target entries plus the Git inputs that selected them."""
 
     entries: tuple[SurfaceEntry, ...]
     visibility_inputs: tuple[VisibilityInput, ...]
+    git_config_inputs: tuple[GitConfigInput, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -941,7 +951,15 @@ def _capture_candidate(
         raise SafetyError("Git surface changed during capture")
     if visibility_before != visibility_after:
         raise SafetyError("Git visibility changed during capture")
-    return SurfaceSnapshot(entries, visibility_after.inputs)
+    config_inputs = tuple(
+        GitConfigInput(source.path, source.kind, source.sha256)
+        for source in config_after.sources
+    )
+    return SurfaceSnapshot(
+        entries,
+        visibility_after.inputs,
+        config_inputs,
+    )
 
 
 def listed_paths(snapshot: SurfaceSnapshot) -> tuple[Path, ...]:
