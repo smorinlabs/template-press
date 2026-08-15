@@ -721,6 +721,7 @@ class GitVisibilityState:
 
     exclusion_inputs: tuple[VisibilityInput, ...]
     config_inputs: tuple[GitConfigInput, ...]
+    config_effective_sha256: str
     index_entries: tuple[tuple[Path, IndexKind], ...]
 
 
@@ -736,6 +737,7 @@ def snapshot_visibility_state(target: Path) -> GitVisibilityState:
     return GitVisibilityState(
         snapshot.visibility_inputs,
         snapshot.git_config_inputs,
+        snapshot.git_config_effective_sha256,
         index_entries,
     )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 from pathlib import Path
@@ -618,12 +619,13 @@ def test_prefix_alias_propagates_to_nested_relative_include(
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, records, b""),
     )
 
-    sources, includes = inventory._config_source_paths(src_target)
+    sources, includes, effective_sha256 = inventory._config_source_paths(src_target)
 
     assert main in sources
     assert child in sources
     assert main in includes
     assert child in includes
+    assert effective_sha256 == hashlib.sha256(records).hexdigest()
 
 
 def test_inventory_ignores_ambient_xdg_and_command_scope_excludes(

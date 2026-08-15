@@ -41,14 +41,17 @@ project template and ships no application. First target:
    before the first command and revalidates it after the last. The snapshot
    records each exclusion input's origin, path, node kind, regular-file
    SHA-256, and symbolic-link text. It also records the content fingerprints
-   of active repository-config sources and the path and kind of every tracked
-   index entry. A command that changes `.gitignore`, `.git/info/exclude`, the
-   repository-local Git configuration, or index membership fails the press
-   and cannot earn a receipt because the final doctor would otherwise scan a
-   different surface. Global and system Git configuration are neutralized by
-   the press and are not part of this snapshot. Intentional ignore-policy,
-   repository-config, and index changes are unsupported during a press. Make
-   and commit them separately before re-running the press.
+   of active repository-config sources, a SHA-256 of Git's effective ordered
+   configuration, and the path and kind of every tracked index entry. The
+   effective-config fingerprint detects conditional activation changes such as
+   `includeIf.onbranch` after a `HEAD` change. A command that changes
+   `.gitignore`, `.git/info/exclude`, the repository-local Git configuration,
+   or index membership fails the press and cannot earn a receipt because the
+   final doctor would otherwise scan a different surface. Global and system
+   Git configuration are neutralized by the press and are not part of this
+   snapshot. Intentional ignore-policy, repository-config, and index changes
+   are unsupported during a press. Make and commit them separately before
+   re-running the press.
 4. **The tool never ships into the target** — no marker in the tool's tree,
    no self-prune, no self-commit.
 

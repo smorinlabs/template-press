@@ -313,6 +313,7 @@ def test_failed_lock_regeneration_exits_1_no_receipt(
         "info_exclude",
         "core_excludes_file",
         "core_ignore_case",
+        "conditional_config_activation",
         "index_membership",
     ],
 )
@@ -351,25 +352,56 @@ def test_declared_command_cannot_change_git_visibility_before_doctor(
             check=True,
             capture_output=True,
         )
-    elif visibility_mutation == "core_ignore_case":
+    elif visibility_mutation in {"core_ignore_case", "conditional_config_activation"}:
         (src_target / ".gitignore").write_text("HIDDEN/\n", encoding="utf-8")
+        if visibility_mutation == "core_ignore_case":
+            sp.run(  # noqa: S603
+                [  # noqa: S607
+                    "git",
+                    "-C",
+                    str(src_target),
+                    "config",
+                    "--local",
+                    "core.ignoreCase",
+                    "false",
+                ],
+                check=True,
+                capture_output=True,
+            )
+    elif visibility_mutation == "index_membership":
+        (src_target / ".gitignore").write_text("hidden/\n", encoding="utf-8")
+    write_source_config(src_target)
+    if visibility_mutation == "conditional_config_activation":
+        (src_target / ".git" / "visibility.config").write_text(
+            "[core]\nignoreCase = true\n", encoding="utf-8"
+        )
+        with (src_target / ".git" / "config").open("a", encoding="utf-8") as fh:
+            fh.write(
+                '\n[includeIf "onbranch:visibility-before"]\n'
+                "path = visibility.config\n"
+                "[core]\nignoreCase = false\n"
+                '[includeIf "onbranch:visibility-after"]\n'
+                "path = visibility.config\n"
+            )
+        for branch in ("visibility-before", "visibility-after"):
+            sp.run(  # noqa: S603
+                ["git", "-C", str(src_target), "branch", branch],  # noqa: S607
+                check=True,
+                capture_output=True,
+            )
         sp.run(  # noqa: S603
             [  # noqa: S607
                 "git",
                 "-C",
                 str(src_target),
-                "config",
-                "--local",
-                "core.ignoreCase",
-                "false",
+                "checkout",
+                "-q",
+                "visibility-before",
             ],
             check=True,
             capture_output=True,
         )
     elif visibility_mutation == "index_membership":
-        (src_target / ".gitignore").write_text("hidden/\n", encoding="utf-8")
-    write_source_config(src_target)
-    if visibility_mutation == "index_membership":
         hidden = src_target / "hidden"
         hidden.mkdir()
         (hidden / "generated.txt").write_text("demo_widget\n", encoding="utf-8")
@@ -442,6 +474,19 @@ def test_declared_command_cannot_change_git_visibility_before_doctor(
                         "--local",
                         "core.ignoreCase",
                         "true",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+            elif visibility_mutation == "conditional_config_activation":
+                real_run(
+                    [
+                        "git",
+                        "-C",
+                        str(src_target),
+                        "symbolic-ref",
+                        "HEAD",
+                        "refs/heads/visibility-after",
                     ],
                     check=True,
                     capture_output=True,
