@@ -1160,13 +1160,14 @@ class TestRetargetOnlyWhenTargetMoves:
         assert not webdir.exists()
 
     @requires_symlink
-    def test_link_to_dangling_symlink_stays_put_when_rename_is_skipped(
-        self, src_target: Path
+    @pytest.mark.parametrize("referring_target", ["plbp-guide", "plbp-guide/child"])
+    def test_link_to_dangling_symlink_path_stays_put_when_rename_is_skipped(
+        self, src_target: Path, referring_target: str
     ) -> None:
         source_link = src_target / "plbp-guide"
         os.symlink("missing-target", source_link)
         referring_link = src_target / "link"
-        os.symlink("plbp-guide", referring_link)
+        os.symlink(referring_target, referring_link)
         _git_add(src_target)
         with (src_target / ".git" / "info" / "exclude").open(
             "a", encoding="utf-8"
@@ -1189,7 +1190,7 @@ class TestRetargetOnlyWhenTargetMoves:
 
         assert source_link.is_symlink()
         assert os.readlink(source_link) == "missing-target"
-        assert os.readlink(referring_link) == "plbp-guide"
+        assert os.readlink(referring_link) == referring_target
         assert occupied_destination.read_text(encoding="utf-8") == "operator data\n"
         assert any(
             "rename plbp-guide (destination exists)" in item for item in report.skipped

@@ -602,6 +602,23 @@ def _virtual_path_translation(
     )
 
 
+def _path_occupied_nofollow(target: Path, posix: str) -> bool:
+    """Check a target coordinate component by component without following links."""
+
+    parts = Path(posix).parts
+    current = target
+    for index, part in enumerate(parts):
+        current /= part
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            return False
+        if index < len(parts) - 1 and stat.S_ISDIR(mode):
+            continue
+        return True
+    return True
+
+
 def _compile_virtual_translations(
     target: Path | None,
     rows: tuple[RenderedSubstitution, ...],
@@ -620,7 +637,7 @@ def _compile_virtual_translations(
         ).as_posix()
         if target_posix == ".." or target_posix.startswith("../"):
             continue
-        if os.path.lexists(target / target_posix):
+        if _path_occupied_nofollow(target, target_posix):
             continue
         translated = _virtual_path_translation(target_posix, path_rows)
         if translated != target_posix:
