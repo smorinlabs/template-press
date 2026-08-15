@@ -639,6 +639,8 @@ def _compile_virtual_translations(
         ).as_posix()
         if target_posix == ".." or target_posix.startswith("../"):
             continue
+        if os.path.lexists(target / target_posix):
+            continue
         occupant = _path_occupant_nofollow(target, target_posix)
         if occupant is not None:
             occupied_prefix, is_symlink = occupant

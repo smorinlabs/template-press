@@ -1222,6 +1222,40 @@ class TestRetargetOnlyWhenTargetMoves:
         assert os.readlink(referring_link) == "alias/acme-guide"
 
     @requires_symlink
+    def test_existing_target_below_unchanged_symlink_stays_put(
+        self, src_target: Path
+    ) -> None:
+        real_dir = src_target / "real-dir"
+        real_dir.mkdir()
+        with (src_target / ".git" / "info" / "exclude").open(
+            "a", encoding="utf-8"
+        ) as stream:
+            stream.write("\nreal-dir/plbp-guide\n")
+        existing_target = real_dir / "plbp-guide"
+        existing_target.write_text("operator data\n", encoding="utf-8")
+        alias = src_target / "alias"
+        os.symlink("real-dir", alias)
+        referring_link = src_target / "link"
+        os.symlink("alias/plbp-guide", referring_link)
+        _git_add(src_target)
+        rules = _rules_with(
+            replace=(
+                ReplaceRule(
+                    pattern="{app_name}-guide",
+                    reason="existing target below unchanged symlink",
+                    paths=True,
+                    content=False,
+                ),
+            )
+        )
+
+        apply(src_target, _identity(), _identity(app_name="acme"), rules)
+
+        assert os.readlink(alias) == "real-dir"
+        assert os.readlink(referring_link) == "alias/plbp-guide"
+        assert existing_target.read_text(encoding="utf-8") == "operator data\n"
+
+    @requires_symlink
     def test_dangling_rule_target_still_retargets(self, src_target: Path):
         """The target never exists anywhere — nothing can break by
         rebranding the link text, so the dangling fallback
