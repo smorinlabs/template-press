@@ -36,7 +36,16 @@ project template and ships no application. First target:
    exemption). Any leak ⇒ exit 1 and NO receipt. The receipt
    (`<target>/press/press-receipt.toml`) records the verified state, and on
    success `press/press-source.toml` is refreshed to the new identity so a
-   future re-press starts from a valid baseline.
+   future re-press starts from a valid baseline. When declared regeneration
+   commands run, the press fingerprints effective Git visibility immediately
+   before the first command and revalidates it after the last. Each fingerprint
+   records the input's origin, path, node kind, regular-file SHA-256, and
+   symbolic-link text. A command that changes `.gitignore`,
+   `.git/info/exclude`, or the repository-local `core.excludesFile` policy
+   fails the press and cannot earn a receipt because the final doctor would
+   otherwise scan a different surface. Intentional ignore-policy changes are
+   unsupported during a press. Make and commit them separately before
+   re-running the press.
 4. **The tool never ships into the target** — no marker in the tool's tree,
    no self-prune, no self-commit.
 

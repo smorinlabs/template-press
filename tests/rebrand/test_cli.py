@@ -306,6 +306,111 @@ def test_failed_lock_regeneration_exits_1_no_receipt(
     assert not (src_target / RECEIPT_REL).exists()
 
 
+@pytest.mark.parametrize(
+    "visibility_input",
+    ["gitignore", "info_exclude", "core_excludes_file"],
+)
+def test_declared_command_cannot_change_git_visibility_before_doctor(
+    src_target: Path,
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    visibility_input: str,
+) -> None:
+    """Issue #71: a command must not hide a leak from the final doctor."""
+    import subprocess as sp
+
+    from template_press.rebrand import cli as cli_mod
+
+    (src_target / "uv.lock").write_text("demo_widget==0.1.0\n", encoding="utf-8")
+    (src_target / "press").mkdir(exist_ok=True)
+    (src_target / "press" / "press-rules.toml").write_text(
+        '[[regenerate]]\nfile = "uv.lock"\ncommand = ["uv", "lock"]\n',
+        encoding="utf-8",
+    )
+    if visibility_input == "core_excludes_file":
+        config_dir = src_target / "config"
+        config_dir.mkdir()
+        (config_dir / "excludes").write_text("# baseline\n", encoding="utf-8")
+        sp.run(  # noqa: S603
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(src_target),
+                "config",
+                "--local",
+                "core.excludesFile",
+                "config/excludes",
+            ],
+            check=True,
+            capture_output=True,
+        )
+    write_source_config(src_target)
+    real_run = sp.run
+
+    def hide_leak_and_succeed(cmd, *args, **kwargs):
+        if Path(cmd[0]).stem == "uv" and cmd[1:] == ["lock"]:
+            (src_target / "uv.lock").write_text(
+                "potato_launcher==1.0.0\n", encoding="utf-8"
+            )
+            hidden = src_target / "hidden"
+            hidden.mkdir()
+            (hidden / "generated.txt").write_text("demo_widget\n", encoding="utf-8")
+            if visibility_input == "gitignore":
+                with (src_target / ".gitignore").open("a", encoding="utf-8") as fh:
+                    fh.write("hidden/\n")
+            elif visibility_input == "info_exclude":
+                with (src_target / ".git" / "info" / "exclude").open(
+                    "a", encoding="utf-8"
+                ) as fh:
+                    fh.write("hidden/\n")
+            else:
+                changed = src_target / "config" / "command-excludes"
+                changed.write_text("hidden/\n", encoding="utf-8")
+                real_run(
+                    [
+                        "git",
+                        "-C",
+                        str(src_target),
+                        "config",
+                        "--local",
+                        "core.excludesFile",
+                        "config/command-excludes",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+            return sp.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", hide_leak_and_succeed)
+    answers = write_answers(tmp_path)
+
+    code = main(["--target", str(src_target), "--config", str(answers)])
+
+    assert code == 1
+    assert "effective Git visibility changed during declared commands" in (
+        capsys.readouterr().err
+    )
+    assert not (src_target / RECEIPT_REL).exists()
+    assert (src_target / "hidden" / "generated.txt").read_text(
+        encoding="utf-8"
+    ) == "demo_widget\n"
+    ignored = real_run(
+        [
+            "git",
+            "-C",
+            str(src_target),
+            "check-ignore",
+            "hidden/generated.txt",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert ignored.returncode == 0
+
+
 def _commit_all(target: Path, message: str = "post-press") -> None:
     subprocess.run(  # noqa: S603
         ["git", "-C", str(target), "add", "-A"],  # noqa: S607

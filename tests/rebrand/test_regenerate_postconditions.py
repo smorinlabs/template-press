@@ -8,8 +8,9 @@ and pass the PARANOID changed-fields scan (matcher.find_occurrences, not
 the doctor's conservative matcher) including rendered [[replace]] FROM
 literals with reverse-mapped scopes and the translated output path's own
 components. After the LAST command, a final pass re-validates every output,
-every reset stub, and the press-owned control files (snapshot/revalidate).
-The receipt records each regeneration's resolved argv (D5 revision).
+every reset stub, the press-owned control files, and effective Git visibility
+(snapshot/revalidate). The receipt records each regeneration's resolved argv
+(D5 revision).
 """
 
 from __future__ import annotations
@@ -29,7 +30,9 @@ from template_press.rebrand.regen import (
     final_validation_pass,
     preflight_regenerate_outputs,
     snapshot_control_files,
+    snapshot_visibility_inputs,
     validate_control_files,
+    validate_visibility_inputs,
 )
 from template_press.rebrand.rules import (
     DEFAULT_RULES,
@@ -476,6 +479,27 @@ class TestControlFileGuard:
         )
         snapshot = snapshot_control_files(target)
         assert validate_control_files(target, snapshot) == []
+
+
+class TestVisibilityGuard:
+    def test_untouched_visibility_inputs_pass(self, src_target: Path):
+        snapshot = snapshot_visibility_inputs(src_target)
+        assert validate_visibility_inputs(src_target, snapshot) == []
+
+    def test_recapture_failure_is_reported(self, src_target: Path, monkeypatch) -> None:
+        from template_press.rebrand import regen as regen_mod
+
+        snapshot = snapshot_visibility_inputs(src_target)
+
+        def fail_capture(_target: Path):
+            raise OSError("Git metadata unavailable")
+
+        monkeypatch.setattr(regen_mod, "capture_surface_snapshot", fail_capture)
+
+        assert validate_visibility_inputs(src_target, snapshot) == [
+            "effective Git visibility could not be revalidated after declared "
+            "commands: Git metadata unavailable"
+        ]
 
 
 class TestReceiptResolvedArgv:

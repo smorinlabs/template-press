@@ -33,6 +33,7 @@ from template_press.rebrand.identity import (
     display_forms,
 )
 from template_press.rebrand.inventory import (
+    VisibilityInput,
     capture_surface_snapshot,
     tracked_path_strings,
 )
@@ -710,6 +711,34 @@ def final_validation_pass(
                 f"the reset — a later command altered it"
             )
     return problems
+
+
+def snapshot_visibility_inputs(target: Path) -> tuple[VisibilityInput, ...]:
+    """Fingerprint effective Git exclusions before the first command runs."""
+
+    return capture_surface_snapshot(target).visibility_inputs
+
+
+def validate_visibility_inputs(
+    target: Path,
+    snapshot: tuple[VisibilityInput, ...],
+) -> list[str]:
+    """Refuse command-phase changes to the Git visibility policy."""
+
+    try:
+        current = capture_surface_snapshot(target).visibility_inputs
+    except (OSError, subprocess.CalledProcessError, SafetyError) as exc:
+        return [
+            "effective Git visibility could not be revalidated after declared "
+            f"commands: {exc}"
+        ]
+    if current == snapshot:
+        return []
+    return [
+        "effective Git visibility changed during declared commands — restore "
+        "the target and its ignore policy before re-running. Make intentional "
+        "ignore-policy changes in a separate commit"
+    ]
 
 
 def snapshot_control_files(target: Path) -> dict[str, bytes | None]:
