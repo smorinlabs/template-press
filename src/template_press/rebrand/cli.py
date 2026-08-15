@@ -299,6 +299,18 @@ def main(argv: list[str] | None = None) -> int:
             table=plan.table,
         )
         gate_problems += reset_problems
+        if plan.table is not None:
+            try:
+                validate_reset_visibility(
+                    target,
+                    plan.table.rename_plan,
+                    tuple(
+                        (preview.rule.file, preview.stub_text)
+                        for preview in reset_previews
+                    ),
+                )
+            except SafetyError as exc:
+                gate_problems.append(str(exc))
         if gate_problems:
             print(
                 "error: declared regeneration/reset cannot run — nothing written:",

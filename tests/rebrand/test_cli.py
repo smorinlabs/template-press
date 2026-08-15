@@ -104,6 +104,29 @@ def test_dry_run_prints_plan_and_writes_nothing(
     assert "demo-widget" in (src_target / "README.md").read_text(encoding="utf-8")
 
 
+def test_dry_run_refuses_reset_that_changes_git_visibility_input(
+    src_target: Path, tmp_path: Path, capsys
+) -> None:
+    write_source_config(src_target)
+    (src_target / "press" / "press-rules.toml").write_text(
+        '[rules]\nextra_exclude_files = [".gitignore"]\n'
+        '[[reset]]\nfile = ".gitignore"\nstub = "other\\n"\n',
+        encoding="utf-8",
+    )
+    _commit_all(src_target, "add visibility reset")
+    answers = write_answers(tmp_path)
+    before = (src_target / ".gitignore").read_bytes()
+
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+
+    assert code == 2
+    assert "reset would change Git visibility input '.gitignore'" in (
+        capsys.readouterr().err
+    )
+    assert (src_target / ".gitignore").read_bytes() == before
+    assert not (src_target / RECEIPT_REL).exists()
+
+
 def test_happy_path_presses_verifies_and_writes_receipt(
     src_target: Path, tmp_path: Path
 ):
