@@ -101,11 +101,10 @@ def test_doctor_reverse_translates_each_entry_once(
         for entry in plan.table.rename_plan.source_entries
     )
     real_reverse_translate = RenamePlan.reverse_translate
-    calls = 0
+    positions: list[str] = []
 
     def counted_reverse_translate(self, posix, *, executed_step_ids=None):
-        nonlocal calls
-        calls += 1
+        positions.append(posix)
         return real_reverse_translate(
             self,
             posix,
@@ -122,7 +121,9 @@ def test_doctor_reverse_translates_each_entry_once(
         table=plan.table,
     )
 
-    assert 0 < calls <= len(plan.table.rename_plan.source_entries)
+    assert positions == [
+        entry.rel.as_posix() for entry in plan.table.rename_plan.source_entries
+    ]
 
 
 @requires_symlink
