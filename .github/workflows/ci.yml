@@ -221,6 +221,10 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install just
         uses: extractions/setup-just@v4
+        with:
+          # Anonymous release listing rate-limits on shared runner IPs and
+          # then reports "no release for just matching version specifier".
+          github-token: ${{ github.token }}
       # `just install-taplo` now downloads the upstream pre-built binary
       # (curl + gunzip from https://github.com/tamasfe/taplo/releases) —
       # ~1-3s installed vs the prior ~2min `cargo install taplo-cli`. Same
