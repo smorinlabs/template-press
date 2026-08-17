@@ -93,19 +93,10 @@ def exempt_regenerated_paths(
     outputs: list[tuple[str, str]] = []
     for rule in rules.regenerate:
         translated = translate_path(rule.file, rename_map)
-        if translated.rsplit("/", 1)[-1] in REGENERATE_EXEMPTIBLE:
-            outputs.append(
-                (
-                    translated,
-                    "declared regeneration — rebuilt and scanned by the real "
-                    "press's post-command check; the hermetic sandbox never "
-                    "runs commands, so verify cannot certify it",
-                )
-            )
-        elif rule.verify_exempt:
-            # Issue #81: beyond the tool cap, an exemption exists only when
-            # the target declared it with a reason — surfaced verbatim so
-            # the coverage gap stays visible in report, --json, and receipt.
+        if rule.verify_exempt:
+            # A declared exemption wins even for capped basenames: the
+            # target wrote a reason, so the report carries it rather than
+            # the generic cap note (codex 3796001647).
             outputs.append(
                 (
                     translated,
@@ -113,6 +104,15 @@ def exempt_regenerated_paths(
                     f"{rule.reason} (rebuilt and scanned by the real press's "
                     f"post-command check; the hermetic sandbox never runs "
                     f"commands)",
+                )
+            )
+        elif translated.rsplit("/", 1)[-1] in REGENERATE_EXEMPTIBLE:
+            outputs.append(
+                (
+                    translated,
+                    "declared regeneration — rebuilt and scanned by the real "
+                    "press's post-command check; the hermetic sandbox never "
+                    "runs commands, so verify cannot certify it",
                 )
             )
     return outputs

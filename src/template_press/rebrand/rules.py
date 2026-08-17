@@ -499,10 +499,10 @@ def _parse_regenerate(
     # Rendered in reports and the receipt — control characters are rejected,
     # not escaped, mirroring the argv rule (report visibility is the
     # approval guard, so a reason must not be able to forge report lines).
-    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in reason):
+    if any(not ch.isprintable() for ch in reason):
         raise ValidationError(
             f"{RULES_REL}: [[regenerate]] {file!r}: reason must not contain "
-            f"control characters"
+            f"control or non-printable characters"
         )
     # The pair is all-or-nothing: an exemption without a reason is a silent
     # coverage purchase, and a reason without the exemption — including an
