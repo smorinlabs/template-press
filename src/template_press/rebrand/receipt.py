@@ -55,7 +55,10 @@ def write_receipt(
     dest: Identity,
     report: ApplyReport,
     regenerations: Sequence[tuple[str, Sequence[str]]] = (),
+    resets: Sequence[str] = (),
     exempt: Sequence[tuple[str, str]] = (),
+    *,
+    platform: str | None = None,
 ) -> Path:
     stamp = datetime.now(UTC).isoformat(timespec="seconds")
     lines = [
@@ -64,6 +67,7 @@ def write_receipt(
         "# verified. Delete it (or use --force) to press again.",
         "[press]",
         "verified = true",
+        *([f"platform = {toml_string(platform)}"] if platform is not None else []),
         f'completed_at = "{stamp}"',
         "",
         *_identity_table("from", source),
@@ -86,6 +90,12 @@ def write_receipt(
             "[[press.regenerate]]",
             f"file = {toml_string(file)}",
             "argv = [" + ", ".join(toml_string(a) for a in argv) + "]",
+        ]
+    for file in resets:
+        lines += [
+            "",
+            "[[press.reset]]",
+            f"file = {toml_string(file)}",
         ]
     # Machine-readable coverage record (P04 D3): every file the ordinary
     # doctor/verify inventories skip, with the mechanism that covered it —

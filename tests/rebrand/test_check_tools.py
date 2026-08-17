@@ -177,7 +177,9 @@ class TestConfigAndDispatch:
         out = capsys.readouterr().out
         assert rc == 0
         assert "git" in out
-        assert len(out.strip().splitlines()) == 1
+        lines = out.strip().splitlines()
+        assert lines[0].startswith("Platform: ")
+        assert len(lines) == 2
 
     def test_invalid_config_exit_2(
         self, src_target: Path, capsys: pytest.CaptureFixture

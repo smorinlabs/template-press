@@ -43,7 +43,7 @@ def check_tools_command(argv: list[str] | None = None) -> int:
         return 2
 
     missing = 0
-    reports: list[str] = []
+    reports: list[str] = [f"Platform: {selected.platform}"]
     git = resolve_executable(target, "git", command_env(()))
     if git is None:
         missing += 1

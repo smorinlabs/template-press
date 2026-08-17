@@ -157,12 +157,12 @@ platforms = ["darwin", "linux", "win32"]
       active cases do fail; the excluded-file safety gate evaluates
       neutralization on the selected platform only; and `press verify` remains
       independent of table-derived scan inputs.
-- [ ] [P07-T02] Implement the two validation phases and thread one
+- [x] [P07-T02] Implement the two validation phases and thread one
       `SelectedRules` value through every existing consumer without
       consumer-local filtering or platform reads. Make TS02 pass while
       preserving the plan-before-write, independent-verifier, and
       no-receipt-on-failure guarantees.
-- [ ] [P07-TS03] Add failing output and receipt tests requiring the selected
+- [x] [P07-TS03] Add failing output and receipt tests requiring the selected
       platform exactly once in combined reset/regenerate plan and
       `press check-tools` output; active declarations only in normal output;
       Git always checked even when no declaration is active; only active

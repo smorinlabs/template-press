@@ -322,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
             for problem in gate_problems:
                 print(f"  {problem}", file=sys.stderr)
             return 2
+        print(f"Platform: {selected.platform}")
         print(plan.render())
         if regen_plans:
             print(render_regenerate_plan(regen_plans))
@@ -367,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
         rules,
         regen_plans,
         [(preview.rule, preview.stub_text) for preview in reset_previews],
+        platform=selected.platform,
         rename_preflight=rename_preflight,
         allow_unsafe_rename=args.force,
         rendered_rules=plan.rendered_rules,
@@ -397,6 +399,7 @@ def _press(
     regen_plans: list[RegenerationPlan],
     resets: list[tuple[ResetRule, str]],
     *,
+    platform: str | None = None,
     rename_preflight: RenamePreflight | None = None,
     allow_unsafe_rename: bool = False,
     rendered_rules: list[tuple[ReplaceRule, str, str]] | None = None,
@@ -544,10 +547,13 @@ def _press(
             source,
             dest,
             report,
+            platform=platform,
             regenerations=[
                 (plan.rule.file, (plan.executable, *plan.rule.command[1:]))
                 for plan in regen_plans
+                if plan.rule.file in report.regenerated
             ],
+            resets=report.reset,
             exempt=[
                 *(
                     (
