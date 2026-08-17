@@ -163,12 +163,15 @@ def _value_present(
     """Whether ``value`` occurs as identity anywhere in the corpus.
 
     The matcher mode is the field's OWN effective mode, not a fixed boundary
-    match (#47). A field in ``substring_fields`` is one whose occurrences the
-    press rewrites without a boundary guard — a target opts in precisely
-    because the value appears GLUED (``xdemolabsy``). Asking the boundary
-    matcher about such a field reports it absent, and preflight then rejects
-    the target with a false exit 2 for the very property the declaration
-    exists to state.
+    match (#47). ``substring_fields`` is the SCAN's effective substring set —
+    ``[verify] substring_fields`` (a scan-scope opt-in that says nothing about
+    rewriting) unioned with ``[rules] substring_rewrite_fields`` (the press's
+    boundary-free rewrite set) — the same set ``verifier.scan`` receives.
+    Either declaration asserts the same thing about presence: this field's
+    occurrences need not carry a boundary. A target opts in precisely because
+    the value appears GLUED (``xdemolabsy``), so asking the boundary matcher
+    reports it absent, and preflight then rejects the target with a false
+    exit 2 for the very property the declaration exists to state.
     """
     substring = field in substring_fields
     return any(
