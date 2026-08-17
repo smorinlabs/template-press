@@ -13,7 +13,7 @@
 #     commit-msg hook on a cold bun cache (see the note in lefthook.yml).
 #   * ty, pytest — project dev deps, provided by `uv run`.
 [tools]
-python = "3.12"
+python = "3.13"
 uv = "latest"
 ruff = "latest"
 taplo = "latest"

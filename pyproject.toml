@@ -23,11 +23,11 @@ name = "template_press"
 version = "3.6.0"
 description = "Standalone rebrand utility — press a new identity onto an external target repo"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 license = "MIT" # PEP 639 license expression (ITM-070, round-19).
 authors = [{ name = "Steve Morin", email = "steve.morin@gmail.com" }]
 classifiers = [
-  # ITM-070 — round-19. py3.12+ only (per ITM-033 floor); MIT classifier
+  # ITM-070 — round-19. py3.13+ only (per ITM-033 floor); MIT classifier
   # intentionally omitted (PEP 639 license expression above is the single
   # source of truth — duplication would drift).
   "Development Status :: 4 - Beta",
@@ -36,7 +36,6 @@ classifiers = [
   "Operating System :: Microsoft :: Windows",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3 :: Only",
   "Topic :: Software Development :: Libraries :: Python Modules",
@@ -112,7 +111,7 @@ module-root = "src"
 # ITM-018 reconciled config (round-2). Merge: template's stricter rule
 # selection + source's ignore rationale. target-version reflects ITM-033
 # Python-floor bump.
-target-version = "py312"
+target-version = "py313"
 line-length = 88
 
 lint.select = [
@@ -176,7 +175,7 @@ include = ["src/template_press", "tests"]
 exclude = ["**/node_modules", "**/__pycache__"]
 defineConstant = { DEBUG = true }
 typeCheckingMode = "strict"
-pythonVersion = "3.12"
+pythonVersion = "3.13"
 useLibraryCodeForTypes = true
 reportMissingImports = true
 reportMissingTypeStubs = true

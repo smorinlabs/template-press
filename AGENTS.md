@@ -8,7 +8,7 @@ Windsurf, and Codex read this file natively. For human-contributor flow see
 
 ## Required tools
 
-- **Python 3.12+** (per `requires-python = ">=3.12"`; see ITM-033).
+- **Python 3.13+** (per `requires-python = ">=3.13"`; see ITM-033).
 - **uv** — Python dependency + venv management.
 - **bun** — commitlint runtime (per ADR-04).
 - **lefthook** — hook manager (per ADR-01).
