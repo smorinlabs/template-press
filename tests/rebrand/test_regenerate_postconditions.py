@@ -21,10 +21,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from template_press.rebrand.engine import ApplyReport
-from template_press.rebrand.identity import Identity
+from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.receipt import RECEIPT_REL, write_receipt
 from template_press.rebrand.regen import (
+    scan_regenerated_output,
     RegenerationPlan,
     execute_regenerations,
     final_validation_pass,
@@ -33,6 +36,15 @@ from template_press.rebrand.regen import (
     snapshot_visibility_state,
     validate_control_files,
     validate_visibility_state,
+)
+from template_press.rebrand.pipeline import MatcherSpec
+from template_press.rebrand.substitutions import (
+    HuntPolicy,
+    Provenance,
+    RenamePlan,
+    RenderedSubstitution,
+    Scope,
+    SubstitutionTable,
 )
 from template_press.rebrand.rules import (
     DEFAULT_RULES,
@@ -525,3 +537,124 @@ def _rules_target(tmp_path: Path, body: str) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     (d / "press-rules.toml").write_text(body, encoding="utf-8")
     return tmp_path / "rules-holder"
+
+
+# ---------------------------------------------------------------------------
+# Per-rule scan policy (PROBLEM-22, py-launch-blueprint dogfood run 4)
+# ---------------------------------------------------------------------------
+class TestScanPolicy:
+    """Substring-mode identity hunting is structurally guaranteed to
+    false-positive against base64 hash material in a regenerated lockfile
+    (run 4: `Bpd` matched inside an integrity hash for app `bpd`). A
+    declared ``scan = "boundary"`` downgrades that output's CONTENT scan to
+    boundary-safe matching; the path scan and rendered [[replace]] literal
+    checks are unaffected."""
+
+    def _substr_rules(self, scan: str | None = None) -> tuple[object, RegenerateRule]:
+        kwargs = {} if scan is None else {"scan": scan}
+        rule = RegenerateRule(file="bun.lock", command=(PY, "-c", "pass"), **kwargs)
+        rules = dataclasses.replace(
+            DEFAULT_RULES,
+            regenerate=(rule,),
+            substring_rewrite_fields=frozenset({"app_name"}),
+        )
+        return rules, rule
+
+    def _run_plan(self, target: Path, rule: RegenerateRule, rules) -> list[str]:
+        plan = RegenerationPlan(rule=rule, executable=PY, env_present=(), env_absent=())
+        failed, _ = _run(target, [plan], rules=rules)
+        return failed
+
+    def test_strict_default_flags_case_glued_hash(self, tmp_path: Path):
+        rules, rule = self._substr_rules()
+        target = _target(
+            tmp_path,
+            **{"bun.lock": 'integrity: "sha512-k6BTx2XpPresslAdnlYW"\n'},
+        )
+        assert self._run_plan(target, rule, rules) == ["bun.lock"]
+
+    def test_boundary_scan_ignores_case_glued_hash(self, tmp_path: Path):
+        rules, rule = self._substr_rules(scan="boundary")
+        target = _target(
+            tmp_path,
+            **{"bun.lock": 'integrity: "sha512-k6BTx2XpPresslAdnlYW"\n'},
+        )
+        assert self._run_plan(target, rule, rules) == []
+
+    def test_boundary_scan_still_flags_boundary_occurrence(self, tmp_path: Path):
+        rules, rule = self._substr_rules(scan="boundary")
+        target = _target(tmp_path, **{"bun.lock": 'bin: "press"\n'})
+        assert self._run_plan(target, rule, rules) == ["bun.lock"]
+
+    def test_scan_key_parses_with_default(self, tmp_path: Path):
+        holder = _rules_target(
+            tmp_path,
+            '[[regenerate]]\nfile = "bun.lock"\ncommand = ["true"]\n'
+            'scan = "boundary"\n'
+            '[[regenerate]]\nfile = "uv.lock"\ncommand = ["true"]\n',
+        )
+        rules = load_rules(holder)
+        by_file = {r.file: r for r in rules.regenerate}
+        assert by_file["bun.lock"].scan == "boundary"
+        assert by_file["uv.lock"].scan == "strict"
+
+    def test_scan_key_rejects_unknown_value(self, tmp_path: Path):
+        holder = _rules_target(
+            tmp_path,
+            '[[regenerate]]\nfile = "bun.lock"\ncommand = ["true"]\nscan = "fuzzy"\n',
+        )
+        with pytest.raises(ValidationError):
+            load_rules(holder)
+
+
+class TestScanPolicyTablePath:
+    """The table path must apply boundary matching INSIDE the hunt (codex
+    PR-82 P1): a post-filter over substring-prefiltered rows both keeps
+    hash noise AND loses the boundary matcher's separator/case-variant
+    catches — `demo-widget` is invisible to the literal substring matcher
+    but is a real leak the boundary matcher sees."""
+
+    def _table(self) -> SubstitutionTable:
+        policy = HuntPolicy(
+            consumer="regeneration",
+            matcher=MatcherSpec(
+                algorithm="paranoid", identity_field="app_name", substring=True
+            ),
+            surfaces=frozenset({"content"}),
+            scope_coordinates="source",
+        )
+        row = RenderedSubstitution(
+            row_id="app_name:0",
+            provenance=(Provenance(kind="identity", name="app_name"),),
+            matcher=MatcherSpec(
+                algorithm="conservative", identity_field="app_name", substring=True
+            ),
+            from_value="demo_widget",
+            to_value="potato_launcher",
+            rewrite_surfaces=frozenset({"content"}),
+            hunts=(policy,),
+            scope=Scope(),
+        )
+        return SubstitutionTable(rows=(row,), rename_plan=RenamePlan())
+
+    def _scan(self, text: str, scan_mode: str) -> list[str]:
+        return scan_regenerated_output(
+            text,
+            "bun.lock",
+            source=SOURCE,
+            dest=DEST,
+            rules=DEFAULT_RULES,
+            renames={},
+            rendered_rules=(),
+            table=self._table(),
+            scan_mode=scan_mode,
+        )
+
+    def test_boundary_still_catches_separator_variant(self, tmp_path: Path):
+        assert self._scan("name: demo-widget\n", "boundary")
+
+    def test_boundary_ignores_glued_hash_noise(self, tmp_path: Path):
+        assert self._scan('integrity: "sha512-xdemo_widgetyk"\n', "boundary") == []
+
+    def test_strict_flags_glued_hash(self, tmp_path: Path):
+        assert self._scan('integrity: "sha512-xdemo_widgetyk"\n', "strict")

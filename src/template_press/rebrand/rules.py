@@ -92,6 +92,13 @@ class RegenerateRule:
     file: str  # canonical POSIX rel path, SOURCE coordinates
     command: tuple[str, ...]
     env: tuple[str, ...] = ()
+    # Post-command content-scan policy. "strict" (default) hunts with the
+    # paranoid matcher including per-field substring mode; "boundary" is the
+    # declared escape hatch for hash-dense outputs (lockfile integrity
+    # hashes false-positive a short substring-mode app_name by construction)
+    # — the content scan downgrades to boundary-safe matching, while the
+    # path scan and rendered [[replace]] literal checks stay strict.
+    scan: str = "strict"
 
 
 @dataclass(frozen=True)
@@ -225,7 +232,8 @@ _RULES_KEYS = frozenset(
 # loading as zero rules.
 _ROOT_KEYS = frozenset({"rules", "replace", "verify", "regenerate", "reset"})
 
-_REGENERATE_KEYS = frozenset({"file", "command", "env", "platforms"})
+_REGENERATE_KEYS = frozenset({"file", "command", "env", "platforms", "scan"})
+_REGENERATE_SCAN_VALUES = frozenset({"strict", "boundary"})
 _RESET_KEYS = frozenset({"file", "stub", "stub_file", "platforms"})
 
 
@@ -462,8 +470,16 @@ def _parse_regenerate(
                 f"{name!r}"
             )
         env.append(name)
+    scan = entry.get("scan", "strict")
+    if not isinstance(scan, str) or scan not in _REGENERATE_SCAN_VALUES:
+        raise ValidationError(
+            f"{RULES_REL}: [[regenerate]] {file!r}: scan must be one of "
+            f"{sorted(_REGENERATE_SCAN_VALUES)}: {scan!r}"
+        )
     return _RegenerateDeclaration(
-        rule=RegenerateRule(file=file, command=tuple(command), env=tuple(env)),
+        rule=RegenerateRule(
+            file=file, command=tuple(command), env=tuple(env), scan=scan
+        ),
         platforms=_parse_platforms(entry, "[[regenerate]]", file),
     )
 

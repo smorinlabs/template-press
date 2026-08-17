@@ -247,19 +247,42 @@ def matching_hunts(
     surface: Surface,
     text: str,
     source_scope_path: str,
+    boundary_identity: bool = False,
 ) -> tuple[tuple[RenderedSubstitution, HuntPolicy], ...]:
-    """Return compiled consumer hunts that match one scoped subject."""
+    """Return compiled consumer hunts that match one scoped subject.
+
+    ``boundary_identity`` swaps paranoid substring identity hunts for
+    boundary-safe matching (regen ``scan = "boundary"``). The swap happens
+    INSIDE the hunt: a post-filter over substring-prefiltered results would
+    drop hash noise but also lose the boundary matcher's separator/case
+    variant catches — ``demo-widget`` is invisible to the literal substring
+    matcher yet a real leak of ``demo_widget``.
+    """
 
     matches: list[tuple[RenderedSubstitution, HuntPolicy]] = []
     for row in table.rows:
         if not row_matches_scope(row, source_scope_path):
             continue
         for policy in row.hunts:
+            if policy.consumer != consumer or surface not in policy.surfaces:
+                continue
             if (
-                policy.consumer == consumer
-                and surface in policy.surfaces
-                and hunt_occurs(row, policy, text)
+                boundary_identity
+                and policy.matcher.algorithm == "paranoid"
+                and policy.matcher.substring
+                and policy.matcher.identity_field is not None
             ):
+                occurs_here = bool(
+                    find_occurrences(
+                        text,
+                        policy.matcher.identity_field,
+                        row.from_value,
+                        substring=False,
+                    )
+                )
+            else:
+                occurs_here = hunt_occurs(row, policy, text)
+            if occurs_here:
                 matches.append((row, policy))
     return tuple(matches)
 
