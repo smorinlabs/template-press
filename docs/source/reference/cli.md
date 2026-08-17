@@ -104,6 +104,29 @@ command = ["scripts/regen-bun-lock.sh"]
 scan = "boundary"
 ```
 
+### Declared verify exemption
+
+Hermetic `press verify` never runs declared commands, so a regenerated
+output cannot be certified in the sandbox. By default only the tool cap
+(`uv.lock`, `bun.lock`) is exempted from the leak scan; any other declared
+output is scanned and will fail verify while it still carries source
+identity. A target may exempt such an output — loudly — by declaring it:
+
+```toml
+[[regenerate]]
+file = "docs/generated-api.md"
+command = ["scripts/render-api-docs.sh"]
+verify_exempt = true
+reason = "rendered from source at build time; press cannot rewrite it"
+```
+
+`verify_exempt = true` requires a non-empty `reason`; a `reason` without
+`verify_exempt` is rejected. The reason is surfaced verbatim in verify's
+not-verified listing, `--json` output, and the press receipt, so the
+coverage gap stays visible and reviewed rather than silently purchased.
+The real press's post-command scan still certifies the output at press
+time.
+
 Configuration loading has two phases:
 
 1. Press parses and validates every declaration, including declarations that

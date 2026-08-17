@@ -102,4 +102,17 @@ def exempt_regenerated_paths(
                     "runs commands, so verify cannot certify it",
                 )
             )
+        elif rule.verify_exempt:
+            # Issue #81: beyond the tool cap, an exemption exists only when
+            # the target declared it with a reason — surfaced verbatim so
+            # the coverage gap stays visible in report, --json, and receipt.
+            outputs.append(
+                (
+                    translated,
+                    f"declared regeneration exempted by the target — "
+                    f"{rule.reason} (rebuilt and scanned by the real press's "
+                    f"post-command check; the hermetic sandbox never runs "
+                    f"commands)",
+                )
+            )
     return outputs
