@@ -17,6 +17,7 @@ on:
       - tests/rebrand/**
       - scripts/rebrand_matrix.sh
       - scripts/regen-bun-lock.sh
+      - scripts/regen-bun-lock.ps1
       - press/press-rules.toml
 
 permissions: {}
@@ -27,8 +28,21 @@ concurrency:
 
 jobs:
   matrix:
-    name: r1-r2-r3
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: r1-r2-r3-posix
+            os: blacksmith-4vcpu-ubuntu-2404
+            command: scripts/rebrand_matrix.sh
+          - name: r3-windows
+            os: windows-latest
+            command: >-
+              uv run pytest
+              tests/rebrand/test_matrix.py::test_r3_self_press_native
+              -m live -q
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     steps:
@@ -47,5 +61,5 @@ jobs:
       - name: Sync locked dev env
         run: uv sync --locked --group dev
 
-      - name: Run R1/R2/R3 acceptance matrix
-        run: scripts/rebrand_matrix.sh
+      - name: Run native acceptance
+        run: ${{ matrix.command }}

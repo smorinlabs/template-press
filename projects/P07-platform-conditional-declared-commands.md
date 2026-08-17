@@ -170,11 +170,11 @@ platforms = ["darwin", "linux", "win32"]
       tools; exit 2 for invalid config/unsupported runtimes; and the captured
       platform plus successfully executed active actions in
       `press/press-receipt.toml`.
-- [ ] [P07-T03] Implement the active-only audit contract for plans,
+- [x] [P07-T03] Implement the active-only audit contract for plans,
       `press check-tools`, and receipts; preserve the unconditional Git check
       and resolved regeneration argv evidence; add machine-readable
       reset-action evidence; and make TS03 pass.
-- [ ] [P07-TS04] Add failing native acceptance coverage for the repository's
+- [x] [P07-TS04] Add failing native acceptance coverage for the repository's
       self-press on Windows and at least one POSIX host. Use the real checked-in
       platform-specific `bun.lock` declarations and require successful matching
       command execution, captured platform/action receipt evidence, a
