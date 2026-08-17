@@ -1,5 +1,70 @@
 # Changelog
 
+## [3.5.0](https://github.com/smorinlabs/template-press/compare/v3.4.0...v3.5.0) (2026-08-17)
+
+
+### Features
+
+* **rebrand:** add native platform regeneration ([7d77ca7](https://github.com/smorinlabs/template-press/commit/7d77ca7480779ff2a56929de16950d8cab2561f6))
+* **rebrand:** compile rendered substitution table ([8b63b36](https://github.com/smorinlabs/template-press/commit/8b63b361affe4f24f0145fc72cd549f4e4593b08))
+* **rebrand:** compile substitution table ([54a1175](https://github.com/smorinlabs/template-press/commit/54a1175a0c9849f6be5e564a68a979989b0b68bc))
+* **rebrand:** per-rule scan policy for regenerated outputs ([21cbede](https://github.com/smorinlabs/template-press/commit/21cbede490e77c5c3e7d4ff7ef0de8daa8814f6f))
+* **rebrand:** per-rule scan policy for regenerated outputs; loud regen-failure reporting ([6428a9c](https://github.com/smorinlabs/template-press/commit/6428a9c65313944faed9e3a4e18367dfe0edb47a))
+* **rebrand:** record active platform actions ([125436e](https://github.com/smorinlabs/template-press/commit/125436ee36cd2cf6533f35aade095a9420e777ea))
+* **rebrand:** select platform-specific commands ([5e5ddf5](https://github.com/smorinlabs/template-press/commit/5e5ddf5843e160ead1a92c40d602f3f5c228d3a7))
+* **rebrand:** support platform-conditional declared commands ([bd52085](https://github.com/smorinlabs/template-press/commit/bd520857daa967ad36780030a101418011e294c8))
+* **rebrand:** thread selected rules through commands ([e72125f](https://github.com/smorinlabs/template-press/commit/e72125f25168c0c00c0749da488bfb69262328a4))
+
+
+### Bug Fixes
+
+* **rebrand:** address substitution table review ([da9a6f5](https://github.com/smorinlabs/template-press/commit/da9a6f5e3b013cb0b6fc96f341a7c3be679acbe3))
+* **rebrand:** align pipeline validation surfaces ([5c4e40f](https://github.com/smorinlabs/template-press/commit/5c4e40fe89a7da0e023add24daff4cb4f3bcf789))
+* **rebrand:** apply boundary matching inside the hunt, not as a post-filter ([2d7df54](https://github.com/smorinlabs/template-press/commit/2d7df54059d81cd8617ab3d6626a4b4a9804ddc6))
+* **rebrand:** bracket conditional config inputs ([22b937e](https://github.com/smorinlabs/template-press/commit/22b937e94bae3b38173564a69c2e446da64ddb3c))
+* **rebrand:** bracket git index capture ([09bbb98](https://github.com/smorinlabs/template-press/commit/09bbb986e2fe24a2f14145de285193104bb0a2be))
+* **rebrand:** close final inventory review gaps ([d0e1992](https://github.com/smorinlabs/template-press/commit/d0e19923bb4cf9d56bd49049b7b54e785e42897c))
+* **rebrand:** close final rename safety gaps ([623aa79](https://github.com/smorinlabs/template-press/commit/623aa79eba3538fb4888b6b434ef22ffdd8e3853))
+* **rebrand:** close inventory race windows ([f00d9fa](https://github.com/smorinlabs/template-press/commit/f00d9fa78ac51fdff80d64f2e3941788c2a0d69c))
+* **rebrand:** close inventory read races ([5a43710](https://github.com/smorinlabs/template-press/commit/5a43710303e7ebe9c37c07656173526274052448))
+* **rebrand:** close inventory review gaps ([fe3fb2d](https://github.com/smorinlabs/template-press/commit/fe3fb2dc6a8250e6e2cf74dda6495fdb71edef13))
+* **rebrand:** close substitution review gaps ([7d36746](https://github.com/smorinlabs/template-press/commit/7d36746626dd90145c4fe5fe16141c5e900dbc8c))
+* **rebrand:** close surface review gaps ([46713ce](https://github.com/smorinlabs/template-press/commit/46713ce41bbb4d76371e15b1e6125d555f758436))
+* **rebrand:** cover config and index visibility changes ([c3097d1](https://github.com/smorinlabs/template-press/commit/c3097d131c79ada6cb751ab989e03e6fb7356047))
+* **rebrand:** detect symlink ancestors in virtual targets ([500d709](https://github.com/smorinlabs/template-press/commit/500d7095f46a30cbcff76c9c6c2e20c66168148a))
+* **rebrand:** guard effective config transitions ([488bdeb](https://github.com/smorinlabs/template-press/commit/488bdeb8810701353a9e38818a0f5b77613c37a8))
+* **rebrand:** guard missing config includes ([fe631cd](https://github.com/smorinlabs/template-press/commit/fe631cd8aadb5f931ee8048fc44a907cb1115974))
+* **rebrand:** guard post-command git visibility ([8e40e16](https://github.com/smorinlabs/template-press/commit/8e40e1699215b776cc72d9000dd2eab9ac47dc9a))
+* **rebrand:** handle unsupported atomic renames ([2c83968](https://github.com/smorinlabs/template-press/commit/2c83968aaa683ddec3561cacf3a419e9507f18ca))
+* **rebrand:** harden shared inventory boundaries ([9a8c0c4](https://github.com/smorinlabs/template-press/commit/9a8c0c4d6de6d076a4e38cf4e409e7734e20ff77))
+* **rebrand:** limit stability sinks to enabled forms ([a774eb3](https://github.com/smorinlabs/template-press/commit/a774eb33e3cadd8d718366bf18a7d38b3297bd86))
+* **rebrand:** make inventory reads phase stable ([042f9df](https://github.com/smorinlabs/template-press/commit/042f9dffd9f155c2f6caf54b8b5ba46f740550c6))
+* **rebrand:** make inventory tests portable ([10adbdb](https://github.com/smorinlabs/template-press/commit/10adbdbfb34bf70cf762d8d65b24cdf6a1a25275))
+* **rebrand:** normalize marker inventory races ([498980f](https://github.com/smorinlabs/template-press/commit/498980f640aad18d98621e3b56d4b8031875fa64))
+* **rebrand:** preserve gitlink boundaries on windows ([8cea374](https://github.com/smorinlabs/template-press/commit/8cea374566a3d9b406ed75d3d124fb61e19c7183))
+* **rebrand:** preserve links when dangling target rename skips ([179d8f2](https://github.com/smorinlabs/template-press/commit/179d8f2751ceeb5df3a5d8ef677f3ff091e6b6af))
+* **rebrand:** preserve links when dangling target rename skips ([c326a2e](https://github.com/smorinlabs/template-press/commit/c326a2ea6678edf2b3a1bc0c4ba9822941e9d4ff))
+* **rebrand:** preserve pipeline matcher semantics ([0b7f76a](https://github.com/smorinlabs/template-press/commit/0b7f76ac9c131a580a02ab07efb20f44f5553c4c))
+* **rebrand:** preserve read race refusals ([ccedcd5](https://github.com/smorinlabs/template-press/commit/ccedcd53eef777be737dafb19f78ddc47f7fb052))
+* **rebrand:** preserve targets through symlink ancestors ([3901d52](https://github.com/smorinlabs/template-press/commit/3901d52939dae012c863d4f28ebc75b98671d201))
+* **rebrand:** print skipped reasons on the regen-failure path ([64eea2d](https://github.com/smorinlabs/template-press/commit/64eea2d102df04aa150edf94dd350d8532f751c5))
+* **rebrand:** refuse unscannable inputs before writes ([d4f3364](https://github.com/smorinlabs/template-press/commit/d4f336458fbda764ef303fdaf47d805f7bbf5f04))
+* **rebrand:** reject converging target paths ([d423e96](https://github.com/smorinlabs/template-press/commit/d423e9663c0dadf8379e4b25a5ed2a61454a370e))
+* **rebrand:** scan dirty gitlink replacements ([6f93052](https://github.com/smorinlabs/template-press/commit/6f93052782a16d44ea1ac85994d7a1e0b3460f95))
+* **rebrand:** scope dangling ancestor suppression ([ecd891f](https://github.com/smorinlabs/template-press/commit/ecd891f02306472e84d53b1673723c30465b3b8e))
+* **rebrand:** support git prefix includes ([e7d3c48](https://github.com/smorinlabs/template-press/commit/e7d3c48fa1323d33a9f615f889ea666a8aa52ea9))
+* **rebrand:** support stable split indexes ([36ac30c](https://github.com/smorinlabs/template-press/commit/36ac30c1db2b6257abc06ef5f4e82d89184295b3))
+* **rebrand:** track effective git config activation ([59b1ddc](https://github.com/smorinlabs/template-press/commit/59b1ddc60447a8c9ca6bf09661cd4fb9668bca28))
+* **rebrand:** validate fallback read ancestors ([5fe4454](https://github.com/smorinlabs/template-press/commit/5fe4454a4aa08ec64aa7dda942d96caf987ad2ca))
+* **rebrand:** validate reset visibility during planning ([21515a9](https://github.com/smorinlabs/template-press/commit/21515a9249defd31cbd7eca339ac32acdd7a0a2c))
+
+
+### Refactor
+
+* **rebrand:** centralize pipeline validation ([b737f29](https://github.com/smorinlabs/template-press/commit/b737f29c489ce3804b41dfd69ad3dc6a3681e5d0))
+* **rebrand:** centralize pipeline validation ([1146c2c](https://github.com/smorinlabs/template-press/commit/1146c2c03482745128a50d107baf6a6cf62a0c7c))
+* **rebrand:** centralize surface inventory ([84edeb4](https://github.com/smorinlabs/template-press/commit/84edeb4b8939298bee36b54e21346f091e722da2))
+
 ## [3.4.0](https://github.com/smorinlabs/template-press/compare/v3.3.0...v3.4.0) (2026-07-27)
 
 
