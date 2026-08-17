@@ -144,13 +144,13 @@ platforms = ["darwin", "linux", "win32"]
       order; unchanged behavior for configurations without `platforms`; and a
       supported-runtime replacement for the existing FreeBSD-specific atomic
       rename scenario plus an explicit unsupported-runtime assertion.
-- [ ] [P07-T01] Extend the regenerate/reset models and config allowlists with
+- [x] [P07-T01] Extend the regenerate/reset models and config allowlists with
       normalized platform sets; validate raw declarations and overlaps before
       selection; reject unsupported runtimes; and implement the immutable
       `SelectedRules` boundary with one pure, injectable selector that defaults
       to `sys.platform` in production. Keep raw declarations private, make TS01
       pass without a CLI override.
-- [ ] [P07-TS02] Add failing integration tests proving that rebrand preflight,
+- [x] [P07-TS02] Add failing integration tests proving that rebrand preflight,
       planning, `press check-tools`, apply, doctor, and `press verify` derive
       the same captured `SelectedRules`; inactive declarations do not fail for
       missing executables or missing/non-UTF-8 reset stub files; the paired

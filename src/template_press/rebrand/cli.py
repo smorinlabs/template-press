@@ -64,7 +64,7 @@ from template_press.rebrand.rules import (
     ReplaceRule,
     ResetRule,
     Rules,
-    load_rules,
+    load_selected_rules,
 )
 from template_press.rebrand.safety import (
     SafetyError,
@@ -244,7 +244,8 @@ def main(argv: list[str] | None = None) -> int:
         # Pipeline stability, ambiguity, and termination are validated together
         # by build_plan before any write.  Keeping the target rules here ensures
         # the adapter preserves each field's effective substring posture.
-        rules = load_rules(target)
+        selected = load_selected_rules(target)
+        rules = selected.rules
         plan = build_plan(target, source, dest, rules)
         rename_preflight = preflight_rename_noreplace(
             target,
