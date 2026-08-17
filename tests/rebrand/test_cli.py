@@ -1256,9 +1256,19 @@ def test_dry_run_warns_but_does_not_require_force_for_nonatomic_rename(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    from template_press.rebrand import engine as engine_module
     from template_press.rebrand import safety
 
-    monkeypatch.setattr(safety.sys, "platform", "freebsd14")
+    monkeypatch.setattr(safety.sys, "platform", "linux")
+
+    def reject_host_support() -> None:
+        raise safety.AtomicRenameUnavailableError(
+            "atomic no-replace rename is unavailable on this supported host"
+        )
+
+    monkeypatch.setattr(
+        engine_module, "require_rename_noreplace_host_support", reject_host_support
+    )
     monkeypatch.setattr(
         safety,
         "_rename_noreplace_unchecked",

@@ -135,7 +135,7 @@ platforms = ["darwin", "linux", "win32"]
 
 ### Tests & Tasks
 
-- [ ] [P07-TS01] Add failing unit tests for the exact `darwin`/`linux`/`win32`
+- [x] [P07-TS01] Add failing unit tests for the exact `darwin`/`linux`/`win32`
       vocabulary; omitted, empty, duplicate, unknown, wrong-case, and
       whitespace-padded selectors; string containers; integer, Boolean, and
       mixed-type elements; unsupported runtimes; environment-independent
