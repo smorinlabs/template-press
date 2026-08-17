@@ -956,6 +956,7 @@ class ApplyReport:
     skipped: list[str] = field(default_factory=list)
     regenerated: list[str] = field(default_factory=list)
     reset: list[str] = field(default_factory=list)  # declared stubs written
+    removed: list[str] = field(default_factory=list)  # declared deletions
     executed_rename_step_ids: list[str] = field(default_factory=list)
 
     def render(self) -> str:
@@ -963,6 +964,7 @@ class ApplyReport:
             f"Applied: {len(self.replaced)} replaced, "
             f"{len(self.renamed)} renamed, "
             f"{len(self.reset)} reset, "
+            f"{len(self.removed)} removed, "
             f"{len(self.regenerated)} regenerated, "
             f"{len(self.skipped)} skipped."
         )

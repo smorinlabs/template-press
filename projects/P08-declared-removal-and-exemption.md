@@ -58,11 +58,11 @@ exemption and no coverage gap.
       reason rejected; reason without exempt rejected), docs
 - [x] [P08-TS01] verify exempts a declared non-lockfile output only with
       `verify_exempt`; report/json/receipt carry the declared reason
-- [ ] [P08-T02] `[[remove]]` schema + plan-time guards (missing file,
+- [x] [P08-T02] `[[remove]]` schema + plan-time guards (missing file,
       control files, overlap with reset/regenerate)
-- [ ] [P08-TS02] removal applies at position zero with sink guards; report,
-      receipt, and dry-run preview record it
-- [ ] [P08-TS03] hermetic verify models removals (removed identity-bearing
+- [x] [P08-TS02] removal applies post-apply at the translated location
+      with sink guards; report, receipt, and dry-run preview record it
+- [x] [P08-TS03] hermetic verify models removals (removed identity-bearing
       file no longer leaks; no exemption listed)
 - [ ] [P08-T03] release v3.6.0 after both PRs merge
 

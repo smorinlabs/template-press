@@ -29,6 +29,7 @@ from template_press.rebrand.engine import (
     build_plan,
     preflight_rename_noreplace,
     stray_press_dirs,
+    translate_path,
 )
 from template_press.rebrand.identity import (
     Identity,
@@ -38,6 +39,7 @@ from template_press.rebrand.receipt import (
     RECEIPT_REL,
     invalidate_receipt,
     read_receipt,
+    removed_files_from_receipt,
     write_receipt,
 )
 from template_press.rebrand.regen import (
@@ -53,6 +55,12 @@ from template_press.rebrand.regen import (
     snapshot_visibility_state,
     validate_control_files,
     validate_visibility_state,
+)
+from template_press.rebrand.remove import (
+    apply_removals,
+    preflight_remove_targets,
+    remove_regen_conflicts,
+    render_remove_plan,
 )
 from template_press.rebrand.reset import (
     apply_resets,
@@ -302,6 +310,11 @@ def main(argv: list[str] | None = None) -> int:
             table=plan.table,
         )
         gate_problems += reset_problems
+        prior_removed = removed_files_from_receipt(read_receipt(target))
+        gate_problems += preflight_remove_targets(
+            target, rules, previously_removed=frozenset(prior_removed)
+        )
+        gate_problems += remove_regen_conflicts(rules)
         if plan.table is not None:
             try:
                 validate_reset_visibility(
@@ -316,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
                 gate_problems.append(str(exc))
         if gate_problems:
             print(
-                "error: declared regeneration/reset cannot run — nothing written:",
+                "error: declared regeneration/reset/removal cannot run — nothing written:",
                 file=sys.stderr,
             )
             for problem in gate_problems:
@@ -328,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
             print(render_regenerate_plan(regen_plans))
         if reset_previews:
             print(render_reset_plan(reset_previews, verbose=args.verbose))
+        if rules.remove:
+            print(render_remove_plan(rules))
         strays = stray_press_dirs(target)
         if strays:
             print(
@@ -368,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
         rules,
         regen_plans,
         [(preview.rule, preview.stub_text) for preview in reset_previews],
+        previously_removed=prior_removed,
         platform=selected.platform,
         rename_preflight=rename_preflight,
         allow_unsafe_rename=args.force,
@@ -399,12 +415,15 @@ def _press(
     regen_plans: list[RegenerationPlan],
     resets: list[tuple[ResetRule, str]],
     *,
+    previously_removed: dict[str, str] | None = None,
     platform: str | None = None,
     rename_preflight: RenamePreflight | None = None,
     allow_unsafe_rename: bool = False,
     rendered_rules: list[tuple[ReplaceRule, str, str]] | None = None,
     table: SubstitutionTable | None = None,
 ) -> PressOutcome:
+    if previously_removed is None:
+        previously_removed = {}
     try:
         if table is None:
             fallback_plan = build_plan(target, source, dest, rules)
@@ -444,6 +463,16 @@ def _press(
             table=table,
         )
         report.reset.extend(reset_done)
+        # Declared removals run right after the rewrite/rename passes, at
+        # their post-rename locations (P08 T2) — before any declared command
+        # so a regeneration never observes a doomed file.
+        removed_rels = apply_removals(
+            target,
+            rules,
+            dict(report.renamed),
+            previously_removed=frozenset(previously_removed),
+        )
+        report.removed.extend(removed_rels)
         # Declared commands run against the FINAL tree: declared paths are
         # translated through the apply-time rename report (P04 D1). The
         # Press-owned control files and Git visibility inputs are snapshotted
@@ -561,6 +590,27 @@ def _press(
                 if plan.rule.file in report.regenerated
             ],
             resets=report.reset,
+            removals=[
+                # Recorded in DECLARED (source) coordinates, matching
+                # [[press.regenerate]] — that is the coordinate every later
+                # consumer (re-press preflight, verify tri-state) compares
+                # against, and press-rules.toml is never rewritten. A target
+                # satisfied by a PRIOR press carries forward, so the
+                # satisfied-chain survives any number of re-presses.
+                (rule.file, rule.reason)
+                for rule in rules.remove
+                if translate_path(rule.file, dict(report.renamed)) in report.removed
+                or rule.file in previously_removed
+            ]
+            + [
+                # Prior records with no active declaration on THIS platform
+                # (or whose declaration was retired) carry forward with
+                # their recorded reasons: a cross-platform re-press must
+                # not drop another platform's satisfied removals.
+                (file, reason)
+                for file, reason in previously_removed.items()
+                if file not in {rule.file for rule in rules.remove}
+            ],
             exempt=[
                 # A declared verify_exempt reason travels VERBATIM into the
                 # receipt's exempt record (issue #81); the generic mechanism

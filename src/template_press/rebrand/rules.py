@@ -122,6 +122,28 @@ class ResetRule:
 
 
 @dataclass(frozen=True)
+class RemoveRule:
+    """One declared removal: delete ``file`` from the pressed tree (P08 T2,
+    issue #80). Template-only files (maintenance CI, dogfood history) must
+    not ship to forks; removal is their neutralization. It executes AFTER
+    ``apply()`` with the path translated through the rename report, and
+    hermetic verify performs it in the sandbox — no command, so no
+    exemption and no coverage gap.
+    """
+
+    file: str  # canonical POSIX rel path, SOURCE coordinates
+    reason: str
+
+
+@dataclass(frozen=True)
+class _RemoveDeclaration:
+    """One parsed removal plus its environment-independent selector."""
+
+    rule: RemoveRule
+    platforms: frozenset[str]
+
+
+@dataclass(frozen=True)
 class _RegenerateDeclaration:
     """One parsed regeneration plus its environment-independent selector."""
 
@@ -157,6 +179,7 @@ class Rules:
     exclude_files: frozenset[str]  # POSIX paths relative to the target root
     regenerate: tuple[RegenerateRule, ...]  # declared-command regenerations
     reset: tuple[ResetRule, ...] = ()  # declared file resets (blank to stub)
+    remove: tuple[RemoveRule, ...] = ()  # declared file removals (issue #80)
     # The deliberate, committed ignore set: directories whose surviving
     # source-identity content is VALID (vendored trees, historical docs).
     # Exempts them from the doctor's leak scan only — never from rewriting.
@@ -187,6 +210,7 @@ class _ParsedRules:
     rules: Rules
     regenerate: tuple[_RegenerateDeclaration, ...] = ()
     reset: tuple[_ResetDeclaration, ...] = ()
+    remove: tuple[_RemoveDeclaration, ...] = ()
 
 
 DEFAULT_RULES = Rules(
@@ -237,7 +261,8 @@ _RULES_KEYS = frozenset(
 # verify_cli.py's _load_verify_config (same file). An unknown root key (e.g.
 # a `[[replace]]` typo like `[[replcae]]`) must fail loud instead of silently
 # loading as zero rules.
-_ROOT_KEYS = frozenset({"rules", "replace", "verify", "regenerate", "reset"})
+_ROOT_KEYS = frozenset({"rules", "replace", "verify", "regenerate", "reset", "remove"})
+_REMOVE_KEYS = frozenset({"file", "reason", "platforms"})
 
 _REGENERATE_KEYS = frozenset(
     {"file", "command", "env", "platforms", "scan", "verify_exempt", "reason"}
@@ -578,9 +603,45 @@ def _parse_reset(entry: object, exclude_files: frozenset[str]) -> _ResetDeclarat
     )
 
 
+def _parse_remove(entry: object) -> _RemoveDeclaration:
+    if not isinstance(entry, dict):
+        raise ValidationError(f"{RULES_REL}: [[remove]] entry must be a table")
+    unknown = set(entry) - _REMOVE_KEYS
+    if unknown:
+        raise ValidationError(
+            f"{RULES_REL}: [[remove]] unknown key(s): {', '.join(sorted(unknown))}"
+        )
+    file = _declared_rel_path("[[remove]] file", entry.get("file"))
+    _reject_reserved("[[remove]]", file)
+    if file.rsplit("/", 1)[-1] in {".gitignore", ".gitattributes", ".gitmodules"}:
+        raise ValidationError(
+            f"{RULES_REL}: [[remove]] {file!r}: Git visibility inputs cannot "
+            f"be removed by declaration — deleting one changes Git's surface "
+            f"after the rewrite plan was validated against it"
+        )
+    reason = entry.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValidationError(
+            f"{RULES_REL}: [[remove]] {file!r}: reason is required and must "
+            f"be a non-empty string — a removal is a deliberate, documented "
+            f"decision, never a silent deletion"
+        )
+    if any(not ch.isprintable() for ch in reason):
+        raise ValidationError(
+            f"{RULES_REL}: [[remove]] {file!r}: reason must not contain "
+            f"control or non-printable characters — it is interpolated into "
+            f"the rendered plan"
+        )
+    return _RemoveDeclaration(
+        rule=RemoveRule(file=file, reason=reason),
+        platforms=_parse_platforms(entry, "[[remove]]", file),
+    )
+
+
 def _validate_writer_overlaps(
     regenerate: tuple[_RegenerateDeclaration, ...],
     reset: tuple[_ResetDeclaration, ...],
+    remove: tuple[_RemoveDeclaration, ...] = (),
 ) -> None:
     """Reject any same-file writer pair active on at least one platform."""
 
@@ -623,6 +684,46 @@ def _validate_writer_overlaps(
                     f"permits exactly one mechanism per file"
                 )
 
+    seen_remove: dict[str, list[frozenset[str]]] = {}
+    for declaration in remove:
+        file = declaration.rule.file
+        for earlier in seen_remove.get(file, []):
+            overlap = earlier & declaration.platforms
+            if overlap:
+                raise ValidationError(
+                    f"{RULES_REL}: duplicate [[remove]] target {file!r} has "
+                    f"platform overlap {sorted(overlap)!r}"
+                )
+        seen_remove.setdefault(file, []).append(declaration.platforms)
+    for remove_declaration in remove:
+        for reset_declaration in reset:
+            stub_file = reset_declaration.rule.stub_file
+            if stub_file is None or stub_file != remove_declaration.rule.file:
+                continue
+            overlap = reset_declaration.platforms & remove_declaration.platforms
+            if overlap:
+                raise ValidationError(
+                    f"{RULES_REL}: {stub_file!r} is a [[reset]] stub_file and "
+                    f"a [[remove]] target on {sorted(overlap)!r} — the "
+                    f"removal would destroy the stub source; drop one "
+                    f"declaration"
+                )
+        for other_kind, others in (
+            ("[[regenerate]]", regenerate),
+            ("[[reset]]", reset),
+        ):
+            for other in others:
+                if other.rule.file != remove_declaration.rule.file:
+                    continue
+                overlap = other.platforms & remove_declaration.platforms
+                if overlap:
+                    file = remove_declaration.rule.file
+                    raise ValidationError(
+                        f"{RULES_REL}: {file!r} has [[remove]] and "
+                        f"{other_kind} overlap on {sorted(overlap)!r} — a "
+                        f"removed file cannot also be rebuilt or reset"
+                    )
+
 
 def _parse_rules(target: Path) -> _ParsedRules:
     """Parse and globally validate declarations before platform selection."""
@@ -660,6 +761,11 @@ def _parse_rules(target: Path) -> _ParsedRules:
         not isinstance(e, dict) for e in raw_reset
     ):
         raise ValidationError(f"{RULES_REL}: [[reset]] must be an array of tables")
+    raw_remove = data.get("remove", [])
+    if not isinstance(raw_remove, list) or any(
+        not isinstance(e, dict) for e in raw_remove
+    ):
+        raise ValidationError(f"{RULES_REL}: [[remove]] must be an array of tables")
     substring_fields = frozenset(_str_list(table, "substring_rewrite_fields", []))
     bad_substring = substring_fields - ALLOWED_PLACEHOLDERS
     if bad_substring:
@@ -693,7 +799,8 @@ def _parse_rules(target: Path) -> _ParsedRules:
     )
     regenerate = tuple(_parse_regenerate(e, exclude_files) for e in raw_regenerate)
     reset = tuple(_parse_reset(e, exclude_files) for e in raw_reset)
-    _validate_writer_overlaps(regenerate, reset)
+    remove = tuple(_parse_remove(e) for e in raw_remove)
+    _validate_writer_overlaps(regenerate, reset, remove)
     return _ParsedRules(
         rules=Rules(
             exclude_dirs=DEFAULT_RULES.exclude_dirs
@@ -708,6 +815,7 @@ def _parse_rules(target: Path) -> _ParsedRules:
         ),
         regenerate=regenerate,
         reset=reset,
+        remove=remove,
     )
 
 
@@ -729,6 +837,11 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
         reset=tuple(
             declaration.rule
             for declaration in parsed.reset
+            if platform in declaration.platforms
+        ),
+        remove=tuple(
+            declaration.rule
+            for declaration in parsed.remove
             if platform in declaration.platforms
         ),
     )

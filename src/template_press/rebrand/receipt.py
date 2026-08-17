@@ -7,6 +7,7 @@ answered. Its presence also guards re-runs (require --force).
 
 from __future__ import annotations
 
+import tomllib
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -56,6 +57,7 @@ def write_receipt(
     report: ApplyReport,
     regenerations: Sequence[tuple[str, Sequence[str]]] = (),
     resets: Sequence[str] = (),
+    removals: Sequence[tuple[str, str]] = (),
     exempt: Sequence[tuple[str, str]] = (),
     *,
     platform: str | None = None,
@@ -78,6 +80,7 @@ def write_receipt(
         f"replaced = {len(report.replaced)}",
         f"renamed = {len(report.renamed)}",
         f"reset = {len(report.reset)}",
+        f"removed = {len(report.removed)}",
         f"regenerated = {len(report.regenerated)}",
         f"skipped = {len(report.skipped)}",
     ]
@@ -97,6 +100,16 @@ def write_receipt(
             "[[press.reset]]",
             f"file = {toml_string(file)}",
         ]
+    # Each removal with its declared reason (P08 T2): a deletion is a
+    # deliberate, documented decision, and the receipt is where it stays
+    # auditable after the file is gone.
+    for file, reason in removals:
+        lines += [
+            "",
+            "[[press.remove]]",
+            f"file = {toml_string(file)}",
+            f"reason = {toml_string(reason)}",
+        ]
     # Machine-readable coverage record (P04 D3): every file the ordinary
     # doctor/verify inventories skip, with the mechanism that covered it —
     # the gap stays visible and deliberate, never an unchecked free pass.
@@ -108,3 +121,37 @@ def write_receipt(
             f"reason = {toml_string(reason)}",
         ]
     return write_control(target, RECEIPT_REL, "\n".join(lines) + "\n")
+
+
+def removed_files_from_receipt(text: str | None) -> dict[str, str]:
+    """The ``[[press.remove]]`` file set recorded by a prior press.
+
+    A successful removal deletes its own precondition: the declaration
+    stays in press-rules.toml while the file is gone, so a forced re-press
+    (and a pressed fork's ``press verify``) must treat a missing target
+    RECORDED here as satisfied — and a missing target NOT recorded as
+    stale config. Tolerant reader: no receipt, unparsable TOML, or absent
+    keys mean an empty mapping (the strict path then reports the target as
+    stale, which fails loud — never silently clean).
+    """
+    if not text:
+        return {}
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return {}
+    press_table = data.get("press", {})
+    if not isinstance(press_table, dict):
+        return {}
+    entries = press_table.get("remove", [])
+    if not isinstance(entries, list):
+        return {}
+    return {
+        e["file"]: (
+            e["reason"]
+            if isinstance(e.get("reason"), str)
+            else "recorded by a prior press"
+        )
+        for e in entries
+        if isinstance(e, dict) and isinstance(e.get("file"), str)
+    }

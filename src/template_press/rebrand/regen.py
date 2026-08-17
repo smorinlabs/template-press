@@ -458,22 +458,23 @@ def preflight_excluded_files(target: Path, rules: Rules) -> list[str]:
     """
     regenerated = {r.file for r in rules.regenerate}
     reset_files = {r.file for r in rules.reset}
+    removed_files = {r.file for r in rules.remove}
     problems: list[str] = []
     for rel in sorted(tracked_paths(target)):
         if rel not in rules.exclude_files:
             continue
-        if rel in regenerated or rel in reset_files:
+        if rel in regenerated or rel in reset_files or rel in removed_files:
             continue
         if any(part in rules.verify_ignore for part in rel.split("/")):
             continue
         if not os.path.lexists(target / rel):
             continue  # tracked but absent from the worktree — nothing survives
         problems.append(
-            f"excluded file {rel} is neither regenerated, reset, nor ignored "
-            f"— it would survive the press unrewritten AND unscanned; declare "
-            f"a [[regenerate]] command or a [[reset]] stub in "
-            f"press/press-rules.toml, or list it under [rules] verify_ignore "
-            f"(the deliberate, committed exemption)"
+            f"excluded file {rel} is neither regenerated, reset, removed, "
+            f"nor ignored — it would survive the press unrewritten AND "
+            f"unscanned; declare a [[regenerate]] command, a [[reset]] stub, "
+            f"or a [[remove]] in press/press-rules.toml, or list it under "
+            f"[rules] verify_ignore (the deliberate, committed exemption)"
         )
     return problems
 
