@@ -39,7 +39,7 @@ keep them in sync:
 2. **mise** — root `mise.toml`; provision with `mise install`.
 3. **flox** — root `.flox/`; provision with `flox activate`.
 
-Both manifests declare the **same lean 10-tool set**: python 3.12, uv, ruff,
+Both manifests declare the **same lean 10-tool set**: python 3.13, uv, ruff,
 taplo, gitleaks, just, bun, gh, lefthook, make. Adding or removing a tool means
 updating all three options.
 

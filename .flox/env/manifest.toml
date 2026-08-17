@@ -11,7 +11,7 @@
 schema-version = "1.12.0"
 
 [install]
-python.pkg-path = "python312"
+python.pkg-path = "python313"
 uv.pkg-path = "uv"
 ruff.pkg-path = "ruff"
 taplo.pkg-path = "taplo"

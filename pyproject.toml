@@ -111,7 +111,7 @@ module-root = "src"
 # ITM-018 reconciled config (round-2). Merge: template's stricter rule
 # selection + source's ignore rationale. target-version reflects ITM-033
 # Python-floor bump.
-target-version = "py312"
+target-version = "py313"
 line-length = 88
 
 lint.select = [
