@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.6.0](https://github.com/smorinlabs/template-press/compare/v3.5.0...v3.6.0) (2026-08-17)
+
+
+### Features
+
+* **rebrand:** declared file removal ([9a61523](https://github.com/smorinlabs/template-press/commit/9a61523975e012c34c779f564c2e94257059241e))
+* **rebrand:** declared file removal ([4f05507](https://github.com/smorinlabs/template-press/commit/4f05507634e261c902f7d1daabc03ef3b3664faf))
+* **rebrand:** declared verify exemption with required reason ([b53a348](https://github.com/smorinlabs/template-press/commit/b53a34831e3a184a622a6161dbc8ccdc92f6e6e0))
+* **rebrand:** declared verify exemption with required reason ([fc4f8d6](https://github.com/smorinlabs/template-press/commit/fc4f8d66dce9953beb0dc1ccd8c727799ac8ec11))
+
+
+### Bug Fixes
+
+* **rebrand:** declared reason wins for capped outputs; reject unicode controls ([dc27b7c](https://github.com/smorinlabs/template-press/commit/dc27b7ccf0b5fc5d851d375f08e2483036dcb38e))
+* **rebrand:** harden the declared reason — control chars, dead config, verbatim receipt ([f5944e2](https://github.com/smorinlabs/template-press/commit/f5944e2804561a57c8b764fe2e51ba201441e172))
+* **rebrand:** receipt-aware removal lifecycle, regen conflicts, reason hygiene ([5acaa9d](https://github.com/smorinlabs/template-press/commit/5acaa9dab98d4e64ae91718558c8c9cf910b94b9))
+* **rebrand:** sandbox ancestor guard and receipt carry-forward hardening ([d79fda5](https://github.com/smorinlabs/template-press/commit/d79fda5555a97d4b93a564998fa7035e3d231400))
+* **rebrand:** source-coordinate removal records, receipt-chain carry-forward, config hardening ([36a79d5](https://github.com/smorinlabs/template-press/commit/36a79d5d3331466ca7e0d2e33de5785e67fe703b))
+
 ## [3.5.0](https://github.com/smorinlabs/template-press/compare/v3.4.0...v3.5.0) (2026-08-17)
 
 
