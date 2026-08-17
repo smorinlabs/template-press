@@ -99,6 +99,13 @@ class RegenerateRule:
     # — the content scan downgrades to boundary-safe matching, while the
     # path scan and rendered [[replace]] literal checks stay strict.
     scan: str = "strict"
+    # Hermetic-verify exemption beyond the tool cap (issue #81). The cap
+    # (REGENERATE_EXEMPTIBLE) stays the silent default; any other declared
+    # output buys its exemption only loudly — verify_exempt = true with a
+    # required reason, committed where reviewers see it. The reason flows
+    # into verify's not-verified listing and the press receipt.
+    verify_exempt: bool = False
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -232,7 +239,9 @@ _RULES_KEYS = frozenset(
 # loading as zero rules.
 _ROOT_KEYS = frozenset({"rules", "replace", "verify", "regenerate", "reset"})
 
-_REGENERATE_KEYS = frozenset({"file", "command", "env", "platforms", "scan"})
+_REGENERATE_KEYS = frozenset(
+    {"file", "command", "env", "platforms", "scan", "verify_exempt", "reason"}
+)
 _REGENERATE_SCAN_VALUES = frozenset({"strict", "boundary"})
 _RESET_KEYS = frozenset({"file", "stub", "stub_file", "platforms"})
 
@@ -476,9 +485,47 @@ def _parse_regenerate(
             f"{RULES_REL}: [[regenerate]] {file!r}: scan must be one of "
             f"{sorted(_REGENERATE_SCAN_VALUES)}: {scan!r}"
         )
+    verify_exempt = entry.get("verify_exempt", False)
+    if not isinstance(verify_exempt, bool):
+        raise ValidationError(
+            f"{RULES_REL}: [[regenerate]] {file!r}: verify_exempt must be a "
+            f"boolean: {verify_exempt!r}"
+        )
+    reason = entry.get("reason", "")
+    if not isinstance(reason, str):
+        raise ValidationError(
+            f"{RULES_REL}: [[regenerate]] {file!r}: reason must be a string: {reason!r}"
+        )
+    # Rendered in reports and the receipt — control characters are rejected,
+    # not escaped, mirroring the argv rule (report visibility is the
+    # approval guard, so a reason must not be able to forge report lines).
+    if any(not ch.isprintable() for ch in reason):
+        raise ValidationError(
+            f"{RULES_REL}: [[regenerate]] {file!r}: reason must not contain "
+            f"control or non-printable characters"
+        )
+    # The pair is all-or-nothing: an exemption without a reason is a silent
+    # coverage purchase, and a reason without the exemption — including an
+    # explicitly empty one — is dead config.
+    if verify_exempt and not reason.strip():
+        raise ValidationError(
+            f"{RULES_REL}: [[regenerate]] {file!r}: verify_exempt = true "
+            f"requires a non-empty reason — the exemption is bought loudly "
+            f"or not at all"
+        )
+    if "reason" in entry and not verify_exempt:
+        raise ValidationError(
+            f"{RULES_REL}: [[regenerate]] {file!r}: reason is only valid "
+            f"with verify_exempt = true"
+        )
     return _RegenerateDeclaration(
         rule=RegenerateRule(
-            file=file, command=tuple(command), env=tuple(env), scan=scan
+            file=file,
+            command=tuple(command),
+            env=tuple(env),
+            scan=scan,
+            verify_exempt=verify_exempt,
+            reason=reason,
         ),
         platforms=_parse_platforms(entry, "[[regenerate]]", file),
     )

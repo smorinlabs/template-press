@@ -29,6 +29,7 @@ file by hand — see Conventions.
 | P05 | `[x]` | [Reset rule: blank a file to a declared stub](projects/P05-reset-rule.md) — first destructive op: blank CHANGELOG-style files instead of leaking their history |
 | P06 | `[x]` | [Derive checkers from one rendered substitution set](projects/P06-substitution-set.md) — one table the rewriter applies and every checker reads (issue #42) |
 | P07 | `[~]` | [Platform-conditional declared commands](projects/P07-platform-conditional-declared-commands.md) — platform-scoped rules; only matching platform triggers |
+| P08 | `[~]` | [Declared removal and declared verify exemption](projects/P08-declared-removal-and-exemption.md) — [[remove]] for blueprint-only files (#80) + verify_exempt with reason on [[regenerate]] (#81); run 4 dogfood gaps |
 
 ## Conventions
 

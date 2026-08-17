@@ -17,11 +17,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from template_press.rebrand.cli import main
 from template_press.rebrand.engine import (
     REGENERATE_EXEMPTIBLE,
     scan_paths,
 )
+from template_press.rebrand.identity import ValidationError
 from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.rules import load_rules
 from template_press.rebrand.verify_cli import verify_command
@@ -248,3 +251,113 @@ class TestVerifyModelsDeclaredResets:
         payload = json.loads(capsys.readouterr().out)
         (entry,) = payload["exempt"]
         assert entry["file"] == "packages/demo_widget/bun.lock"
+
+
+class TestDeclaredExemption:
+    """P08-T01/TS01 (issue #81): the tool cap stays the silent default; a
+    target buys an exemption for any OTHER regenerated output only loudly —
+    ``verify_exempt = true`` plus a required ``reason`` on the
+    ``[[regenerate]]`` entry, committed where reviewers see it."""
+
+    RULES_EXEMPT = (
+        "[rules]\n"
+        'extra_exclude_files = ["docs/generated-api.md"]\n'
+        "[[regenerate]]\n"
+        'file = "docs/generated-api.md"\n'
+        'command = ["true"]\n'
+        "verify_exempt = true\n"
+        'reason = "rendered from source at build time; press cannot rewrite it"\n'
+    )
+    RULES_PLAIN = (
+        "[rules]\n"
+        'extra_exclude_files = ["docs/generated-api.md"]\n'
+        "[[regenerate]]\n"
+        'file = "docs/generated-api.md"\n'
+        'command = ["true"]\n'
+    )
+
+    def _repo(self, tmp_path: Path, rules_body: str) -> Path:
+        repo = make_pressable(tmp_path)
+        gen = repo / "docs" / "generated-api.md"
+        gen.parent.mkdir(exist_ok=True)
+        gen.write_text("# demo_widget API\n", encoding="utf-8")
+        (repo / "press" / "press-rules.toml").write_text(rules_body, encoding="utf-8")
+        _commit(repo)
+        return repo
+
+    def test_declared_exemption_verifies_clean_with_reason_shown(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        repo = self._repo(tmp_path, self.RULES_EXEMPT)
+        assert verify_command(["--target", str(repo)]) == 0
+        out = capsys.readouterr().out
+        assert "docs/generated-api.md" in out
+        assert "rendered from source at build time" in out
+
+    def test_without_declaration_the_output_still_fails_verify(
+        self, tmp_path: Path
+    ) -> None:
+        """Pins the cap as the default: a non-lockfile declared regen
+        without verify_exempt is scanned and leaks (dogfood PROBLEM-28)."""
+        repo = self._repo(tmp_path, self.RULES_PLAIN)
+        assert verify_command(["--target", str(repo)]) == 1
+
+    def test_verify_exempt_requires_reason(self, tmp_path: Path) -> None:
+        repo = self._repo(
+            tmp_path,
+            self.RULES_EXEMPT.replace(
+                'reason = "rendered from source at build time; press cannot rewrite it"\n',
+                "",
+            ),
+        )
+        with pytest.raises(ValidationError):
+            load_rules(repo)
+
+    def test_reason_without_verify_exempt_is_rejected(self, tmp_path: Path) -> None:
+        repo = self._repo(
+            tmp_path,
+            self.RULES_EXEMPT.replace("verify_exempt = true\n", ""),
+        )
+        with pytest.raises(ValidationError):
+            load_rules(repo)
+
+    def test_control_characters_in_reason_rejected(self, tmp_path: Path) -> None:
+        repo = self._repo(
+            tmp_path,
+            self.RULES_EXEMPT.replace(
+                'reason = "rendered from source at build time; press cannot rewrite it"\n',
+                'reason = "line one\\u001b[31mforged report line"\n',
+            ),
+        )
+        with pytest.raises(ValidationError):
+            load_rules(repo)
+
+    def test_explicitly_empty_reason_without_exempt_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """`reason = ""` with no verify_exempt is dead config, not a pass."""
+        repo = self._repo(
+            tmp_path,
+            self.RULES_PLAIN + 'reason = ""\n',
+        )
+        with pytest.raises(ValidationError):
+            load_rules(repo)
+
+    def test_real_press_receipt_carries_declared_reason_verbatim(
+        self, tmp_path: Path
+    ) -> None:
+        repo = make_pressable(tmp_path)
+        gen = repo / "docs" / "generated-api.md"
+        gen.parent.mkdir(exist_ok=True)
+        gen.write_text("# API reference\n", encoding="utf-8")  # identity-free
+        (repo / "press" / "press-rules.toml").write_text(
+            self.RULES_EXEMPT, encoding="utf-8"
+        )
+        _commit(repo)
+        answers = write_answers_file(tmp_path, DEST)
+        assert main(["--target", str(repo), "--config", str(answers)]) == 0
+        receipt = (repo / RECEIPT_REL).read_text(encoding="utf-8")
+        assert (
+            'reason = "rendered from source at build time; '
+            'press cannot rewrite it"' in receipt
+        )
