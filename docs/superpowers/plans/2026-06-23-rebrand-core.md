@@ -512,7 +512,7 @@ def test_load_rules_merges_target_overrides(tmp_path: Path):
     press = tmp_path / ".press"
     press.mkdir()
     (press / "rules.toml").write_text(
-        '[rules]\n'
+        "[rules]\n"
         'extra_exclude_dirs = ["vendored"]\n'
         'extra_exclude_files = ["docs/history.md"]\n'
         'regenerate = ["uv.lock", "bun.lock"]\n',
@@ -708,9 +708,7 @@ def make_target(base: Path, layout: str = "src") -> Path:
     (repo / "press_config.toml").write_text(
         '# press config for demo_widget\ntheme = "dark"\n', encoding="utf-8"
     )
-    (pkg / "__init__.py").write_text(
-        '"""demo_widget package."""\n', encoding="utf-8"
-    )
+    (pkg / "__init__.py").write_text('"""demo_widget package."""\n', encoding="utf-8")
     (pkg / "cli.py").write_text(CLI_PY, encoding="utf-8")
     (repo / ".gitignore").write_text(".venv/\n__pycache__/\n", encoding="utf-8")
     _git(repo, "init", "-q", "-b", "main")
@@ -918,9 +916,7 @@ def iter_target_files(target: Path, rules: Rules) -> list[Path]:
     return sorted(out)
 
 
-def replacement_pairs(
-    source: Identity, dest: Identity
-) -> list[tuple[str, str, str]]:
+def replacement_pairs(source: Identity, dest: Identity) -> list[tuple[str, str, str]]:
     """(field, current, replacement) triples, longest current first."""
     src, dst = source.as_dict(), dest.as_dict()
     pairs = [(k, src[k], dst[k]) for k in src if src[k] != dst[k]]
@@ -946,9 +942,7 @@ def _renamed_rel(rel: Path, pairs: list[tuple[str, str, str]]) -> Path:
     return Path(*parts)
 
 
-def build_plan(
-    target: Path, source: Identity, dest: Identity, rules: Rules
-) -> Plan:
+def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> Plan:
     """Resolve what apply() would do; executes nothing."""
     source.validate()
     dest.validate()
@@ -1100,9 +1094,7 @@ def _apply_replacements(
             report.replaced.append(rel)
 
 
-def apply(
-    target: Path, source: Identity, dest: Identity, rules: Rules
-) -> ApplyReport:
+def apply(target: Path, source: Identity, dest: Identity, rules: Rules) -> ApplyReport:
     """Execute the rebrand: replace pass, then rename pass."""
     source.validate()
     dest.validate()
@@ -1366,9 +1358,7 @@ def render_leak_report(leaks: list[Leak], limit: int = 20) -> str:
         f"INCOMPLETE; no receipt written."
     ]
     for leak in leaks[:limit]:
-        lines.append(
-            f"  [{leak.where}] {leak.path}: {leak.field}={leak.value!r}"
-        )
+        lines.append(f"  [{leak.where}] {leak.path}: {leak.field}={leak.value!r}")
     if len(leaks) > limit:
         lines.append(f"  … and {len(leaks) - limit} more")
     lines.append(
@@ -1447,7 +1437,9 @@ def test_mismatches_empty_when_source_matches(src_target: Path):
 
 
 def test_mismatches_reported_loudly(src_target: Path):
-    wrong = SOURCE.__class__(**{**SOURCE.as_dict_prompted(), "package_name": "other_pkg"})
+    wrong = SOURCE.__class__(
+        **{**SOURCE.as_dict_prompted(), "package_name": "other_pkg"}
+    )
     msgs = mismatches(wrong, discover(src_target))
     assert any("package_name" in m and "other_pkg" in m for m in msgs)
 ```
@@ -1644,9 +1636,7 @@ def test_load_answers_answers_table(tmp_path: Path):
     p = tmp_path / "answers.toml"
     p.write_text(
         "[answers]\n"
-        + "\n".join(
-            f'{k} = "{v}"' for k, v in DEST.as_dict_prompted().items()
-        )
+        + "\n".join(f'{k} = "{v}"' for k, v in DEST.as_dict_prompted().items())
         + "\n",
         encoding="utf-8",
     )
@@ -1911,9 +1901,7 @@ def write_answers(base: Path) -> Path:
 
 def test_missing_target_dir_exits_2(tmp_path: Path):
     answers = write_answers(tmp_path)
-    code = main(
-        ["--target", str(tmp_path / "nope"), "--config", str(answers)]
-    )
+    code = main(["--target", str(tmp_path / "nope"), "--config", str(answers)])
     assert code == 2
 
 
@@ -1970,9 +1958,7 @@ def test_dry_run_prints_plan_and_writes_nothing(
 ):
     write_source_config(src_target)
     answers = write_answers(tmp_path)
-    code = main(
-        ["--target", str(src_target), "--config", str(answers), "--dry-run"]
-    )
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
     assert code == 0
     assert "README.md" in capsys.readouterr().out
     assert "demo-widget" in (src_target / "README.md").read_text(encoding="utf-8")
@@ -2091,9 +2077,7 @@ def _resolve_source(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="press rebrand", description=__doc__
-    )
+    parser = argparse.ArgumentParser(prog="press rebrand", description=__doc__)
     parser.add_argument("--target", type=Path, required=True)
     parser.add_argument("--config", type=Path, help="answers TOML (TO identity)")
     parser.add_argument("--source-config", type=Path, dest="source_config")
@@ -2223,9 +2207,7 @@ Also extend the engine import at the top of cli.py to
 `from template_press.rebrand.engine import ApplyReport, apply, build_plan`.
 
 ```python
-def _regenerate_lockfiles(
-    target: Path, rules: Rules, report: ApplyReport
-) -> None:
+def _regenerate_lockfiles(target: Path, rules: Rules, report: ApplyReport) -> None:
     for lockfile in rules.regenerate:
         if not (target / lockfile).is_file():
             continue
@@ -2383,9 +2365,7 @@ def write_answers_file(base: Path, identity: Identity) -> Path:
     p = base / "answers.toml"
     p.write_text(
         "[answers]\n"
-        + "\n".join(
-            f'{k} = "{v}"' for k, v in identity.as_dict_prompted().items()
-        )
+        + "\n".join(f'{k} = "{v}"' for k, v in identity.as_dict_prompted().items())
         + "\n",
         encoding="utf-8",
     )

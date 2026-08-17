@@ -350,8 +350,7 @@ class TestDisplayNameLeaks:
         dst = _identity(display_name="Acme Widget")
         leaks = find_leaks(tmp_path, src, DEFAULT_RULES, dest=dst)
         assert any(
-            lk.field == "display_name_pascal" and lk.where == "content"
-            for lk in leaks
+            lk.field == "display_name_pascal" and lk.where == "content" for lk in leaks
         )
 
     def test_unchanged_display_name_is_not_a_leak(self, tmp_path):
@@ -554,11 +553,11 @@ git commit -m "feat(cli): fail loud on half-specified display_name"
 ```python
 @dataclass(frozen=True)
 class ReplaceRule:
-    pattern: str                 # template with {field} placeholders
-    reason: str                  # REQUIRED documentation (codesign ch-07-d)
+    pattern: str  # template with {field} placeholders
+    reason: str  # REQUIRED documentation (codesign ch-07-d)
     files: tuple[str, ...] = ()  # fnmatch globs vs POSIX rel path; () = all
-    paths: bool = False          # participate in path renames (ch-07-b)
-    content: bool = True         # participate in content rewrites
+    paths: bool = False  # participate in path renames (ch-07-b)
+    content: bool = True  # participate in content rewrites
 ```
 
 - `Rules` gains: `replace: tuple[ReplaceRule, ...] = ()`, `substring_rewrite_fields: frozenset[str] = frozenset()`, `display_forms: tuple[str, ...] = DISPLAY_FORM_NAMES`.
@@ -656,7 +655,7 @@ class TestRewriteKnobs:
     def test_display_forms_subset(self, tmp_path):
         target = _write_rules(tmp_path, '[rules]\ndisplay_forms = ["spaced"]\n')
         assert load_rules(target).display_forms == ("spaced",)
-        target = _write_rules(tmp_path, '[rules]\ndisplay_forms = []\n')
+        target = _write_rules(tmp_path, "[rules]\ndisplay_forms = []\n")
         with pytest.raises(ValidationError):
             load_rules(target)
         target = _write_rules(tmp_path, '[rules]\ndisplay_forms = ["kebab"]\n')
@@ -735,7 +734,9 @@ def _parse_replace(entry: object) -> ReplaceRule:
         )
     pattern = entry.get("pattern")
     if not isinstance(pattern, str) or not pattern:
-        raise ValidationError(f"{RULES_REL}: [[replace]] pattern must be a non-empty string")
+        raise ValidationError(
+            f"{RULES_REL}: [[replace]] pattern must be a non-empty string"
+        )
     names = _PLACEHOLDER_RE.findall(pattern)
     if not names:
         raise ValidationError(
@@ -781,33 +782,31 @@ def _parse_replace(entry: object) -> ReplaceRule:
 In `load_rules`, validate/collect the new surfaces. After `table = data.get("rules", {})` checks, add:
 
 ```python
-    raw_replace = data.get("replace", [])
-    if not isinstance(raw_replace, list):
-        raise ValidationError(f"{RULES_REL}: [[replace]] must be an array of tables")
-    substring_fields = frozenset(_str_list(table, "substring_rewrite_fields", []))
-    bad_substring = substring_fields - ALLOWED_PLACEHOLDERS
-    if bad_substring:
-        raise ValidationError(
-            f"{RULES_REL}: [rules] substring_rewrite_fields unknown field(s): "
-            f"{', '.join(sorted(bad_substring))}"
-        )
-    display_forms_list = _str_list(
-        table, "display_forms", list(DISPLAY_FORM_NAMES)
+raw_replace = data.get("replace", [])
+if not isinstance(raw_replace, list):
+    raise ValidationError(f"{RULES_REL}: [[replace]] must be an array of tables")
+substring_fields = frozenset(_str_list(table, "substring_rewrite_fields", []))
+bad_substring = substring_fields - ALLOWED_PLACEHOLDERS
+if bad_substring:
+    raise ValidationError(
+        f"{RULES_REL}: [rules] substring_rewrite_fields unknown field(s): "
+        f"{', '.join(sorted(bad_substring))}"
     )
-    bad_forms = set(display_forms_list) - set(DISPLAY_FORM_NAMES)
-    if bad_forms or not display_forms_list:
-        raise ValidationError(
-            f"{RULES_REL}: [rules] display_forms must be a non-empty subset of "
-            f"{list(DISPLAY_FORM_NAMES)}: {display_forms_list!r}"
-        )
+display_forms_list = _str_list(table, "display_forms", list(DISPLAY_FORM_NAMES))
+bad_forms = set(display_forms_list) - set(DISPLAY_FORM_NAMES)
+if bad_forms or not display_forms_list:
+    raise ValidationError(
+        f"{RULES_REL}: [rules] display_forms must be a non-empty subset of "
+        f"{list(DISPLAY_FORM_NAMES)}: {display_forms_list!r}"
+    )
 ```
 
 and extend the returned `Rules(...)` with:
 
 ```python
-        replace=tuple(_parse_replace(e) for e in raw_replace),
-        substring_rewrite_fields=substring_fields,
-        display_forms=tuple(dict.fromkeys(display_forms_list)),
+replace = (tuple(_parse_replace(e) for e in raw_replace),)
+substring_rewrite_fields = (substring_fields,)
+display_forms = (tuple(dict.fromkeys(display_forms_list)),)
 ```
 
 (`_str_list` gains a third positional `default` argument use — it already has one.)
@@ -858,7 +857,9 @@ class TestRuleRendering:
         assert render_replace_pattern("_{app_name}_owned", dst) == "_acme_owned"
 
     def test_app_name_upper_placeholder(self):
-        assert render_replace_pattern("{app_name_upper}_HOME", _identity()) == "PLBP_HOME"
+        assert (
+            render_replace_pattern("{app_name_upper}_HOME", _identity()) == "PLBP_HOME"
+        )
 
     def test_missing_display_name_fails_loud(self):
         with pytest.raises(ValidationError):
@@ -866,7 +867,9 @@ class TestRuleRendering:
 
     def test_display_name_renders_when_declared(self):
         ident = _identity(display_name="Py Launch Blueprint")
-        assert render_replace_pattern("{display_name}!", ident) == "Py Launch Blueprint!"
+        assert (
+            render_replace_pattern("{display_name}!", ident) == "Py Launch Blueprint!"
+        )
 
 
 class TestRuleScoping:
@@ -1206,7 +1209,9 @@ class TestRulePathRenames:
         rules = _rules_with(
             replace=(
                 ReplaceRule(
-                    pattern="{app_name}", reason="degenerate", paths=True,
+                    pattern="{app_name}",
+                    reason="degenerate",
+                    paths=True,
                     content=False,
                 ),
             )
@@ -1560,15 +1565,13 @@ class TestDisplayNameScan:
             substring_fields=frozenset(),
             rules=DEFAULT_RULES,
         )
-        assert any(
-            f.field == "display_name" and f.where == "content" for f in findings
-        )
+        assert any(f.field == "display_name" and f.where == "content" for f in findings)
 
     def test_sparse_identity_does_not_crash(self, git_target):
         _git_add_all(git_target)
         findings = scan(
             git_target,
-            _identity(),           # no display_name
+            _identity(),  # no display_name
             _identity(app_name="acme"),
             fields=("app_name", "display_name"),
             substring_fields=frozenset(),
@@ -1605,9 +1608,7 @@ def _changed_fields(
     (optional display_name) is simply not scanned.
     """
     src, dst = source.as_dict(), dest.as_dict()
-    return [
-        (f, src[f]) for f in fields if f in src and f in dst and src[f] != dst[f]
-    ]
+    return [(f, src[f]) for f in fields if f in src and f in dst and src[f] != dst[f]]
 ```
 
 `verify_cli.py`: right after `rules = load_rules(target)` (line 314), add:
@@ -1669,9 +1670,7 @@ from template_press.rebrand.cli import main
 
 
 def _git(target: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-C", str(target), *args], check=True, capture_output=True
-    )
+    subprocess.run(["git", "-C", str(target), *args], check=True, capture_output=True)
 
 
 def _build_target(tmp_path: Path) -> Path:
