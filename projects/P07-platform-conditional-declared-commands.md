@@ -77,6 +77,9 @@ Platform-scoped rules; only matching platform triggers
 
 - [ ] [P07-TS01] Add failing tests for selector validation, platform
       selection, overlap rejection, and active-rule propagation.
+- [ ] [P07-T01] Implement `platforms` parsing, normalization, overlap
+      validation, and a pure platform-selection function that makes TS01 pass
+      while preserving configurations that omit `platforms`.
 
 ### Notes
 
