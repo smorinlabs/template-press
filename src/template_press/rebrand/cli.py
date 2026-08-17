@@ -29,6 +29,7 @@ from template_press.rebrand.engine import (
     build_plan,
     preflight_rename_noreplace,
     stray_press_dirs,
+    translate_path,
 )
 from template_press.rebrand.identity import (
     Identity,
@@ -38,6 +39,7 @@ from template_press.rebrand.receipt import (
     RECEIPT_REL,
     invalidate_receipt,
     read_receipt,
+    removed_files_from_receipt,
     write_receipt,
 )
 from template_press.rebrand.regen import (
@@ -57,6 +59,7 @@ from template_press.rebrand.regen import (
 from template_press.rebrand.remove import (
     apply_removals,
     preflight_remove_targets,
+    remove_regen_conflicts,
     render_remove_plan,
 )
 from template_press.rebrand.reset import (
@@ -307,7 +310,11 @@ def main(argv: list[str] | None = None) -> int:
             table=plan.table,
         )
         gate_problems += reset_problems
-        gate_problems += preflight_remove_targets(target, rules)
+        prior_removed = removed_files_from_receipt(read_receipt(target))
+        gate_problems += preflight_remove_targets(
+            target, rules, previously_removed=prior_removed
+        )
+        gate_problems += remove_regen_conflicts(rules)
         if plan.table is not None:
             try:
                 validate_reset_visibility(
@@ -376,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
         rules,
         regen_plans,
         [(preview.rule, preview.stub_text) for preview in reset_previews],
+        previously_removed=prior_removed,
         platform=selected.platform,
         rename_preflight=rename_preflight,
         allow_unsafe_rename=args.force,
@@ -407,6 +415,7 @@ def _press(
     regen_plans: list[RegenerationPlan],
     resets: list[tuple[ResetRule, str]],
     *,
+    previously_removed: frozenset[str] = frozenset(),
     platform: str | None = None,
     rename_preflight: RenamePreflight | None = None,
     allow_unsafe_rename: bool = False,
@@ -455,7 +464,12 @@ def _press(
         # Declared removals run right after the rewrite/rename passes, at
         # their post-rename locations (P08 T2) — before any declared command
         # so a regeneration never observes a doomed file.
-        removed_rels = apply_removals(target, rules, dict(report.renamed))
+        removed_rels = apply_removals(
+            target,
+            rules,
+            dict(report.renamed),
+            previously_removed=previously_removed,
+        )
         report.removed.extend(removed_rels)
         # Declared commands run against the FINAL tree: declared paths are
         # translated through the apply-time rename report (P04 D1). The
@@ -575,8 +589,13 @@ def _press(
             ],
             resets=report.reset,
             removals=[
+                # Pair by membership, not position: a target already removed
+                # by a prior press is skipped, so report.removed can be a
+                # strict subset of the declarations.
                 (rel, rule.reason)
-                for rule, rel in zip(rules.remove, report.removed, strict=True)
+                for rule in rules.remove
+                for rel in report.removed
+                if translate_path(rule.file, dict(report.renamed)) == rel
             ],
             exempt=[
                 # A declared verify_exempt reason travels VERBATIM into the

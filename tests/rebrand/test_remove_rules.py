@@ -12,6 +12,8 @@ exemption and no coverage gap.
 
 from __future__ import annotations
 
+import dataclasses
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -208,3 +210,91 @@ class TestRemoveVerify:
         notes.write_text("# demo_widget maintenance\n", encoding="utf-8")
         _commit(repo)
         assert preflight_excluded_files(repo, load_rules(repo)) == []
+
+
+# ---------------------------------------------------------------------------
+# Re-press, stale-verify, regen conflict, reason hygiene (PR #85 review)
+# ---------------------------------------------------------------------------
+class TestRemoveLifecycle:
+    def test_forced_re_press_after_removal_succeeds(self, tmp_path: Path):
+        """A removal deletes its own precondition; the prior receipt's
+        [[press.remove]] record must satisfy the next press's preflight."""
+        repo = make_pressable(tmp_path)
+        _write_rules(repo, REMOVE_NOTES)
+        notes = repo / "docs" / "legacy-notes.md"
+        notes.parent.mkdir(exist_ok=True)
+        notes.write_text("# demo_widget maintenance\n", encoding="utf-8")
+        _commit(repo)
+        answers = write_answers_file(tmp_path, DEST)
+        assert main(["--target", str(repo), "--config", str(answers)]) == 0
+        _commit(repo)
+        # Re-point origin to the pressed identity — discovery cross-checks
+        # the source-config against the remote, exactly as a real fork must.
+        subprocess.run(  # noqa: S603
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(repo),
+                "remote",
+                "set-url",
+                "origin",
+                f"https://github.com/{DEST.owner}/{DEST.repo_name}.git",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        second = dataclasses.replace(
+            DEST,
+            package_name="carrot_launcher",
+            repo_name="carrot-launcher",
+            app_name="carrot",
+            author="Carrot Author",
+            email="hello@carrot.example",
+            owner="carrotlabs",
+        )
+        answers2 = tmp_path / "answers2.toml"
+        answers2.write_text(
+            "[answers]\n"
+            + "\n".join(f'{k} = "{v}"' for k, v in second.as_dict_prompted().items())
+            + "\n",
+            encoding="utf-8",
+        )
+        assert main(["--target", str(repo), "--config", str(answers2), "--force"]) == 0
+
+    def test_verify_fails_loud_on_stale_removal(self, tmp_path: Path):
+        """No receipt record + missing target = config drift; verify must
+        refuse (exit 2), never silently scan clean."""
+        repo = make_pressable(tmp_path)
+        _write_rules(repo, REMOVE_NOTES)  # target never created
+        _commit(repo)
+        assert verify_command(["--target", str(repo)]) == 2
+
+    def test_remove_regen_argv_conflict_refused(self, tmp_path: Path):
+        repo = make_pressable(tmp_path)
+        script = repo / "scripts" / "regen.sh"
+        script.parent.mkdir(exist_ok=True)
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        script.chmod(0o755)
+        _write_rules(
+            repo,
+            "[rules]\n"
+            'extra_exclude_files = ["uv.lock"]\n'
+            "[[regenerate]]\n"
+            'file = "uv.lock"\n'
+            'command = ["scripts/regen.sh"]\n'
+            "[[remove]]\n"
+            'file = "scripts/regen.sh"\n'
+            'reason = "maintenance script"\n',
+        )
+        (repo / "uv.lock").write_text("lock\n", encoding="utf-8")
+        _commit(repo)
+        answers = write_answers_file(tmp_path, DEST)
+        assert main(["--target", str(repo), "--config", str(answers)]) == 2
+
+    def test_control_characters_in_remove_reason_rejected(self, tmp_path: Path):
+        target = _write_rules(
+            tmp_path,
+            '[[remove]]\nfile = "a.md"\nreason = "line\\u001b[31mforged"\n',
+        )
+        with pytest.raises(ValidationError):
+            load_rules(target)

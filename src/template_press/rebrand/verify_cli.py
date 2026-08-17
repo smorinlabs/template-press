@@ -55,6 +55,10 @@ from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_map
 from template_press.rebrand.inventory import capture_surface_snapshot
 from template_press.rebrand.matcher import find_occurrences
+from template_press.rebrand.receipt import (
+    read_receipt,
+    removed_files_from_receipt,
+)
 from template_press.rebrand.reset import load_stub_content
 from template_press.rebrand.rules import RULES_REL, Rules, load_selected_rules
 from template_press.rebrand.safety import (
@@ -416,6 +420,7 @@ def verify_command(argv: list[str] | None = None) -> int:
                 # the press (codex 3654853355): apply() renames
                 # identity-bearing dirs, so a stub_file path beneath one
                 # would no longer resolve afterwards.
+                prior_removed = removed_files_from_receipt(read_receipt(sandbox.path))
                 reset_stubs = [
                     (rule, load_stub_content(sandbox.path, rule))
                     for rule in rules.reset
@@ -428,12 +433,28 @@ def verify_command(argv: list[str] | None = None) -> int:
                 # Model declared removals (P08 T2): unlike regeneration, a
                 # removal needs no command, so verify performs it for real —
                 # the file vanishes from the scan with no exemption and no
-                # coverage gap.
+                # coverage gap. Tri-state, mirroring the press preflight: a
+                # missing target recorded in the target's own receipt was
+                # removed by a prior press (a pressed fork's normal state);
+                # a missing target with NO record is stale config and must
+                # fail loud, never silently scan clean.
                 for remove_rule in rules.remove:
                     rel = translate_path(remove_rule.file, dict(report.renamed))
                     removed_path = sandbox.path / rel
                     if os.path.lexists(removed_path):
+                        if not is_regular_lstat(removed_path):
+                            raise SafetyError(
+                                f"remove target {rel} is not a regular file "
+                                f"(no-follow check)"
+                            )
                         os.unlink(removed_path)
+                    elif remove_rule.file not in prior_removed:
+                        return _fail(
+                            f"[[remove]] target {remove_rule.file} does not "
+                            f"exist and no receipt records its removal — a "
+                            f"stale declaration is config drift; delete it "
+                            f"or restore the file"
+                        )
                 _restage_sandbox(sandbox.path)
             except _PRESS_ENV_ERRORS as exc:
                 return _fail(

@@ -620,6 +620,12 @@ def _parse_remove(entry: object) -> _RemoveDeclaration:
             f"be a non-empty string — a removal is a deliberate, documented "
             f"decision, never a silent deletion"
         )
+    if any(not ch.isprintable() for ch in reason):
+        raise ValidationError(
+            f"{RULES_REL}: [[remove]] {file!r}: reason must not contain "
+            f"control or non-printable characters — it is interpolated into "
+            f"the rendered plan"
+        )
     return _RemoveDeclaration(
         rule=RemoveRule(file=file, reason=reason),
         platforms=_parse_platforms(entry, "[[remove]]", file),

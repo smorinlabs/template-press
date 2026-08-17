@@ -7,6 +7,7 @@ answered. Its presence also guards re-runs (require --force).
 
 from __future__ import annotations
 
+import tomllib
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -120,3 +121,30 @@ def write_receipt(
             f"reason = {toml_string(reason)}",
         ]
     return write_control(target, RECEIPT_REL, "\n".join(lines) + "\n")
+
+
+def removed_files_from_receipt(text: str | None) -> frozenset[str]:
+    """The ``[[press.remove]]`` file set recorded by a prior press.
+
+    A successful removal deletes its own precondition: the declaration
+    stays in press-rules.toml while the file is gone, so a forced re-press
+    (and a pressed fork's ``press verify``) must treat a missing target
+    RECORDED here as satisfied — and a missing target NOT recorded as
+    stale config. Tolerant reader: no receipt, unparsable TOML, or absent
+    keys mean an empty set (the strict path then reports the target as
+    stale, which fails loud — never silently clean).
+    """
+    if not text:
+        return frozenset()
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return frozenset()
+    entries = data.get("press", {}).get("remove", [])
+    if not isinstance(entries, list):
+        return frozenset()
+    return frozenset(
+        e["file"]
+        for e in entries
+        if isinstance(e, dict) and isinstance(e.get("file"), str)
+    )
