@@ -1,6 +1,6 @@
 # P08 — Declared removal and declared verify exemption
 
-- **Status:** `[~]` in progress
+- **Status:** `[x]` completed
 
 Close the two engine gaps the py-launch-blueprint Run 4 dogfood filed:
 forks inherit blueprint-only files the press cannot delete (#80), and any
@@ -64,7 +64,8 @@ exemption and no coverage gap.
       with sink guards; report, receipt, and dry-run preview record it
 - [x] [P08-TS03] hermetic verify models removals (removed identity-bearing
       file no longer leaks; no exemption listed)
-- [ ] [P08-T03] release v3.6.0 after both PRs merge
+- [x] [P08-T03] release v3.6.0 after both PRs merge (tag cut from
+      c7efb909; PRs #83 + #85; issues #80/#81 closed; #86 deferred backlog)
 
 ### Automated Verification
 
