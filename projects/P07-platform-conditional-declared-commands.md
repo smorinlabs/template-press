@@ -75,11 +75,40 @@ Platform-scoped rules; only matching platform triggers
 
 ### Tests & Tasks
 
-- [ ] [P07-TS01] Add failing tests for selector validation, platform
-      selection, overlap rejection, and active-rule propagation.
-- [ ] [P07-T01] Implement `platforms` parsing, normalization, overlap
-      validation, and a pure platform-selection function that makes TS01 pass
-      while preserving configurations that omit `platforms`.
+- [ ] [P07-TS01] Add failing unit tests for the exact `darwin`/`linux`/`win32`
+      vocabulary; omitted, empty, duplicate, and unknown selectors; all-host
+      validation of inactive declarations; disjoint same-file declarations;
+      same-mechanism and reset/regenerate overlap rejection; stable declaration
+      order; and unchanged behavior for configurations without `platforms`.
+- [ ] [P07-T01] Extend the regenerate/reset models and config allowlists with
+      normalized platform sets; validate all declarations and overlaps before
+      selection; and implement one pure, injectable selector that defaults to
+      `sys.platform` in production and makes TS01 pass without a CLI override.
+- [ ] [P07-TS02] Add failing integration tests proving that rebrand preflight,
+      planning, `press check-tools`, apply, doctor, and `press verify` derive
+      the same active `Rules` view; inactive commands require no tools; and the
+      excluded-file safety gate evaluates neutralization on the selected
+      platform only.
+- [ ] [P07-T02] Select the platform once at each command's config boundary and
+      thread the resulting active `Rules` view through every existing consumer
+      without consumer-local filtering; make TS02 pass while preserving the
+      current plan-before-write and no-receipt-on-failure guarantees.
+- [ ] [P07-TS03] Add failing output and receipt tests requiring the selected
+      platform in plans and `press check-tools`; active declarations only in
+      normal output; and the selected platform plus active reset/regenerate
+      actions in `press/press-receipt.toml`.
+- [ ] [P07-T03] Implement the active-only audit contract for plans,
+      `press check-tools`, and receipts; preserve resolved regeneration argv
+      evidence and add machine-readable reset-action evidence; make TS03 pass.
+- [ ] [P07-T04] Update `docs/source/reference/cli.md` and the checked-in
+      `press/press-rules.toml` example with the Option A schema, omission
+      behavior, disjoint same-file declarations, selector validation, and
+      active-only tool/preflight behavior.
+- [ ] [P07-T05] Run the focused rule, preflight, CLI, check-tools, verify, and
+      receipt suites; run `just check` and `just matrix`; verify the existing
+      Linux/macOS/Windows CI matrix; perform an adversarial review against
+      D1-D5 and the P04-P06 safety contracts; fix reproduced in-scope defects;
+      then rerun every affected gate before merge.
 
 ### Notes
 
