@@ -63,6 +63,7 @@ from template_press.rebrand.reset import load_stub_content
 from template_press.rebrand.rules import RULES_REL, Rules, load_selected_rules
 from template_press.rebrand.safety import (
     SafetyError,
+    assert_ancestors_real,
     git_hardening_args,
     is_regular_lstat,
     owned_sandbox,
@@ -441,6 +442,11 @@ def verify_command(argv: list[str] | None = None) -> int:
                 for remove_rule in rules.remove:
                     rel = translate_path(remove_rule.file, dict(report.renamed))
                     removed_path = sandbox.path / rel
+                    # The unlink must not travel through a symlinked
+                    # ancestor — an absolute link in the copied tree could
+                    # point OUTSIDE the sandbox (same guard as the real
+                    # press's apply_removals).
+                    assert_ancestors_real(removed_path, sandbox.path)
                     if os.path.lexists(removed_path):
                         if not is_regular_lstat(removed_path):
                             raise SafetyError(

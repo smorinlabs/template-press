@@ -613,6 +613,12 @@ def _parse_remove(entry: object) -> _RemoveDeclaration:
         )
     file = _declared_rel_path("[[remove]] file", entry.get("file"))
     _reject_reserved("[[remove]]", file)
+    if file.rsplit("/", 1)[-1] in {".gitignore", ".gitattributes", ".gitmodules"}:
+        raise ValidationError(
+            f"{RULES_REL}: [[remove]] {file!r}: Git visibility inputs cannot "
+            f"be removed by declaration — deleting one changes Git's surface "
+            f"after the rewrite plan was validated against it"
+        )
     reason = entry.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         raise ValidationError(

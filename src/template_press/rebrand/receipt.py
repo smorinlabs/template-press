@@ -123,7 +123,7 @@ def write_receipt(
     return write_control(target, RECEIPT_REL, "\n".join(lines) + "\n")
 
 
-def removed_files_from_receipt(text: str | None) -> frozenset[str]:
+def removed_files_from_receipt(text: str | None) -> dict[str, str]:
     """The ``[[press.remove]]`` file set recorded by a prior press.
 
     A successful removal deletes its own precondition: the declaration
@@ -131,23 +131,27 @@ def removed_files_from_receipt(text: str | None) -> frozenset[str]:
     (and a pressed fork's ``press verify``) must treat a missing target
     RECORDED here as satisfied — and a missing target NOT recorded as
     stale config. Tolerant reader: no receipt, unparsable TOML, or absent
-    keys mean an empty set (the strict path then reports the target as
+    keys mean an empty mapping (the strict path then reports the target as
     stale, which fails loud — never silently clean).
     """
     if not text:
-        return frozenset()
+        return {}
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
-        return frozenset()
+        return {}
     press_table = data.get("press", {})
     if not isinstance(press_table, dict):
-        return frozenset()
+        return {}
     entries = press_table.get("remove", [])
     if not isinstance(entries, list):
-        return frozenset()
-    return frozenset(
-        e["file"]
+        return {}
+    return {
+        e["file"]: (
+            e["reason"]
+            if isinstance(e.get("reason"), str)
+            else "recorded by a prior press"
+        )
         for e in entries
         if isinstance(e, dict) and isinstance(e.get("file"), str)
-    )
+    }

@@ -312,7 +312,7 @@ def main(argv: list[str] | None = None) -> int:
         gate_problems += reset_problems
         prior_removed = removed_files_from_receipt(read_receipt(target))
         gate_problems += preflight_remove_targets(
-            target, rules, previously_removed=prior_removed
+            target, rules, previously_removed=frozenset(prior_removed)
         )
         gate_problems += remove_regen_conflicts(rules)
         if plan.table is not None:
@@ -415,13 +415,15 @@ def _press(
     regen_plans: list[RegenerationPlan],
     resets: list[tuple[ResetRule, str]],
     *,
-    previously_removed: frozenset[str] = frozenset(),
+    previously_removed: dict[str, str] | None = None,
     platform: str | None = None,
     rename_preflight: RenamePreflight | None = None,
     allow_unsafe_rename: bool = False,
     rendered_rules: list[tuple[ReplaceRule, str, str]] | None = None,
     table: SubstitutionTable | None = None,
 ) -> PressOutcome:
+    if previously_removed is None:
+        previously_removed = {}
     try:
         if table is None:
             fallback_plan = build_plan(target, source, dest, rules)
@@ -468,7 +470,7 @@ def _press(
             target,
             rules,
             dict(report.renamed),
-            previously_removed=previously_removed,
+            previously_removed=frozenset(previously_removed),
         )
         report.removed.extend(removed_rels)
         # Declared commands run against the FINAL tree: declared paths are
@@ -599,6 +601,15 @@ def _press(
                 for rule in rules.remove
                 if translate_path(rule.file, dict(report.renamed)) in report.removed
                 or rule.file in previously_removed
+            ]
+            + [
+                # Prior records with no active declaration on THIS platform
+                # (or whose declaration was retired) carry forward with
+                # their recorded reasons: a cross-platform re-press must
+                # not drop another platform's satisfied removals.
+                (file, reason)
+                for file, reason in previously_removed.items()
+                if file not in {rule.file for rule in rules.remove}
             ],
             exempt=[
                 # A declared verify_exempt reason travels VERBATIM into the

@@ -318,12 +318,13 @@ class TestRemoveReceiptChain:
         recorded = removed_files_from_receipt(
             (repo / RECEIPT_REL).read_text(encoding="utf-8")
         )
-        assert recorded == frozenset({"docs/legacy-notes.md"})
+        assert set(recorded) == {"docs/legacy-notes.md"}
+        assert "blueprint-only" in recorded["docs/legacy-notes.md"]
 
     def test_tampered_receipt_press_value_is_tolerated(self):
         from template_press.rebrand.receipt import removed_files_from_receipt
 
-        assert removed_files_from_receipt('press = "legacy"\n') == frozenset()
+        assert removed_files_from_receipt('press = "legacy"\n') == {}
 
     def test_stub_file_remove_overlap_rejected(self, tmp_path: Path):
         target = _write_rules(
@@ -334,6 +335,71 @@ class TestRemoveReceiptChain:
             "[[remove]]\n"
             'file = "press/stubs/CHANGELOG.md"\n'
             'reason = "r"\n',
+        )
+        with pytest.raises(ValidationError):
+            load_rules(target)
+
+    def test_foreign_platform_records_carry_forward(self, tmp_path: Path):
+        """A prior receipt entry with no active declaration on this platform
+        must survive into the replacement receipt."""
+        repo = make_pressable(tmp_path)
+        _write_rules(repo, REMOVE_NOTES)
+        notes = repo / "docs" / "legacy-notes.md"
+        notes.parent.mkdir(exist_ok=True)
+        notes.write_text("# demo_widget maintenance\n", encoding="utf-8")
+        _commit(repo)
+        answers = write_answers_file(tmp_path, DEST)
+        assert main(["--target", str(repo), "--config", str(answers)]) == 0
+        # Inject a foreign-platform record into the receipt, as if another
+        # OS's press had satisfied its own removal.
+        receipt_path = repo / RECEIPT_REL
+        receipt_path.write_text(
+            receipt_path.read_text(encoding="utf-8")
+            + '\n[[press.remove]]\nfile = "scripts/win-only.ps1"\n'
+            'reason = "windows maintenance script"\n',
+            encoding="utf-8",
+        )
+        _commit(repo)
+        subprocess.run(  # noqa: S603
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(repo),
+                "remote",
+                "set-url",
+                "origin",
+                f"https://github.com/{DEST.owner}/{DEST.repo_name}.git",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        second = dataclasses.replace(
+            DEST,
+            package_name="carrot_launcher",
+            repo_name="carrot-launcher",
+            app_name="carrot",
+            author="Carrot Author",
+            email="hello@carrot.example",
+            owner="carrotlabs",
+        )
+        answers2 = tmp_path / "answers2.toml"
+        answers2.write_text(
+            "[answers]\n"
+            + "\n".join(f'{k} = "{v}"' for k, v in second.as_dict_prompted().items())
+            + "\n",
+            encoding="utf-8",
+        )
+        assert main(["--target", str(repo), "--config", str(answers2), "--force"]) == 0
+        from template_press.rebrand.receipt import removed_files_from_receipt
+
+        recorded = removed_files_from_receipt(receipt_path.read_text(encoding="utf-8"))
+        assert "scripts/win-only.ps1" in recorded
+        assert recorded["scripts/win-only.ps1"] == "windows maintenance script"
+
+    def test_gitignore_removal_rejected(self, tmp_path: Path):
+        target = _write_rules(
+            tmp_path,
+            '[[remove]]\nfile = ".gitignore"\nreason = "r"\n',
         )
         with pytest.raises(ValidationError):
             load_rules(target)
