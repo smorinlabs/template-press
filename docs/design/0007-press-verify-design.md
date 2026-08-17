@@ -113,6 +113,7 @@ verifier: it silently misses a camelCase-glued leftover like
 ```python
 _SEP = re.compile(r"[_\-. ]+")
 
+
 def identity_pattern(field, value):
     core = "[-_. ]?".join(re.escape(t) for t in _SEP.split(value) if t)
     tail = r"(?:(?![A-Za-z0-9])|(?-i:(?<=[a-z])(?=[A-Z])))"

@@ -136,7 +136,7 @@ RULES_REL = Path("press") / "press-rules.toml"
 
 `src/template_press/rebrand/rules.py:36` — inside `DEFAULT_RULES.exclude_dirs`, replace the `".press",` entry with:
 ```python
-            "press",
+("press",)
 ```
 
 `src/template_press/rebrand/receipt.py:17`

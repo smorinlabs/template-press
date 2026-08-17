@@ -147,23 +147,41 @@ verify: load source -> preflight -> equal-fields WARN -> synth (equality-preserv
 - [ ] **5.1 Failing tests** (fixture app_name=`press`, package=`demo_widget`):
 ```python
 def test_word_traps_not_matched():
-    for w in ("compress","express","pressure","Pressure","PRESSURE"):
-        assert find_occurrences(w,"app_name","press",substring=False)==[]
+    for w in ("compress", "express", "pressure", "Pressure", "PRESSURE"):
+        assert find_occurrences(w, "app_name", "press", substring=False) == []
+
+
 def test_variants_matched():
-    for s in ("0001-x-press.md","PRESS_LOG","demo-widget_x","demoWidgetConfig"):
-        assert find_occurrences(s,"package_name" if "widget" in s.lower() else "app_name",
-                                "demo_widget" if "widget" in s.lower() else "press",substring=False)
+    for s in ("0001-x-press.md", "PRESS_LOG", "demo-widget_x", "demoWidgetConfig"):
+        assert find_occurrences(
+            s,
+            "package_name" if "widget" in s.lower() else "app_name",
+            "demo_widget" if "widget" in s.lower() else "press",
+            substring=False,
+        )
+
+
 def test_glued_only_with_substring():
-    assert find_occurrences("xdemo_widgety","package_name","demo_widget",substring=False)==[]
-    assert find_occurrences("xdemo_widgety","package_name","demo_widget",substring=True)
+    assert (
+        find_occurrences(
+            "xdemo_widgety", "package_name", "demo_widget", substring=False
+        )
+        == []
+    )
+    assert find_occurrences(
+        "xdemo_widgety", "package_name", "demo_widget", substring=True
+    )
 ```
 - [ ] **5.2** Run → FAIL. **5.3** Implement (the `(?-i:...)` scopes the case-transition test case-SENSITIVE inside an IGNORECASE pattern — the v2 regex was broken because global IGNORECASE folded the trailing class):
 ```python
 import re
+
 _SEP = re.compile(r"[_\-. ]+")
+
+
 def identity_pattern(field, value):
     core = "[-_. ]?".join(re.escape(t) for t in _SEP.split(value) if t)
-    tail = r"(?:(?![A-Za-z0-9])|(?-i:(?<=[a-z])(?=[A-Z])))"   # full boundary OR lower->UPPER
+    tail = r"(?:(?![A-Za-z0-9])|(?-i:(?<=[a-z])(?=[A-Z])))"  # full boundary OR lower->UPPER
     return re.compile(rf"(?<![A-Za-z0-9]){core}{tail}", re.IGNORECASE)
 ```
 - [ ] **5.4** Run → PASS (incl. `PRESSURE` rejected, `demoWidgetConfig` matched). **5.5** Property test over a wordlist **excluding the identity values themselves**. Document the known residuals in Task 14 (leading camel `myPressConfig` not matched; `PressKit` matched — acceptable for a paranoid posture). Commit `feat(matcher): identifier-aware pattern (case-scoped transition) + opt-in substring`.
@@ -229,20 +247,38 @@ Tests: anchored line+col ignore suppresses exactly one of two same-line leaks; a
 
 - [ ] **12.1 Failing tests** (via `make_pressable`, `_commit`, `_tree`):
 ```python
-def test_clean_template_exits_0(tmp_path):                       # incl. compress/press README + a uv.lock
-    r = make_pressable(tmp_path); (r/"uv.lock").write_text('name = "demo_widget"\n'); _commit(r)
+def test_clean_template_exits_0(tmp_path):  # incl. compress/press README + a uv.lock
+    r = make_pressable(tmp_path)
+    (r / "uv.lock").write_text('name = "demo_widget"\n')
+    _commit(r)
     assert verify_command(["--target", str(r)]) == 0
-def test_bun_lock_leak_exits_1(tmp_path):                        # unregenerable lockfile IS scanned
-    r = make_pressable(tmp_path); (r/"bun.lock").write_text('"name":"demo_widget"\n'); _commit(r)
+
+
+def test_bun_lock_leak_exits_1(tmp_path):  # unregenerable lockfile IS scanned
+    r = make_pressable(tmp_path)
+    (r / "bun.lock").write_text('"name":"demo_widget"\n')
+    _commit(r)
     assert verify_command(["--target", str(r)]) == 1
+
+
 def test_hyphen_token_leak_exits_1(tmp_path): ...
-def test_missing_source_config_exits_2_no_write(tmp_path): ...   # _tree(before)==_tree(after)
-def test_declared_app_absent_exits_2(tmp_path):                  # discovery-invisible: drop [project.scripts]
+def test_missing_source_config_exits_2_no_write(
+    tmp_path,
+): ...  # _tree(before)==_tree(after)
+def test_declared_app_absent_exits_2(
+    tmp_path,
+):  # discovery-invisible: drop [project.scripts]
     ...  # source declares app_name="ghost"; presence fails -> 2
-def test_control_path_symlink_rejected_exits_2(tmp_path): ...    # press -> tmp_path/"outside" ; no external write
-def test_ignore_suppresses_then_drifts(tmp_path): ...            # real leftover + ignore -> 0 ; break anchor -> 1
-def test_equal_fields_warns_exits_0(tmp_path): ...               # package==app ; warn ; 0 ; error-mode -> 1
-def test_env_regen_absent_is_2(monkeypatch, tmp_path): ...       # force env_error -> 2
+def test_control_path_symlink_rejected_exits_2(
+    tmp_path,
+): ...  # press -> tmp_path/"outside" ; no external write
+def test_ignore_suppresses_then_drifts(
+    tmp_path,
+): ...  # real leftover + ignore -> 0 ; break anchor -> 1
+def test_equal_fields_warns_exits_0(
+    tmp_path,
+): ...  # package==app ; warn ; 0 ; error-mode -> 1
+def test_env_regen_absent_is_2(monkeypatch, tmp_path): ...  # force env_error -> 2
 ```
 - [ ] **12.2** Run → FAIL. **12.3** Implement the flow (apply, not _press). **12.4** Run → PASS. **12.5** Commit `feat(cli): press verify — hermetic sandbox self-press leak check`.
 
