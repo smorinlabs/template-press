@@ -1,6 +1,6 @@
 # P07 — Platform-conditional declared commands
 
-- **Status:** `[ ]` scoped, not started
+- **Status:** `[~]` in progress
 
 Platform-scoped rules; only matching platform triggers
 
@@ -74,6 +74,9 @@ Platform-scoped rules; only matching platform triggers
 - None.
 
 ### Tests & Tasks
+
+- [ ] [P07-TS01] Add failing tests for selector validation, platform
+      selection, overlap rejection, and active-rule propagation.
 
 ### Notes
 

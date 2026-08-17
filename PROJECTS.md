@@ -28,7 +28,7 @@ file by hand — see Conventions.
 | P04 | `[x]` | [Regenerate bun.lock during a press](projects/P04-regenerate-bun-lock.md) — neutralize bun.lock: excluded from rewrite but never regenerated, so it always leaks |
 | P05 | `[x]` | [Reset rule: blank a file to a declared stub](projects/P05-reset-rule.md) — first destructive op: blank CHANGELOG-style files instead of leaking their history |
 | P06 | `[x]` | [Derive checkers from one rendered substitution set](projects/P06-substitution-set.md) — one table the rewriter applies and every checker reads (issue #42) |
-| P07 | `[ ]` | [Platform-conditional declared commands](projects/P07-platform-conditional-declared-commands.md) — platform-scoped rules; only matching platform triggers |
+| P07 | `[~]` | [Platform-conditional declared commands](projects/P07-platform-conditional-declared-commands.md) — platform-scoped rules; only matching platform triggers |
 
 ## Conventions
 
