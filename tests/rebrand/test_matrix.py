@@ -7,6 +7,8 @@ clone carrying the declarations presses clean end to end — G1's CHANGELOG
 reset and G2's bun.lock regeneration proven against the real repo (R1b).
 """
 
+import dataclasses
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -24,28 +26,6 @@ from .conftest import DEST, posix_only, write_answers_file
 BLUEPRINT = "https://github.com/smorinlabs/py-launch-blueprint.git"
 SELF_ORIGIN = "https://github.com/smorinlabs/template-press.git"
 REPO_ROOT = Path(__file__).parents[2]
-
-BLUEPRINT_RULES = """\
-[[regenerate]]
-file = "uv.lock"
-command = ["uv", "lock"]
-
-[[regenerate]]
-file = "bun.lock"
-command = ["scripts/regen-bun-lock.sh"]
-
-[[reset]]
-file = "CHANGELOG.md"
-stub = "# Changelog\\n"
-"""
-
-# bun install alone never rewrites an existing lock's workspace name
-# (bun 1.3.14) — the lock must be regenerated from scratch.
-REGEN_BUN_LOCK = (
-    "#!/bin/sh\nset -e\n"
-    'command -v bun >/dev/null 2>&1 || { echo "bun not found" >&2; exit 127; }\n'
-    "rm -f bun.lock\nexec bun install\n"
-)
 
 
 def clone(url: str, dest: Path) -> Path:
@@ -156,8 +136,13 @@ def test_r3_self_press_native(tmp_path: Path) -> None:
 def test_r1a_undeclared_blueprint_refused_loudly(tmp_path: Path, capsys):
     """§6: tracked excluded files with no declared neutralization refuse the
     press (exit 2, nothing written) — naming every file, never silently
-    letting identity survive."""
+    letting identity survive.
+
+    The real blueprint has been conformed (its P05 run 4) and now COMMITS
+    its declarations, so the undeclared state is constructed deliberately:
+    strip the committed press/ config after cloning."""
     target = clone(BLUEPRINT, tmp_path / "plb")
+    shutil.rmtree(target / "press")
     answers = write_answers_file(tmp_path, DEST)
     code = main(
         [
@@ -180,16 +165,16 @@ def test_r1a_undeclared_blueprint_refused_loudly(tmp_path: Path, capsys):
 @posix_only
 def test_r1b_declared_blueprint_presses_clean(tmp_path: Path):
     """The declared pipeline against the real blueprint: CHANGELOG resets to
-    the stub (G1), lockfiles regenerate under the pressed identity (G2)."""
+    the stub (G1), lockfiles regenerate under the pressed identity (G2).
+
+    The blueprint commits its own press/ config and regen scripts since its
+    P05 conform, so the clone presses AS SHIPPED — that committed config is
+    exactly what this acceptance run must prove. Its source declares
+    display_name, so the answers must supply one."""
     target = clone(BLUEPRINT, tmp_path / "plb")
-    press_dir = target / "press"
-    press_dir.mkdir()
-    (press_dir / "press-rules.toml").write_text(BLUEPRINT_RULES, encoding="utf-8")
-    script = target / "scripts" / "regen-bun-lock.sh"
-    script.parent.mkdir(exist_ok=True)
-    script.write_text(REGEN_BUN_LOCK, encoding="utf-8")
-    script.chmod(0o755)
-    answers = write_answers_file(tmp_path, DEST)
+    answers = write_answers_file(
+        tmp_path, dataclasses.replace(DEST, display_name="Potato Launcher")
+    )
     code = main(
         [
             "--target",
@@ -218,7 +203,9 @@ def test_r1b_declared_blueprint_presses_clean(tmp_path: Path):
 @pytest.mark.live
 def test_r2_mismatched_identity_fails_loudly(tmp_path: Path):
     target = clone(BLUEPRINT, tmp_path / "plb2")
-    (target / "press").mkdir()
+    # The conformed blueprint ships press/ — overwrite its source config
+    # with a mismatched identity in place.
+    (target / "press").mkdir(exist_ok=True)
     (target / SOURCE_CONFIG_REL).write_text(
         "[identity]\n"
         'package_name = "template_press"\n'
