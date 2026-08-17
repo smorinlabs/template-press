@@ -56,6 +56,7 @@ def write_receipt(
     report: ApplyReport,
     regenerations: Sequence[tuple[str, Sequence[str]]] = (),
     resets: Sequence[str] = (),
+    removals: Sequence[tuple[str, str]] = (),
     exempt: Sequence[tuple[str, str]] = (),
     *,
     platform: str | None = None,
@@ -78,6 +79,7 @@ def write_receipt(
         f"replaced = {len(report.replaced)}",
         f"renamed = {len(report.renamed)}",
         f"reset = {len(report.reset)}",
+        f"removed = {len(report.removed)}",
         f"regenerated = {len(report.regenerated)}",
         f"skipped = {len(report.skipped)}",
     ]
@@ -96,6 +98,16 @@ def write_receipt(
             "",
             "[[press.reset]]",
             f"file = {toml_string(file)}",
+        ]
+    # Each removal with its declared reason (P08 T2): a deletion is a
+    # deliberate, documented decision, and the receipt is where it stays
+    # auditable after the file is gone.
+    for file, reason in removals:
+        lines += [
+            "",
+            "[[press.remove]]",
+            f"file = {toml_string(file)}",
+            f"reason = {toml_string(reason)}",
         ]
     # Machine-readable coverage record (P04 D3): every file the ordinary
     # doctor/verify inventories skip, with the mechanism that covered it —

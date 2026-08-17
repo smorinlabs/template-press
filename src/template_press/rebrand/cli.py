@@ -54,6 +54,11 @@ from template_press.rebrand.regen import (
     validate_control_files,
     validate_visibility_state,
 )
+from template_press.rebrand.remove import (
+    apply_removals,
+    preflight_remove_targets,
+    render_remove_plan,
+)
 from template_press.rebrand.reset import (
     apply_resets,
     preflight_reset_targets,
@@ -302,6 +307,7 @@ def main(argv: list[str] | None = None) -> int:
             table=plan.table,
         )
         gate_problems += reset_problems
+        gate_problems += preflight_remove_targets(target, rules)
         if plan.table is not None:
             try:
                 validate_reset_visibility(
@@ -328,6 +334,8 @@ def main(argv: list[str] | None = None) -> int:
             print(render_regenerate_plan(regen_plans))
         if reset_previews:
             print(render_reset_plan(reset_previews, verbose=args.verbose))
+        if rules.remove:
+            print(render_remove_plan(rules))
         strays = stray_press_dirs(target)
         if strays:
             print(
@@ -444,6 +452,11 @@ def _press(
             table=table,
         )
         report.reset.extend(reset_done)
+        # Declared removals run right after the rewrite/rename passes, at
+        # their post-rename locations (P08 T2) — before any declared command
+        # so a regeneration never observes a doomed file.
+        removed_rels = apply_removals(target, rules, dict(report.renamed))
+        report.removed.extend(removed_rels)
         # Declared commands run against the FINAL tree: declared paths are
         # translated through the apply-time rename report (P04 D1). The
         # Press-owned control files and Git visibility inputs are snapshotted
@@ -561,6 +574,10 @@ def _press(
                 if plan.rule.file in report.regenerated
             ],
             resets=report.reset,
+            removals=[
+                (rel, rule.reason)
+                for rule, rel in zip(rules.remove, report.removed, strict=True)
+            ],
             exempt=[
                 # A declared verify_exempt reason travels VERBATIM into the
                 # receipt's exempt record (issue #81); the generic mechanism

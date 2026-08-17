@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import subprocess  # nosec B404 — re-stages the OWNED sandbox git index only
 import sys
 import tomllib
@@ -424,6 +425,15 @@ def verify_command(argv: list[str] | None = None) -> int:
                 for reset_rule, stub in reset_stubs:
                     rel = translate_path(reset_rule.file, dict(report.renamed))
                     safe_write(sandbox.path, rel, stub, refuse_hardlink=False)
+                # Model declared removals (P08 T2): unlike regeneration, a
+                # removal needs no command, so verify performs it for real —
+                # the file vanishes from the scan with no exemption and no
+                # coverage gap.
+                for remove_rule in rules.remove:
+                    rel = translate_path(remove_rule.file, dict(report.renamed))
+                    removed_path = sandbox.path / rel
+                    if os.path.lexists(removed_path):
+                        os.unlink(removed_path)
                 _restage_sandbox(sandbox.path)
             except _PRESS_ENV_ERRORS as exc:
                 return _fail(

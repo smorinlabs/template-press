@@ -458,11 +458,12 @@ def preflight_excluded_files(target: Path, rules: Rules) -> list[str]:
     """
     regenerated = {r.file for r in rules.regenerate}
     reset_files = {r.file for r in rules.reset}
+    removed_files = {r.file for r in rules.remove}
     problems: list[str] = []
     for rel in sorted(tracked_paths(target)):
         if rel not in rules.exclude_files:
             continue
-        if rel in regenerated or rel in reset_files:
+        if rel in regenerated or rel in reset_files or rel in removed_files:
             continue
         if any(part in rules.verify_ignore for part in rel.split("/")):
             continue

@@ -104,6 +104,28 @@ command = ["scripts/regen-bun-lock.sh"]
 scan = "boundary"
 ```
 
+### Declared removal
+
+Template-only files — maintenance CI workflows, dogfood history — must not
+ship to pressed forks. A `[[remove]]` declaration deletes the file during
+the press, after the rewrite/rename passes, at its post-rename location:
+
+```toml
+[[remove]]
+file = "docs/maintenance-log.md"
+reason = "template maintenance history; forks must not inherit it"
+```
+
+`reason` is required — a removal is a deliberate, documented decision.
+Targets must exist, be git-tracked, and be clean at plan time; a
+`[[remove]]` naming a missing file refuses the press (exit 2 — a stale
+declaration is config drift, never a silent no-op). Removals are rendered
+in the plan, counted in the receipt (`[[press.remove]]` with the reason),
+and count as a §6 neutralization for excluded files. Hermetic
+`press verify` performs removals in its sandbox — no command is needed, so
+unlike regeneration there is no exemption and no coverage gap. An optional
+`platforms` selector scopes a removal like reset/regenerate.
+
 ### Declared verify exemption
 
 Hermetic `press verify` never runs declared commands, so a regenerated
