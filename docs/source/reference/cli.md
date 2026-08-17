@@ -84,6 +84,26 @@ The same file may appear in multiple `[[regenerate]]` declarations, multiple
 platform sets are disjoint. If two declarations can write the same file on
 the same platform, configuration loading fails with exit code `2`.
 
+### Regeneration scan policy
+
+A `[[regenerate]]` declaration may set `scan` to choose how the post-command
+content scan hunts the changed identity fields in the produced output:
+
+| Value | Meaning |
+|-------|---------|
+| `"strict"` (default) | The paranoid matcher, including per-field substring mode — case-insensitive, no boundary check. |
+| `"boundary"` | Boundary-safe matching only. The declared escape hatch for hash-dense outputs: a lockfile's base64 integrity hashes will eventually contain a short substring-mode `app_name` by chance, failing the press on noise. |
+
+`scan = "boundary"` downgrades only the output's **content** scan; the
+translated-path scan and rendered `[[replace]]` literal checks stay strict.
+
+```toml
+[[regenerate]]
+file = "bun.lock"
+command = ["scripts/regen-bun-lock.sh"]
+scan = "boundary"
+```
+
 Configuration loading has two phases:
 
 1. Press parses and validates every declaration, including declarations that
