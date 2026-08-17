@@ -475,6 +475,13 @@ def _press(
                 f"with --force.",
                 file=sys.stderr,
             )
+            # The per-file reason lives in report.skipped; without it the
+            # failure is undiagnosable from the output (dogfood run 4
+            # PROBLEM-23 — the reason was only printed on the success path).
+            if report.skipped:
+                print("skipped (review):", file=sys.stderr)
+                for entry in report.skipped:
+                    print(f"  {entry}", file=sys.stderr)
             print(report.render(), file=sys.stderr)
             return PressOutcome(
                 False,

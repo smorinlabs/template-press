@@ -302,7 +302,12 @@ def test_failed_lock_regeneration_exits_1_no_receipt(
         ["--target", str(src_target), "--config", str(answers), "--allow-dirty"]
     )
     assert code == 1
-    assert "lockfile regeneration failed" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "lockfile regeneration failed" in err
+    # The per-file reason must reach the operator on the FAILURE path too
+    # (dogfood run 4 PROBLEM-23).
+    assert "skipped (review):" in err
+    assert "command exited" in err
     assert not (src_target / RECEIPT_REL).exists()
 
 
