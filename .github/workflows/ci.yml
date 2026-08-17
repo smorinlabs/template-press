@@ -109,7 +109,7 @@ jobs:
       - name: ty check
         run: uv run --no-sync ty check src/template_press/
 
-  # ITM-030 - test matrix: Blacksmith ubuntu + macOS + windows x py3.12/3.13
+  # ITM-030 - test matrix: Blacksmith ubuntu + macOS + windows x py3.13
   # (decided round 3); windows added alongside platform-native default paths (REC-24).
   test:
     name: test (${{ matrix.os }} / py${{ matrix.python-version }})
@@ -128,15 +128,15 @@ jobs:
             blacksmith-6vcpu-macos-latest,
             blacksmith-4vcpu-windows-2025,
           ]
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.13"]
         upload-coverage: [false]
         exclude:
           - os: blacksmith-4vcpu-ubuntu-2404
-            python-version: "3.12"
+            python-version: "3.13"
             upload-coverage: false
         include:
           - os: blacksmith-4vcpu-ubuntu-2404
-            python-version: "3.12"
+            python-version: "3.13"
             upload-coverage: true
     steps:
       - uses: actions/checkout@v7
