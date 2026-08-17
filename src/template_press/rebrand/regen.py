@@ -529,12 +529,17 @@ def scan_regenerated_output(
     problems: list[str] = []
     source_scope = _reverse_output_path(translated_rel, renames, table)
     if table is not None:
+        # scan = "boundary" swaps the CONTENT hunt's matcher inside
+        # matching_hunts: hash noise (substring hit, no boundary hit) drops
+        # out, while separator/case variants the boundary matcher sees stay
+        # caught (PROBLEM-22, plbp dogfood run 4).
         for row, policy in matching_hunts(
             table,
             consumer="regeneration",
             surface="content",
             text=text,
             source_scope_path=source_scope,
+            boundary_identity=scan_mode == "boundary",
         ):
             if row.provenance[0].kind == "replace_rule":
                 problems.append(
@@ -543,9 +548,6 @@ def scan_regenerated_output(
                 )
             else:
                 field = policy.matcher.identity_field or row.provenance[0].name
-                # scan = "boundary" downgrades the CONTENT hunt only: a
-                # substring hit that vanishes under boundary matching is
-                # hash noise, not a leak (PROBLEM-22, plbp dogfood run 4).
                 substring = policy.matcher.substring and scan_mode != "boundary"
                 spans = find_occurrences(
                     text,

@@ -27,6 +27,7 @@ from template_press.rebrand.engine import ApplyReport
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.receipt import RECEIPT_REL, write_receipt
 from template_press.rebrand.regen import (
+    scan_regenerated_output,
     RegenerationPlan,
     execute_regenerations,
     final_validation_pass,
@@ -35,6 +36,15 @@ from template_press.rebrand.regen import (
     snapshot_visibility_state,
     validate_control_files,
     validate_visibility_state,
+)
+from template_press.rebrand.pipeline import MatcherSpec
+from template_press.rebrand.substitutions import (
+    HuntPolicy,
+    Provenance,
+    RenamePlan,
+    RenderedSubstitution,
+    Scope,
+    SubstitutionTable,
 )
 from template_press.rebrand.rules import (
     DEFAULT_RULES,
@@ -595,3 +605,56 @@ class TestScanPolicy:
         )
         with pytest.raises(ValidationError):
             load_rules(holder)
+
+
+class TestScanPolicyTablePath:
+    """The table path must apply boundary matching INSIDE the hunt (codex
+    PR-82 P1): a post-filter over substring-prefiltered rows both keeps
+    hash noise AND loses the boundary matcher's separator/case-variant
+    catches — `demo-widget` is invisible to the literal substring matcher
+    but is a real leak the boundary matcher sees."""
+
+    def _table(self) -> SubstitutionTable:
+        policy = HuntPolicy(
+            consumer="regeneration",
+            matcher=MatcherSpec(
+                algorithm="paranoid", identity_field="app_name", substring=True
+            ),
+            surfaces=frozenset({"content"}),
+            scope_coordinates="source",
+        )
+        row = RenderedSubstitution(
+            row_id="app_name:0",
+            provenance=(Provenance(kind="identity", name="app_name"),),
+            matcher=MatcherSpec(
+                algorithm="conservative", identity_field="app_name", substring=True
+            ),
+            from_value="demo_widget",
+            to_value="potato_launcher",
+            rewrite_surfaces=frozenset({"content"}),
+            hunts=(policy,),
+            scope=Scope(),
+        )
+        return SubstitutionTable(rows=(row,), rename_plan=RenamePlan())
+
+    def _scan(self, text: str, scan_mode: str) -> list[str]:
+        return scan_regenerated_output(
+            text,
+            "bun.lock",
+            source=SOURCE,
+            dest=DEST,
+            rules=DEFAULT_RULES,
+            renames={},
+            rendered_rules=(),
+            table=self._table(),
+            scan_mode=scan_mode,
+        )
+
+    def test_boundary_still_catches_separator_variant(self, tmp_path: Path):
+        assert self._scan("name: demo-widget\n", "boundary")
+
+    def test_boundary_ignores_glued_hash_noise(self, tmp_path: Path):
+        assert self._scan('integrity: "sha512-xdemo_widgetyk"\n', "boundary") == []
+
+    def test_strict_flags_glued_hash(self, tmp_path: Path):
+        assert self._scan('integrity: "sha512-xdemo_widgetyk"\n', "strict")
