@@ -89,6 +89,17 @@ def test_native_r3_workflow_covers_posix_and_windows() -> None:
     assert "scripts/regen-bun-lock.ps1" in workflow
 
 
+def test_general_ci_provisions_bun_for_native_r3() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    _prefix, test_marker, after_test = workflow.partition("\n  test:\n")
+    test_job, next_marker, _suffix = after_test.partition("\n  build-smoke:\n")
+
+    assert test_marker and next_marker
+    assert 'run: uv run --no-sync pytest -m ""' in test_job
+    assert "uses: oven-sh/setup-bun@v2.2.0" in test_job
+    assert "bun-version: '1.3.14'" in test_job
+
+
 @pytest.mark.live
 def test_r3_self_press_native(tmp_path: Path) -> None:
     """Execute the checked-in declaration selected by this native host."""
