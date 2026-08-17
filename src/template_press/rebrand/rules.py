@@ -690,6 +690,18 @@ def _validate_writer_overlaps(
                 )
         seen_remove.setdefault(file, []).append(declaration.platforms)
     for remove_declaration in remove:
+        for reset_declaration in reset:
+            stub_file = reset_declaration.rule.stub_file
+            if stub_file is None or stub_file != remove_declaration.rule.file:
+                continue
+            overlap = reset_declaration.platforms & remove_declaration.platforms
+            if overlap:
+                raise ValidationError(
+                    f"{RULES_REL}: {stub_file!r} is a [[reset]] stub_file and "
+                    f"a [[remove]] target on {sorted(overlap)!r} — the "
+                    f"removal would destroy the stub source; drop one "
+                    f"declaration"
+                )
         for other_kind, others in (
             ("[[regenerate]]", regenerate),
             ("[[reset]]", reset),

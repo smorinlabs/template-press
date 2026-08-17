@@ -298,3 +298,42 @@ class TestRemoveLifecycle:
         )
         with pytest.raises(ValidationError):
             load_rules(target)
+
+
+class TestRemoveReceiptChain:
+    def test_receipt_records_source_coordinates(self, tmp_path: Path):
+        """[[press.remove]] records the DECLARED path (like
+        [[press.regenerate]]) — the coordinate re-press and verify compare,
+        since press-rules.toml is never rewritten."""
+        repo = make_pressable(tmp_path)
+        _write_rules(repo, REMOVE_NOTES)
+        notes = repo / "docs" / "legacy-notes.md"
+        notes.parent.mkdir(exist_ok=True)
+        notes.write_text("# demo_widget maintenance\n", encoding="utf-8")
+        _commit(repo)
+        answers = write_answers_file(tmp_path, DEST)
+        assert main(["--target", str(repo), "--config", str(answers)]) == 0
+        from template_press.rebrand.receipt import removed_files_from_receipt
+
+        recorded = removed_files_from_receipt(
+            (repo / RECEIPT_REL).read_text(encoding="utf-8")
+        )
+        assert recorded == frozenset({"docs/legacy-notes.md"})
+
+    def test_tampered_receipt_press_value_is_tolerated(self):
+        from template_press.rebrand.receipt import removed_files_from_receipt
+
+        assert removed_files_from_receipt('press = "legacy"\n') == frozenset()
+
+    def test_stub_file_remove_overlap_rejected(self, tmp_path: Path):
+        target = _write_rules(
+            tmp_path,
+            "[[reset]]\n"
+            'file = "CHANGELOG.md"\n'
+            'stub_file = "press/stubs/CHANGELOG.md"\n'
+            "[[remove]]\n"
+            'file = "press/stubs/CHANGELOG.md"\n'
+            'reason = "r"\n',
+        )
+        with pytest.raises(ValidationError):
+            load_rules(target)

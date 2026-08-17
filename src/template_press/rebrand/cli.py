@@ -329,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
                 gate_problems.append(str(exc))
         if gate_problems:
             print(
-                "error: declared regeneration/reset cannot run — nothing written:",
+                "error: declared regeneration/reset/removal cannot run — nothing written:",
                 file=sys.stderr,
             )
             for problem in gate_problems:
@@ -589,13 +589,16 @@ def _press(
             ],
             resets=report.reset,
             removals=[
-                # Pair by membership, not position: a target already removed
-                # by a prior press is skipped, so report.removed can be a
-                # strict subset of the declarations.
-                (rel, rule.reason)
+                # Recorded in DECLARED (source) coordinates, matching
+                # [[press.regenerate]] — that is the coordinate every later
+                # consumer (re-press preflight, verify tri-state) compares
+                # against, and press-rules.toml is never rewritten. A target
+                # satisfied by a PRIOR press carries forward, so the
+                # satisfied-chain survives any number of re-presses.
+                (rule.file, rule.reason)
                 for rule in rules.remove
-                for rel in report.removed
-                if translate_path(rule.file, dict(report.renamed)) == rel
+                if translate_path(rule.file, dict(report.renamed)) in report.removed
+                or rule.file in previously_removed
             ],
             exempt=[
                 # A declared verify_exempt reason travels VERBATIM into the

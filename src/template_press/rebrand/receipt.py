@@ -140,7 +140,10 @@ def removed_files_from_receipt(text: str | None) -> frozenset[str]:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
         return frozenset()
-    entries = data.get("press", {}).get("remove", [])
+    press_table = data.get("press", {})
+    if not isinstance(press_table, dict):
+        return frozenset()
+    entries = press_table.get("remove", [])
     if not isinstance(entries, list):
         return frozenset()
     return frozenset(
