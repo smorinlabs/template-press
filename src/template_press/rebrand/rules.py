@@ -496,15 +496,24 @@ def _parse_regenerate(
         raise ValidationError(
             f"{RULES_REL}: [[regenerate]] {file!r}: reason must be a string: {reason!r}"
         )
+    # Rendered in reports and the receipt — control characters are rejected,
+    # not escaped, mirroring the argv rule (report visibility is the
+    # approval guard, so a reason must not be able to forge report lines).
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in reason):
+        raise ValidationError(
+            f"{RULES_REL}: [[regenerate]] {file!r}: reason must not contain "
+            f"control characters"
+        )
     # The pair is all-or-nothing: an exemption without a reason is a silent
-    # coverage purchase, and a reason without the exemption is dead config.
+    # coverage purchase, and a reason without the exemption — including an
+    # explicitly empty one — is dead config.
     if verify_exempt and not reason.strip():
         raise ValidationError(
             f"{RULES_REL}: [[regenerate]] {file!r}: verify_exempt = true "
             f"requires a non-empty reason — the exemption is bought loudly "
             f"or not at all"
         )
-    if reason and not verify_exempt:
+    if "reason" in entry and not verify_exempt:
         raise ValidationError(
             f"{RULES_REL}: [[regenerate]] {file!r}: reason is only valid "
             f"with verify_exempt = true"

@@ -320,3 +320,44 @@ class TestDeclaredExemption:
         )
         with pytest.raises(ValidationError):
             load_rules(repo)
+
+    def test_control_characters_in_reason_rejected(self, tmp_path: Path) -> None:
+        repo = self._repo(
+            tmp_path,
+            self.RULES_EXEMPT.replace(
+                'reason = "rendered from source at build time; press cannot rewrite it"\n',
+                'reason = "line one\\u001b[31mforged report line"\n',
+            ),
+        )
+        with pytest.raises(ValidationError):
+            load_rules(repo)
+
+    def test_explicitly_empty_reason_without_exempt_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """`reason = ""` with no verify_exempt is dead config, not a pass."""
+        repo = self._repo(
+            tmp_path,
+            self.RULES_PLAIN + 'reason = ""\n',
+        )
+        with pytest.raises(ValidationError):
+            load_rules(repo)
+
+    def test_real_press_receipt_carries_declared_reason_verbatim(
+        self, tmp_path: Path
+    ) -> None:
+        repo = make_pressable(tmp_path)
+        gen = repo / "docs" / "generated-api.md"
+        gen.parent.mkdir(exist_ok=True)
+        gen.write_text("# API reference\n", encoding="utf-8")  # identity-free
+        (repo / "press" / "press-rules.toml").write_text(
+            self.RULES_EXEMPT, encoding="utf-8"
+        )
+        _commit(repo)
+        answers = write_answers_file(tmp_path, DEST)
+        assert main(["--target", str(repo), "--config", str(answers)]) == 0
+        receipt = (repo / RECEIPT_REL).read_text(encoding="utf-8")
+        assert (
+            'reason = "rendered from source at build time; '
+            'press cannot rewrite it"' in receipt
+        )

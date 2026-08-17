@@ -120,9 +120,11 @@ verify_exempt = true
 reason = "rendered from source at build time; press cannot rewrite it"
 ```
 
-`verify_exempt = true` requires a non-empty `reason`; a `reason` without
-`verify_exempt` is rejected. The reason is surfaced verbatim in verify's
-not-verified listing, `--json` output, and the press receipt, so the
+`verify_exempt = true` requires a non-empty `reason` (control characters
+rejected — the reason is rendered in reports); a `reason` without
+`verify_exempt` — even an empty one — is rejected as dead config. The
+reason is carried verbatim in the receipt's `[[press.exempt]]` record and
+included in verify's not-verified listing and `--json` output, so the
 coverage gap stays visible and reviewed rather than silently purchased.
 The real press's post-command scan still certifies the output at press
 time.
