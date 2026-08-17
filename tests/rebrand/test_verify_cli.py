@@ -286,6 +286,51 @@ def test_declared_display_name_present_in_variant_form_passes(tmp_path: Path) ->
     assert verify_command(["--target", str(repo)]) == 0
 
 
+def _glue_only_app_name(repo: Path) -> None:
+    """Delete the README's ONLY boundary-separated app_name occurrence.
+
+    ``make_pressable``'s README writes ``Run `press --help`.`` — the single
+    boundary-bounded ``press`` in the fixture. Removing that line leaves only
+    the English-word traps (``Compress``, ``express``, ``pressure``), i.e. a
+    target whose app_name occurs GLUED and nowhere else. That is exactly the
+    target shape ``[rules] substring_rewrite_fields`` exists to serve.
+    """
+    readme = (repo / "README.md").read_text(encoding="utf-8")
+    (repo / "README.md").write_text(
+        "\n".join(ln for ln in readme.splitlines() if "--help" not in ln) + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_glued_only_substring_rewrite_field_passes_presence(tmp_path: Path) -> None:
+    # #47: the presence preflight hardcoded `substring=False`, so a field whose
+    # only occurrences are glued failed presence with a FALSE exit 2 — the
+    # target was rejected for the very property it opted into substring mode to
+    # declare. app_name is undiscoverable here (no [project.scripts]), which is
+    # what routes it through the presence check at all.
+    repo = make_pressable(tmp_path, scripts=False)
+    _glue_only_app_name(repo)
+    (repo / "press" / "press-rules.toml").write_text(
+        '[rules]\nsubstring_rewrite_fields = ["app_name"]\n', encoding="utf-8"
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 0
+
+
+def test_glued_only_field_without_substring_mode_still_exits_2(
+    tmp_path: Path, capsys
+) -> None:
+    # Control for the test above, pinning the exit CLASS: without the opt-in the
+    # boundary matcher governs, a glued-only value is genuinely not present as
+    # identity, and the unverifiable verdict must still fire. The fix must widen
+    # the presence check only for fields that declared substring mode.
+    repo = make_pressable(tmp_path, scripts=False)
+    _glue_only_app_name(repo)
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 2
+    assert "app_name" in capsys.readouterr().err
+
+
 @requires_symlink
 def test_control_path_symlink_rejected_exits_2(tmp_path: Path) -> None:
     repo = make_pressable(tmp_path)

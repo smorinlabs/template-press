@@ -157,8 +157,26 @@ def _target_text_corpus(target: Path, rules: Rules) -> list[str]:
     return corpus
 
 
-def _value_present(field: str, value: str, corpus: list[str]) -> bool:
-    return any(find_occurrences(text, field, value, substring=False) for text in corpus)
+def _value_present(
+    field: str, value: str, corpus: list[str], substring_fields: frozenset[str]
+) -> bool:
+    """Whether ``value`` occurs as identity anywhere in the corpus.
+
+    The matcher mode is the field's OWN effective mode, not a fixed boundary
+    match (#47). ``substring_fields`` is the SCAN's effective substring set —
+    ``[verify] substring_fields`` (a scan-scope opt-in that says nothing about
+    rewriting) unioned with ``[rules] substring_rewrite_fields`` (the press's
+    boundary-free rewrite set) — the same set ``verifier.scan`` receives.
+    Either declaration asserts the same thing about presence: this field's
+    occurrences need not carry a boundary. A target opts in precisely because
+    the value appears GLUED (``xdemolabsy``), so asking the boundary matcher
+    reports it absent, and preflight then rejects the target with a false
+    exit 2 for the very property the declaration exists to state.
+    """
+    substring = field in substring_fields
+    return any(
+        find_occurrences(text, field, value, substring=substring) for text in corpus
+    )
 
 
 def _effective_scan_fields(
@@ -181,7 +199,11 @@ def _effective_scan_fields(
 
 
 def _preflight(
-    target: Path, source: Identity, rules: Rules, scan_fields: Sequence[str]
+    target: Path,
+    source: Identity,
+    rules: Rules,
+    scan_fields: Sequence[str],
+    substring_fields: frozenset[str],
 ) -> list[str]:
     """Consistency + presence check against the REAL target; problems -> 2.
 
@@ -194,6 +216,11 @@ def _preflight(
     scanned set. ``mismatches`` (the consistency check) is unchanged — a
     discoverable field that DISAGREES with the config still fails regardless of
     scope.
+
+    ``substring_fields`` is the same effective set the scan uses
+    (``[verify] substring_fields`` unioned with ``[rules]
+    substring_rewrite_fields``), so presence is decided by each field's own
+    matcher mode rather than a fixed boundary match — see ``_value_present``.
     """
     found = discover(target)
     problems = list(mismatches(source, found))
@@ -216,7 +243,7 @@ def _preflight(
         return problems
     corpus = _target_text_corpus(target, rules)
     if check_display_name and not _value_present(
-        "display_name", source.display_name, corpus
+        "display_name", source.display_name, corpus, substring_fields
     ):
         problems.append(
             f"declared display_name {source.display_name!r} not found in "
@@ -224,7 +251,11 @@ def _preflight(
         )
     if not undiscoverable:
         return problems
-    absent = [f for f in undiscoverable if not _value_present(f, declared[f], corpus)]
+    absent = [
+        f
+        for f in undiscoverable
+        if not _value_present(f, declared[f], corpus, substring_fields)
+    ]
     if len(undiscoverable) == len(scanned) and len(absent) == len(undiscoverable):
         problems.append(
             "unverifiable: the declared identity is WHOLLY undiscoverable and "
@@ -387,7 +418,7 @@ def verify_command(argv: list[str] | None = None) -> int:
             scan_fields, rules.substring_rewrite_fields
         )
         scan_substring = cfg.substring_fields | rules.substring_rewrite_fields
-        problems = _preflight(target, source, rules, scan_fields)
+        problems = _preflight(target, source, rules, scan_fields, scan_substring)
     except _CONFIG_ERRORS as exc:
         return _fail(f"preflight failed: {exc}")
     if problems:
