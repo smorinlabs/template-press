@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import fnmatch
 import re
+import sys
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from template_press.rebrand.identity import (
@@ -22,6 +23,8 @@ from template_press.rebrand.identity import (
 from template_press.rebrand.safety import SafeRelPath, UnsafePathError
 
 RULES_REL = Path("press") / "press-rules.toml"
+
+SUPPORTED_PLATFORMS: frozenset[str] = frozenset({"darwin", "linux", "win32"})
 
 _PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 
@@ -104,6 +107,22 @@ class ResetRule:
     stub_file: str | None = None
 
 
+@dataclass(frozen=True)
+class _RegenerateDeclaration:
+    """One parsed regeneration plus its environment-independent selector."""
+
+    rule: RegenerateRule
+    platforms: frozenset[str]
+
+
+@dataclass(frozen=True)
+class _ResetDeclaration:
+    """One parsed reset plus its environment-independent selector."""
+
+    rule: ResetRule
+    platforms: frozenset[str]
+
+
 def rule_matches_path(rule: ReplaceRule, posix: str) -> bool:
     """POSIX rel-path scope check: empty files = every file; else fnmatch.
 
@@ -137,6 +156,23 @@ class Rules:
     # value here WILL corrupt prose; that risk is the author's to accept.
     substring_rewrite_fields: frozenset[str] = frozenset()
     display_forms: tuple[str, ...] = DISPLAY_FORM_NAMES
+
+
+@dataclass(frozen=True)
+class SelectedRules:
+    """The captured runtime platform and its active, selector-free rules."""
+
+    platform: str
+    rules: Rules
+
+
+@dataclass(frozen=True)
+class _ParsedRules:
+    """Private pre-selection declarations plus platform-neutral base rules."""
+
+    rules: Rules
+    regenerate: tuple[_RegenerateDeclaration, ...] = ()
+    reset: tuple[_ResetDeclaration, ...] = ()
 
 
 DEFAULT_RULES = Rules(
@@ -189,8 +225,8 @@ _RULES_KEYS = frozenset(
 # loading as zero rules.
 _ROOT_KEYS = frozenset({"rules", "replace", "verify", "regenerate", "reset"})
 
-_REGENERATE_KEYS = frozenset({"file", "command", "env"})
-_RESET_KEYS = frozenset({"file", "stub", "stub_file"})
+_REGENERATE_KEYS = frozenset({"file", "command", "env", "platforms"})
+_RESET_KEYS = frozenset({"file", "stub", "stub_file", "platforms"})
 
 
 def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
@@ -338,7 +374,36 @@ def _reject_reserved(kind: str, file: str) -> None:
         )
 
 
-def _parse_regenerate(entry: object, exclude_files: frozenset[str]) -> RegenerateRule:
+def _parse_platforms(entry: dict, kind: str, file: str) -> frozenset[str]:
+    """Validate one optional selector without consulting the host environment."""
+
+    if "platforms" not in entry:
+        return SUPPORTED_PLATFORMS
+    raw = entry["platforms"]
+    if not isinstance(raw, list) or not raw:
+        raise ValidationError(
+            f"{RULES_REL}: {kind} {file!r}: platforms must be a non-empty list "
+            f"containing only {sorted(SUPPORTED_PLATFORMS)!r}"
+        )
+    platforms: list[str] = []
+    for value in raw:
+        if not isinstance(value, str) or value not in SUPPORTED_PLATFORMS:
+            raise ValidationError(
+                f"{RULES_REL}: {kind} {file!r}: platforms values must be exact "
+                f"members of {sorted(SUPPORTED_PLATFORMS)!r}: {value!r}"
+            )
+        if value in platforms:
+            raise ValidationError(
+                f"{RULES_REL}: {kind} {file!r}: platforms contains duplicate "
+                f"value {value!r}"
+            )
+        platforms.append(value)
+    return frozenset(platforms)
+
+
+def _parse_regenerate(
+    entry: object, exclude_files: frozenset[str]
+) -> _RegenerateDeclaration:
     if not isinstance(entry, dict):
         raise ValidationError(f"{RULES_REL}: [[regenerate]] entry must be a table")
     unknown = set(entry) - _REGENERATE_KEYS
@@ -397,10 +462,13 @@ def _parse_regenerate(entry: object, exclude_files: frozenset[str]) -> Regenerat
                 f"{name!r}"
             )
         env.append(name)
-    return RegenerateRule(file=file, command=tuple(command), env=tuple(env))
+    return _RegenerateDeclaration(
+        rule=RegenerateRule(file=file, command=tuple(command), env=tuple(env)),
+        platforms=_parse_platforms(entry, "[[regenerate]]", file),
+    )
 
 
-def _parse_reset(entry: object, exclude_files: frozenset[str]) -> ResetRule:
+def _parse_reset(entry: object, exclude_files: frozenset[str]) -> _ResetDeclaration:
     if not isinstance(entry, dict):
         raise ValidationError(f"{RULES_REL}: [[reset]] entry must be a table")
     unknown = set(entry) - _RESET_KEYS
@@ -435,18 +503,70 @@ def _parse_reset(entry: object, exclude_files: frozenset[str]) -> ResetRule:
             raise ValidationError(
                 f"{RULES_REL}: [[reset]] {file!r}: stub must be a string"
             )
-        return ResetRule(file=file, stub=stub)
-    stub_file = _declared_rel_path(
-        f"[[reset]] {file!r} stub_file", entry.get("stub_file")
+        rule = ResetRule(file=file, stub=stub)
+    else:
+        stub_file = _declared_rel_path(
+            f"[[reset]] {file!r} stub_file", entry.get("stub_file")
+        )
+        rule = ResetRule(file=file, stub_file=stub_file)
+    return _ResetDeclaration(
+        rule=rule,
+        platforms=_parse_platforms(entry, "[[reset]]", file),
     )
-    return ResetRule(file=file, stub_file=stub_file)
 
 
-def load_rules(target: Path) -> Rules:
-    """DEFAULT_RULES, extended by the target's press/press-rules.toml if present."""
+def _validate_writer_overlaps(
+    regenerate: tuple[_RegenerateDeclaration, ...],
+    reset: tuple[_ResetDeclaration, ...],
+) -> None:
+    """Reject any same-file writer pair active on at least one platform."""
+
+    seen_regenerate: dict[str, list[frozenset[str]]] = {}
+    for declaration in regenerate:
+        file = declaration.rule.file
+        for earlier in seen_regenerate.get(file, []):
+            overlap = earlier & declaration.platforms
+            if overlap:
+                raise ValidationError(
+                    f"{RULES_REL}: {file} declared by more than one "
+                    f"[[regenerate]] table with platform overlap "
+                    f"{sorted(overlap)!r} — each platform permits one writer"
+                )
+        seen_regenerate.setdefault(file, []).append(declaration.platforms)
+
+    seen_reset: dict[str, list[frozenset[str]]] = {}
+    for declaration in reset:
+        file = declaration.rule.file
+        for earlier in seen_reset.get(file, []):
+            overlap = earlier & declaration.platforms
+            if overlap:
+                raise ValidationError(
+                    f"{RULES_REL}: duplicate [[reset]] target {file!r} has "
+                    f"platform overlap {sorted(overlap)!r} — each platform "
+                    f"permits one writer"
+                )
+        seen_reset.setdefault(file, []).append(declaration.platforms)
+
+    for regenerate_declaration in regenerate:
+        for reset_declaration in reset:
+            if regenerate_declaration.rule.file != reset_declaration.rule.file:
+                continue
+            overlap = regenerate_declaration.platforms & reset_declaration.platforms
+            if overlap:
+                file = regenerate_declaration.rule.file
+                raise ValidationError(
+                    f"{RULES_REL}: {file!r} has [[regenerate]] and [[reset]] "
+                    f"writer overlap on {sorted(overlap)!r} — each platform "
+                    f"permits exactly one mechanism per file"
+                )
+
+
+def _parse_rules(target: Path) -> _ParsedRules:
+    """Parse and globally validate declarations before platform selection."""
+
     override_path = target / RULES_REL
     if not override_path.is_file():
-        return DEFAULT_RULES
+        return _ParsedRules(rules=DEFAULT_RULES)
     data = tomllib.loads(override_path.read_text(encoding="utf-8"))
     unknown_root = set(data) - _ROOT_KEYS
     if unknown_root:
@@ -509,41 +629,57 @@ def load_rules(target: Path) -> Rules:
         _str_list(table, "extra_exclude_files", [])
     )
     regenerate = tuple(_parse_regenerate(e, exclude_files) for e in raw_regenerate)
-    seen_regen: set[str] = set()
-    for regen_rule in regenerate:
-        if regen_rule.file in seen_regen:
-            raise ValidationError(
-                f"{RULES_REL}: {regen_rule.file} declared by more than one "
-                f"[[regenerate]] table — one regeneration per file (the "
-                f"second command would silently win)"
-            )
-        seen_regen.add(regen_rule.file)
     reset = tuple(_parse_reset(e, exclude_files) for e in raw_reset)
-    seen_reset: set[str] = set()
-    for reset_rule in reset:
-        if reset_rule.file in seen_reset:
-            raise ValidationError(
-                f"{RULES_REL}: duplicate [[reset]] target {reset_rule.file!r} — "
-                f"one reset per file (the second write would silently win)"
-            )
-        seen_reset.add(reset_rule.file)
-    overlap = {r.file for r in regenerate} & seen_reset
-    if overlap:
-        raise ValidationError(
-            f"{RULES_REL}: {', '.join(sorted(overlap))} declared as BOTH a "
-            f"[[regenerate]] output and a [[reset]] target — reset runs first "
-            f"and regeneration after apply, so the stub would be written and "
-            f"immediately overwritten with both operations counted "
-            f"successful; declare exactly one mechanism per file"
-        )
-    return Rules(
-        exclude_dirs=DEFAULT_RULES.exclude_dirs
-        | frozenset(_str_list(table, "extra_exclude_dirs", [])),
-        exclude_files=exclude_files,
+    _validate_writer_overlaps(regenerate, reset)
+    return _ParsedRules(
+        rules=Rules(
+            exclude_dirs=DEFAULT_RULES.exclude_dirs
+            | frozenset(_str_list(table, "extra_exclude_dirs", [])),
+            exclude_files=exclude_files,
+            regenerate=(),
+            reset=(),
+            verify_ignore=frozenset(_str_list(table, "verify_ignore", [])),
+            replace=tuple(_parse_replace(e) for e in raw_replace),
+            substring_rewrite_fields=substring_fields,
+            display_forms=tuple(dict.fromkeys(display_forms_list)),
+        ),
         regenerate=regenerate,
         reset=reset,
-        verify_ignore=frozenset(_str_list(table, "verify_ignore", [])),
-        replace=tuple(_parse_replace(e) for e in raw_replace),
-        substring_rewrite_fields=substring_fields,
-        display_forms=tuple(dict.fromkeys(display_forms_list)),
     )
+
+
+def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
+    """Purely select active rules for one already-captured runtime value."""
+
+    if platform not in SUPPORTED_PLATFORMS:
+        raise ValidationError(
+            f"unsupported runtime platform {platform!r}; expected one of "
+            f"{sorted(SUPPORTED_PLATFORMS)!r}"
+        )
+    rules = replace(
+        parsed.rules,
+        regenerate=tuple(
+            declaration.rule
+            for declaration in parsed.regenerate
+            if platform in declaration.platforms
+        ),
+        reset=tuple(
+            declaration.rule
+            for declaration in parsed.reset
+            if platform in declaration.platforms
+        ),
+    )
+    return SelectedRules(platform=platform, rules=rules)
+
+
+def load_selected_rules(target: Path, *, platform: str | None = None) -> SelectedRules:
+    """Parse all declarations, then select once for the captured platform."""
+
+    parsed = _parse_rules(target)
+    return _select_rules(parsed, sys.platform if platform is None else platform)
+
+
+def load_rules(target: Path) -> Rules:
+    """Compatibility view of active rules for callers not yet carrying selection."""
+
+    return load_selected_rules(target).rules

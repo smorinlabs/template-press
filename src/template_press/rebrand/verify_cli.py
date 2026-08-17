@@ -55,7 +55,7 @@ from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_
 from template_press.rebrand.inventory import capture_surface_snapshot
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.reset import load_stub_content
-from template_press.rebrand.rules import RULES_REL, Rules, load_rules
+from template_press.rebrand.rules import RULES_REL, Rules, load_selected_rules
 from template_press.rebrand.safety import (
     SafetyError,
     git_hardening_args,
@@ -164,7 +164,7 @@ def _effective_scan_fields(
     from ``fields`` (e.g. ``app_name_upper``, not in ``DEFAULT_FIELDS``) is
     never scanned at all — ``scan_substring`` only controls HOW a field
     already in ``fields`` is matched, not WHETHER it is scanned. Filtered to
-    ``KNOWN_FIELDS`` defensively: ``rules.load_rules`` already rejects any
+    ``KNOWN_FIELDS`` defensively: ``rules.load_selected_rules`` already rejects any
     other value at parse time, so this is defense in depth, not a reachable
     path through normal config loading.
     """
@@ -361,7 +361,8 @@ def verify_command(argv: list[str] | None = None) -> int:
 
     # Steps 2-3 — preflight + [verify] config, against the REAL target.
     try:
-        rules = load_rules(target)
+        selected = load_selected_rules(target)
+        rules = selected.rules
         cfg = _load_verify_config(target)
         scan_fields: tuple[str, ...] = cfg.fields
         if source.display_name is not None and "display_name" not in scan_fields:

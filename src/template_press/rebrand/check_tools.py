@@ -16,7 +16,7 @@ import tomllib
 from pathlib import Path
 
 from template_press.rebrand.regen import command_env, resolve_executable
-from template_press.rebrand.rules import ValidationError, load_rules
+from template_press.rebrand.rules import ValidationError, load_selected_rules
 
 
 def check_tools_command(argv: list[str] | None = None) -> int:
@@ -29,7 +29,8 @@ def check_tools_command(argv: list[str] | None = None) -> int:
         print(f"error: target {target} is not a directory", file=sys.stderr)
         return 2
     try:
-        rules = load_rules(target)
+        selected = load_selected_rules(target)
+        rules = selected.rules
     except (
         ValidationError,
         tomllib.TOMLDecodeError,
@@ -42,7 +43,7 @@ def check_tools_command(argv: list[str] | None = None) -> int:
         return 2
 
     missing = 0
-    reports: list[str] = []
+    reports: list[str] = [f"Platform: {selected.platform}"]
     git = resolve_executable(target, "git", command_env(()))
     if git is None:
         missing += 1

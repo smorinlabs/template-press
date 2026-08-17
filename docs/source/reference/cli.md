@@ -48,6 +48,61 @@ those directories from being rewritten, list the same names under
 `extra_exclude_dirs`. Both keys match a single directory *name* at any depth,
 not a path.
 
+### Platform-conditional reset and regeneration
+
+`[[regenerate]]` and `[[reset]]` declarations may include an optional
+`platforms` selector. The selector is a non-empty list containing one or more
+of these exact Python runtime platform values:
+
+| Value | Supported host |
+|-------|----------------|
+| `"darwin"` | macOS |
+| `"linux"` | Linux |
+| `"win32"` | Windows |
+
+Omitting `platforms` makes the declaration active on all three supported
+platforms. Values are case-sensitive and whitespace-sensitive. Empty lists,
+duplicate values, non-string values, and any value outside the table are
+configuration errors.
+
+This example assigns one `bun.lock` output to a native command on each host:
+
+```toml
+[[regenerate]]
+file = "bun.lock"
+command = ["scripts/regen-bun-lock.sh"]
+platforms = ["darwin", "linux"]
+
+[[regenerate]]
+file = "bun.lock"
+command = ["powershell", "-NoProfile", "-File", "scripts/regen-bun-lock.ps1"]
+platforms = ["win32"]
+```
+
+The same file may appear in multiple `[[regenerate]]` declarations, multiple
+`[[reset]]` declarations, or one declaration of each kind only when their
+platform sets are disjoint. If two declarations can write the same file on
+the same platform, configuration loading fails with exit code `2`.
+
+Configuration loading has two phases:
+
+1. Press parses and validates every declaration, including declarations that
+   are inactive on the current host. Schema errors and overlapping same-file
+   writers therefore cannot hide behind a platform selector.
+2. Press captures `sys.platform` once and selects the active declarations.
+   Host-dependent checks, such as executable resolution and `stub_file`
+   reading, run only for that selected set.
+
+The selected platform is printed once before rebrand plans and
+`press check-tools` reports. Plans, tool checks, resets, regenerations, and
+receipts contain active declarations only. A successful receipt records the
+captured value as `press.platform`, successful regeneration actions as
+`[[press.regenerate]]`, and applied reset actions as `[[press.reset]]`.
+
+Git is not a declared regeneration tool. Press and `press check-tools` require
+and check Git on every supported platform, including when no reset or
+regeneration declaration is active.
+
 ### After a successful press
 
 A receipt is written to `<target>/press/press-receipt.toml`, and
@@ -148,14 +203,16 @@ reason = "Historical reference in changelog"
 
 ## `press check-tools`
 
-Reports whether every declared `[[regenerate]]` command's `argv[0]` — plus
-`git`, the one tool press itself needs — resolves on this machine, using
-exactly the resolution the press will use (path-qualified names against the
-target root, bare names on the deny-by-default effective `PATH`). It reads
-the target's config, writes nothing, and executes nothing.
+Reports whether every active `[[regenerate]]` command's `argv[0]` — plus
+`git`, the one tool press itself needs — resolves on the captured platform,
+using exactly the resolution the press will use (path-qualified names against
+the target root, bare names on the deny-by-default effective `PATH`). It
+validates all declarations before platform selection, writes nothing, and
+executes nothing.
 
 ```console
 $ press check-tools --target ../my-repo
+Platform: darwin
 git — /usr/bin/git
 uv — /opt/homebrew/bin/uv (regenerates uv.lock)
 bun — missing (declared to regenerate bun.lock)

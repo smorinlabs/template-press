@@ -8,6 +8,8 @@ reset and G2's bun.lock regeneration proven against the real repo (R1b).
 """
 
 import subprocess
+import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -15,10 +17,13 @@ import pytest
 from template_press.rebrand.cli import main
 from template_press.rebrand.config import SOURCE_CONFIG_REL
 from template_press.rebrand.receipt import RECEIPT_REL
+from template_press.rebrand.rules import load_selected_rules
 
 from .conftest import DEST, posix_only, write_answers_file
 
 BLUEPRINT = "https://github.com/smorinlabs/py-launch-blueprint.git"
+SELF_ORIGIN = "https://github.com/smorinlabs/template-press.git"
+REPO_ROOT = Path(__file__).parents[2]
 
 BLUEPRINT_RULES = """\
 [[regenerate]]
@@ -51,6 +56,100 @@ def clone(url: str, dest: Path) -> Path:
         capture_output=True,
     )
     return dest
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected_helper", "inactive_helper"),
+    [
+        ("darwin", "scripts/regen-bun-lock.sh", "scripts/regen-bun-lock.ps1"),
+        ("linux", "scripts/regen-bun-lock.sh", "scripts/regen-bun-lock.ps1"),
+        ("win32", "scripts/regen-bun-lock.ps1", "scripts/regen-bun-lock.sh"),
+    ],
+)
+def test_checked_in_bun_regeneration_is_native_and_single_writer(
+    platform: str, expected_helper: str, inactive_helper: str
+) -> None:
+    selected = load_selected_rules(REPO_ROOT, platform=platform)
+    bun_rules = [rule for rule in selected.rules.regenerate if rule.file == "bun.lock"]
+
+    assert len(bun_rules) == 1
+    assert expected_helper in bun_rules[0].command
+    assert inactive_helper not in bun_rules[0].command
+    assert (REPO_ROOT / expected_helper).is_file()
+
+
+def test_native_r3_workflow_covers_posix_and_windows() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/rebrand-matrix.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "blacksmith-4vcpu-ubuntu-2404" in workflow
+    assert "windows-latest" in workflow
+    assert "test_r3_self_press_native" in workflow
+    assert "scripts/regen-bun-lock.ps1" in workflow
+
+
+def test_general_ci_provisions_bun_for_native_r3() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    _prefix, test_marker, after_test = workflow.partition("\n  test:\n")
+    test_job, next_marker, _suffix = after_test.partition("\n  build-smoke:\n")
+
+    assert test_marker and next_marker
+    assert 'run: uv run --no-sync pytest -m ""' in test_job
+    assert "uses: oven-sh/setup-bun@v2.2.0" in test_job
+    assert "bun-version: '1.3.14'" in test_job
+
+
+@pytest.mark.live
+def test_r3_self_press_native(tmp_path: Path) -> None:
+    """Execute the checked-in declaration selected by this native host."""
+
+    target = clone(str(REPO_ROOT), tmp_path / "self")
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "git",
+            "-C",
+            str(target),
+            "remote",
+            "set-url",
+            "origin",
+            SELF_ORIGIN,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    answers = write_answers_file(tmp_path, DEST)
+
+    code = main(
+        [
+            "--target",
+            str(target),
+            "--config",
+            str(answers),
+            "--accept-discovery",
+            "--allow-dirty",
+        ]
+    )
+
+    assert code == 0
+    raw_receipt = (target / RECEIPT_REL).read_text(encoding="utf-8")
+    receipt = tomllib.loads(raw_receipt)
+    assert receipt["press"]["platform"] == sys.platform
+    bun_actions = [
+        item for item in receipt["press"]["regenerate"] if item["file"] == "bun.lock"
+    ]
+    assert len(bun_actions) == 1
+    expected_helper = (
+        "regen-bun-lock.ps1" if sys.platform == "win32" else "regen-bun-lock.sh"
+    )
+    inactive_helper = (
+        "regen-bun-lock.sh" if sys.platform == "win32" else "regen-bun-lock.ps1"
+    )
+    assert any(expected_helper in element for element in bun_actions[0]["argv"])
+    assert inactive_helper not in raw_receipt
+    bun_lock = (target / "bun.lock").read_text(encoding="utf-8")
+    assert "template_press" not in bun_lock
+    assert '"template-press"' not in bun_lock
 
 
 @pytest.mark.live

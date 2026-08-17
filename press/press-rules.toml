@@ -12,6 +12,12 @@ command = ["uv", "lock"]
 [[regenerate]]
 file = "bun.lock"
 command = ["scripts/regen-bun-lock.sh"]
+platforms = ["darwin", "linux"]
+
+[[regenerate]]
+file = "bun.lock"
+command = ["powershell", "-NoProfile", "-File", "scripts/regen-bun-lock.ps1"]
+platforms = ["win32"]
 
 [[reset]]
 file = "CHANGELOG.md"
