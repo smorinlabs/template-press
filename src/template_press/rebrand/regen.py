@@ -327,6 +327,7 @@ def execute_regenerations(
             renames=renames,
             rendered_rules=rendered_rules,
             table=table,
+            scan_mode=rule.scan,
         )
         if problems:
             report.skipped.extend(
@@ -511,6 +512,7 @@ def scan_regenerated_output(
     renames: Mapping[str, str],
     rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
     table: SubstitutionTable | None = None,
+    scan_mode: str = "strict",
 ) -> list[str]:
     """Paranoid changed-fields scan of one produced output (D3).
 
@@ -541,12 +543,18 @@ def scan_regenerated_output(
                 )
             else:
                 field = policy.matcher.identity_field or row.provenance[0].name
+                # scan = "boundary" downgrades the CONTENT hunt only: a
+                # substring hit that vanishes under boundary matching is
+                # hash noise, not a leak (PROBLEM-22, plbp dogfood run 4).
+                substring = policy.matcher.substring and scan_mode != "boundary"
                 spans = find_occurrences(
                     text,
                     field,
                     row.from_value,
-                    substring=policy.matcher.substring,
+                    substring=substring,
                 )
+                if not spans:
+                    continue
                 problems.append(
                     f"output still carries source {field} {row.from_value!r} "
                     f"({len(spans)} occurrence(s))"
@@ -573,7 +581,8 @@ def scan_regenerated_output(
         return problems
     for field, value in changed_identity_pairs(source, dest):
         substring = field in rules.substring_rewrite_fields
-        spans = find_occurrences(text, field, value, substring=substring)
+        content_substring = substring and scan_mode != "boundary"
+        spans = find_occurrences(text, field, value, substring=content_substring)
         if spans:
             problems.append(
                 f"output still carries source {field} {value!r} "
@@ -617,6 +626,7 @@ def _postcondition_problems(
     renames: Mapping[str, str],
     rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
     table: SubstitutionTable | None = None,
+    scan_mode: str = "strict",
 ) -> list[str]:
     """Existence, type, containment, UTF-8, and the paranoid scan — what a
     command must leave behind to have regenerated anything at all (D3)."""
@@ -649,6 +659,7 @@ def _postcondition_problems(
         renames=renames,
         rendered_rules=rendered_rules,
         table=table,
+        scan_mode=scan_mode,
     )
 
 
@@ -683,6 +694,7 @@ def final_validation_pass(
             renames=renames,
             rendered_rules=rendered_rules,
             table=table,
+            scan_mode=plan.rule.scan,
         ):
             problems.append(f"final pass: {plan.rule.file}: {problem}")
     for rule, stub in resets:
