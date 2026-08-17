@@ -1,16 +1,18 @@
 # 0009 — Rendered substitution table and surface inventory
 
-- **Status:** Accepted (P06 design checkpoint, 2026-08-12)
+- **Status:** Accepted (P06 design checkpoint, 2026-08-12; P07 platform
+  selection amendment, 2026-08-16)
 - **Type:** Design / decision record
 - **Created:** 2026-08-12
 - **Applies to:** `template_press.rebrand.engine`, `doctor`, `regen`, and
   `reset`; the new `inventory` and `substitutions` modules; and the
   independence boundary around `verifier`
 - **References:** [P06 — derive checkers from one rendered substitution
-  set](../../projects/P06-substitution-set.md); [0006 — external-target
-  model](0006-external-target-model.md); [0007 — `press verify`
-  design](0007-press-verify-design.md); [0008 — identity variants and replace
-  rules](0008-identity-variants-and-replace-rules.md)
+  set](../../projects/P06-substitution-set.md); [P07 — platform-conditional
+  declared commands](../../projects/P07-platform-conditional-declared-commands.md);
+  [0006 — external-target model](0006-external-target-model.md); [0007 —
+  `press verify` design](0007-press-verify-design.md); [0008 — identity
+  variants and replace rules](0008-identity-variants-and-replace-rules.md)
 
 ## Purpose and decision
 
@@ -56,6 +58,10 @@ matching, scope, and rename translation remain in pure policies above it.
   rule.
 - `Identity` is the value object that holds one source or destination identity.
   `Rules` is the parsed `press/press-rules.toml` configuration model.
+- **Parsed declarations** are the private, pre-selection `[[regenerate]]` and
+  `[[reset]]` entries, including each entry's platform set. `SelectedRules` is
+  the frozen boundary containing one captured platform value and a `Rules`
+  value with only the declarations active on that platform.
 - `DISPLAY_FORM_NAMES` is the closed display-form set: `spaced`, `pascal`, and
   `camel`.
 - A **rename plan** is the ordered, target-specific sequence of path-prefix
@@ -64,32 +70,66 @@ matching, scope, and rename translation remain in pure policies above it.
 
 ## Architecture
 
-The diagram shows which consumers share compiled behavior and which checker
-stays independent.
+The diagram shows the P07 selection boundary, which consumers share compiled
+behavior, and which checker stays independent.
 
 ```text
-source identity + destination identity + Rules
-                     |
-                     | render and validate
-                     v
-             SubstitutionTable rows
-                |       |       |
-                |       |       +--> reset/regeneration hunt terms
-                |       +----------> inline doctor hunt terms
-                +------------------> conservative rewriter
-                     |
-surface inventory ---+--> fixed-point RenamePlan --> plan/apply/translation
-
-source identity + destination identity + Rules + VerifyConfig
-                     |
-                     +--> verifier matcher + verifier scan
-                          (no SubstitutionTable dependency)
+press/press-rules.toml
+          |
+          v
+parsed declarations
+          |
+          | validate every schema and same-file writer overlap
+          v
+platform selection (capture once)
+          |
+          v
+SelectedRules {platform, active Rules}
+          |
+          +--> active Rules + source identity + destination identity
+          |                 |
+          |                 | render and validate
+          |                 v
+          |         SubstitutionTable rows
+          |            |       |       |
+          |            |       |       +--> reset/regeneration hunts
+          |            |       +----------> inline doctor hunts
+          |            +------------------> conservative rewriter
+          |                 |
+          |    inventory ---+--> fixed-point RenamePlan
+          |                          |
+          |                          +--> plan/apply/translation
+          |
+          +--> active Rules + source identity + destination identity
+                + VerifyConfig + source snapshot
+                              |
+                              +--> verifier matcher + verifier scan
+                                   (no SubstitutionTable dependency)
 ```
 
 The shared table removes accidental disagreement among the rewriter and its
 inline checks. `press verify` uses that rewriter in its sandbox, but the
 separate verifier-scan dependency path preserves an independent failure
 detector after the sandbox press.
+
+Selection never hides invalid configuration. Parsing validates every declared
+schema and rejects any pair of `[[regenerate]]` or `[[reset]]` writers whose
+platform sets overlap for the same file. Only after that global phase does the
+pure selector build `SelectedRules`. The selected `Rules` value then governs
+plan, preflight, apply, doctor, reset, regeneration, and table construction;
+no consumer filters declarations or reads the runtime platform again.
+
+Environmental validation occurs after selection. Missing active executables,
+unreadable active reset stubs, and active excluded-file coverage failures stop
+the operation before mutation. An inactive declaration can trigger a global
+schema or overlap error, but its executable, stub, plan item, action, and
+receipt evidence are absent. Git remains an unconditional preflight tool.
+
+The verifier follows the same selected `Rules` boundary so platform-inactive
+exemptions cannot affect its sandbox. Its scanner still derives matches from
+source identity, destination identity, active `Rules`, `VerifyConfig`, and the
+source snapshot. It does not consume `SubstitutionTable`, compiled hunts, or
+engine findings.
 
 ## D1 — Rendered table shape
 

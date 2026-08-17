@@ -179,11 +179,11 @@ platforms = ["darwin", "linux", "win32"]
       platform-specific `bun.lock` declarations and require successful matching
       command execution, captured platform/action receipt evidence, a
       regenerated identity-clean `bun.lock`, and no inactive action evidence.
-- [ ] [P07-T04] Add the Windows-capable `bun.lock` regeneration helper and
+- [x] [P07-T04] Add the Windows-capable `bun.lock` regeneration helper and
       disjoint POSIX/Windows Option A declarations to `press/press-rules.toml`;
       extend the acceptance workflow so R3 self-press runs natively on Windows
       and at least one POSIX host; and make TS04 pass.
-- [ ] [P07-T05] Update `docs/source/reference/cli.md` with the schema,
+- [x] [P07-T05] Update `docs/source/reference/cli.md` with the schema,
       three-host support contract, omission and validation behavior, disjoint
       same-file rules, two validation phases, active-only behavior, and Git
       requirement. Update design 0009 with the flow `parsed declarations` →
