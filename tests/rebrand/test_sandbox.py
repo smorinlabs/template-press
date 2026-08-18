@@ -156,6 +156,352 @@ def test_sandbox_preserves_legal_posix_punctuation_names(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
+# (b2) a recreated symlink passes target_is_directory matching what it points
+# at (Windows needs it on a directory-target link, per the sibling fix in
+# engine._retarget_symlinks); asserted via the CALL ARGUMENT rather than
+# actual broken/working link behavior, since only a Windows runner can
+# observe that directly. Containment is computed ONLY on Windows -- POSIX
+# ignores the flag entirely and always passes False, spending zero
+# filesystem I/O proving it (a POSIX-side containment walk would itself be a
+# probe of every path component, including a possible in-tree mount point).
+# The Windows path is exercised on ANY host by patching `os.name` to "nt";
+# `os.symlink`'s OWN handling of the flag is unaffected by that patch (POSIX
+# accepts and ignores it either way), so the real symlink still gets created
+# correctly underneath the patch.
+# ---------------------------------------------------------------------------
+# `posix_only`, not `_IS_WINDOWS`-patched like its Windows sibling below:
+# this test asserts the REAL environment's behavior directly (no flag
+# override), so it must actually run on POSIX -- on a genuine Windows CI
+# runner `_IS_WINDOWS` is truly True and `target_is_directory=True` for a
+# real directory target is the CORRECT product behavior there, not a bug.
+@posix_only
+@requires_symlink
+def test_posix_symlink_to_directory_target_always_passes_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = make_target(tmp_path)
+    (target / "realdir").mkdir()
+    (target / "realdir" / "f.txt").write_text("x\n", encoding="utf-8")
+    (target / "link_to_dir").symlink_to("realdir", target_is_directory=True)
+    _git(target, "add", "realdir/f.txt", "link_to_dir")
+    _git(target, "commit", "-q", "-m", "add dir symlink")
+
+    real_symlink = os.symlink
+    calls: list[tuple[str, bool]] = []
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        if Path(dst).name == "link_to_dir":
+            calls.append((src, target_is_directory))
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    assert calls == [("realdir", False)]
+
+
+@requires_symlink
+def test_windows_symlink_to_directory_target_passes_target_is_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import template_press.rebrand.sandbox as sandbox_mod
+
+    target = make_target(tmp_path)
+    (target / "realdir").mkdir()
+    (target / "realdir" / "f.txt").write_text("x\n", encoding="utf-8")
+    (target / "link_to_dir").symlink_to("realdir", target_is_directory=True)
+    _git(target, "add", "realdir/f.txt", "link_to_dir")
+    _git(target, "commit", "-q", "-m", "add dir symlink")
+
+    # Patches the module's OWN flag, not the real `os.name` -- Python 3.13's
+    # pathlib consults `os.name` internally to pick WindowsPath/PosixPath,
+    # so patching it globally breaks Path operations mid-test on a POSIX host.
+    monkeypatch.setattr(sandbox_mod, "_IS_WINDOWS", True)
+
+    real_symlink = os.symlink
+    calls: list[tuple[str, bool]] = []
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        if Path(dst).name == "link_to_dir":
+            calls.append((src, target_is_directory))
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    assert calls == [("realdir", True)]
+
+
+@requires_symlink
+def test_symlink_to_file_target_passes_target_is_directory_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = make_target(tmp_path)
+    (target / "realfile.txt").write_text("x\n", encoding="utf-8")
+    (target / "link_to_file").symlink_to("realfile.txt")
+    _git(target, "add", "realfile.txt", "link_to_file")
+    _git(target, "commit", "-q", "-m", "add file symlink")
+
+    real_symlink = os.symlink
+    calls: list[tuple[str, bool]] = []
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        if Path(dst).name == "link_to_file":
+            calls.append((src, target_is_directory))
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    assert calls == [("realfile.txt", False)]
+
+
+@requires_symlink
+def test_escaping_symlink_target_is_never_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A tracked symlink whose target resolves OUTSIDE the target repo (here,
+    # a directory that genuinely exists and IS a directory) must never be
+    # followed to determine target_is_directory -- doing so would mean
+    # stat-ing an arbitrary external path (a UNC share, an automount,
+    # anything that could hang or trigger network I/O) during a supposedly
+    # hermetic sandbox build. Proven two ways: target_is_directory comes
+    # through False despite the real external target being a directory, AND
+    # Path.is_dir is never even CALLED for this link's path -- not just
+    # "returns a safe answer", but "never touches the filesystem at all".
+    target = make_target(tmp_path)
+    outside_dir = tmp_path / "outside_real_dir"
+    outside_dir.mkdir()
+    (target / "escaping_link").symlink_to("../outside_real_dir")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "add escaping symlink")
+
+    real_symlink = os.symlink
+    calls: list[tuple[str, bool]] = []
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        if Path(dst).name == "escaping_link":
+            calls.append((src, target_is_directory))
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    real_is_dir = Path.is_dir
+    is_dir_calls: list[Path] = []
+
+    def recording_is_dir(self: Path, *args, **kwargs) -> bool:
+        is_dir_calls.append(self)
+        return real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", recording_is_dir)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    assert calls == [("../outside_real_dir", False)]
+    escaping_src = target / "escaping_link"
+    assert escaping_src not in is_dir_calls
+
+
+@requires_symlink
+def test_pivot_symlink_target_is_never_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `link -> pivot/dir` looks lexically contained (symlink_target_posix
+    # sees only the string "pivot/dir") -- but `pivot` is ITSELF a tracked
+    # symlink whose OWN target is outside the target tree. A naive follow of
+    # `link`'s target would cross `pivot` to reach outside. Proven exactly
+    # like the escaping-target case: target_is_directory stays False despite
+    # the real chained target being a directory, and Path.is_dir is never
+    # called with a path that would cross the pivot.
+    target = make_target(tmp_path)
+    outside_dir = tmp_path / "outside_pivot_dir"
+    outside_dir.mkdir()
+    (target / "pivot").symlink_to("../outside_pivot_dir", target_is_directory=True)
+    (target / "pivot_link").symlink_to("pivot/nonexistent")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "add pivot symlink chain")
+
+    real_symlink = os.symlink
+    calls: list[tuple[str, bool]] = []
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        if Path(dst).name in ("pivot", "pivot_link"):
+            calls.append((Path(dst).name, target_is_directory))
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    real_is_dir = Path.is_dir
+    is_dir_calls: list[Path] = []
+
+    def recording_is_dir(self: Path, *args, **kwargs) -> bool:
+        is_dir_calls.append(self)
+        return real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", recording_is_dir)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    pivot_link_call = next(c for c in calls if c[0] == "pivot_link")
+    assert pivot_link_call == ("pivot_link", False)
+    pivot_link_src = target / "pivot_link"
+    assert pivot_link_src not in is_dir_calls
+
+
+@requires_symlink
+def test_single_component_pivot_symlink_is_never_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `link -> pivot` (a SINGLE-component target, no further path segment
+    # under it) is the direct-destination case the ancestor-only walk used
+    # to skip entirely: `"pivot".split("/")[:-1]` is `[]`, zero iterations,
+    # vacuously "safely contained". `pivot` itself — the direct
+    # destination — must be checked too, not just its ancestors.
+    target = make_target(tmp_path)
+    outside_dir = tmp_path / "outside_single_pivot_dir"
+    outside_dir.mkdir()
+    (target / "pivot").symlink_to(
+        "../outside_single_pivot_dir", target_is_directory=True
+    )
+    (target / "direct_link").symlink_to("pivot")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "add single-component pivot chain")
+
+    real_symlink = os.symlink
+    calls: list[tuple[str, bool]] = []
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        if Path(dst).name in ("pivot", "direct_link"):
+            calls.append((Path(dst).name, target_is_directory))
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    real_is_dir = Path.is_dir
+    is_dir_calls: list[Path] = []
+
+    def recording_is_dir(self: Path, *args, **kwargs) -> bool:
+        is_dir_calls.append(self)
+        return real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", recording_is_dir)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    direct_link_call = next(c for c in calls if c[0] == "direct_link")
+    assert direct_link_call == ("direct_link", False)
+    direct_link_src = target / "direct_link"
+    assert direct_link_src not in is_dir_calls
+
+
+@requires_symlink
+def test_dotdot_erasing_pivot_component_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `link -> "pivot/../real_dir"` normalizes (os.path.normpath) to
+    # `"real_dir"`, LEXICALLY erasing "pivot" from the string the
+    # containment walk would otherwise check — even though the real
+    # filesystem walk a naive follow performs still steps through the
+    # tracked `pivot` symlink on its way to `real_dir`. `real_dir` itself
+    # is a genuine in-tree directory, so this is not caught by any other
+    # check; only rejecting any raw `..` component up front closes it.
+    target = make_target(tmp_path)
+    outside_dir = tmp_path / "outside_dotdot_pivot_dir"
+    outside_dir.mkdir()
+    (target / "pivot").symlink_to(
+        "../outside_dotdot_pivot_dir", target_is_directory=True
+    )
+    (target / "real_dir").mkdir()
+    (target / "real_dir" / ".gitkeep").write_text("", encoding="utf-8")
+    (target / "dotdot_link").symlink_to("pivot/../real_dir")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "add dotdot-erasing pivot chain")
+
+    real_is_dir = Path.is_dir
+    is_dir_calls: list[Path] = []
+
+    def recording_is_dir(self: Path, *args, **kwargs) -> bool:
+        is_dir_calls.append(self)
+        return real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", recording_is_dir)
+
+    real_symlink = os.symlink
+    calls: list[tuple[str, bool]] = []
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        if Path(dst).name == "dotdot_link":
+            calls.append((src, target_is_directory))
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    assert calls == [("pivot/../real_dir", False)]
+    dotdot_link_src = target / "dotdot_link"
+    assert dotdot_link_src not in is_dir_calls
+
+
+@requires_symlink
+def test_windows_anchor_link_text_is_rejected_on_any_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `os.path.isabs()` does not recognize Windows root- or drive-relative
+    # target text ("\external", "C:external") when evaluated with POSIX
+    # semantics — these are rejected directly on the raw link characters
+    # instead, so the guard holds regardless of which host runs it. POSIX
+    # permits a backslash or colon literally in a symlink target, so both
+    # links below are creatable and followable on this host — proving the
+    # rejection is a deliberate policy choice, not a filesystem error.
+    target = make_target(tmp_path)
+    (target / "backslash_link").symlink_to("\\external")
+    (target / "drive_link").symlink_to("C:external")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "add windows-anchor-text symlinks")
+
+    real_symlink = os.symlink
+    calls: dict[str, tuple[str, bool]] = {}
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        name = Path(dst).name
+        if name in ("backslash_link", "drive_link"):
+            calls[name] = (src, target_is_directory)
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    real_is_dir = Path.is_dir
+    is_dir_calls: list[Path] = []
+
+    def recording_is_dir(self: Path, *args, **kwargs) -> bool:
+        is_dir_calls.append(self)
+        return real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", recording_is_dir)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    # `target_is_directory` is the property under test on every host; the
+    # exact `src` text is NOT pinned for "C:external" because Windows
+    # itself resolves a drive-relative symlink target to an extended-length
+    # absolute form (`\\?\C:\...\external`) on readback -- a real, benign
+    # platform quirk in what `readlink` returns, not a rewrite performed by
+    # this code (which never rewrites link text) and not a containment
+    # weakening (the resolved form still contains `:` and is rejected the
+    # same way).
+    assert calls["backslash_link"][1] is False
+    assert calls["drive_link"][1] is False
+    # Proves the False came from a REJECTION, not from `.is_dir()` merely
+    # returning False for a target that happens not to exist on this host.
+    assert target / "backslash_link" not in is_dir_calls
+    assert target / "drive_link" not in is_dir_calls
+
+
+# ---------------------------------------------------------------------------
 # (c) a gitlink path is scannable-by-name AND recorded unavailable
 # ---------------------------------------------------------------------------
 def _add_gitlink(target: Path, tmp_path: Path, rel: str = "sub") -> None:
