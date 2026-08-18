@@ -156,6 +156,64 @@ def test_sandbox_preserves_legal_posix_punctuation_names(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
+# (b2) a recreated symlink passes target_is_directory matching what it points
+# at (Windows needs it on a directory-target link, per the sibling fix in
+# engine._retarget_symlinks); asserted via the CALL ARGUMENT rather than
+# actual broken/working link behavior, since only a Windows runner can
+# observe that directly.
+# ---------------------------------------------------------------------------
+@requires_symlink
+def test_symlink_to_directory_target_passes_target_is_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = make_target(tmp_path)
+    (target / "realdir").mkdir()
+    (target / "realdir" / "f.txt").write_text("x\n", encoding="utf-8")
+    (target / "link_to_dir").symlink_to("realdir")
+    _git(target, "add", "realdir/f.txt", "link_to_dir")
+    _git(target, "commit", "-q", "-m", "add dir symlink")
+
+    real_symlink = os.symlink
+    calls: list[tuple[str, bool]] = []
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        if Path(dst).name == "link_to_dir":
+            calls.append((src, target_is_directory))
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    assert calls == [("realdir", True)]
+
+
+@requires_symlink
+def test_symlink_to_file_target_omits_target_is_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = make_target(tmp_path)
+    (target / "realfile.txt").write_text("x\n", encoding="utf-8")
+    (target / "link_to_file").symlink_to("realfile.txt")
+    _git(target, "add", "realfile.txt", "link_to_file")
+    _git(target, "commit", "-q", "-m", "add file symlink")
+
+    real_symlink = os.symlink
+    calls: list[tuple[str, bool]] = []
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        if Path(dst).name == "link_to_file":
+            calls.append((src, target_is_directory))
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    assert calls == [("realfile.txt", False)]
+
+
+# ---------------------------------------------------------------------------
 # (c) a gitlink path is scannable-by-name AND recorded unavailable
 # ---------------------------------------------------------------------------
 def _add_gitlink(target: Path, tmp_path: Path, rel: str = "sub") -> None:

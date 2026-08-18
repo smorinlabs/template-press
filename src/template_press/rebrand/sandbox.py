@@ -128,7 +128,13 @@ def make_sandbox(target: Path, dest_root: Path) -> Sandbox:
             # (rewriting is apply's job; scanning never follows).
             link = readlink_nofollow(src)
             assert_ancestors_real(dest, sandbox)
-            os.symlink(link, dest)
+            # Windows distinguishes file and directory symlinks: a
+            # directory-target link created without target_is_directory
+            # comes back as a broken file link there. `src.is_dir()`
+            # follows the (still-verbatim) symlink, asking what it points
+            # at, mirroring engine._retarget_symlinks. POSIX ignores
+            # target_is_directory, so one code path serves both.
+            os.symlink(link, dest, target_is_directory=src.is_dir())
             added.append(rel.as_posix())
         elif entry.kind == "gitlink":
             # Inner content is not enumerable from the superproject — make the
