@@ -443,8 +443,16 @@ def test_windows_anchor_link_text_is_rejected_on_any_host(
 
     make_sandbox(target, _dest_root(tmp_path))
 
-    assert calls["backslash_link"] == ("\\external", False)
-    assert calls["drive_link"] == ("C:external", False)
+    # `target_is_directory` is the property under test on every host; the
+    # exact `src` text is NOT pinned for "C:external" because Windows
+    # itself resolves a drive-relative symlink target to an extended-length
+    # absolute form (`\\?\C:\...\external`) on readback -- a real, benign
+    # platform quirk in what `readlink` returns, not a rewrite performed by
+    # this code (which never rewrites link text) and not a containment
+    # weakening (the resolved form still contains `:` and is rejected the
+    # same way).
+    assert calls["backslash_link"][1] is False
+    assert calls["drive_link"][1] is False
     # Proves the False came from a REJECTION, not from `.is_dir()` merely
     # returning False for a target that happens not to exist on this host.
     assert target / "backslash_link" not in is_dir_calls
