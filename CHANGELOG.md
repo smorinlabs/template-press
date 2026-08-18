@@ -1,5 +1,24 @@
 # Changelog
 
+## [4.0.0](https://github.com/smorinlabs/template-press/compare/v3.6.0...v4.0.0) (2026-08-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* minimum supported Python version is now 3.13.
+
+### Bug Fixes
+
+* sync flox/ruff/ADR python floor with the 3.13 bump ([b76baea](https://github.com/smorinlabs/template-press/commit/b76baea1941c31a20b08d23bbb0a4645e094d667))
+* **synthesize:** preserve display-form/field equality in synthetic identities ([edf9ce9](https://github.com/smorinlabs/template-press/commit/edf9ce935cf2d5fabb6ac6d972a105e59ab30f1f)), closes [#46](https://github.com/smorinlabs/template-press/issues/46)
+* **synthesize:** reserve every display form and cap fallback-seed line length ([a40560a](https://github.com/smorinlabs/template-press/commit/a40560a43bfc6ab17bb9123dac081c44e70ebb86))
+* **verify:** honor substring mode in the presence preflight ([01a8db2](https://github.com/smorinlabs/template-press/commit/01a8db285a26f06391e78f55f9902001db221a1b)), closes [#47](https://github.com/smorinlabs/template-press/issues/47)
+
+
+### Build System
+
+* drop python 3.12 support, require &gt;=3.13 ([cdab101](https://github.com/smorinlabs/template-press/commit/cdab101a2716047092508789d00e288ee8088a40))
+
 ## [3.6.0](https://github.com/smorinlabs/template-press/compare/v3.5.0...v3.6.0) (2026-08-17)
 
 
