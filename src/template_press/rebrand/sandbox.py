@@ -13,11 +13,16 @@ write lands inside the owned sandbox — NEVER the real target, cwd, or $HOME
 * every file write goes through ``safe_write``/``safe_mkdir`` (contained,
   no-follow, atomic); symlinks are recreated VERBATIM with ``os.symlink``
   — the target TEXT is never rewritten (rewriting is apply's job) — and are
-  followed ONLY when their normalized target is proven, by pure string
-  computation with zero filesystem I/O, to stay inside the target tree; an
-  absolute or ``../``-escaping target is never followed, so a symlink
-  pointing outside the target (a UNC share, an automount, anything that
-  could hang or trigger network I/O to stat) can never be touched;
+  followed ONLY once proven, in two layers, to stay inside the target
+  tree: pure string computation on the unfollowed link text rejects an
+  absolute or ``../``-escaping target, and an incremental no-follow
+  ``lstat`` walk (``_dir_chain_is_safely_contained``) rejects a target
+  reached through an in-tree PIVOT symlink — a tracked symlink whose OWN
+  target points outside, which a lexically-safe-looking path could still
+  cross. Neither layer ever follows an unverified symlink to check it, so
+  a symlink pointing outside the target (a UNC share, an automount,
+  anything that could hang or trigger network I/O to stat) can never be
+  touched;
 * every git op is ``git -C <sandbox>`` (NEVER cwd) with a scrubbed +
   hardened env and a SYNTHETIC author/committer identity, and the add list is
   fed on STDIN via ``--pathspec-from-file=- --pathspec-file-nul`` (ARG_MAX-safe
@@ -31,6 +36,7 @@ write lands inside the owned sandbox — NEVER the real target, cwd, or $HOME
 from __future__ import annotations
 
 import os
+import stat
 import subprocess  # nosec B404 — sandbox git init/add/commit, all hardened `git -C`
 from dataclasses import dataclass
 from pathlib import Path
@@ -99,6 +105,40 @@ def _run_git(
     )
 
 
+def _dir_chain_is_safely_contained(target: Path, target_posix: str) -> bool:
+    """True if every ancestor directory of ``target_posix`` (root down to,
+    but excluding, its own final component) is a real, non-symlink
+    directory — an incremental, LEFT-TO-RIGHT, no-follow ``lstat`` walk.
+
+    Deliberately NOT ``safety.assert_ancestors_real``/``assert_under_root``:
+    both open with ``path.parent.resolve()``, which follows every ancestor
+    symlink to compute the real parent — exactly the filesystem access this
+    function exists to avoid. A symlink `link -> pivot/dir` can look
+    lexically contained (``symlink_target_posix`` sees only the string
+    ``pivot/dir``) while `pivot` is ITSELF a tracked symlink pointing
+    outside the target (a UNC share, an automount) — ``.resolve()`` would
+    follow straight through it.
+
+    The walk here is safe against that pivot because each step's ``lstat``
+    only ever traverses through ancestors THIS SAME WALK has already
+    confirmed are real, non-symlink directories: by the time component N is
+    checked, components 0..N-1 are already proven safe, so resolving the
+    path down to component N cannot pass through anything unverified. A
+    symlink found at any step ends the walk immediately, before its target
+    is ever read or followed.
+    """
+    cur = target
+    for part in target_posix.split("/")[:-1]:
+        cur = cur / part
+        try:
+            st = cur.lstat()
+        except OSError:
+            return False  # fail closed: unreadable/missing ancestor
+        if stat.S_ISLNK(st.st_mode):
+            return False  # a pivot — stop before it is ever followed
+    return True
+
+
 def make_sandbox(target: Path, dest_root: Path) -> Sandbox:
     """Build a faithful, isolated git copy of ``target`` under ``dest_root``.
 
@@ -140,13 +180,19 @@ def make_sandbox(target: Path, dest_root: Path) -> Sandbox:
             # tree (a UNC share, an automount, anything `stat`-able that
             # could hang or trigger network I/O), matching
             # `engine._retarget_planned_symlinks`'s own posture. Containment
-            # is proven by pure string computation on the UNFOLLOWED link
-            # text (`symlink_target_posix`, zero filesystem I/O) before
-            # `.is_dir()` is ever allowed to touch the real filesystem; an
-            # absolute or `../`-escaping target is left as
+            # is checked in two layers before `.is_dir()` is ever allowed to
+            # touch the real filesystem: (1) pure string computation on the
+            # UNFOLLOWED link text (`symlink_target_posix`, zero filesystem
+            # I/O) rejects an absolute or `../`-escaping target outright;
+            # (2) `_dir_chain_is_safely_contained` additionally rejects a
+            # target reached through an in-tree PIVOT symlink — a tracked
+            # `pivot -> /mnt/external` with `link -> pivot/dir` looks
+            # lexically safe (layer 1 sees only "pivot/dir") but a naive
+            # follow would still cross the pivot to reach outside the
+            # target. Either layer failing leaves
             # `target_is_directory=False` (Python's own default) rather
-            # than followed. POSIX ignores target_is_directory, so one code
-            # path serves both platforms.
+            # than following. POSIX ignores target_is_directory, so one
+            # code path serves both platforms.
             link = readlink_nofollow(src)
             assert_ancestors_real(dest, sandbox)
             target_posix = symlink_target_posix(rel, link)
@@ -154,7 +200,7 @@ def make_sandbox(target: Path, dest_root: Path) -> Sandbox:
                 os.path.isabs(target_posix)
                 or target_posix == ".."
                 or target_posix.startswith("../")
-            )
+            ) and _dir_chain_is_safely_contained(target, target_posix)
             target_is_directory = safely_contained and src.is_dir()
             os.symlink(link, dest, target_is_directory=target_is_directory)
             added.append(rel.as_posix())

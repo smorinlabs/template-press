@@ -263,6 +263,52 @@ def test_escaping_symlink_target_is_never_followed(
     assert escaping_src not in is_dir_calls
 
 
+@requires_symlink
+def test_pivot_symlink_target_is_never_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `link -> pivot/dir` looks lexically contained (symlink_target_posix
+    # sees only the string "pivot/dir") -- but `pivot` is ITSELF a tracked
+    # symlink whose OWN target is outside the target tree. A naive follow of
+    # `link`'s target would cross `pivot` to reach outside. Proven exactly
+    # like the escaping-target case: target_is_directory stays False despite
+    # the real chained target being a directory, and Path.is_dir is never
+    # called with a path that would cross the pivot.
+    target = make_target(tmp_path)
+    outside_dir = tmp_path / "outside_pivot_dir"
+    outside_dir.mkdir()
+    (target / "pivot").symlink_to("../outside_pivot_dir", target_is_directory=True)
+    (target / "pivot_link").symlink_to("pivot/nonexistent")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "add pivot symlink chain")
+
+    real_symlink = os.symlink
+    calls: list[tuple[str, bool]] = []
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        if Path(dst).name in ("pivot", "pivot_link"):
+            calls.append((Path(dst).name, target_is_directory))
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    real_is_dir = Path.is_dir
+    is_dir_calls: list[Path] = []
+
+    def recording_is_dir(self: Path, *args, **kwargs) -> bool:
+        is_dir_calls.append(self)
+        return real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", recording_is_dir)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    pivot_link_call = next(c for c in calls if c[0] == "pivot_link")
+    assert pivot_link_call == ("pivot_link", False)
+    pivot_link_src = target / "pivot_link"
+    assert pivot_link_src not in is_dir_calls
+
+
 # ---------------------------------------------------------------------------
 # (c) a gitlink path is scannable-by-name AND recorded unavailable
 # ---------------------------------------------------------------------------
