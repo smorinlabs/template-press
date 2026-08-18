@@ -1,5 +1,23 @@
 # Changelog
 
+## [4.0.1](https://github.com/smorinlabs/template-press/compare/v4.0.0...v4.0.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **engine:** exempt compatible nesting from the rendered-FROM guard ([5d41903](https://github.com/smorinlabs/template-press/commit/5d41903ba26eee23abace09549d23441023553f3)), closes [#44](https://github.com/smorinlabs/template-press/issues/44)
+* **engine:** plan-time guard for nested/overlapping rendered rule FROMs ([173c6da](https://github.com/smorinlabs/template-press/commit/173c6dae8e0bb95e3215929580e77ee92c9f64d1))
+* **engine:** plan-time guard for nested/overlapping rendered rule FROMs ([00a5c15](https://github.com/smorinlabs/template-press/commit/00a5c15dbee100242ca572e6464ed0373b4c594c)), closes [#44](https://github.com/smorinlabs/template-press/issues/44)
+* **rules,receipt:** case-fold control paths, handle non-utf-8 receipts ([ca99778](https://github.com/smorinlabs/template-press/commit/ca99778572ec2fe8c819d6c8ce909e633a6cdc11))
+* **rules,receipt:** case-fold control paths, handle non-utf-8 receipts ([4095a08](https://github.com/smorinlabs/template-press/commit/4095a08fbe6c2e681fb6a3634ab506735957def0)), closes [#86](https://github.com/smorinlabs/template-press/issues/86)
+* **rules:** reject windows trailing-dot/space control-path aliases ([05ce8b0](https://github.com/smorinlabs/template-press/commit/05ce8b04ea8d17ee71294277ef7bbd3204b6da5d))
+* **sandbox:** close 4 more symlink-containment gaps in the pivot walk ([c502cdf](https://github.com/smorinlabs/template-press/commit/c502cdfd20962bce56475356bc0cba5cddbe2b8b))
+* **sandbox:** never follow a symlink target outside the target tree ([c093b28](https://github.com/smorinlabs/template-press/commit/c093b2882d4802cb7760029555e5dcdd9caebfe3))
+* **sandbox:** never follow a symlink target through an in-tree pivot ([e1ff559](https://github.com/smorinlabs/template-press/commit/e1ff5598eddc8f3480353b39e1c2a8764c789858))
+* **sandbox:** recreate directory symlinks with target_is_directory on windows ([90ed9d5](https://github.com/smorinlabs/template-press/commit/90ed9d5a812c42b16602e70a14300d09dcc23244))
+* **sandbox:** recreate directory symlinks with target_is_directory on windows ([e733a90](https://github.com/smorinlabs/template-press/commit/e733a9028636fd242c6c9dda8608ed8d28a2125b)), closes [#50](https://github.com/smorinlabs/template-press/issues/50)
+* **sandbox:** skip directory-symlink containment probing on POSIX ([00f49d1](https://github.com/smorinlabs/template-press/commit/00f49d1c118a7068fcbc2b74b3c032b056f0bf0b))
+
 ## [4.0.0](https://github.com/smorinlabs/template-press/compare/v3.6.0...v4.0.0) (2026-08-18)
 
 
