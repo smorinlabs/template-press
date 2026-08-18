@@ -109,25 +109,21 @@ pass closes the duplicate retarget predicate described under Known limitations.
 - `files` globs use Python fnmatch against the full POSIX relative path:
   `*` crosses `/` (so `*.txt` matches nested files); scope rules by explicit
   path prefixes or exact paths when directory scoping matters.
-- A `paths = true` rule whose `files` glob is scoped under a directory that
-  is itself renamed during the multi-pass rename fixpoint can diverge from
-  what `--dry-run` predicted (glob matched against the current path each
-  pass). For a narrow glob (e.g. `files = ["docs/*/data.txt"]`) this is
-  worse than a missed prediction, and there is **no backstop for it**: the
-  rename pass scope-matches the rule against the FILE's own posix
-  (`_renamed_rel`), so a file-scoped hit can rename the containing
-  directory as a side effect — but the retarget pass scope-matches the
-  SAME rule against the link's TARGET/directory posix
-  (`_retarget_symlinks`), which the narrow glob does not match, so a
-  symlink pointing at that directory is left dangling. `doctor.find_leaks`
-  and `press verify`'s scanner both reuse that identical directory/
-  target-posix predicate (`_rule_scope_hits`) to scope their own symlink-text
-  scan, so the same blind spot that let the dangling link through the press
-  also hides it from both scans — a dangling link under a clean receipt
-  AND a clean `verify`, not caught downstream. Prefer UNSCOPED `files`
-  globs for `paths = true` rules, or scope by a stable directory prefix
-  that is never itself renamed, until the map-driven retarget refactor
-  below closes the predicate gap for good.
+- **Historical, fixed by the map-driven retarget below:** a `paths = true`
+  rule whose `files` glob was scoped under a directory that was itself
+  renamed during the multi-pass rename fixpoint used to be able to diverge
+  from what `--dry-run` predicted. A narrow glob (e.g.
+  `files = ["docs/*/data.txt"]`) could satisfy the rename pass, which
+  scope-matched the rule against the FILE's own posix (`_renamed_rel`), but
+  miss the retarget pass, which scope-matched the SAME rule against the
+  link's TARGET/directory posix (`_retarget_symlinks`) — leaving a symlink
+  pointing at that directory dangling, undetected by either `doctor.find_leaks`
+  or `press verify` (both reused the same predicate). The map-driven
+  retarget (`_retarget_planned_symlinks`) closed this: symlinks are now
+  retargeted from the actual executed `(old -> new)` rename map instead of
+  re-evaluating the rule's scope predicate a second time, so a narrowly
+  scoped `files` glob on a `paths = true` rule is safe — the earlier advice
+  to prefer unscoped globs as a workaround no longer applies.
 - **Straddling matches (cycle 10):** `rendered_replace_rules`'s rendered-TO
   stability check (commit `9d347d3`) catches every mutation of a rule's
   rendered TO that lies wholly WITHIN that TO. A match that STRADDLES the
