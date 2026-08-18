@@ -309,6 +309,148 @@ def test_pivot_symlink_target_is_never_followed(
     assert pivot_link_src not in is_dir_calls
 
 
+@requires_symlink
+def test_single_component_pivot_symlink_is_never_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `link -> pivot` (a SINGLE-component target, no further path segment
+    # under it) is the direct-destination case the ancestor-only walk used
+    # to skip entirely: `"pivot".split("/")[:-1]` is `[]`, zero iterations,
+    # vacuously "safely contained". `pivot` itself — the direct
+    # destination — must be checked too, not just its ancestors.
+    target = make_target(tmp_path)
+    outside_dir = tmp_path / "outside_single_pivot_dir"
+    outside_dir.mkdir()
+    (target / "pivot").symlink_to(
+        "../outside_single_pivot_dir", target_is_directory=True
+    )
+    (target / "direct_link").symlink_to("pivot")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "add single-component pivot chain")
+
+    real_symlink = os.symlink
+    calls: list[tuple[str, bool]] = []
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        if Path(dst).name in ("pivot", "direct_link"):
+            calls.append((Path(dst).name, target_is_directory))
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    real_is_dir = Path.is_dir
+    is_dir_calls: list[Path] = []
+
+    def recording_is_dir(self: Path, *args, **kwargs) -> bool:
+        is_dir_calls.append(self)
+        return real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", recording_is_dir)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    direct_link_call = next(c for c in calls if c[0] == "direct_link")
+    assert direct_link_call == ("direct_link", False)
+    direct_link_src = target / "direct_link"
+    assert direct_link_src not in is_dir_calls
+
+
+@requires_symlink
+def test_dotdot_erasing_pivot_component_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `link -> "pivot/../real_dir"` normalizes (os.path.normpath) to
+    # `"real_dir"`, LEXICALLY erasing "pivot" from the string the
+    # containment walk would otherwise check — even though the real
+    # filesystem walk a naive follow performs still steps through the
+    # tracked `pivot` symlink on its way to `real_dir`. `real_dir` itself
+    # is a genuine in-tree directory, so this is not caught by any other
+    # check; only rejecting any raw `..` component up front closes it.
+    target = make_target(tmp_path)
+    outside_dir = tmp_path / "outside_dotdot_pivot_dir"
+    outside_dir.mkdir()
+    (target / "pivot").symlink_to(
+        "../outside_dotdot_pivot_dir", target_is_directory=True
+    )
+    (target / "real_dir").mkdir()
+    (target / "real_dir" / ".gitkeep").write_text("", encoding="utf-8")
+    (target / "dotdot_link").symlink_to("pivot/../real_dir")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "add dotdot-erasing pivot chain")
+
+    real_is_dir = Path.is_dir
+    is_dir_calls: list[Path] = []
+
+    def recording_is_dir(self: Path, *args, **kwargs) -> bool:
+        is_dir_calls.append(self)
+        return real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", recording_is_dir)
+
+    real_symlink = os.symlink
+    calls: list[tuple[str, bool]] = []
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        if Path(dst).name == "dotdot_link":
+            calls.append((src, target_is_directory))
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    assert calls == [("pivot/../real_dir", False)]
+    dotdot_link_src = target / "dotdot_link"
+    assert dotdot_link_src not in is_dir_calls
+
+
+@requires_symlink
+def test_windows_anchor_link_text_is_rejected_on_any_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `os.path.isabs()` does not recognize Windows root- or drive-relative
+    # target text ("\external", "C:external") when evaluated with POSIX
+    # semantics — these are rejected directly on the raw link characters
+    # instead, so the guard holds regardless of which host runs it. POSIX
+    # permits a backslash or colon literally in a symlink target, so both
+    # links below are creatable and followable on this host — proving the
+    # rejection is a deliberate policy choice, not a filesystem error.
+    target = make_target(tmp_path)
+    (target / "backslash_link").symlink_to("\\external")
+    (target / "drive_link").symlink_to("C:external")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "add windows-anchor-text symlinks")
+
+    real_symlink = os.symlink
+    calls: dict[str, tuple[str, bool]] = {}
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        name = Path(dst).name
+        if name in ("backslash_link", "drive_link"):
+            calls[name] = (src, target_is_directory)
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    real_is_dir = Path.is_dir
+    is_dir_calls: list[Path] = []
+
+    def recording_is_dir(self: Path, *args, **kwargs) -> bool:
+        is_dir_calls.append(self)
+        return real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", recording_is_dir)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    assert calls["backslash_link"] == ("\\external", False)
+    assert calls["drive_link"] == ("C:external", False)
+    # Proves the False came from a REJECTION, not from `.is_dir()` merely
+    # returning False for a target that happens not to exist on this host.
+    assert target / "backslash_link" not in is_dir_calls
+    assert target / "drive_link" not in is_dir_calls
+
+
 # ---------------------------------------------------------------------------
 # (c) a gitlink path is scannable-by-name AND recorded unavailable
 # ---------------------------------------------------------------------------
