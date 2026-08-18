@@ -280,6 +280,16 @@ def _synthesize_entangled(
         )
         dest_class_value.update(proposal)
         used.update(proposal.values())
+        # `proposal` covers only the ENTANGLED display forms (#46 review,
+        # Copilot). A form whose own class is a singleton — e.g. `spaced`/
+        # `pascal` when only `camel` ties into another field, reachable for
+        # any multi-word, all-distinct-signature display — never lands in
+        # `proposal`, so its value must still be reserved here or a later
+        # REQUIRED_FIELDS mint could accidentally choose it, introducing a
+        # dest-only equality with no source basis (exactly what `_assert_
+        # equality_signature` exists to catch, but reserving is cheaper and
+        # keeps every accepted value in `used`, not just the tied ones).
+        used.update(display_forms(dest_display).values())
         _ensure_upper_derived()
 
     for field in REQUIRED_FIELDS:
@@ -440,9 +450,8 @@ def _fallback_candidates(display: str) -> Iterator[str]:
     single_word = sp_pa or sp_ca
     for counter in itertools.count():
         length = max(4, 4 + counter // 64)
-        digest = hashlib.sha256(
-            f"template-press:synthesize:mask-fallback\x00{display}\x00{counter}".encode()
-        ).digest()
+        seed = f"template-press:synthesize:mask-fallback\x00{display}\x00{counter}"
+        digest = hashlib.sha256(seed.encode()).digest()
         letters = "".join(
             chr(ord("a") + digest[i % len(digest)] % 26) for i in range(length)
         )

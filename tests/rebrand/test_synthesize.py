@@ -427,6 +427,40 @@ class TestFallbackCandidates:
 class TestSynthesizeEntangled:
     """End-to-end: synthesize_dest on sources whose derived slots collide."""
 
+    def test_untied_display_forms_are_still_reserved_in_used(self):
+        # #46 PR review (Copilot): only ENTANGLED display forms land in
+        # `proposal` (and so, before the fix, only those landed in `used`).
+        # "Some Product" is multi-word/all-distinct (sig5) with camel tied
+        # to owner via a mixed-case value only owner/author's charset
+        # permits -- spaced/pascal's OWN classes are singletons, so they
+        # never appear in `proposal` at all. Without reserving them
+        # explicitly, a later REQUIRED_FIELDS mint could accidentally equal
+        # one of them, introducing a dest-only equality with no source
+        # basis. White-box, not end-to-end: forcing an actual hash
+        # collision isn't practically constructible, so this checks the
+        # INVARIANT the fix maintains -- every emitted display form is in
+        # `used` -- directly.
+        source = _identity(owner="someProduct", display_name="Some Product")
+        dest = synthesize_dest(source)
+        forms = display_forms(dest.display_name)
+        assert forms["camel"] == dest.owner  # the intended tie
+        # spaced/pascal are UNTIED -- neither entangled with anything nor
+        # equal to each other in the source -- so each must still be
+        # distinct from every other emitted value, including owner/camel's
+        # shared value and each other.
+        others = {
+            dest.package_name,
+            dest.repo_name,
+            dest.app_name,
+            dest.author,
+            dest.email,
+            dest.owner,
+        }
+        assert forms["spaced"] not in others
+        assert forms["pascal"] not in others
+        assert forms["spaced"] != forms["pascal"]
+        dest.validate()
+
     def test_the_issues_own_case_camel_vs_app_name(self):
         source = _identity(app_name="press", display_name="Press")
         dest = synthesize_dest(source)
