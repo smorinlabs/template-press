@@ -85,6 +85,38 @@ class TestRemoveSchema:
         with pytest.raises(ValidationError):
             load_rules(target)
 
+    def test_control_file_rejected_case_insensitive(self, tmp_path: Path):
+        """Issue #86: on a case-insensitive filesystem (Windows, default
+        macOS), `PRESS/press-source.toml` is the SAME file as the control
+        path — the reserved check must not be exact-case only."""
+        target = _write_rules(
+            tmp_path,
+            '[[remove]]\nfile = "PRESS/press-source.toml"\nreason = "nope"\n',
+        )
+        with pytest.raises(ValidationError, match="control"):
+            load_rules(target)
+
+    @pytest.mark.parametrize(
+        "alias",
+        [
+            "press/press-source.toml.",
+            "press/press-source.toml ",
+            "press./press-source.toml",
+        ],
+    )
+    def test_control_file_rejected_windows_trailing_alias(
+        self, tmp_path: Path, alias: str
+    ):
+        """Windows drops trailing dots/spaces from every path component, so
+        each of these declarations names the press-owned control file exactly
+        like the plain lowercase form."""
+        target = _write_rules(
+            tmp_path,
+            f'[[remove]]\nfile = "{alias}"\nreason = "nope"\n',
+        )
+        with pytest.raises(ValidationError):
+            load_rules(target)
+
     def test_overlap_with_reset_rejected(self, tmp_path: Path):
         target = _write_rules(
             tmp_path,

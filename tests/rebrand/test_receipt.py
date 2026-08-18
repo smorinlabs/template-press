@@ -6,10 +6,23 @@ from pathlib import Path
 import pytest
 
 from template_press.rebrand.engine import ApplyReport
+from template_press.rebrand.identity import ValidationError
 from template_press.rebrand.receipt import RECEIPT_REL, read_receipt, write_receipt
 from template_press.rebrand.safety import ContainmentError
 
 from .conftest import DEST, SOURCE, requires_symlink
+
+
+def test_read_receipt_non_utf8_raises_validation_error(tmp_path: Path):
+    """Issue #86: a corrupted or hand-edited receipt must fail clean, not
+    crash the caller with a raw UnicodeDecodeError."""
+    press_dir = tmp_path / "press"
+    press_dir.mkdir()
+    (press_dir / "press-receipt.toml").write_bytes(
+        b"[press]\nverified = true\n\xff\xfe"
+    )
+    with pytest.raises(ValidationError, match="UTF-8"):
+        read_receipt(tmp_path)
 
 
 def test_write_and_read_receipt(tmp_path: Path):
