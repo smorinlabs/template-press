@@ -117,6 +117,10 @@ class TestResetSchema:
             # (Windows, default macOS) this is the SAME file as the
             # lowercase control path above.
             "press/Press-Receipt.toml",
+            # Windows drops trailing dots/spaces from every path component,
+            # so these name the control file too (same alias class).
+            "press/press-receipt.toml.",
+            "press /press-receipt.toml",
         ],
     )
     def test_root_control_rejected(self, tmp_path: Path, reserved: str):

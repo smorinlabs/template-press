@@ -207,6 +207,10 @@ class TestFileValidation:
             # (Windows, default macOS) this is the SAME file as the
             # lowercase control path above.
             "PRESS/press-source.toml",
+            # Windows drops trailing dots/spaces from every path component,
+            # so these name the control file too (same alias class).
+            "press/press-source.toml.",
+            "press/press-source.toml ",
         ],
     )
     def test_root_control_rejected(self, tmp_path: Path, reserved: str):

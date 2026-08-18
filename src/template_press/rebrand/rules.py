@@ -404,17 +404,27 @@ def _declared_rel_path(context: str, value: object) -> str:
     return rel.as_posix()
 
 
+def _control_alias_key(file: str) -> str:
+    """Collapse a POSIX relative path to its filesystem-alias identity."""
+    return "/".join(part.rstrip(" .").casefold() for part in file.split("/"))
+
+
 def _reject_reserved(kind: str, file: str) -> None:
     # Deferred import avoids a module-load cycle: pathing imports Rules for
     # neutral scope helpers, while this validator needs the control paths.
     from template_press.rebrand.pathing import ROOT_CONTROL
 
-    # Casefolded, matching the same-file test used elsewhere for filesystem
-    # path comparisons (safety.py's `_is_dotgit`): on a case-insensitive
-    # filesystem (Windows, default macOS), `PRESS/press-source.toml` and
-    # `press/press-source.toml` are the SAME file, so the reserved check
-    # must not be case-sensitive either.
-    if file.casefold() in {entry.casefold() for entry in ROOT_CONTROL}:
+    # Normalized exactly like the same-file test used elsewhere for filesystem
+    # path comparisons (safety.py's `_is_dotgit`): casefold, plus a per-
+    # component strip of trailing dots/spaces. Both are real filesystem
+    # aliases, not cosmetics — on a case-insensitive filesystem (Windows,
+    # default macOS) `PRESS/press-source.toml` is the SAME file as
+    # `press/press-source.toml`, and on Windows so are
+    # `press/press-source.toml.` and `press/press-source.toml ` (the
+    # filesystem drops trailing dots/spaces from every component). Rules are
+    # validated identically on every platform, so the check rejects the union
+    # of aliases rather than the host's own set.
+    if _control_alias_key(file) in {_control_alias_key(e) for e in ROOT_CONTROL}:
         raise ValidationError(
             f"{RULES_REL}: {kind} may not target press-owned control file "
             f"{file!r} — press itself writes it after validation (reserved)"
