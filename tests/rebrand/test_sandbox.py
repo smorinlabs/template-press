@@ -169,7 +169,11 @@ def test_symlink_to_directory_target_passes_target_is_directory(
     target = make_target(tmp_path)
     (target / "realdir").mkdir()
     (target / "realdir" / "f.txt").write_text("x\n", encoding="utf-8")
-    (target / "link_to_dir").symlink_to("realdir")
+    # target_is_directory=True at CREATION time too: pathlib defaults it to
+    # False, which on a privileged Windows host would make this FIXTURE
+    # itself a broken file-type link despite pointing at a real directory —
+    # the fixture couldn't exercise the behavior it's meant to cover there.
+    (target / "link_to_dir").symlink_to("realdir", target_is_directory=True)
     _git(target, "add", "realdir/f.txt", "link_to_dir")
     _git(target, "commit", "-q", "-m", "add dir symlink")
 
@@ -189,7 +193,7 @@ def test_symlink_to_directory_target_passes_target_is_directory(
 
 
 @requires_symlink
-def test_symlink_to_file_target_omits_target_is_directory(
+def test_symlink_to_file_target_passes_target_is_directory_false(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = make_target(tmp_path)
@@ -211,6 +215,52 @@ def test_symlink_to_file_target_omits_target_is_directory(
     make_sandbox(target, _dest_root(tmp_path))
 
     assert calls == [("realfile.txt", False)]
+
+
+@requires_symlink
+def test_escaping_symlink_target_is_never_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A tracked symlink whose target resolves OUTSIDE the target repo (here,
+    # a directory that genuinely exists and IS a directory) must never be
+    # followed to determine target_is_directory -- doing so would mean
+    # stat-ing an arbitrary external path (a UNC share, an automount,
+    # anything that could hang or trigger network I/O) during a supposedly
+    # hermetic sandbox build. Proven two ways: target_is_directory comes
+    # through False despite the real external target being a directory, AND
+    # Path.is_dir is never even CALLED for this link's path -- not just
+    # "returns a safe answer", but "never touches the filesystem at all".
+    target = make_target(tmp_path)
+    outside_dir = tmp_path / "outside_real_dir"
+    outside_dir.mkdir()
+    (target / "escaping_link").symlink_to("../outside_real_dir")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "add escaping symlink")
+
+    real_symlink = os.symlink
+    calls: list[tuple[str, bool]] = []
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        if Path(dst).name == "escaping_link":
+            calls.append((src, target_is_directory))
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    real_is_dir = Path.is_dir
+    is_dir_calls: list[Path] = []
+
+    def recording_is_dir(self: Path, *args, **kwargs) -> bool:
+        is_dir_calls.append(self)
+        return real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", recording_is_dir)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    assert calls == [("../outside_real_dir", False)]
+    escaping_src = target / "escaping_link"
+    assert escaping_src not in is_dir_calls
 
 
 # ---------------------------------------------------------------------------

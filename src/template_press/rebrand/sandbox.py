@@ -12,7 +12,12 @@ write lands inside the owned sandbox — NEVER the real target, cwd, or $HOME
   ``owned_sandbox``);
 * every file write goes through ``safe_write``/``safe_mkdir`` (contained,
   no-follow, atomic); symlinks are recreated VERBATIM with ``os.symlink``
-  (never followed, never rewritten — rewriting is apply's job);
+  — the target TEXT is never rewritten (rewriting is apply's job) — and are
+  followed ONLY when their normalized target is proven, by pure string
+  computation with zero filesystem I/O, to stay inside the target tree; an
+  absolute or ``../``-escaping target is never followed, so a symlink
+  pointing outside the target (a UNC share, an automount, anything that
+  could hang or trigger network I/O to stat) can never be touched;
 * every git op is ``git -C <sandbox>`` (NEVER cwd) with a scrubbed +
   hardened env and a SYNTHETIC author/committer identity, and the add list is
   fed on STDIN via ``--pathspec-from-file=- --pathspec-file-nul`` (ARG_MAX-safe
@@ -32,6 +37,7 @@ from pathlib import Path
 
 from template_press.rebrand.config import assert_control_real
 from template_press.rebrand.engine import copy_paths
+from template_press.rebrand.pathing import symlink_target_posix
 from template_press.rebrand.safety import (
     SafetyError,
     assert_ancestors_real,
@@ -124,17 +130,33 @@ def make_sandbox(target: Path, dest_root: Path) -> Sandbox:
             safe_write(sandbox, rel, read_regular_nofollow(src))
             added.append(rel.as_posix())
         elif entry.kind == "symlink":
-            # Recreate VERBATIM: do not follow and do not rewrite the target
-            # (rewriting is apply's job; scanning never follows).
+            # Recreate VERBATIM: the target TEXT is never rewritten
+            # (rewriting is apply's job; scanning never follows it for
+            # content). Windows distinguishes file and directory symlinks:
+            # a directory-target link created without target_is_directory
+            # comes back as a broken file link there. `src.is_dir()` would
+            # supply it by following the symlink — but this codebase never
+            # follows a symlink whose target could be outside the target
+            # tree (a UNC share, an automount, anything `stat`-able that
+            # could hang or trigger network I/O), matching
+            # `engine._retarget_planned_symlinks`'s own posture. Containment
+            # is proven by pure string computation on the UNFOLLOWED link
+            # text (`symlink_target_posix`, zero filesystem I/O) before
+            # `.is_dir()` is ever allowed to touch the real filesystem; an
+            # absolute or `../`-escaping target is left as
+            # `target_is_directory=False` (Python's own default) rather
+            # than followed. POSIX ignores target_is_directory, so one code
+            # path serves both platforms.
             link = readlink_nofollow(src)
             assert_ancestors_real(dest, sandbox)
-            # Windows distinguishes file and directory symlinks: a
-            # directory-target link created without target_is_directory
-            # comes back as a broken file link there. `src.is_dir()`
-            # follows the (still-verbatim) symlink, asking what it points
-            # at, mirroring engine._retarget_symlinks. POSIX ignores
-            # target_is_directory, so one code path serves both.
-            os.symlink(link, dest, target_is_directory=src.is_dir())
+            target_posix = symlink_target_posix(rel, link)
+            safely_contained = not (
+                os.path.isabs(target_posix)
+                or target_posix == ".."
+                or target_posix.startswith("../")
+            )
+            target_is_directory = safely_contained and src.is_dir()
+            os.symlink(link, dest, target_is_directory=target_is_directory)
             added.append(rel.as_posix())
         elif entry.kind == "gitlink":
             # Inner content is not enumerable from the superproject — make the
