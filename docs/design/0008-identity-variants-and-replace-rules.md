@@ -109,25 +109,24 @@ pass closes the duplicate retarget predicate described under Known limitations.
 - `files` globs use Python fnmatch against the full POSIX relative path:
   `*` crosses `/` (so `*.txt` matches nested files); scope rules by explicit
   path prefixes or exact paths when directory scoping matters.
-- A `paths = true` rule whose `files` glob is scoped under a directory that
-  is itself renamed during the multi-pass rename fixpoint can diverge from
-  what `--dry-run` predicted (glob matched against the current path each
-  pass). For a narrow glob (e.g. `files = ["docs/*/data.txt"]`) this is
-  worse than a missed prediction, and there is **no backstop for it**: the
-  rename pass scope-matches the rule against the FILE's own posix
-  (`_renamed_rel`), so a file-scoped hit can rename the containing
-  directory as a side effect — but the retarget pass scope-matches the
-  SAME rule against the link's TARGET/directory posix
-  (`_retarget_symlinks`), which the narrow glob does not match, so a
-  symlink pointing at that directory is left dangling. `doctor.find_leaks`
-  and `press verify`'s scanner both reuse that identical directory/
-  target-posix predicate (`_rule_scope_hits`) to scope their own symlink-text
-  scan, so the same blind spot that let the dangling link through the press
-  also hides it from both scans — a dangling link under a clean receipt
-  AND a clean `verify`, not caught downstream. Prefer UNSCOPED `files`
-  globs for `paths = true` rules, or scope by a stable directory prefix
-  that is never itself renamed, until the map-driven retarget refactor
-  below closes the predicate gap for good.
+- **Historical, fixed by the map-driven retarget:** a `paths = true` rule
+  whose `files` glob was scoped under a directory that was itself renamed
+  during the multi-pass rename fixpoint used to be able to diverge from
+  what `--dry-run` predicted. A narrow glob (e.g.
+  `files = ["docs/*/data.txt"]`) could satisfy the rename pass, which
+  scope-matched the rule against the FILE's own posix (`_renamed_rel`), but
+  miss the retarget pass, which scope-matched the SAME rule against the
+  link's TARGET/directory posix (the pre-refactor `_retarget_symlinks`,
+  commit `a0f0f98`) — leaving a symlink pointing at that directory
+  dangling, undetected by either `doctor.find_leaks` or `press verify`
+  (both reused the same predicate). The map-driven retarget
+  (`_retarget_planned_symlinks`) closed this for good: symlinks are now
+  retargeted from the actual executed `(old -> new)` rename map instead of
+  re-evaluating any rule's scope predicate a second time, so a narrowly
+  scoped `files` glob on a `paths = true` rule is safe — the earlier advice
+  to prefer unscoped globs as a workaround no longer applies, and the FILE-
+  posix-vs-DIRECTORY-posix predicate divergence this bullet used to warn
+  about no longer exists (there is no second predicate to diverge from).
 - **Straddling matches (cycle 10):** `rendered_replace_rules`'s rendered-TO
   stability check (commit `9d347d3`) catches every mutation of a rule's
   rendered TO that lies wholly WITHIN that TO. A match that STRADDLES the
@@ -136,14 +135,3 @@ pass closes the duplicate retarget predicate described under Known limitations.
   `package_name` `"xbar"` -> `"qq"`) is content-dependent and not checkable
   at plan time — not a claim of impossibility, just outside what a
   plan-time check can see.
-- **Symlink retarget's map-driven refactor (cycle 10):** the principled fix
-  for the retarget predicate (`_retarget_symlinks`, commit `a0f0f98`) is to
-  run renames first and retarget links from the actual `(old -> new)` rename
-  map, eliminating the second derivation of "does this rule govern this
-  path" entirely. Design 0009 accepts this change for P06 PR 3. It requires
-  reordering `apply()` and using the source surface inventory to locate links
-  in the post-rename tree while Git's index still holds pre-rename paths. A
-  further predicate edge no per-link check closes: a rule's `files`
-  scope is evaluated against the FILE posix in `_renamed_rel` but the
-  DIRECTORY posix in retarget, and the two can disagree — evidence that
-  predicate variants will keep leaking until the refactor lands.
