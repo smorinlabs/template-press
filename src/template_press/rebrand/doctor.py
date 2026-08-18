@@ -452,7 +452,9 @@ def render_leak_report(leaks: list[Leak], limit: int = 20) -> str:
         "hint: restore the target (git -C <target> checkout . && git clean "
         "-fd), fix the root cause (or, for content that is VALID to keep, "
         "add its directory to BOTH extra_exclude_dirs and verify_ignore in "
-        "<target>/press/press-rules.toml — the first skips rewriting, the second skips "
-        "this scan), then press again."
+        "<target>/press/press-rules.toml — the first skips rewriting, the "
+        "second skips this scan; a [symlink] leak is keyed on the link's "
+        "OWN name, not its target's directory, so also add the link's own "
+        "name to verify_ignore), then press again."
     )
     return "\n".join(lines)
