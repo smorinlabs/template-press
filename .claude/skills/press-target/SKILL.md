@@ -80,8 +80,8 @@ Declaring `display_name` on only one side — source declares it, answers
 doesn't, or vice versa — is a precondition failure (exit 2); declare it on
 both or neither. When declared, it is rewritten as a CLOSED set of exact
 forms (spaced / PascalCase / camelCase), each replaced with the
-same-shaped form of the new name; narrow the set with `[rules]
-display_forms` in `press/press-rules.toml` (default: all three). See
+same-shaped form of the new name; narrow the set with
+`[rules] display_forms` in `press/press-rules.toml` (default: all three). See
 [design 0008](../../../docs/design/0008-identity-variants-and-replace-rules.md)
 for the full semantics.
 
