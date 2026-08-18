@@ -109,21 +109,24 @@ pass closes the duplicate retarget predicate described under Known limitations.
 - `files` globs use Python fnmatch against the full POSIX relative path:
   `*` crosses `/` (so `*.txt` matches nested files); scope rules by explicit
   path prefixes or exact paths when directory scoping matters.
-- **Historical, fixed by the map-driven retarget below:** a `paths = true`
-  rule whose `files` glob was scoped under a directory that was itself
-  renamed during the multi-pass rename fixpoint used to be able to diverge
-  from what `--dry-run` predicted. A narrow glob (e.g.
+- **Historical, fixed by the map-driven retarget:** a `paths = true` rule
+  whose `files` glob was scoped under a directory that was itself renamed
+  during the multi-pass rename fixpoint used to be able to diverge from
+  what `--dry-run` predicted. A narrow glob (e.g.
   `files = ["docs/*/data.txt"]`) could satisfy the rename pass, which
   scope-matched the rule against the FILE's own posix (`_renamed_rel`), but
   miss the retarget pass, which scope-matched the SAME rule against the
-  link's TARGET/directory posix (`_retarget_symlinks`) — leaving a symlink
-  pointing at that directory dangling, undetected by either `doctor.find_leaks`
-  or `press verify` (both reused the same predicate). The map-driven
-  retarget (`_retarget_planned_symlinks`) closed this: symlinks are now
+  link's TARGET/directory posix (the pre-refactor `_retarget_symlinks`,
+  commit `a0f0f98`) — leaving a symlink pointing at that directory
+  dangling, undetected by either `doctor.find_leaks` or `press verify`
+  (both reused the same predicate). The map-driven retarget
+  (`_retarget_planned_symlinks`) closed this for good: symlinks are now
   retargeted from the actual executed `(old -> new)` rename map instead of
-  re-evaluating the rule's scope predicate a second time, so a narrowly
+  re-evaluating any rule's scope predicate a second time, so a narrowly
   scoped `files` glob on a `paths = true` rule is safe — the earlier advice
-  to prefer unscoped globs as a workaround no longer applies.
+  to prefer unscoped globs as a workaround no longer applies, and the FILE-
+  posix-vs-DIRECTORY-posix predicate divergence this bullet used to warn
+  about no longer exists (there is no second predicate to diverge from).
 - **Straddling matches (cycle 10):** `rendered_replace_rules`'s rendered-TO
   stability check (commit `9d347d3`) catches every mutation of a rule's
   rendered TO that lies wholly WITHIN that TO. A match that STRADDLES the
@@ -132,14 +135,3 @@ pass closes the duplicate retarget predicate described under Known limitations.
   `package_name` `"xbar"` -> `"qq"`) is content-dependent and not checkable
   at plan time — not a claim of impossibility, just outside what a
   plan-time check can see.
-- **Symlink retarget's map-driven refactor (cycle 10):** the principled fix
-  for the retarget predicate (`_retarget_symlinks`, commit `a0f0f98`) is to
-  run renames first and retarget links from the actual `(old -> new)` rename
-  map, eliminating the second derivation of "does this rule govern this
-  path" entirely. Design 0009 accepts this change for P06 PR 3. It requires
-  reordering `apply()` and using the source surface inventory to locate links
-  in the post-rename tree while Git's index still holds pre-rename paths. A
-  further predicate edge no per-link check closes: a rule's `files`
-  scope is evaluated against the FILE posix in `_renamed_rel` but the
-  DIRECTORY posix in retarget, and the two can disagree — evidence that
-  predicate variants will keep leaking until the refactor lands.

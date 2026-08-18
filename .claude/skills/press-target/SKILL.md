@@ -66,7 +66,7 @@ owner = "janedev"
 
 | Field | Required | Notes |
 |---|---|---|
-| `package_name` | yes | Python identifier / import name |
+| `package_name` | yes | lowercase Python identifier / import name |
 | `repo_name` | yes | GitHub repo slug |
 | `app_name` | yes | lowercase Python identifier — becomes the CLI command and file/env prefixes |
 | `author` | yes | free-form |
@@ -84,6 +84,15 @@ same-shaped form of the new name; narrow the set with
 `[rules] display_forms` in `press/press-rules.toml` (default: all three). See
 [design 0008](../../../docs/design/0008-identity-variants-and-replace-rules.md)
 for the full semantics.
+
+If a source name's forms coincide (e.g. `"NumPy"`: spaced and PascalCase
+are both literally `NumPy`), the engine cannot rewrite each occurrence to a
+DIFFERENT same-shaped destination form — it deterministically keeps the
+first enabled form (per `[rules] display_forms` order, spaced by default)
+and applies that same destination text everywhere the shared source
+literal occurs. A destination `"Acme Widget"` therefore replaces every
+`NumPy` occurrence with `Acme Widget` — not `AcmeWidget` for the would-be
+PascalCase spots.
 
 ## Rules authoring (`press/press-rules.toml`)
 
@@ -121,8 +130,14 @@ reason = "glued token in generated fixtures"
 substring_rewrite_fields = ["app_name", "app_name_upper"]
 ```
 
-A per-field opt-in that switches a field to plain substring replacement in
-content AND path components, instead of the boundary-guarded default.
+A per-field opt-in that switches a field to plain substring replacement,
+instead of the boundary-guarded default. It always applies to content.
+It ALSO reaches path components, but only for the four fields the engine
+renames paths on at all — `package_name`, `repo_name`, `app_name`, and
+`app_name_upper` — never for `author`, `email`, or `owner`: those never
+appear in path components regardless of this setting, so opting one of
+them in only changes its content matching. To rewrite one of them inside
+a path anyway, declare an explicit `[[replace]]` rule with `paths = true`.
 Gated on the target author declaring the token word-disjoint — never a
 default. Fields are independent: opting in `app_name` alone does not cover
 glued UPPERCASE forms (`PLBPOwned`); pair it with `app_name_upper` when
@@ -146,3 +161,13 @@ directory's contents but not the link itself — you must ALSO add the
 link's own name to `verify_ignore`, or the post-apply doctor pass
 (and `press verify`) will report exit 1 on that link indefinitely, even
 though the directory it points into is correctly excluded.
+
+### Gotcha: a `paths = true` rule's `files` scope matches a symlink's TARGET, not its own path
+
+For a symlink specifically, the doctor's leak scan matches a rule's
+`files` glob against the link's TARGET path, not the repository path of
+the link itself. A rule scoped `files = ["links/**"]` intended to cover
+every symlink stored under `links/` will not match a link under `links/`
+whose target points somewhere else (e.g. `../vendor/data`) — the rule's
+literal can survive there unflagged. Scope symlink-covering rules by
+where their targets point, not by where the links themselves live.
