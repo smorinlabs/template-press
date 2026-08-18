@@ -260,6 +260,54 @@ def test_ordered_symlink_output_dependency_is_rejected() -> None:
         validate_pipeline((first, second))
 
 
+def test_issue_44_nested_rendered_source_in_symlink_targets_is_rejected() -> None:
+    # The symlink-surface twin of the content-surface case: an earlier row's
+    # rendered FROM found inside a later row's rendered FROM, in link text.
+    first = _candidate(
+        "first",
+        "demo",
+        "spud",
+        surfaces=frozenset({"symlink"}),
+        provenance=("rule:first",),
+    )
+    second = _candidate(
+        "second",
+        "demo_widget",
+        "potato_launcher",
+        surfaces=frozenset({"symlink"}),
+        matcher=MatcherSpec("conservative", "package_name", False),
+        provenance=("identity:package_name",),
+    )
+
+    with pytest.raises(
+        ValidationError, match="nested rendered source in symlink targets"
+    ):
+        validate_pipeline((first, second))
+
+
+def test_issue_44_compatible_nested_symlink_rewrite_is_accepted() -> None:
+    # The symlink twin of the compatible content case: the earlier row
+    # already rewrites the link text into the later row's own destination,
+    # so nothing is corrupted and the pipeline stays valid.
+    first = _candidate(
+        "first",
+        "demo",
+        "spud",
+        surfaces=frozenset({"symlink"}),
+        provenance=("rule:first",),
+    )
+    second = _candidate(
+        "second",
+        "demo_widget",
+        "spud_widget",
+        surfaces=frozenset({"symlink"}),
+        matcher=MatcherSpec("conservative", "package_name", False),
+        provenance=("identity:package_name",),
+    )
+
+    assert validate_pipeline((first, second)) == (first, second)
+
+
 def test_content_output_cannot_emit_an_earlier_source() -> None:
     first = _candidate("first", "alpha", "bravo", provenance=("rule:first",))
     second = _candidate("second", "charlie", "alpha", provenance=("rule:second",))
@@ -271,6 +319,90 @@ def test_content_output_cannot_emit_an_earlier_source() -> None:
     assert "stale-source emission" in message
     assert "first" in message and "rule:first" in message
     assert "second" in message and "rule:second" in message
+
+
+def test_issue_44_nested_rendered_source_is_rejected() -> None:
+    # A row whose rendered FROM is a plain substring of a LATER row's
+    # rendered FROM, on overlapping scope: the earlier row's own pass
+    # corrupts the exact text the later row needs intact, starving it
+    # silently (exit 0, internally inconsistent output) before this guard.
+    first = _candidate("first", "demo", "spud", provenance=("rule:first",))
+    second = _candidate(
+        "second",
+        "demo_widget",
+        "potato_launcher",
+        matcher=MatcherSpec("conservative", "package_name", False),
+        provenance=("identity:package_name",),
+    )
+
+    with pytest.raises(ValidationError) as exc_info:
+        validate_pipeline((first, second))
+
+    message = str(exc_info.value)
+    assert "nested rendered source" in message
+    assert "first" in message and "rule:first" in message
+    assert "second" in message and "identity:package_name" in message
+
+
+def test_issue_44_compatible_nested_rewrite_is_accepted() -> None:
+    # Nesting alone is not corruption: the earlier row's own pass already
+    # renders the later row's FROM into exactly the later row's TO
+    # ("demo_widget" -> "spud_widget"), so the later row is left with
+    # nothing to do and the pressed text is the one it wanted. Only an
+    # INCOMPATIBLE result is #44's silent corruption.
+    first = _candidate("first", "demo", "spud", provenance=("rule:first",))
+    second = _candidate(
+        "second",
+        "demo_widget",
+        "spud_widget",
+        matcher=MatcherSpec("conservative", "package_name", False),
+        provenance=("identity:package_name",),
+    )
+
+    assert validate_pipeline((first, second)) == (first, second)
+
+
+def test_issue_44_reverse_order_is_safe() -> None:
+    # The identity-vs-identity shape this guard must NOT reject: the longer
+    # FROM ("demo_widget") is length-sorted ahead of the shorter one
+    # ("demo") in real usage, so a longer-FROM row can never be "found
+    # inside" a shorter-FROM row that runs after it.
+    first = _candidate(
+        "first",
+        "demo_widget",
+        "potato_launcher",
+        matcher=MatcherSpec("conservative", "package_name", False),
+        provenance=("identity:package_name",),
+    )
+    second = _candidate(
+        "second",
+        "demo",
+        "spud",
+        matcher=MatcherSpec("conservative", "app_name", False),
+        provenance=("identity:app_name",),
+    )
+
+    assert validate_pipeline((first, second)) == (first, second)
+
+
+def test_issue_44_disjoint_exact_content_scopes_exempt_nested_source() -> None:
+    # Mirrors #45's exemption: two rules provably scoped to disjoint exact
+    # files never actually run over the same text, so nesting between their
+    # FROMs is not a real hazard.
+    first = _candidate("first", "demo", "spud", files=("a.txt",))
+    second = _candidate("second", "demo_widget", "potato_launcher", files=("b.txt",))
+
+    assert validate_pipeline((first, second)) == (first, second)
+
+
+def test_issue_44_intersecting_exact_content_scopes_keep_nested_source() -> None:
+    first = _candidate("first", "demo", "spud", files=("a.txt", "shared.txt"))
+    second = _candidate(
+        "second", "demo_widget", "potato_launcher", files=("shared.txt", "b.txt")
+    )
+
+    with pytest.raises(ValidationError, match="nested rendered source"):
+        validate_pipeline((first, second))
 
 
 def test_disjoint_exact_content_scopes_exempt_output_dependency() -> None:

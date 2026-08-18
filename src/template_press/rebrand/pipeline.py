@@ -294,6 +294,62 @@ def _find_cycle(graph: dict[int, set[int]]) -> tuple[int, ...] | None:
 def _validate_dependencies(
     candidates: tuple[PipelineCandidate, ...], *, target_paths_known: bool
 ) -> None:
+    """Reject every ordered pair of content rows whose EXECUTION order could
+    corrupt one another, for four distinct relationships:
+
+    - a row emitting its own source (stale-source emission, self-pair);
+    - an earlier row's rendered TO consumed by a later row (ordered content
+      dependency);
+    - a later row's rendered TO matching an earlier row's now-stale source
+      (stale-source emission, cross-pair);
+    - an earlier row's rendered FROM matching INSIDE a later row's rendered
+      FROM (issue #44, "nested rendered source"): the earlier row runs
+      first and has no notion of the later row's boundaries, so it can
+      consume/corrupt the exact text the later row needs intact — e.g. a
+      declared `[[replace]]` rule rendering `app_name` runs before every
+      identity row, so if `app_name`'s value is a plain substring of
+      `package_name`'s value (the ordinary shape of a real Python repo —
+      `app_name="demo"`, `package_name="demo_widget"`), the rule's literal
+      pass mangles `demo_widget` into `spud_widget` before the
+      `package_name` row ever gets a chance to match the intact token. This
+      is NOT the TO-vs-FROM relationship the other three checks cover — it
+      is FROM-vs-FROM — and previously went undetected: the press exited 0
+      with an internally inconsistent target (content mismatched the
+      renamed package directory), silently.
+
+    Identity rows are length-sorted (longest FROM first) before this
+    validator ever sees them, so identity-vs-identity nesting — a shorter
+    identity value being a substring of a longer one, e.g. `app_name` inside
+    `package_name` — is already safe by construction and this check stays
+    silent for it (a longer FROM can never be found inside a shorter one).
+    It fires only when EXECUTION order and LENGTH order disagree, which is
+    exactly the declared-rule-before-identity-row shape above. Scoped by
+    the same `_rewrite_scopes_overlap` exemption #45 established, so two
+    rules provably scoped to disjoint files are not falsely rejected here
+    either. Explicitly excludes `producer.from_value == receiver.from_value`
+    (a string trivially "contains" itself): two rows sharing the EXACT SAME
+    rendered FROM is the SAME-FROM ambiguity/coexistence question, already
+    governed by `_validate_ambiguity`'s own #45 carve-out — this guard is
+    strictly about a PROPER substring relationship between two DIFFERENT
+    FROM values.
+
+    It also excludes the COMPATIBLE nesting shape: when applying the earlier
+    row to the later row's rendered FROM already yields exactly the later
+    row's rendered TO (`demo -> spud` ahead of `demo_widget ->
+    spud_widget`), the earlier pass produces the later row's own intended
+    text, so the later row has nothing left to do and the pipeline is
+    stable rather than corrupt. Only an INCOMPATIBLE result (`demo_widget`
+    becoming `spud_widget` where the later row wanted `potato_launcher`) is
+    the silent corruption #44 is about. This mirrors the engine's existing
+    treatment of a duplicated substitution pair, which is dropped silently
+    when both entries map to the same replacement and raised on only when
+    the replacements differ (`_raw_replacement_pairs` in `engine.py`).
+
+    Beyond these content-surface pair relationships, this function also
+    owns the PATH-surface dependency proof: after the pair loop it builds
+    `_path_graph` and rejects both dependency cycles (`_find_cycle`) and
+    any path row whose rendered TO is consumed by another path row.
+    """
     for producer_index, producer in enumerate(candidates):
         if "content" not in producer.rewrite_surfaces:
             continue
@@ -311,6 +367,20 @@ def _validate_dependencies(
                 continue
             if not _rewrite_scopes_overlap(producer, receiver):
                 continue
+            if (
+                producer_index < receiver_index
+                and producer.from_value != receiver.from_value
+                and _matches(producer, receiver.from_value)
+                and _replace(producer, receiver.from_value) != receiver.to_value
+            ):
+                raise ValidationError(
+                    f"nested rendered source: {_describe(producer)}'s source "
+                    f"{producer.from_value!r} matches inside {_describe(receiver)}'s "
+                    f"source {receiver.from_value!r}, and {_describe(producer)} runs "
+                    f"first — {_describe(receiver)} would never see an intact "
+                    "occurrence to rewrite; press in two steps via an intermediate "
+                    "identity"
+                )
             if producer_index < receiver_index and _matches(
                 receiver, producer.to_value
             ):
@@ -367,6 +437,31 @@ def _validate_symlink_dependencies(
                 continue
             if not _rewrite_scopes_overlap(producer, receiver):
                 continue
+            # Issue #44's twin, for symlink target text: an earlier row's
+            # rendered FROM matching inside a later row's rendered FROM
+            # would let the earlier row corrupt the later row's occurrence
+            # before it ever gets an intact link-text match to rewrite. See
+            # `_validate_dependencies`'s docstring for the full mechanism —
+            # the equality exclusion applies here for the identical reason
+            # (same-FROM is `_validate_ambiguity`'s question, not this one),
+            # and so does the compatible-outcome exclusion (an earlier pass
+            # that already yields the later row's own rendered TO leaves
+            # correct link text, not corruption).
+            if (
+                producer_index < receiver_index
+                and producer.from_value != receiver.from_value
+                and _matches(producer, receiver.from_value)
+                and _replace(producer, receiver.from_value) != receiver.to_value
+            ):
+                raise ValidationError(
+                    f"nested rendered source in symlink targets: "
+                    f"{_describe(producer)}'s source {producer.from_value!r} "
+                    f"matches inside {_describe(receiver)}'s source "
+                    f"{receiver.from_value!r}, and {_describe(producer)} runs "
+                    f"first — {_describe(receiver)} would never see an intact "
+                    "occurrence to rewrite; press in two steps via an "
+                    "intermediate identity"
+                )
             if producer_index < receiver_index and _matches(
                 receiver, producer.to_value
             ):
