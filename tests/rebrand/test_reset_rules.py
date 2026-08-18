@@ -110,7 +110,14 @@ class TestResetSchema:
 
     @pytest.mark.parametrize(
         "reserved",
-        ["press/press-receipt.toml", "press/press-source.toml"],
+        [
+            "press/press-receipt.toml",
+            "press/press-source.toml",
+            # Case-fold (issue #86): on a case-insensitive filesystem
+            # (Windows, default macOS) this is the SAME file as the
+            # lowercase control path above.
+            "press/Press-Receipt.toml",
+        ],
     )
     def test_root_control_rejected(self, tmp_path: Path, reserved: str):
         target = _write_rules(

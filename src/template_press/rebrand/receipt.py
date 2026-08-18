@@ -14,7 +14,7 @@ from pathlib import Path
 
 from template_press.rebrand.config import toml_string
 from template_press.rebrand.engine import ApplyReport
-from template_press.rebrand.identity import Identity
+from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.safety import write_control
 
 RECEIPT_REL = Path("press") / "press-receipt.toml"
@@ -24,7 +24,12 @@ def read_receipt(target: Path) -> str | None:
     path = target / RECEIPT_REL
     if not path.is_file():
         return None
-    return path.read_text(encoding="utf-8")
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValidationError(
+            f"{RECEIPT_REL}: receipt is not valid UTF-8 ({path}): {exc}"
+        ) from exc
 
 
 def invalidate_receipt(target: Path) -> bool:

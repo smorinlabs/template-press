@@ -22,6 +22,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.verify_cli import _effective_scan_fields, verify_command
 
 from .conftest import requires_symlink
@@ -179,6 +180,17 @@ def test_hyphen_token_leak_exits_1(tmp_path: Path) -> None:
     )
     _commit(repo)
     assert verify_command(["--target", str(repo)]) == 1
+
+
+def test_non_utf8_receipt_exits_2_not_unicode_decode_error(tmp_path: Path) -> None:
+    """Issue #86: verify's sandboxed removal modeling reads the receipt from
+    the copied sandbox tree (`read_receipt(sandbox.path)`); a corrupted or
+    hand-edited receipt must fail clean (exit 2), not crash with a raw
+    UnicodeDecodeError."""
+    repo = make_pressable(tmp_path)
+    (repo / RECEIPT_REL).write_bytes(b"[press]\nverified = true\n\xff\xfe")
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 2
 
 
 def test_missing_source_config_exits_2_no_write(tmp_path: Path) -> None:

@@ -409,7 +409,12 @@ def _reject_reserved(kind: str, file: str) -> None:
     # neutral scope helpers, while this validator needs the control paths.
     from template_press.rebrand.pathing import ROOT_CONTROL
 
-    if file in ROOT_CONTROL:
+    # Casefolded, matching the same-file test used elsewhere for filesystem
+    # path comparisons (safety.py's `_is_dotgit`): on a case-insensitive
+    # filesystem (Windows, default macOS), `PRESS/press-source.toml` and
+    # `press/press-source.toml` are the SAME file, so the reserved check
+    # must not be case-sensitive either.
+    if file.casefold() in {entry.casefold() for entry in ROOT_CONTROL}:
         raise ValidationError(
             f"{RULES_REL}: {kind} may not target press-owned control file "
             f"{file!r} — press itself writes it after validation (reserved)"

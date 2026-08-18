@@ -52,6 +52,19 @@ def test_dirty_target_exits_2(src_target: Path, tmp_path: Path):
     assert main(["--target", str(src_target), "--config", str(answers)]) == 2
 
 
+def test_non_utf8_receipt_exits_2_not_unicode_decode_error(
+    src_target: Path, tmp_path: Path, capsys
+):
+    """Issue #86: a corrupted or hand-edited receipt (non-UTF-8 bytes) must
+    fail clean at the precondition check, not crash with UnicodeDecodeError."""
+    write_source_config(src_target)
+    (src_target / RECEIPT_REL).write_bytes(b"[press]\nverified = true\n\xff\xfe")
+    answers = write_answers(tmp_path)
+    code = main(["--target", str(src_target), "--config", str(answers)])
+    assert code == 2
+    assert "UTF-8" in capsys.readouterr().err
+
+
 def test_missing_source_config_prints_proposal_and_exits_2(
     src_target: Path, tmp_path: Path, capsys
 ):
