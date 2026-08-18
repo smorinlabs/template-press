@@ -169,6 +169,12 @@ def test_sandbox_preserves_legal_posix_punctuation_names(tmp_path: Path) -> None
 # accepts and ignores it either way), so the real symlink still gets created
 # correctly underneath the patch.
 # ---------------------------------------------------------------------------
+# `posix_only`, not `_IS_WINDOWS`-patched like its Windows sibling below:
+# this test asserts the REAL environment's behavior directly (no flag
+# override), so it must actually run on POSIX -- on a genuine Windows CI
+# runner `_IS_WINDOWS` is truly True and `target_is_directory=True` for a
+# real directory target is the CORRECT product behavior there, not a bug.
+@posix_only
 @requires_symlink
 def test_posix_symlink_to_directory_target_always_passes_false(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
