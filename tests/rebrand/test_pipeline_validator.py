@@ -285,6 +285,29 @@ def test_issue_44_nested_rendered_source_in_symlink_targets_is_rejected() -> Non
         validate_pipeline((first, second))
 
 
+def test_issue_44_compatible_nested_symlink_rewrite_is_accepted() -> None:
+    # The symlink twin of the compatible content case: the earlier row
+    # already rewrites the link text into the later row's own destination,
+    # so nothing is corrupted and the pipeline stays valid.
+    first = _candidate(
+        "first",
+        "demo",
+        "spud",
+        surfaces=frozenset({"symlink"}),
+        provenance=("rule:first",),
+    )
+    second = _candidate(
+        "second",
+        "demo_widget",
+        "spud_widget",
+        surfaces=frozenset({"symlink"}),
+        matcher=MatcherSpec("conservative", "package_name", False),
+        provenance=("identity:package_name",),
+    )
+
+    assert validate_pipeline((first, second)) == (first, second)
+
+
 def test_content_output_cannot_emit_an_earlier_source() -> None:
     first = _candidate("first", "alpha", "bravo", provenance=("rule:first",))
     second = _candidate("second", "charlie", "alpha", provenance=("rule:second",))
@@ -319,6 +342,24 @@ def test_issue_44_nested_rendered_source_is_rejected() -> None:
     assert "nested rendered source" in message
     assert "first" in message and "rule:first" in message
     assert "second" in message and "identity:package_name" in message
+
+
+def test_issue_44_compatible_nested_rewrite_is_accepted() -> None:
+    # Nesting alone is not corruption: the earlier row's own pass already
+    # renders the later row's FROM into exactly the later row's TO
+    # ("demo_widget" -> "spud_widget"), so the later row is left with
+    # nothing to do and the pressed text is the one it wanted. Only an
+    # INCOMPATIBLE result is #44's silent corruption.
+    first = _candidate("first", "demo", "spud", provenance=("rule:first",))
+    second = _candidate(
+        "second",
+        "demo_widget",
+        "spud_widget",
+        matcher=MatcherSpec("conservative", "package_name", False),
+        provenance=("identity:package_name",),
+    )
+
+    assert validate_pipeline((first, second)) == (first, second)
 
 
 def test_issue_44_reverse_order_is_safe() -> None:

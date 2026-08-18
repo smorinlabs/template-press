@@ -332,6 +332,23 @@ def _validate_dependencies(
     governed by `_validate_ambiguity`'s own #45 carve-out — this guard is
     strictly about a PROPER substring relationship between two DIFFERENT
     FROM values.
+
+    It also excludes the COMPATIBLE nesting shape: when applying the earlier
+    row to the later row's rendered FROM already yields exactly the later
+    row's rendered TO (`demo -> spud` ahead of `demo_widget ->
+    spud_widget`), the earlier pass produces the later row's own intended
+    text, so the later row has nothing left to do and the pipeline is
+    stable rather than corrupt. Only an INCOMPATIBLE result (`demo_widget`
+    becoming `spud_widget` where the later row wanted `potato_launcher`) is
+    the silent corruption #44 is about. This mirrors the engine's existing
+    treatment of a duplicated substitution pair, which is dropped silently
+    when both entries map to the same replacement and raised on only when
+    the replacements differ (`_raw_replacement_pairs` in `engine.py`).
+
+    Beyond these content-surface pair relationships, this function also
+    owns the PATH-surface dependency proof: after the pair loop it builds
+    `_path_graph` and rejects both dependency cycles (`_find_cycle`) and
+    any path row whose rendered TO is consumed by another path row.
     """
     for producer_index, producer in enumerate(candidates):
         if "content" not in producer.rewrite_surfaces:
@@ -354,6 +371,7 @@ def _validate_dependencies(
                 producer_index < receiver_index
                 and producer.from_value != receiver.from_value
                 and _matches(producer, receiver.from_value)
+                and _replace(producer, receiver.from_value) != receiver.to_value
             ):
                 raise ValidationError(
                     f"nested rendered source: {_describe(producer)}'s source "
@@ -425,11 +443,15 @@ def _validate_symlink_dependencies(
             # before it ever gets an intact link-text match to rewrite. See
             # `_validate_dependencies`'s docstring for the full mechanism —
             # the equality exclusion applies here for the identical reason
-            # (same-FROM is `_validate_ambiguity`'s question, not this one).
+            # (same-FROM is `_validate_ambiguity`'s question, not this one),
+            # and so does the compatible-outcome exclusion (an earlier pass
+            # that already yields the later row's own rendered TO leaves
+            # correct link text, not corruption).
             if (
                 producer_index < receiver_index
                 and producer.from_value != receiver.from_value
                 and _matches(producer, receiver.from_value)
+                and _replace(producer, receiver.from_value) != receiver.to_value
             ):
                 raise ValidationError(
                     f"nested rendered source in symlink targets: "
