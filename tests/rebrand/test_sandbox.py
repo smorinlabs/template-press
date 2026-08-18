@@ -160,22 +160,58 @@ def test_sandbox_preserves_legal_posix_punctuation_names(tmp_path: Path) -> None
 # at (Windows needs it on a directory-target link, per the sibling fix in
 # engine._retarget_symlinks); asserted via the CALL ARGUMENT rather than
 # actual broken/working link behavior, since only a Windows runner can
-# observe that directly.
+# observe that directly. Containment is computed ONLY on Windows -- POSIX
+# ignores the flag entirely and always passes False, spending zero
+# filesystem I/O proving it (a POSIX-side containment walk would itself be a
+# probe of every path component, including a possible in-tree mount point).
+# The Windows path is exercised on ANY host by patching `os.name` to "nt";
+# `os.symlink`'s OWN handling of the flag is unaffected by that patch (POSIX
+# accepts and ignores it either way), so the real symlink still gets created
+# correctly underneath the patch.
 # ---------------------------------------------------------------------------
 @requires_symlink
-def test_symlink_to_directory_target_passes_target_is_directory(
+def test_posix_symlink_to_directory_target_always_passes_false(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = make_target(tmp_path)
     (target / "realdir").mkdir()
     (target / "realdir" / "f.txt").write_text("x\n", encoding="utf-8")
-    # target_is_directory=True at CREATION time too: pathlib defaults it to
-    # False, which on a privileged Windows host would make this FIXTURE
-    # itself a broken file-type link despite pointing at a real directory —
-    # the fixture couldn't exercise the behavior it's meant to cover there.
     (target / "link_to_dir").symlink_to("realdir", target_is_directory=True)
     _git(target, "add", "realdir/f.txt", "link_to_dir")
     _git(target, "commit", "-q", "-m", "add dir symlink")
+
+    real_symlink = os.symlink
+    calls: list[tuple[str, bool]] = []
+
+    def recording_symlink(src, dst, target_is_directory=False):
+        if Path(dst).name == "link_to_dir":
+            calls.append((src, target_is_directory))
+        real_symlink(src, dst, target_is_directory=target_is_directory)
+
+    monkeypatch.setattr(os, "symlink", recording_symlink)
+
+    make_sandbox(target, _dest_root(tmp_path))
+
+    assert calls == [("realdir", False)]
+
+
+@requires_symlink
+def test_windows_symlink_to_directory_target_passes_target_is_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import template_press.rebrand.sandbox as sandbox_mod
+
+    target = make_target(tmp_path)
+    (target / "realdir").mkdir()
+    (target / "realdir" / "f.txt").write_text("x\n", encoding="utf-8")
+    (target / "link_to_dir").symlink_to("realdir", target_is_directory=True)
+    _git(target, "add", "realdir/f.txt", "link_to_dir")
+    _git(target, "commit", "-q", "-m", "add dir symlink")
+
+    # Patches the module's OWN flag, not the real `os.name` -- Python 3.13's
+    # pathlib consults `os.name` internally to pick WindowsPath/PosixPath,
+    # so patching it globally breaks Path operations mid-test on a POSIX host.
+    monkeypatch.setattr(sandbox_mod, "_IS_WINDOWS", True)
 
     real_symlink = os.symlink
     calls: list[tuple[str, bool]] = []

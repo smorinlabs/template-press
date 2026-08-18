@@ -78,6 +78,13 @@ _SYNTHETIC_IDENTITY: dict[str, str] = {
 # sandbox and get scanned by name (submodule content is unavailable).
 _SUBMODULE_PLACEHOLDER = ".press-submodule-unavailable"
 
+# A module-level flag, not a bare `os.name == "nt"` inline check: tests need
+# to force the Windows containment branch on any host to exercise it, and
+# patching the real `os.name` breaks Python 3.13's pathlib internals (which
+# now consult it to choose between `WindowsPath`/`PosixPath`). Patching this
+# flag instead leaves `os.name` and pathlib untouched.
+_IS_WINDOWS = os.name == "nt"
+
 
 @dataclass(frozen=True)
 class Sandbox:
@@ -225,34 +232,48 @@ def make_sandbox(target: Path, dest_root: Path) -> Sandbox:
             # follows a symlink whose target could be outside the target
             # tree (a UNC share, an automount, anything `stat`-able that
             # could hang or trigger network I/O), matching
-            # `engine._retarget_planned_symlinks`'s own posture. Containment
-            # is checked in two layers, CONSERVATIVELY, before `.is_dir()`
-            # is ever allowed to touch the real filesystem: (1)
-            # `_link_text_is_safe` rejects a leading `/`, a backslash, a
-            # colon, or ANY `..` component in the raw UNFOLLOWED link text
-            # (zero filesystem I/O) — even a legitimate in-tree `..` hop,
-            # because normalizing first would risk lexically erasing a
-            # pivot component before it can be checked; (2)
-            # `_dir_chain_is_safely_contained` walks every component of the
-            # normalized target and rejects one reached through an in-tree
-            # PIVOT symlink or Windows junction — a tracked
-            # `pivot -> /mnt/external` with `link -> pivot` (or
+            # `engine._retarget_planned_symlinks`'s own posture.
+            #
+            # POSIX ignores `target_is_directory` entirely, so containment
+            # is computed ONLY on Windows, where the flag actually matters —
+            # on POSIX it is always `False`, with zero filesystem I/O spent
+            # proving it. This is not merely an optimization: on POSIX, even
+            # the containment WALK's own `lstat()` calls are themselves a
+            # filesystem probe of every component, including one that could
+            # be an in-tree bind/NFS/autofs mount point (neither an
+            # `S_IFLNK` node nor a Windows junction, so the walk would not
+            # otherwise reject it) — running that walk for a return value
+            # nothing on POSIX consumes would be probing for probing's sake.
+            #
+            # On Windows, containment is checked in two layers,
+            # CONSERVATIVELY, before `.is_dir()` is ever allowed to touch
+            # the real filesystem: (1) `_link_text_is_safe` rejects a
+            # leading `/`, a backslash, a colon, or ANY `..` component in
+            # the raw UNFOLLOWED link text (zero filesystem I/O) — even a
+            # legitimate in-tree `..` hop, because normalizing first would
+            # risk lexically erasing a pivot component before it can be
+            # checked; (2) `_dir_chain_is_safely_contained` walks every
+            # component of the normalized target and rejects one reached
+            # through an in-tree PIVOT symlink or Windows junction — a
+            # tracked `pivot -> /mnt/external` with `link -> pivot` (or
             # `link -> pivot/dir`) looks lexically safe to layer 1 but a
             # naive follow would still cross `pivot` to reach outside the
             # target. Either layer failing leaves
             # `target_is_directory=False` (Python's own default) rather
             # than following — the asymmetry is deliberate: a false
             # rejection costs only a broken-looking directory symlink on
-            # Windows (POSIX ignores target_is_directory entirely), while a
-            # false acceptance is the containment breach this exists to
-            # prevent.
+            # Windows, while a false acceptance is the containment breach
+            # this exists to prevent.
             link = readlink_nofollow(src)
             assert_ancestors_real(dest, sandbox)
-            target_posix = symlink_target_posix(rel, link)
-            safely_contained = _link_text_is_safe(
-                link
-            ) and _dir_chain_is_safely_contained(target, target_posix)
-            target_is_directory = safely_contained and src.is_dir()
+            if _IS_WINDOWS:
+                target_posix = symlink_target_posix(rel, link)
+                safely_contained = _link_text_is_safe(
+                    link
+                ) and _dir_chain_is_safely_contained(target, target_posix)
+                target_is_directory = safely_contained and src.is_dir()
+            else:
+                target_is_directory = False
             os.symlink(link, dest, target_is_directory=target_is_directory)
             added.append(rel.as_posix())
         elif entry.kind == "gitlink":
