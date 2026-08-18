@@ -127,7 +127,11 @@ project template. To press an identity onto a repo, follow the
 identity validation → apply → verify → receipt). Command shape:
 `press rebrand --target <path> --config <press-answers.toml>` (in a dev checkout,
 `uv run press rebrand …`). The design contract is
-[`docs/design/0006-external-target-model.md`](docs/design/0006-external-target-model.md);
+[`docs/design/0006-external-target-model.md`](docs/design/0006-external-target-model.md).
+The identity-field set (six required plus optional `display_name`) and the
+target-authored `press/press-rules.toml` mechanisms (`[[replace]]` exact
+rules, `substring_rewrite_fields`) are specified in
+[`docs/design/0008-identity-variants-and-replace-rules.md`](docs/design/0008-identity-variants-and-replace-rules.md).
 `provision`/`status` verbs arrive with the M6 Provision phase.
 
 ## Single source of truth
