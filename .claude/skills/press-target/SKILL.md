@@ -67,11 +67,11 @@ owner = "janedev"
 | Field | Required | Notes |
 |---|---|---|
 | `package_name` | yes | lowercase Python identifier / import name |
-| `repo_name` | yes | GitHub repo slug |
+| `repo_name` | yes | lowercase, letter-led, alphanumeric + hyphens (GitHub repo slug) |
 | `app_name` | yes | lowercase Python identifier — becomes the CLI command and file/env prefixes |
 | `author` | yes | free-form |
 | `email` | yes | `local@domain.tld` |
-| `owner` | yes | GitHub owner/org (1-39 chars, alphanumeric + hyphens) |
+| `owner` | yes | GitHub owner/org (1-39 chars, alphanumeric + hyphens, must start AND end with an alphanumeric — no leading/trailing hyphen) |
 | `display_name` | no | humanized product name, e.g. `"Py Launch Blueprint"`; absent = feature off |
 
 `app_name_upper` (uppercased `app_name`) is derived, not settable, but is a
@@ -84,6 +84,13 @@ same-shaped form of the new name; narrow the set with
 `[rules] display_forms` in `press/press-rules.toml` (default: all three). See
 [design 0008](../../../docs/design/0008-identity-variants-and-replace-rules.md)
 for the full semantics.
+
+This built-in rewrite is CONTENT ONLY — display forms never rewrite path
+components or symlink target text, even though the leak scan still checks
+those surfaces for an enabled form. A display-form occurrence living in a
+path or a symlink target survives the press unrewritten and then trips
+exit 1 as a leak. Cover such an occurrence with an explicit `[[replace]]`
+rule (`paths = true`) instead.
 
 If a source name's forms coincide (e.g. `"NumPy"`: spaced and PascalCase
 are both literally `NumPy`), the engine cannot rewrite each occurrence to a
@@ -103,7 +110,7 @@ reach on its own (e.g. a glued `PLBPOwned` or `x{app_name}owned`):
 
 ```toml
 [[replace]]
-pattern = "{app_name}_owned"
+pattern = "x{app_name}owned"
 files = ["docs/*/data.txt"]   # fnmatch globs; omit for unscoped (all files)
 paths = true                   # also match path components + symlink text (default false)
 content = true                 # match file content (default true)
@@ -120,8 +127,16 @@ reason = "glued token in generated fixtures"
 - `files` (default: unscoped — all files): fnmatch globs (see the gotcha
   below).
 - `paths` (default `false`): also scope path components and symlink text,
-  not just content.
-- `content` (default `true`): scope file content.
+  not just content. For symlinks specifically, only CONTAINED relative
+  targets are actually retargeted — an absolute symlink or one whose
+  target resolves outside the repo (`../`-escaping) is left untouched
+  regardless of this rule, and its source literal survives as a leak.
+- `content` (default `true`): scope file content. UTF-8 TEXT ONLY — a
+  tracked file that fails UTF-8 decoding is silently excluded from BOTH
+  the rewrite pass and the leak scan, so a source literal inside a binary
+  survives unrewritten and unflagged; a clean receipt does not mean binary
+  artifacts are clean. Regenerate, remove, or otherwise exempt them
+  deliberately rather than relying on `content = true`.
 
 ### `substring_rewrite_fields` — boundary-free opt-in
 
@@ -161,6 +176,13 @@ directory's contents but not the link itself — you must ALSO add the
 link's own name to `verify_ignore`, or the post-apply doctor pass
 (and `press verify`) will report exit 1 on that link indefinitely, even
 though the directory it points into is correctly excluded.
+
+`verify_ignore` matches by PATH COMPONENT, anywhere in the tree — not by
+the link's full path. Adding a common basename (e.g. `current`) excludes
+EVERY entry in the repo that has that name as any path component, not
+just your one symlink; a real, unrelated leak sharing that component name
+would then pass silently. Use a name specific enough to be unique across
+the whole tree, not just locally unique next to the link.
 
 ### Gotcha: a `paths = true` rule's `files` scope matches a symlink's TARGET, not its own path
 
