@@ -29,7 +29,16 @@ project template and ships no application. First target:
    fails loudly on mismatch. Discovery never silently drives a run.
 2. **Rules are generic and scan-based**: the tool carries rewrite rules
    (boundary-safe by default); it does not carry any target's identity or
-   file list. Per-target overrides: `<target>/press/press-rules.toml`.
+   file list. Per-target overrides: `<target>/press/press-rules.toml` —
+   `[[replace]]` exact glued-token rules (`pattern`/`reason`, scoped by
+   `files` fnmatch globs, `paths`, `content`) and `substring_rewrite_fields`
+   (a boundary-free, per-field opt-in). Identity itself is six required
+   fields (`package_name`, `repo_name`, `app_name`, `author`, `email`,
+   `owner`) plus an optional 7th, `display_name` (humanized product name;
+   absent = feature off). Full field/rule semantics:
+   [design 0008](0008-identity-variants-and-replace-rules.md); rendering
+   pipeline: [design 0009](0009-substitution-table.md); operator
+   walkthrough: [`press-target`](../../.claude/skills/press-target/SKILL.md).
 3. **Verify-then-mark**: after apply, a no-leak doctor pass scans the target
    for surviving source-identity tokens (changed fields only; the explicit
    `verify_ignore` list in `press/press-rules.toml` is the one sanctioned
