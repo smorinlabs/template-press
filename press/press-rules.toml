@@ -22,3 +22,10 @@ platforms = ["win32"]
 [[reset]]
 file = "CHANGELOG.md"
 stub = "# Changelog\n"
+
+# The difftree workflow references the template owner's action; a pressed
+# fork's owner rewrite would point `uses:` at a repository that does not
+# exist, so pressed outputs drop the workflow (same rule as py-launch-blueprint).
+[[remove]]
+file = ".github/workflows/difftree-pr-comment.yml"
+reason = "uses the template owner's difftree action; the rewritten uses: path would not exist for a fork owner"
