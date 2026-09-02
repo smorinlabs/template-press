@@ -78,6 +78,7 @@ from template_press.rebrand.safety import (
 )
 from template_press.rebrand.substitutions import (
     RenamePlan,
+    RenameStep,
     SubstitutionTable,
     compile_substitution_table,
     declared_rule_triples,
@@ -892,19 +893,35 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
         plan.items.append(PlanItem("rename", step.old_prefix, f"→ {step.new_prefix}"))
     plan.renames.update(table.rename_plan.as_mapping())
     tracked = tracked_path_strings(snapshot)
-    rename_prefixes = [step.old_prefix for step in table.rename_plan.steps]
-    rewrite_paths = {item.path for item in plan.items if item.kind == "replace"} | {
-        path
-        for path in tracked
-        if any(
-            path == prefix or path.startswith(f"{prefix}/")
-            for prefix in rename_prefixes
-        )
-    }
+    rewrite_paths = {item.path for item in plan.items if item.kind == "replace"} | (
+        _rename_covered_paths(table.rename_plan.steps) & tracked
+    )
     plan.removal_warnings = removal_coverage_warnings(
         rules, source, rewrite_paths, tracked
     )
     return plan
+
+
+def _rename_covered_paths(steps: Collection[RenameStep]) -> set[str]:
+    """Every SOURCE-coordinate leaf path a planned rename moves.
+
+    ``RenameStep.old_prefix`` is only a source coordinate for a step's OWN
+    pass; a later fixed-point pass (spec E5a round 2 fix) computes
+    ``old_prefix`` from the CURRENT path left by earlier passes — an
+    intermediate coordinate a tracked (pre-rename) path would never match.
+    ``RenameStep.source_entries`` is the field the rename planner itself
+    keeps in true SOURCE coordinates across every pass (it is threaded
+    through ``current_by_source`` keyed by the original path, never the
+    intermediate one — see ``compile_substitution_table``'s rename-plan
+    loop), so reading it directly here is correct for a chained rename
+    regardless of how many passes resolved it, with no prefix arithmetic
+    needed.
+    """
+
+    covered: set[str] = set()
+    for step in steps:
+        covered.update(step.source_entries)
+    return covered
 
 
 def removal_coverage_warnings(

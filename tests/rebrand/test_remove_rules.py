@@ -628,3 +628,64 @@ class TestRemovalCoverageWarning:
         out = capsys.readouterr().out
         assert code == 0
         assert "warning:" not in out
+
+    def test_directory_with_init_py_but_wrong_name_still_warns(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """Round 2 discriminating test: item 3 dropped the __init__.py
+        proxy for "the package directory" in favor of comparing the
+        directory's name against source.package_name directly. A top-level
+        directory that happens to hold an __init__.py but is NOT named
+        after the source package must still warn when fully rewritten —
+        the old __init__.py-based heuristic would have wrongly suppressed
+        this one."""
+        extra = src_target / "extra_pkg"
+        extra.mkdir()
+        (extra / "__init__.py").write_text(
+            '"""demo_widget extra."""\n', encoding="utf-8"
+        )
+        (extra / "notes.md").write_text("demo_widget notes\n", encoding="utf-8")
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "extra pkg-shaped dir")
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "warning: 2 tracked files under extra_pkg/ will be rewritten" in out
+
+    def test_no_warning_on_pep420_style_package_dir_without_init_py(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """Round 2 discriminating test: the flat-layout package exclusion
+        must key on source.package_name alone, not on __init__.py presence
+        — a PEP 420 namespace package (no __init__.py at all) named after
+        the source package must still be silent. This top-level
+        "demo_widget" directory is separate from src_target's existing
+        src/demo_widget/ (src-layout); it exists only to isolate the
+        name-based exclusion from the __init__.py-based one."""
+        pkg = src_target / "demo_widget"
+        pkg.mkdir()
+        (pkg / "plugin.py").write_text("demo_widget plugin\n", encoding="utf-8")
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "pep420-style pkg dir")
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "warning:" not in out
