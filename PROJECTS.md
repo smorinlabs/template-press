@@ -30,6 +30,7 @@ file by hand — see Conventions.
 | P06 | `[x]` | [Derive checkers from one rendered substitution set](projects/P06-substitution-set.md) — one table the rewriter applies and every checker reads (issue #42) |
 | P07 | `[~]` | [Platform-conditional declared commands](projects/P07-platform-conditional-declared-commands.md) — platform-scoped rules; only matching platform triggers |
 | P08 | `[x]` | [Declared removal and declared verify exemption](projects/P08-declared-removal-and-exemption.md) — [[remove]] for blueprint-only files (#80) + verify_exempt with reason on [[regenerate]] (#81); run 4 dogfood gaps |
+| P09 | `[ ]` | [Declared in-place edit ([[edit]]) and command-phase snapshot gate](projects/P09-declared-in-place-edit.md) — new [[edit]] mechanism with required `expect` post-condition; snapshot gate for any declared command (E4, E11) |
 
 ## Conventions
 
