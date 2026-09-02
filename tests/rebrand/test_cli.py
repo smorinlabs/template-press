@@ -1888,6 +1888,7 @@ def _try_make_invalid_utf8_name(base: Path) -> Path | None:
     return raw
 
 
+@posix_only
 def test_closure_refusal_diagnostics_json_hostile_undecodable_filename(
     src_target, tmp_path, capsys
 ):
