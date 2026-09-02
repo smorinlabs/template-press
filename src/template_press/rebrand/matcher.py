@@ -90,12 +90,16 @@ def find_occurrences(
     return [m.span() for m in pattern.finditer(text)]
 
 
-# Immediately after a boundary-matched occurrence: one separator, then an
-# alphanumeric — the shape of a stale source value sitting as a prefix of a
-# longer, renamed token (`demo-widget` inside `demo-widget-2`). A separator
-# with nothing alphanumeric after it (end of text, another separator, or a
-# non-word character) is NOT a continuation — the match stands on its own.
-_PREFIX_CONTINUATION = re.compile(r"[-_.][A-Za-z0-9]")
+# Immediately after a boundary-matched occurrence: a hyphen or underscore,
+# then an alphanumeric — the shape of a stale source value sitting as a
+# prefix of a longer, RENAMED token (`demo-widget` inside `demo-widget-2`).
+# `.` is deliberately EXCLUDED (spec E9(b) fix round 1): a dot right after
+# the value is an extension or domain suffix (`demo-widget.git`,
+# `template-press.svg`), not a rename continuation, and must classify as
+# whole-token. A separator with nothing alphanumeric after it (end of text,
+# another separator, or a non-word character) is likewise NOT a
+# continuation — the match stands on its own.
+_PREFIX_CONTINUATION = re.compile(r"[-_][A-Za-z0-9]")
 
 
 def classify_occurrence(text: str, span: tuple[int, int]) -> tuple[str, str]:

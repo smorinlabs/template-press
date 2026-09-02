@@ -72,6 +72,29 @@ def test_classify_occurrence_trailing_separator_with_no_continuation():
     assert classify_occurrence("demo-widget-", (0, 11)) == ("whole", "")
 
 
+def test_classify_occurrence_dot_extension_is_not_a_continuation():
+    # spec E9(b) fix round 1: a dot right after the value is an
+    # extension/domain suffix (`demo-widget.git`, `template-press.svg`),
+    # not a rename continuation — it must classify whole even though a dot
+    # followed by an alphanumeric used to (incorrectly) read as "prefix".
+    cases = [
+        ("repo_name", "demo-widget", "clone demo-widget.git here"),
+        ("app_name", "template-press", "icons/template-press.svg"),
+    ]
+    for field, value, text in cases:
+        span = find_occurrences(text, field, value, substring=False)[0]
+        assert classify_occurrence(text, span) == ("whole", ""), text
+
+
+def test_classify_occurrence_slash_is_a_whole_token_boundary():
+    # Pin: unaffected by the dot fix — a `/` right after the value was
+    # already, and remains, a whole-token boundary (`demo-widget/` is a
+    # path segment, not a rename suffix).
+    text = "demo-widget/releases"
+    span = find_occurrences(text, "repo_name", "demo-widget", substring=False)[0]
+    assert classify_occurrence(text, span) == ("whole", "")
+
+
 # --- 5.5 property test: no false positives over an unrelated wordlist -----
 #
 # Deterministic (no `random`/time): a fixed, modest wordlist of plain English

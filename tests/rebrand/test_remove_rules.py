@@ -13,13 +13,15 @@ exemption and no coverage gap.
 from __future__ import annotations
 
 import dataclasses
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from template_press.rebrand.cli import main
-from template_press.rebrand.identity import ValidationError
+from template_press.rebrand.config import SOURCE_CONFIG_REL, render_source_config
+from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.regen import preflight_excluded_files
 from template_press.rebrand.remove import (
@@ -29,7 +31,7 @@ from template_press.rebrand.remove import (
 from template_press.rebrand.rules import RemoveRule, load_rules, load_selected_rules
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import DEST, _git, write_answers_file
+from .conftest import DEST, SOURCE, _git, write_answers_file
 from .test_cli import write_answers, write_source_config
 from .test_verify_cli import _commit, make_pressable
 
@@ -771,3 +773,224 @@ class TestPrefixOnlyWarning:
         out = capsys.readouterr().out
         assert code == 0
         assert "occurs only as a prefix of" not in out
+
+    # -----------------------------------------------------------------
+    # Fix round 1: `.` is not a rename continuation; display forms are
+    # checked; real-apply and --diagnostics-json coverage.
+    # -----------------------------------------------------------------
+
+    def test_no_warning_when_only_mention_is_a_dot_extension(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """A dot right after the value is an extension/domain suffix
+        (``demo-widget.git``), not a rename continuation — spec E9(b) fix
+        round 1. The target's ONLY repo_name mention is the `.git` URL."""
+        (src_target / "README.md").write_text(
+            "See https://github.com/demolabs/demo-widget.git for source.\n",
+            encoding="utf-8",
+        )
+        _git(src_target, "commit", "-qam", "only a .git mention")
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "occurs only as a prefix of" not in out
+
+    def test_slash_after_value_is_a_whole_token_boundary(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """Pin: a `/` right after the value was already correctly a
+        whole-token boundary before the fix-round-1 `.` change, and stays
+        one — `demo-widget/` is a path segment, not a rename suffix."""
+        (src_target / "README.md").write_text(
+            "Clone from demo-widget/releases for the latest build.\n",
+            encoding="utf-8",
+        )
+        _git(src_target, "commit", "-qam", "only a trailing-slash mention")
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "occurs only as a prefix of" not in out
+
+    def test_hyphen_suffix_is_still_a_prefix_after_the_dot_fix(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """Pin: `demo-widget-2` (hyphen + alphanumeric) is still classified
+        prefix after excluding `.` from the continuation class — the P1 fix
+        narrows the rule, it does not disable it."""
+        for rel in ("README.md", "pyproject.toml"):
+            p = src_target / rel
+            p.write_text(
+                p.read_text(encoding="utf-8").replace("demo-widget", "demo-widget-2"),
+                encoding="utf-8",
+            )
+        _git(src_target, "commit", "-qam", "renamed upstream")
+        write_source_config(src_target)
+        _git(src_target, "remote", "remove", "origin")
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert (
+            "warning: repo_name 'demo-widget' occurs only as a prefix of "
+            "'demo-widget-2'" in out
+        )
+
+    def test_plan_warns_when_a_display_form_occurs_only_as_prefix(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """spec E9(b) fix round 1: a rendered display form (here,
+        `display_name_spaced`) is exactly as checkable as a plain identity
+        field — the same stale-rename shape can hide behind a spaced
+        display name (``Demo Widget`` -> ``Demo Widget-2`` upstream) just
+        as easily as behind a hyphenated repo_name."""
+        (src_target / "NOTES.md").write_text(
+            "See the Demo Widget-2 changelog for details.\n", encoding="utf-8"
+        )
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "add notes mentioning the rename")
+        src = Identity(**{**SOURCE.as_dict_prompted(), "display_name": "Demo Widget"})
+        (src_target / "press").mkdir(exist_ok=True)
+        (src_target / SOURCE_CONFIG_REL).write_text(
+            render_source_config(src), encoding="utf-8"
+        )
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "add source config")
+        dest = {**DEST.as_dict_prompted(), "display_name": "Potato Launcher"}
+        answers = tmp_path / "answers.toml"
+        answers.write_text(
+            "[answers]\n" + "\n".join(f'{k} = "{v}"' for k, v in dest.items()) + "\n",
+            encoding="utf-8",
+        )
+        code = main(
+            ["--target", str(src_target), "--config", str(answers), "--dry-run"]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert (
+            "warning: display_name_spaced 'Demo Widget' occurs only as a "
+            "prefix of 'Demo Widget-2'" in out
+        )
+        assert "update press/press-source.toml" in out
+
+    def test_no_warning_on_display_form_when_whole_occurrence_also_exists(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """A plain whole-token mention of the spaced display name silences
+        the warning even when a prefix form also exists — same rule as the
+        hyphenated-value compound-form case."""
+        (src_target / "NOTES.md").write_text(
+            "Demo Widget is the project. See Demo Widget-2 for the fork.\n",
+            encoding="utf-8",
+        )
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "add notes with both forms")
+        src = Identity(**{**SOURCE.as_dict_prompted(), "display_name": "Demo Widget"})
+        (src_target / "press").mkdir(exist_ok=True)
+        (src_target / SOURCE_CONFIG_REL).write_text(
+            render_source_config(src), encoding="utf-8"
+        )
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "add source config")
+        dest = {**DEST.as_dict_prompted(), "display_name": "Potato Launcher"}
+        answers = tmp_path / "answers.toml"
+        answers.write_text(
+            "[answers]\n" + "\n".join(f'{k} = "{v}"' for k, v in dest.items()) + "\n",
+            encoding="utf-8",
+        )
+        code = main(
+            ["--target", str(src_target), "--config", str(answers), "--dry-run"]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "occurs only as a prefix of" not in out
+
+    def test_prefix_warning_prints_on_real_apply_not_only_dry_run(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """The warning is not a `--dry-run`-only artifact: it prints on a
+        real apply too, and does not change the (unchanged, success) exit
+        code — it is advisory, per `Plan.prefix_warnings`'s own contract."""
+        for rel in ("README.md", "pyproject.toml"):
+            p = src_target / rel
+            p.write_text(
+                p.read_text(encoding="utf-8").replace("demo-widget", "demo-widget-2"),
+                encoding="utf-8",
+            )
+        _git(src_target, "commit", "-qam", "renamed upstream")
+        write_source_config(src_target)
+        _git(src_target, "remote", "remove", "origin")
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert (
+            "warning: repo_name 'demo-widget' occurs only as a prefix of "
+            "'demo-widget-2'" in out
+        )
+        assert (src_target / RECEIPT_REL).is_file()
+
+    def test_diagnostics_json_omits_prefix_warning_text(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """A closure refusal (spec E2) short-circuits before the plan's own
+        advisories reach the terminal — `--diagnostics-json` must stay pure
+        JSON, with no prefix-warning prose, even when the target ALSO
+        carries a prefix-only occurrence that would otherwise warn."""
+        for rel in ("README.md", "pyproject.toml"):
+            p = src_target / rel
+            p.write_text(
+                p.read_text(encoding="utf-8").replace("demo-widget", "demo-widget-2"),
+                encoding="utf-8",
+            )
+        _git(src_target, "commit", "-qam", "renamed upstream")
+        write_source_config(src_target)
+        (src_target / "src" / "demo_widget" / "__pycache__").mkdir()
+        (src_target / "src" / "demo_widget" / "__pycache__" / "x.pyc").write_bytes(
+            b"\0"
+        )
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+                "--diagnostics-json",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 2
+        assert "occurs only as a prefix of" not in out
+        payload = json.loads(out)  # still pure JSON — no stray prose line
+        assert payload["code"] == "rename_closure_unauthorized"

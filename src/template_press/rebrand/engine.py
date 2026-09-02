@@ -1036,14 +1036,24 @@ class _PrefixCounts:
     prefix_tokens: Counter[str] = field(default_factory=Counter)
 
 
-def _prefix_check_fields(table: SubstitutionTable) -> dict[str, str]:
-    """Every non-`app_name` identity field this press changes, field -> value.
+_PREFIX_CHECK_PROVENANCE_KINDS = frozenset({"identity", "display_form"})
 
-    Sourced from ``table.rows``' own "identity" provenance (the same rows
-    `build_plan` already renders into `PlanItem`s) rather than re-deriving
-    "changed field" from `source`/`dest` directly, so a field the table
-    declined to render (e.g. because from == to) can never be checked here
-    either.
+
+def _prefix_check_fields(table: SubstitutionTable) -> dict[str, str]:
+    """Every checked identity field/display form this press changes, name ->
+    value.
+
+    Sourced from ``table.rows``' own "identity" and "display_form"
+    provenance (the same rows `build_plan` already renders into
+    `PlanItem`s) rather than re-deriving "changed field" from
+    `source`/`dest` directly, so a field the table declined to render (e.g.
+    because from == to, or a display form disabled by `[rules]
+    display_forms`) can never be checked here either. A rendered display
+    form (``display_name_spaced``/``display_name_pascal``/
+    ``display_name_camel``) is exactly as checkable as a plain identity
+    field (spec E9(b) fix round 1): the same stale-rename signature can hide
+    behind ``Demo Widget`` becoming ``Demo Widget-2`` upstream just as
+    easily as behind ``demo-widget``.
     """
 
     fields: dict[str, str] = {}
@@ -1052,7 +1062,7 @@ def _prefix_check_fields(table: SubstitutionTable) -> dict[str, str]:
             continue
         for provenance in row.provenance:
             if (
-                provenance.kind == "identity"
+                provenance.kind in _PREFIX_CHECK_PROVENANCE_KINDS
                 and provenance.name not in _PREFIX_CHECK_EXCLUDED_FIELDS
             ):
                 fields[provenance.name] = row.from_value
