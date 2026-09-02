@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import tomllib
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,6 +19,22 @@ from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.safety import write_control
 
 RECEIPT_REL = Path("press") / "press-receipt.toml"
+
+
+@dataclass(frozen=True)
+class OriginDecision:
+    """What the origin-remote guard decided about `git remote origin` (E1).
+
+    `named_destination` lists the fields (`owner`/`repo_name`) whose
+    discovered value disagreed with the source-config but matched the
+    DESTINATION identity, so the guard accepted them instead of refusing.
+    It is recorded in the receipt so the relaxation stays auditable after
+    the press. `mismatch_accepted` is reserved for the operator-accepted
+    case (origin names neither identity) and is always empty today.
+    """
+
+    named_destination: tuple[str, ...] = ()
+    mismatch_accepted: tuple[str, ...] = ()
 
 
 def read_receipt(target: Path) -> str | None:
@@ -66,8 +83,22 @@ def write_receipt(
     exempt: Sequence[tuple[str, str]] = (),
     *,
     platform: str | None = None,
+    origin: OriginDecision | None = None,
 ) -> Path:
     stamp = datetime.now(UTC).isoformat(timespec="seconds")
+    # Only written when the guard actually relaxed something (E1): a receipt
+    # without the key means "origin agreed with the source-config", so every
+    # reader must tolerate its absence.
+    named = origin.named_destination if origin is not None else ()
+    origin_lines = (
+        [
+            "origin_named_destination = ["
+            + ", ".join(toml_string(f) for f in sorted(named))
+            + "]"
+        ]
+        if named
+        else []
+    )
     lines = [
         "# press/press-receipt.toml — written by template-press AFTER the no-leak",
         "# verification pass. Presence means: this rebrand completed and was",
@@ -76,6 +107,7 @@ def write_receipt(
         "verified = true",
         *([f"platform = {toml_string(platform)}"] if platform is not None else []),
         f'completed_at = "{stamp}"',
+        *origin_lines,
         "",
         *_identity_table("from", source),
         "",

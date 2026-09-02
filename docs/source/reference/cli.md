@@ -39,6 +39,73 @@ The exit code is the contract — scripts and CI can branch on it:
 
 `--dry-run` exits `0` after printing the plan — it is a preview and writes nothing (no receipt). It performs a read-only host check; a statically unsupported host produces a warning that real apply requires `--force`. The target filesystem's operational atomic-rename capability is probed only during real apply. Other plan-time refusals (a missing declared tool, a stale argv, an undeclared excluded file) exit `2` before the plan renders, exactly as they would without `--dry-run`.
 
+### The source-identity guard and the `origin` remote
+
+Before planning anything, the press cross-checks the committed
+`press/press-source.toml` (the **source** identity) against what the target
+actually shows — `pyproject.toml`, the `[project.scripts]` key, the package
+layout, and the `origin` remote's GitHub URL, from which `owner` and
+`repo_name` are read. Any disagreement is the silent-half-rebrand guard's
+business and exits `2` with nothing written.
+
+`origin` is the one input that legitimately runs ahead of the source-config:
+the usual bootstrap is `gh repo create --template …` (or a clone whose
+remote was repointed), so the fresh target's `origin` already names the
+repository you are pressing *to*, not the template you are pressing *from*.
+For `owner` and `repo_name` only, and independently per field, the guard
+therefore recognizes three states:
+
+| `origin` names | Guard |
+|---|---|
+| The **source** identity (matches `press-source.toml`) | Agrees — no message. |
+| The **destination** identity (matches the `--config` answers for that same field) | Accepted, with a notice; the press proceeds. |
+| **Neither** identity | Exit `2` with the mismatch message, as before. |
+
+The accepted case prints one line per relaxed field to stdout:
+
+```text
+notice: repo_name: origin already names the destination ('potato-launcher'); source-config says 'demo-widget' — accepted
+```
+
+and the receipt records exactly which fields were relaxed, as a sorted list
+under `[press]`:
+
+```toml
+origin_named_destination = ["owner", "repo_name"]
+```
+
+The key is written only when the relaxation actually fired, so a receipt
+without it means `origin` agreed with the source-config.
+
+Three limits are deliberate:
+
+- **`owner` and `repo_name` only.** A `package_name`, `app_name`, `author`,
+  or `email` that disagrees with the source-config still exits `2`, whatever
+  the answers file says.
+- **Per field, not whole-identity.** A cross-owner press relaxes `owner`
+  alone if `repo_name` still matches the source-config; and if one field
+  names the destination while the other names a third repository, the notice
+  prints for the first and the guard still exits `2` on the second.
+- **Exact comparison.** `github.com/PotatoLabs/potato-launcher` against an
+  answers file saying `potatolabs` is a mismatch, not a match: the case
+  difference trips the guard and exits `2`. Fix the answers file (or the
+  remote) so the two agree exactly.
+
+Without `--config` there is no destination identity to compare against, and
+the guard behaves exactly as it did before.
+
+**Documented blind spot.** If the template repository was renamed upstream
+(`demo-widget` → `demo-widget-2`) *without* a package rename, the target's
+`press/press-source.toml` still carries the old `repo_name`, and `origin`
+already points at the destination, then the stale `repo_name` is accepted
+along with everything else — the guard cannot tell a stale source-config
+from an ahead-of-time remote, because `origin` no longer describes the
+template at all. This is accepted, not overlooked; the mitigation is the
+plan-time [prefix-only occurrence warning](#prefix-only-occurrence-warning),
+which flags a source value that appears in the target's content only as a
+separator-joined prefix of a longer token and tells you to update
+`press/press-source.toml`.
+
 ### Structured refusals
 
 A rename-prefix closure that carries content absent from the authorized

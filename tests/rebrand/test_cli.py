@@ -21,7 +21,14 @@ from template_press.rebrand.config import (
 from template_press.rebrand.identity import Identity
 from template_press.rebrand.receipt import RECEIPT_REL
 
-from .conftest import DEST, SOURCE, posix_only, requires_symlink, write_answers_file
+from .conftest import (
+    DEST,
+    SOURCE,
+    _git,
+    posix_only,
+    requires_symlink,
+    write_answers_file,
+)
 
 
 def write_source_config(target: Path) -> None:
@@ -110,6 +117,102 @@ def test_mismatched_source_config_fails_loudly_no_writes(
     assert "package_name" in capsys.readouterr().out
     assert (src_target / "README.md").read_text(encoding="utf-8") == before
     assert not (src_target / RECEIPT_REL).exists()
+
+
+def _set_origin(target: Path, url: str) -> None:
+    _git(target, "remote", "set-url", "origin", url)
+
+
+def test_origin_already_names_destination_is_accepted_with_notice(
+    src_target: Path, tmp_path: Path, capsys
+):
+    """E1: origin already points at the DESTINATION repo (the gh-created
+    clone case). Per field (owner/repo_name only) the discovered value is
+    accepted because it equals the destination's value for that field."""
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/potatolabs/potato-launcher.git")
+    answers = write_answers(tmp_path)
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert (
+        "notice: repo_name: origin already names the destination "
+        "('potato-launcher')" in out
+    )
+    assert "notice: owner: origin already names the destination ('potatolabs')" in out
+
+
+def test_origin_naming_third_repo_still_exits_2(
+    src_target: Path, tmp_path: Path, capsys
+):
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/someone/else.git")
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--dry-run",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 2 and "repo_name" in out and "owner" in out
+    assert not (src_target / RECEIPT_REL).exists()
+
+
+def test_receipt_records_origin_relaxation(src_target: Path, tmp_path: Path):
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/potatolabs/potato-launcher.git")
+    assert (
+        main(["--target", str(src_target), "--config", str(write_answers(tmp_path))])
+        == 0
+    )
+    receipt = (src_target / RECEIPT_REL).read_text(encoding="utf-8")
+    assert 'origin_named_destination = ["owner", "repo_name"]' in receipt
+
+
+def test_documented_blind_spot_stale_repo_name_with_destination_origin(
+    src_target: Path, tmp_path: Path
+):
+    # DOCUMENTED ACCEPTANCE (spec E1/E9): template renamed upstream to demo-widget-2,
+    # source-config stale, origin already the destination -> accepted. A change here
+    # must be deliberate.
+    for rel in ("README.md",):
+        f = src_target / rel
+        f.write_text(
+            f.read_text(encoding="utf-8").replace("demo-widget", "demo-widget-2"),
+            encoding="utf-8",
+        )
+    _git(src_target, "commit", "-qam", "renamed upstream")
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/potatolabs/potato-launcher.git")
+    assert (
+        main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+
+
+def test_malformed_answers_reports_before_guard(src_target: Path, tmp_path: Path):
+    """The answers file is loaded BEFORE the guard, so a malformed one is
+    reported first — exit 2, and nothing is written to the target."""
+    write_source_config(src_target)
+    bad = tmp_path / "answers.toml"
+    bad.write_text("[answers\n", encoding="utf-8")
+    assert main(["--target", str(src_target), "--config", str(bad)]) == 2
+    assert not (
+        (src_target / SOURCE_CONFIG_REL)
+        .read_text(encoding="utf-8")
+        .startswith("garbage")
+    )
 
 
 def test_dry_run_prints_plan_and_writes_nothing(
