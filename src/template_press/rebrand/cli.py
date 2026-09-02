@@ -418,6 +418,8 @@ def main(argv: list[str] | None = None) -> int:
             print(render_remove_plan(rules))
         for warning in plan.removal_warnings:
             print(warning)
+        for warning in plan.prefix_warnings:
+            print(warning)
         strays = stray_press_dirs(target)
         if strays:
             print(

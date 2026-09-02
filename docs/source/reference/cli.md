@@ -185,6 +185,28 @@ never flagged. This is advisory only — it never blocks a press, and a
 directory with even one untouched tracked file (an image, an unrelated
 config) does not count as "fully rewritten" and stays silent.
 
+### Prefix-only occurrence warning
+
+Plan time also checks, per identity field (skipping `app_name` and
+`app_name_upper`, whose own rewrite matchers already treat a trailing
+hyphen as a boundary), whether the declared SOURCE value shows up in the
+target's tracked content ONLY as a separator-joined prefix of a longer
+token — never as a whole token on its own. This is the signature of a
+target that renamed itself upstream (`demo-widget` -> `demo-widget-2`)
+after `press/press-source.toml` was written, since the rewrite matcher's
+own boundary rule treats a hyphen (or `_`/`.`) right after the value as a
+non-boundary: `demo-widget` still matches, and still rewrites, inside
+`demo-widget-2`, so nothing else flags the drift. When a field has at
+least one prefix occurrence and zero whole-token occurrences, the plan
+prints a non-fatal `warning: <field> '<value>' occurs only as a prefix of
+'<longer-token>' (N places); if the template was renamed, update
+press/press-source.toml` line — on both `--dry-run` and a real apply,
+after the plan, with the exit code unchanged. A field with even one
+whole-token occurrence stays silent even when a prefix form also exists
+(`demo-widget` alongside `demo-widget-web`): a compound naming convention
+living next to the plain value is a deliberate, rewritable form, not a
+stale source config.
+
 ### Declared verify exemption
 
 Hermetic `press verify` never runs declared commands, so a regenerated

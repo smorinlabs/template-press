@@ -88,3 +88,36 @@ def find_occurrences(
         return [m.span() for m in re.finditer(re.escape(value), text, re.IGNORECASE)]
     pattern = identity_pattern(field, value)
     return [m.span() for m in pattern.finditer(text)]
+
+
+# Immediately after a boundary-matched occurrence: one separator, then an
+# alphanumeric — the shape of a stale source value sitting as a prefix of a
+# longer, renamed token (`demo-widget` inside `demo-widget-2`). A separator
+# with nothing alphanumeric after it (end of text, another separator, or a
+# non-word character) is NOT a continuation — the match stands on its own.
+_PREFIX_CONTINUATION = re.compile(r"[-_.][A-Za-z0-9]")
+
+
+def classify_occurrence(text: str, span: tuple[int, int]) -> tuple[str, str]:
+    """Classify one boundary-matched occurrence span as ``"whole"`` or
+    ``"prefix"`` (spec E9(b)). `span` is any ``(start, end)`` match into
+    `text` whose own boundary rule already permits a hyphen right after it
+    — `find_occurrences` (`matcher.py`, the paranoid verify scanner) and
+    `identity.token_pattern` (the literal rewrite matcher) both qualify.
+
+    ``"whole"``: the match stands as its own token — returns ``("whole",
+    "")``. ``"prefix"``: the match is immediately followed by a separator-
+    joined continuation — returns ``("prefix", token)`` where ``token`` is
+    the longer token the match is a prefix of, extended rightward from the
+    match's own start through every trailing alphanumeric-or-separator
+    character.
+    """
+    start, end = span
+    if not _PREFIX_CONTINUATION.match(text, end):
+        return "whole", ""
+    token_end = end
+    while token_end < len(text) and (
+        text[token_end].isalnum() or text[token_end] in "-_."
+    ):
+        token_end += 1
+    return "prefix", text[start:token_end]

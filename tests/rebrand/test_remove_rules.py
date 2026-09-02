@@ -689,3 +689,85 @@ class TestRemovalCoverageWarning:
         out = capsys.readouterr().out
         assert code == 0
         assert "warning:" not in out
+
+
+# ---------------------------------------------------------------------------
+# E9(b) — prefix-only occurrence warning
+# ---------------------------------------------------------------------------
+class TestPrefixOnlyWarning:
+    def test_plan_warns_when_source_value_occurs_only_as_prefix(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        for rel in ("README.md", "pyproject.toml"):
+            p = src_target / rel
+            p.write_text(
+                p.read_text(encoding="utf-8").replace("demo-widget", "demo-widget-2"),
+                encoding="utf-8",
+            )
+        _git(src_target, "commit", "-qam", "renamed upstream")
+        write_source_config(src_target)  # still declares repo_name = demo-widget
+        _git(src_target, "remote", "remove", "origin")  # guard skips owner/repo_name
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert (
+            "warning: repo_name 'demo-widget' occurs only as a prefix of "
+            "'demo-widget-2'" in out
+        )
+        assert "update press/press-source.toml" in out
+
+    def test_no_prefix_warning_on_plain_src_target(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """Plain fixture: repo_name/package_name/etc. occur as whole tokens
+        (``# demo-widget``, ``name = "demo_widget"``) — no prefix-only
+        signal."""
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "occurs only as a prefix of" not in out
+
+    def test_no_warning_when_both_whole_and_prefix_forms_exist(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """Compound forms are a deliberate, rewritable naming convention
+        (spec E9's hyphen-boundary decision) — a plain whole-token
+        occurrence anywhere in the corpus suppresses the warning even when
+        a compound form (``demo-widget-web``) also exists."""
+        readme = src_target / "README.md"
+        readme.write_text(
+            readme.read_text(encoding="utf-8")
+            + "\nSee also demo-widget-web for the browser build.\n",
+            encoding="utf-8",
+        )
+        _git(src_target, "commit", "-qam", "add compound-form mention")
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "occurs only as a prefix of" not in out

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import stat
+from collections import Counter
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,7 @@ from template_press.rebrand.identity import (
     ValidationError,
     display_forms,
     replace_token,
+    token_pattern,
 )
 from template_press.rebrand.inventory import (
     SurfaceEntry,
@@ -34,6 +36,7 @@ from template_press.rebrand.inventory import (
     select_verifier_entries,
     tracked_path_strings,
 )
+from template_press.rebrand.matcher import classify_occurrence
 from template_press.rebrand.pathing import (
     REGENERATE_EXEMPTIBLE as REGENERATE_EXEMPTIBLE,
 )
@@ -143,6 +146,12 @@ class Plan:
     # populated by build_plan from the SAME snapshot the plan itself was
     # built from, so the printed plan and the warnings can never disagree.
     removal_warnings: list[str] = field(default_factory=list)
+    # Plan-time, non-fatal E9(b) advisories: a declared source identity
+    # value that occurs in the target ONLY as a separator-joined prefix of a
+    # longer token, never as a whole token — the signature of a stale
+    # press/press-source.toml after the template was renamed upstream.
+    # Populated by build_plan from the same content scan as `items`.
+    prefix_warnings: list[str] = field(default_factory=list)
 
     def render(self) -> str:
         if not self.items:
@@ -866,12 +875,18 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
         exclude_dirs=rules.exclude_dirs,
         root_control=ROOT_CONTROL,
     )
+    prefix_fields = _prefix_check_fields(table)
+    prefix_counts = {
+        field_name: _PrefixCounts(value=value)
+        for field_name, value in prefix_fields.items()
+    }
     for entry in content_entries:
         path = target / entry.rel
         rel = entry.rel
         assert_ancestors_real(path, target)
         text = _read_text(path, expected_kind=entry.worktree_kind)
         if text is not None:
+            _tally_prefix_occurrences(text, prefix_fields, prefix_counts)
             preview = text
             for row in table.rows:
                 if "content" not in row.rewrite_surfaces or not row_matches_scope(
@@ -889,6 +904,7 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                 )
                 plan.items.append(PlanItem("replace", rel.as_posix(), detail))
                 preview = rewritten
+    plan.prefix_warnings = prefix_only_warnings(prefix_counts)
     for step in table.rename_plan.steps:
         plan.items.append(PlanItem("rename", step.old_prefix, f"→ {step.new_prefix}"))
     plan.renames.update(table.rename_plan.as_mapping())
@@ -996,6 +1012,110 @@ def removal_coverage_warnings(
                 "resets them — declare [[remove]] or [rules] verify_ignore "
                 "if this is template history"
             )
+    return warnings
+
+
+# app_name and app_name_upper are excluded (spec E9(b)): their own rewrite
+# matchers already treat a trailing hyphen as a boundary
+# (identity.token_pattern:205-208 — app_name's right lookahead is
+# `(?![A-Za-z0-9-])`, app_name_upper's is `(?![A-Za-z-])`), so neither can
+# ever occur as a separator-joined prefix in the first place. app_name_upper
+# additionally has underscore-then-alnum as its OWN designed usage
+# (``_PRESS_COMPLETE``, ``PRESS000`` env/const prefixes per
+# identity.token_pattern's docstring) — checking it would misclassify that
+# intentional shape as a stale-config signal.
+_PREFIX_CHECK_EXCLUDED_FIELDS = frozenset({"app_name", "app_name_upper"})
+
+
+@dataclass
+class _PrefixCounts:
+    """Occurrence tally for one identity field, across the whole corpus."""
+
+    value: str
+    whole: int = 0
+    prefix_tokens: Counter[str] = field(default_factory=Counter)
+
+
+def _prefix_check_fields(table: SubstitutionTable) -> dict[str, str]:
+    """Every non-`app_name` identity field this press changes, field -> value.
+
+    Sourced from ``table.rows``' own "identity" provenance (the same rows
+    `build_plan` already renders into `PlanItem`s) rather than re-deriving
+    "changed field" from `source`/`dest` directly, so a field the table
+    declined to render (e.g. because from == to) can never be checked here
+    either.
+    """
+
+    fields: dict[str, str] = {}
+    for row in table.rows:
+        if "content" not in row.rewrite_surfaces:
+            continue
+        for provenance in row.provenance:
+            if (
+                provenance.kind == "identity"
+                and provenance.name not in _PREFIX_CHECK_EXCLUDED_FIELDS
+            ):
+                fields[provenance.name] = row.from_value
+    return fields
+
+
+def _tally_prefix_occurrences(
+    text: str,
+    fields: Mapping[str, str],
+    counts: Mapping[str, _PrefixCounts],
+) -> None:
+    """Classify every occurrence of every checked field's value in `text`.
+
+    Candidate positions come from `identity.token_pattern` — the same
+    literal, boundary-safe pattern `rewrite_with_row`/`replace_token` use to
+    perform the actual content rewrite — NOT `matcher.find_occurrences`
+    (the paranoid `press verify` scanner): that matcher's core is built by
+    splitting the value on any separator and rejoining with a
+    separator-TOLERANT class (`matcher.py` `identity_pattern`), so it treats
+    `demo-widget` and `demo_widget` as the same pattern and would cross-
+    contaminate two different fields (e.g. `repo_name` and `package_name`)
+    that share the same letters with different separators. `token_pattern`
+    matches only the field's own literal value, so a hyphen right after it
+    is exactly the boundary the rewriter itself would happily cross —
+    which is the E9(b) signal.
+    """
+
+    for field_name, value in fields.items():
+        tally = counts[field_name]
+        pattern = token_pattern(field_name, value)
+        if pattern is None:  # every field currently returns a pattern
+            continue
+        for match in pattern.finditer(text):
+            kind, token = classify_occurrence(text, match.span())
+            if kind == "prefix":
+                tally.prefix_tokens[token] += 1
+            else:
+                tally.whole += 1
+
+
+def prefix_only_warnings(counts: Mapping[str, _PrefixCounts]) -> list[str]:
+    """Plan-time, non-fatal advisory (spec E9(b)).
+
+    Fires for a field that occurs ONLY as a separator-joined prefix of a
+    longer token and never as a whole token — the signature of a stale
+    ``press/press-source.toml`` after the template was renamed upstream
+    (``demo-widget`` -> ``demo-widget-2``). A field with at least one
+    whole-token occurrence is unflagged: a compound form living alongside
+    the plain value (``demo-widget`` AND ``demo-widget-web``) is a
+    deliberate, rewritable naming convention (spec E9), not a stale config.
+    """
+
+    warnings: list[str] = []
+    for field_name in sorted(counts):
+        tally = counts[field_name]
+        if tally.whole != 0 or not tally.prefix_tokens:
+            continue
+        token, places = tally.prefix_tokens.most_common(1)[0]
+        warnings.append(
+            f"warning: {field_name} {tally.value!r} occurs only as a prefix "
+            f"of {token!r} ({places} places); if the template was renamed, "
+            "update press/press-source.toml"
+        )
     return warnings
 
 
