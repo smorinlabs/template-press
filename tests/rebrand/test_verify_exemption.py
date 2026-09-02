@@ -371,34 +371,43 @@ def _write_rules(target: Path, body: str) -> Path:
     return target
 
 
-def test_regenerate_against_identity_bearing_source_file_is_refused(
+def test_regenerate_on_excluded_identity_bearing_source_fails_after_apply_without_receipt(
     src_target: Path, capsys: pytest.CaptureFixture
 ) -> None:
     """E3 — regression PIN, not TDD (see E3-review.md §4's "one test that
     must exist").
 
-    Neither `load_rules` nor `build_plan` refuses a `[[regenerate]]`
+    This is an AFTER-APPLY leak failure, not a plan-time refusal ("refusal"
+    in this CLI means exit 2, nothing written — see `preflight_*` gates).
+    Neither `load_rules` nor `build_plan` rejects a `[[regenerate]]`
     declared against a normal, identity-bearing source file once that file
     is added to `extra_exclude_files` (confirmed empirically: both succeed
     for this exact rules body — the file-in-exclude_files check at parse
     time and the excluded-file preflight are satisfied because a
     `[[regenerate]]` declaration for the file exists, regardless of what
-    its command actually does). The refusal that exists today is later and
-    functional, not an exception: `execute_regenerations`' post-command
-    leak scan (`regen.py`) finds the excluded file still carrying source
-    identity — the `[[replace]]` pass never touched it — and `main()`
-    reports `PressOutcome(success=False)`, printing to stderr and
-    returning exit code 1 with NO receipt written. This is the same
-    "leaks found, no receipt, target already rewritten — restore it
-    first" contract every other leak failure uses (`press-target`
-    SKILL.md step 5), not a plan-time exit-2 refusal.
+    its command actually does). What fails is later and functional, not an
+    exception: `apply()` rewrites the rest of the tree first, then
+    `execute_regenerations`' post-command leak scan (`regen.py`) finds the
+    excluded file still carrying source identity — the `[[replace]]` pass
+    never touched it — and `main()` reports `PressOutcome(success=False)`,
+    printing to stderr and returning exit code 1 with NO receipt written.
+    This is the same "leaks found, no receipt, target already rewritten —
+    restore it first" contract every other leak failure uses
+    (`press-target` SKILL.md step 5): `git checkout -- .` restores the
+    excluded file's pre-press bytes exactly, which this test also pins.
+
+    The declared command is `["true"]`, not a real formatter — the pin
+    exercises the excluded-file leak boundary, not a specific tool, so it
+    must not depend on PATH.
     """
+    cli_py = src_target / "src" / "demo_widget" / "cli.py"
+    pre_press_bytes = cli_py.read_bytes()
     _write_rules(
         src_target,
         '[rules]\nextra_exclude_files = ["src/demo_widget/cli.py"]\n'
         "[[regenerate]]\n"
         'file = "src/demo_widget/cli.py"\n'
-        'command = ["ruff", "format", "src"]\n',
+        'command = ["true"]\n',
     )
     _commit(src_target)
 
@@ -422,3 +431,13 @@ def test_regenerate_against_identity_bearing_source_file_is_refused(
     assert not (src_target / RECEIPT_REL).exists()
     assert "src/demo_widget/cli.py" in err
     assert "still carries source" in err
+
+    # Documented recovery path (press-target SKILL.md step 5): git restores
+    # the excluded file's pre-press bytes exactly.
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "checkout", "--", "."],  # noqa: S607
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert cli_py.read_bytes() == pre_press_bytes
