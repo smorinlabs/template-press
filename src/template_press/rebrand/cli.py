@@ -96,6 +96,19 @@ def _fail(msg: str) -> int:
     return 2
 
 
+def _partial_rewrite_restore_hint(target: Path) -> str:
+    """Shared restoration guidance for a mid-mutation `_press()` failure.
+
+    Used by both the generic catch-all message and the
+    `RenameClosureUnauthorized` branch, which prints its own aggregated
+    findings + remedy first and then appends this same hint.
+    """
+    return (
+        f"target may be PARTIALLY rewritten; restore with "
+        f"`git -C {target} checkout . && git clean -fd`"
+    )
+
+
 def _print_closure_refusal_prose(
     exc: RenameClosureUnauthorized, target: Path, rules: Rules
 ) -> None:
@@ -722,13 +735,14 @@ def _press(
             # The tree changed between planning and apply (e.g. a new
             # ignored file appeared under a renamed prefix): print the same
             # aggregated findings + remedy argv as the plan-time refusal,
-            # never JSON here (the plan already printed to stdout) and
+            # never JSON here (the plan already printed to stdout), THEN the
+            # same restoration guidance the generic branch below prints —
             # without changing this site's exit-1 partial-rewrite contract.
             _print_closure_refusal_prose(exc, target, rules)
+            print(_partial_rewrite_restore_hint(target), file=sys.stderr)
         else:
             print(
-                f"error: {exc} — target may be PARTIALLY rewritten; restore with "
-                f"`git -C {target} checkout . && git clean -fd`",
+                f"error: {exc} — {_partial_rewrite_restore_hint(target)}",
                 file=sys.stderr,
             )
         return PressOutcome(

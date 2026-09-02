@@ -1827,7 +1827,8 @@ def test_closure_refusal_on_apply_time_revalidation_exits_1_with_remedy(
     monkeypatch.setattr(cli_module, "revalidate_substitution_table", planted_revalidate)
 
     code = main(["--target", str(src_target), "--config", str(answers)])
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out, err = captured.out, captured.err
     assert code == 1
     assert "absent from the authorized surface" in out
     assert (
@@ -1835,6 +1836,10 @@ def test_closure_refusal_on_apply_time_revalidation_exits_1_with_remedy(
         and "clean -fdX -- src/demo_widget" in out
     )
     assert "phase='apply'" in out
+    assert (
+        "target may be PARTIALLY rewritten; restore with "
+        f"`git -C {src_target} checkout . && git clean -fd`" in err
+    )
     assert not (src_target / RECEIPT_REL).exists()
     assert (src_target / "README.md").read_text(encoding="utf-8") == readme_before
     # never JSON at this catch site, even if requested — no --diagnostics-json
@@ -1847,8 +1852,11 @@ def test_closure_refusal_diagnostics_json_carries_all_findings_when_truncated(
     write_source_config(src_target)
     pycache = src_target / "src" / "demo_widget" / "__pycache__"
     pycache.mkdir()
+    planted_paths = set()
     for i in range(25):
-        (pycache / f"m{i:02d}.pyc").write_bytes(b"\0")
+        name = f"m{i:02d}.pyc"
+        (pycache / name).write_bytes(b"\0")
+        planted_paths.add(f"src/demo_widget/__pycache__/{name}")
     answers = write_answers(tmp_path)
     code = main(
         [
@@ -1862,8 +1870,8 @@ def test_closure_refusal_diagnostics_json_carries_all_findings_when_truncated(
     )
     payload = json.loads(capsys.readouterr().out)
     assert code == 2
-    assert payload["total"] > 20
-    assert len(payload["findings"]) == payload["total"]
+    assert payload["total"] == 25
+    assert {f["path"] for f in payload["findings"]} == planted_paths
     assert payload["truncated"] is True
 
 
