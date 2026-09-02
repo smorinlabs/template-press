@@ -3,12 +3,14 @@ import subprocess
 from pathlib import Path
 
 from template_press.rebrand.engine import (
+    _rename_covered_paths,
     build_plan,
     iter_target_files,
     replacement_pairs,
 )
 from template_press.rebrand.identity import Identity
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
+from template_press.rebrand.substitutions import RenameStep
 
 from .conftest import DEST, SOURCE
 
@@ -117,3 +119,64 @@ class TestSubstringPlan:
             src_target, _identity(), _identity(app_name="acme"), DEFAULT_RULES
         )
         assert not any(i.kind == "replace" and i.path == "note.txt" for i in plan.items)
+
+
+class TestRenameCoveredPaths:
+    """Round 2 fix (E5a): rewrite-coverage candidacy for a rename must read
+    RenameStep.source_entries, not compare tracked paths against old_prefix
+    — a step from pass 2+ carries an INTERMEDIATE old_prefix (the path an
+    earlier pass already moved it to), which a pre-rename tracked path
+    would never match."""
+
+    def _step(self, **overrides) -> RenameStep:
+        base = {
+            "step_id": "rename:1:1",
+            "old_prefix": "pkg_a",
+            "new_prefix": "pkg_b",
+            "pass_number": 1,
+            "row_ids": (),
+            "source_entries": (),
+            "expected_kind": "file",
+        }
+        base.update(overrides)
+        return RenameStep(**base)
+
+    def test_single_pass_step_covers_its_source_entries(self):
+        step = self._step(source_entries=("pkg_a/file.py", "pkg_a/sub/other.py"))
+        assert _rename_covered_paths((step,)) == {
+            "pkg_a/file.py",
+            "pkg_a/sub/other.py",
+        }
+
+    def test_chained_step_resolves_through_intermediate_old_prefix(self):
+        """A pass-2 step's old_prefix ("pkg_b") is the CURRENT path left by
+        a pass-1 step that already moved "pkg_a" -> "pkg_b" — the true
+        SOURCE-coordinate file never had that name. The buggy old_prefix
+        comparison would miss it entirely; source_entries must not."""
+        chained_step = self._step(
+            step_id="rename:2:1",
+            old_prefix="pkg_b",  # intermediate coordinate, not a real source path
+            new_prefix="pkg_c",
+            pass_number=2,
+            source_entries=("pkg_a/file.py",),  # true SOURCE coordinate
+        )
+        covered = _rename_covered_paths((chained_step,))
+        assert covered == {"pkg_a/file.py"}
+        # Demonstrate the old (buggy) approach would have missed it: the
+        # tracked SOURCE path never equals, or nests under, this step's
+        # intermediate old_prefix.
+        tracked_source_path = "pkg_a/file.py"
+        old_prefix_would_match = tracked_source_path == chained_step.old_prefix or (
+            tracked_source_path.startswith(f"{chained_step.old_prefix}/")
+        )
+        assert not old_prefix_would_match
+
+    def test_multiple_steps_union(self):
+        step1 = self._step(source_entries=("a/x.py",))
+        step2 = self._step(
+            step_id="rename:1:2",
+            old_prefix="pkg_c",
+            new_prefix="pkg_d",
+            source_entries=("c/y.py", "c/z.py"),
+        )
+        assert _rename_covered_paths((step1, step2)) == {"a/x.py", "c/y.py", "c/z.py"}

@@ -7,7 +7,7 @@ caught even though there is no separator character. fixture app_name=
 ``press``, package=``demo_widget`` (mirrors conftest.SOURCE).
 """
 
-from template_press.rebrand.matcher import find_occurrences
+from template_press.rebrand.matcher import classify_occurrence, find_occurrences
 
 
 def test_word_traps_not_matched():
@@ -43,6 +43,56 @@ def test_glued_only_with_substring():
     assert find_occurrences(
         "xdemo_widgety", "package_name", "demo_widget", substring=True
     )
+
+
+# --- spec E9(b): whole-token vs separator-joined-prefix classification ----
+
+
+def test_classify_occurrence_prefix_of_a_longer_token():
+    # "demo-widget-2" (template renamed upstream): the match is immediately
+    # followed by "-2" — a separator, then an alphanumeric.
+    span = find_occurrences(
+        "see demo-widget-2 docs", "repo_name", "demo-widget", substring=False
+    )[0]
+    assert classify_occurrence("see demo-widget-2 docs", span) == (
+        "prefix",
+        "demo-widget-2",
+    )
+
+
+def test_classify_occurrence_whole_token():
+    for text in ("demo-widget", "demo-widget end", "demo-widget."):
+        span = find_occurrences(text, "repo_name", "demo-widget", substring=False)[0]
+        assert classify_occurrence(text, span) == ("whole", "")
+
+
+def test_classify_occurrence_trailing_separator_with_no_continuation():
+    # A separator with nothing alphanumeric after it (end of string) is not
+    # a continuation — the match still stands on its own.
+    assert classify_occurrence("demo-widget-", (0, 11)) == ("whole", "")
+
+
+def test_classify_occurrence_dot_extension_is_not_a_continuation():
+    # spec E9(b) fix round 1: a dot right after the value is an
+    # extension/domain suffix (`demo-widget.git`, `template-press.svg`),
+    # not a rename continuation — it must classify whole even though a dot
+    # followed by an alphanumeric used to (incorrectly) read as "prefix".
+    cases = [
+        ("repo_name", "demo-widget", "clone demo-widget.git here"),
+        ("app_name", "template-press", "icons/template-press.svg"),
+    ]
+    for field, value, text in cases:
+        span = find_occurrences(text, field, value, substring=False)[0]
+        assert classify_occurrence(text, span) == ("whole", ""), text
+
+
+def test_classify_occurrence_slash_is_a_whole_token_boundary():
+    # Pin: unaffected by the dot fix — a `/` right after the value was
+    # already, and remains, a whole-token boundary (`demo-widget/` is a
+    # path segment, not a rename suffix).
+    text = "demo-widget/releases"
+    span = find_occurrences(text, "repo_name", "demo-widget", substring=False)[0]
+    assert classify_occurrence(text, span) == ("whole", "")
 
 
 # --- 5.5 property test: no false positives over an unrelated wordlist -----

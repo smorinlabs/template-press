@@ -9,6 +9,8 @@ found after apply (no receipt), 2 precondition/config error (no writes).
 from __future__ import annotations
 
 import argparse
+import json
+import shlex
 import subprocess  # nosec B404 — invokes git/uv on user-supplied targets
 import sys
 import tomllib
@@ -75,6 +77,7 @@ from template_press.rebrand.rules import (
     load_selected_rules,
 )
 from template_press.rebrand.safety import (
+    RenameClosureUnauthorized,
     SafetyError,
     git_hardening_args,
     scrubbed_git_env,
@@ -90,6 +93,106 @@ from template_press.rebrand.substitutions import (
 
 def _fail(msg: str) -> int:
     print(f"error: {msg}", file=sys.stderr)
+    return 2
+
+
+def _shell_join(argv: list[str]) -> str:
+    """Render `argv` as a copy-pasteable shell command for this platform."""
+    if sys.platform == "win32":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
+def _partial_rewrite_restore_hint(target: Path) -> str:
+    """Shared restoration guidance for a mid-mutation `_press()` failure.
+
+    Used by both the generic catch-all message and the
+    `RenameClosureUnauthorized` branch, which prints its own aggregated
+    findings + remedy first and then appends this same hint.
+    """
+    checkout = _shell_join(["git", "-C", str(target), "checkout", "--", "."])
+    clean = _shell_join(["git", "-C", str(target), "clean", "-fd"])
+    return f"target may be PARTIALLY rewritten; restore with `{checkout} && {clean}`"
+
+
+def _empty_dir_paths(exc: RenameClosureUnauthorized) -> list[str]:
+    """Sorted ``empty-dir`` finding paths from `exc` (E2).
+
+    ``git clean -fdX`` (the remedy `remedy_argv` prints) cannot remove these:
+    ``-X`` only removes IGNORED paths, and an uninventoried empty directory
+    is by definition unignored (nothing in it for `.gitignore` to match) —
+    so each needs its own `rmdir`.
+
+    Stays repo-relative here: the `--diagnostics-json` payload's
+    ``rmdir_paths`` renders this return value as-is (a machine consumer
+    joins it with its own known target root), while the prose remedy
+    (`_print_closure_refusal_prose`) renders each path through `target /
+    path` so the printed `rmdir` command works from any caller cwd.
+    """
+    return sorted(path for kind, path in exc.findings if kind == "empty-dir")
+
+
+def _print_closure_refusal_prose(
+    exc: RenameClosureUnauthorized, target: Path, rules: Rules
+) -> None:
+    """Print the E2 aggregated findings + remedy argv as prose (stdout).
+
+    Shared by both catch sites: the plan-time refusal (exit 2, "nothing
+    written") and the apply-time revalidation refusal (exit 1, "partially
+    rewritten") — the message and remedy are identical; only the exit code
+    and surrounding context differ by call site.
+    """
+    preview, remove = exc.remedy_argv(target)
+    print(str(exc))
+    print(f"preview: {_shell_join(preview)}")
+    print(f"remove:  {_shell_join(remove)}")
+    print(
+        "(destructive, and broader than the paths listed — run only if "
+        "the preview shows nothing you keep)"
+    )
+    empty_dirs = _empty_dir_paths(exc)
+    if empty_dirs:
+        cap = 20
+        prefix_abs = target / exc.source_prefix
+        for path in empty_dirs[:cap]:
+            leaf = target / path
+            if sys.platform == "win32":
+                argv = ["rmdir", str(leaf)]
+            else:
+                argv = ["rmdir", "--", str(leaf)]
+            print(_shell_join(argv))
+            print(f"  # then rmdir each newly-empty parent up to {prefix_abs}")
+        if len(empty_dirs) > cap:
+            print(f"  … ({len(empty_dirs) - cap} more)")
+    if getattr(rules, "clean", ()):
+        print(f"declared clean rules exist — run: press clean --target {target}")
+
+
+def _report_closure_refusal(
+    exc: RenameClosureUnauthorized, target: Path, rules: Rules, diagnostics_json: bool
+) -> int:
+    """Print the E2 remedy (or `--diagnostics-json` payload) and return 2.
+
+    Plan-time only (see docstring on `_print_closure_refusal_prose` for the
+    apply-time counterpart, which never emits JSON and returns 1).
+    """
+    if diagnostics_json:
+        preview, remove = exc.remedy_argv(target)
+        payload = {
+            "schema": 1,
+            "code": exc.code,
+            "source_prefix": exc.source_prefix,
+            "findings": [{"kind": kind, "path": path} for kind, path in exc.findings],
+            "total": exc.total,
+            "truncated": exc.truncated,
+            "phase": exc.phase,
+            "preview_argv": preview,
+            "remove_argv": remove,
+            "rmdir_paths": _empty_dir_paths(exc),
+        }
+        print(json.dumps(payload, ensure_ascii=True))
+        return 2
+    _print_closure_refusal_prose(exc, target, rules)
     return 2
 
 
@@ -211,6 +314,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument(
+        "--diagnostics-json",
+        action="store_true",
+        help=(
+            "on a structured refusal, print a JSON diagnostic instead of "
+            "prose; exit code unchanged"
+        ),
+    )
     parser.add_argument(
         "--verbose",
         action="store_true",
@@ -343,6 +454,10 @@ def main(argv: list[str] | None = None) -> int:
             print(render_reset_plan(reset_previews, verbose=args.verbose))
         if rules.remove:
             print(render_remove_plan(rules))
+        for warning in plan.removal_warnings:
+            print(warning)
+        for warning in plan.prefix_warnings:
+            print(warning)
         strays = stray_press_dirs(target)
         if strays:
             print(
@@ -375,6 +490,8 @@ def main(argv: list[str] | None = None) -> int:
         subprocess.CalledProcessError,
         SafetyError,
     ) as exc:
+        if isinstance(exc, RenameClosureUnauthorized):
+            return _report_closure_refusal(exc, target, rules, args.diagnostics_json)
         return _fail(str(exc))
     outcome = _press(
         target,
@@ -656,11 +773,20 @@ def _press(
         # Exit 2 (main's pre-_press gate) means "nothing applied"; a
         # mid-mutation failure here is not that — target may be PARTIALLY
         # rewritten.
-        print(
-            f"error: {exc} — target may be PARTIALLY rewritten; restore with "
-            f"`git -C {target} checkout . && git clean -fd`",
-            file=sys.stderr,
-        )
+        if isinstance(exc, RenameClosureUnauthorized):
+            # The tree changed between planning and apply (e.g. a new
+            # ignored file appeared under a renamed prefix): print the same
+            # aggregated findings + remedy argv as the plan-time refusal,
+            # never JSON here (the plan already printed to stdout), THEN the
+            # same restoration guidance the generic branch below prints —
+            # without changing this site's exit-1 partial-rewrite contract.
+            _print_closure_refusal_prose(exc, target, rules)
+            print(_partial_rewrite_restore_hint(target), file=sys.stderr)
+        else:
+            print(
+                f"error: {exc} — {_partial_rewrite_restore_hint(target)}",
+                file=sys.stderr,
+            )
         return PressOutcome(
             False,
             report.renamed if report else [],

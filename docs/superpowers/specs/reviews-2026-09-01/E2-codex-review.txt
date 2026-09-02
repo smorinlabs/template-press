@@ -1,0 +1,111 @@
+  Duration: 5m 11s
+  Codex session ID: 01a05648-7f00-7221-8c8d-ac3d73d48838
+  Resume in Codex: codex resume 01a05648-7f00-7221-8c8d-ac3d73d48838
+  Log: /Users/stevemorin/.claude/plugins/data/codex-openai-codex/state/template-press-pr90-fork-press-improve-g2p-89aa293b34326b4b/jobs/task-mtgspos8-10l2g6.log
+  Result: /codex:result task-mtgspos8-10l2g6
+## Adversarial verdict
+
+Keep the refusal. Option 6 is sound only as a diagnostic improvement: apply modified forms of (a)–(c), and reject (d).
+
+| Option | Verdict | Confidence |
+|---|---|---:|
+| (a) collect-then-raise | **APPLY MODIFIED** | High, 95% |
+| (b) Git-clean remedy | **APPLY MODIFIED** | High, 94% |
+| (c) machine-readable refusal | **APPLY MODIFIED** | High, 96% |
+| (d) non-refusing dry-run | **REJECT** | High, 99% |
+
+### (a) Collect-then-raise
+
+This does not weaken rename atomicity. `_prefix_closure()` runs while building or revalidating the plan, before `rename_noreplace()` executes; apply revalidates the closure before the first mutation. [substitutions.py:505](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/substitutions.py:505>) [substitutions.py:591](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/substitutions.py:591>) [safety.py:704](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/safety.py:704>)
+
+It does change the diagnostic ordering: today the sorted depth-first walk reports its first empty directory or unauthorized leaf. That ordering is an implementation behavior, not a documented safety guarantee. [substitutions.py:529](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/substitutions.py:529>)
+
+Modify the proposal as follows:
+
+- Preserve the covered-gitlink precheck as the highest-priority refusal. Design 0009 explicitly requires immediate gitlink refusal without descending into it. [substitutions.py:513](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/substitutions.py:513>) [0009-substitution-table.md:343](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/docs/design/0009-substitution-table.md:343>)
+- Keep missing nodes, unreadable directories, and inventory-kind mismatches immediate. Those conditions mean the walk cannot produce a trustworthy complete finding set. [substitutions.py:532](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/substitutions.py:532>) [substitutions.py:542](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/substitutions.py:542>) [substitutions.py:560](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/substitutions.py:560>)
+- Aggregate only authorization findings: absent non-directory nodes and uninventoried empty directories. Raise after a successful complete walk.
+- Count every finding, but retain only the first 20 deterministic paths plus `total` and `truncated`; do not retain an unbounded in-memory list.
+- Keep `absent from the authorized surface` verbatim.
+
+Path disclosure is real in logs, although not a new privilege boundary: the current error already prints the first path. Aggregation increases exposure from one filename to approximately 20. Never include contents, and render hostile filenames escaped rather than as raw newline-containing text. [substitutions.py:548](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/substitutions.py:548>) [substitutions.py:554](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/substitutions.py:554>)
+
+### (b) Git-clean remedy
+
+`-X` is the correct selector; `-x` is not. `-x` would also delete non-ignored untracked files that the press deliberately includes in its authorized inventory. [inventory.py:919](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/inventory.py:919>)
+
+The proposed command is nevertheless too broad and incomplete:
+
+- `git clean -fdX -- <prefix>` removes every path Git currently considers ignored below the prefix, not merely the blockers listed by the refusal. Ignored credentials, local configuration, or operator data may disappear.
+- It cannot repair an unignored empty directory or a non-ignored node created after snapshot capture.
+- A raw Git invocation may use global/system ignore configuration that the press neutralizes and pins during inventory, so its deletion set can exceed the press’s blocker set. [inventory.py:140](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/inventory.py:140>)
+- Nested `.gitignore` rules are correctly interpreted by Git. Conversely, a single `-f` does not authorize deleting nested repositories; do not “fix” that by recommending `-ff`. Embedded repositories receive special inventory treatment and require manual disposition. [inventory.py:864](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/inventory.py:864>)
+- A gitlink is the earlier immovable-boundary refusal, not a cleanable blocker.
+- A direct symlink rename is a no-follow leaf and should already be inventoried; cleanup code must never traverse a symlink prefix. [substitutions.py:476](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/substitutions.py:476>)
+- A shell string is not portable to Windows and can mis-handle spaces, newlines, leading dashes, or Git pathspec magic.
+
+Show target-aware, literal-pathspec argv conceptually:
+
+```text
+preview argv: ["git", "--literal-pathspecs", "-C", TARGET, "clean", "-ndX", "--", PREFIX]
+remove argv:  ["git", "--literal-pathspecs", "-C", TARGET, "clean", "-fdX", "--", PREFIX]
+```
+
+Label the remove form “destructive, broader than the reported blockers; run only if the preview contains exclusively disposable paths.” It must remain operator-executed and must not be emitted as an automatically safe remedy.
+
+### (c) Machine-readable refusal
+
+Use a typed error, not a stable ad-hoc line. Filenames may contain newlines or undecodable POSIX bytes, making an unescaped line protocol unsafe.
+
+The producer should raise a `SafetyError` subclass carrying:
+
+```text
+code, source_prefix, findings[{kind, path}], total, truncated, phase
+```
+
+The CLI should serialize it under an explicit structured-diagnostics flag while retaining exit code `2`. Exit `2` already means a precondition/configuration refusal with nothing written; introducing a distinct process code would break the documented automation contract unnecessarily. [safety.py:81](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/safety.py:81>) [cli.md:30](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/docs/source/reference/cli.md:30>)
+
+This data does not belong in `Plan`, because `build_plan()` raises before the plan can render. It also does not belong in `render_regenerate_plan()`, which renders approved post-apply commands. [cli.py:257](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/cli.py:257>) [cli.py:338](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/cli.py:338>) [regen.py:342](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/regen.py:342>)
+
+Structured output exposes the same filenames as (a), potentially all of them. Make it opt-in, version its schema, encode paths losslessly, and never include file contents.
+
+### (d) Dry-run warning instead of refusal
+
+Reject. Current dry-run and apply both call `build_plan()` before their paths diverge. Successful dry-run means the complete plan passed its plan-time gates. [cli.py:252](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/cli.py:252>) [cli.py:356](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/cli.py:356>)
+
+Design 0009 requires `build_plan()` and `apply()` to consume the same snapshot-backed rename plan and forbids continuing with a partially valid plan. Its dry-run consumers use the full planned view. [0009-substitution-table.md:327](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/docs/design/0009-substitution-table.md:327>) [0009-substitution-table.md:352](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/docs/design/0009-substitution-table.md:352>) [0009-substitution-table.md:373](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/docs/design/0009-substitution-table.md:373>)
+
+The exact dry-run parity statement is in the CLI reference, not design 0006: plan-time refusals exit `2` before rendering exactly as apply does. [cli.md:40](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/docs/source/reference/cli.md:40>)
+
+Dry-run may render the aggregated refusal as a blocked-plan diagnostic, but it must still exit `2`, omit the normal executable plan, and not print `(dry run — nothing applied)` as a success terminator. Reporting names on successful stdout would also increase accidental CI-log disclosure.
+
+### Automation boundary
+
+Accept engine-side diagnosis, not engine-side deletion:
+
+- Exit `2` with stable `error.code = "rename_closure_unauthorized"`.
+- Return the sorted typed findings and preview argv.
+- Let the wrapper display the Git preview, obtain explicit confirmation, perform external cleanup, and rerun planning from a fresh snapshot.
+
+Do not add `press clean` as part of this fix. Gitignored means “not tracked,” not “disposable,” and ignored data has no Git recovery path. Existing declared deletion is allowed only for clean, tracked regular files precisely because Git provides recovery. [remove.py:50](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/remove.py:50>)
+
+A future `press clean` would need a separate accepted destructive-operation design: preview by default, immutable manifest binding, exact-path deletion rather than prefix-wide cleaning, immediate revalidation, no-follow removal, and refusal for gitlinks, symlinks, embedded repositories, non-ignored empty directories, or changed ignore inputs. That is disproportionate to this diagnostic fix.
+
+I agree with the other rejected alternatives. Carrying, skipping, or engine-deleting ignored nodes breaks the authorized-closure/undo model; default-authorized globs turn cache policy into hidden movement authority; and `--clean-ignored` makes destructive behavior part of rebrand. Skipping a child also cannot coexist with the atomic whole-prefix move: the filesystem rename moves the directory as one object. [safety.py:704](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/src/template_press/rebrand/safety.py:704>)
+
+### Minimal test set
+
+1. Aggregate two ignored leaves and one empty directory into one deterministic error; assert count, cap, kinds, and legacy substring.
+2. Combine a gitlink with ignored leaves; assert the gitlink remains the refusal.
+3. Inject missing, unreadable, and kind-mismatched nodes during traversal; assert each immediate structural refusal wins.
+4. Preserve the existing live-divergence/no-content-write assertion at [test_substitution_safety.py:107](</Users/stevemorin/c/template-press-pr90-fork-press-improve-g2p/tests/rebrand/test_substitution_safety.py:107>).
+5. Assert dry-run and apply return exit `2`, emit the same structured code, make no writes, and render no normal plan.
+6. Round-trip spaces, leading dashes, pathspec metacharacters, newlines, and non-UTF-8 POSIX names through structured diagnostics.
+7. Git-clean integration: `-X` preserves non-ignored untracked files; ignored nested-cache paths appear in preview; unignored empty directories, gitlinks, and embedded repositories remain refused.
+8. Run the focused substitution-safety and CLI tests, then the required `just check` and `just matrix` gates. No tests were run during this read-only review.
+
+
+Codex session ID: 01a05648-7f00-7221-8c8d-ac3d73d48838
+Resume in Codex: codex resume 01a05648-7f00-7221-8c8d-ac3d73d48838
+
+[exited with code 0]

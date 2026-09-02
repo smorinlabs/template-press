@@ -39,6 +39,40 @@ The exit code is the contract — scripts and CI can branch on it:
 
 `--dry-run` exits `0` after printing the plan — it is a preview and writes nothing (no receipt). It performs a read-only host check; a statically unsupported host produces a warning that real apply requires `--force`. The target filesystem's operational atomic-rename capability is probed only during real apply. Other plan-time refusals (a missing declared tool, a stale argv, an undeclared excluded file) exit `2` before the plan renders, exactly as they would without `--dry-run`.
 
+### Structured refusals
+
+A rename-prefix closure that carries content absent from the authorized
+surface inventory (`code = rename_closure_unauthorized`) refuses at the
+plan-time check with exit `2` — "nothing written" — under both `--dry-run`
+and a real apply, since a real apply runs the same plan-time check before
+writing anything; dry-run never prints the `(dry run — nothing applied)`
+success terminator on a refusal. The prose form names every offending path
+in the rendered message (up to 20, sorted, plus a total/truncated count —
+`truncated` describes only this rendering; the typed exception's `findings`
+and the `--diagnostics-json` payload's `findings` always carry every one of
+them, uncapped) and prints a remedy as literal-pathspec `git clean` argv: a
+preview (`clean -ndX`) and a remove (`clean -fdX`). Both are restricted to
+`-d` (directories) and `-X` (ignored files only — never `-x`), and are
+deliberately broader than the specific paths listed — run only after
+confirming the preview shows nothing worth keeping. When the target declares
+`[[clean]]` rules, the refusal also names `press clean` as the fix to run
+first. Pass `--diagnostics-json` to get the same information as one JSON
+object on stdout instead of prose (schema `{"schema", "code", "source_prefix",
+"findings", "total", "truncated", "phase", "preview_argv", "remove_argv"}`) —
+the exit code is unchanged. The prose form, like the JSON, is printed to
+stdout — unlike every other exit-`2` refusal, it does not go to stderr
+with the `error:` prefix that `_fail` puts there, so a check that greps
+stderr for `error:` will not see it. The removal-coverage and prefix-only
+warnings documented below print to stdout as well.
+
+If the target tree changes between planning and apply — e.g. a new ignored
+file appears under a prefix being renamed — the same check runs again as an
+apply-time revalidation immediately before the first mutation. It prints the
+same aggregated findings and remedy argv, but never as JSON (the plan has
+already printed to stdout by then), and it exits `1` under the partial-
+rewrite contract (target may be partially rewritten; restore with
+`git -C <target> checkout . && git clean -fd`), not `2`.
+
 ### The ignore set
 
 If a target legitimately keeps some source-identity content (vendored code,
@@ -47,6 +81,19 @@ historical docs), list those directory names under `verify_ignore` in
 those directories from being rewritten, list the same names under
 `extra_exclude_dirs`. Both keys match a single directory *name* at any depth,
 not a path.
+
+A `foo/` line in `.gitignore` (the trailing slash) matches DIRECTORIES only —
+it does not ignore a symlink or a regular file also named `foo`. `press
+verify` and the post-apply doctor only ever see what
+`git ls-files --exclude-standard` lists, so an untracked `foo` that is
+anything other than a real directory (most commonly a symlink standing in for
+a vendored directory, e.g. `node_modules` created by `bun install
+--frozen-lockfile` — see the `press-target` skill's
+troubleshooting notes) is enumerated and scanned like any other untracked
+entry, and `git add -A` would commit it. When a finding lands on such an
+entry, the report attaches a note identifying the exact `.gitignore` line and
+naming the fix: drop the trailing slash, remove the entry, or list its name
+under `verify_ignore`.
 
 ### Platform-conditional reset and regeneration
 
@@ -83,6 +130,16 @@ The same file may appear in multiple `[[regenerate]]` declarations, multiple
 `[[reset]]` declarations, or one declaration of each kind only when their
 platform sets are disjoint. If two declarations can write the same file on
 the same platform, configuration loading fails with exit code `2`.
+
+A `[[regenerate]]` declaration names one output: the declared `file`, which
+must already be excluded from the identity rewrite. The engine enforces that
+much — and post-checks only that one file for leaked identity — but it does
+not police what the declared command writes elsewhere; nothing stops a
+command from touching other files. `[[regenerate]]` is still not a hook for
+repo-wide tools: a declared command MUST NOT edit files other than its
+declared output, and a whole-tree formatter cannot be declared this way. Run
+the target's own formatter in the target after the press, before the first
+commit.
 
 ### Regeneration scan policy
 
@@ -125,6 +182,68 @@ and count as a §6 neutralization for excluded files. Hermetic
 `press verify` performs removals in its sandbox — no command is needed, so
 unlike regeneration there is no exemption and no coverage gap. An optional
 `platforms` selector scopes a removal like reset/regenerate.
+
+When `[[remove]]` declares at least one file under a directory, the plan
+appends a `removing N file(s) under <dir>/` summary line (singular for
+`N == 1`) beneath the per-file lines — a quick count check, grouped by the
+removal's declared SOURCE path, top-level directory only.
+
+### Declared-removal coverage warning
+
+Plan time also checks, independently of any `[[remove]]` declaration,
+whether a top-level directory (depth 1 — a target's `<dir>/`, not any
+directory nested inside it) looks like undeclared template history: every
+one of its git-tracked files is a rewrite candidate — it either gets a
+content substitution, or its path falls under a planned rename (a
+rename-only file, such as a logo image or a directory named after the
+package, counts too) — and no `[[remove]]` or `[[reset]]` rule touches
+anything under it. When that happens, the plan prints a non-fatal
+`warning: N tracked files under <dir>/ will be rewritten to the new
+identity and no rule removes or resets them — declare [[remove]] or
+[rules] verify_ignore if this is template history` line — on both
+`--dry-run` and a real apply, after the plan, with the exit code
+unchanged. The directories `src/`, `tests/`, and the top-level directory
+named after the SOURCE identity's `package_name` (the flat-layout package
+root — under `src/` layout the package sits a level deeper, already
+covered by the `src/` exclusion) are never flagged: a fully rewritten
+package or test tree is the expected, unremarkable case, not a sign of
+leftover history. A directory named in `[rules] verify_ignore` is likewise
+never flagged. This is advisory only — it never blocks a press, and a
+directory with even one untouched tracked file (an image, an unrelated
+config) does not count as "fully rewritten" and stays silent.
+
+### Prefix-only occurrence warning
+
+Plan time also checks, per identity field and per rendered display form
+(skipping `app_name` and `app_name_upper`, whose own rewrite matchers
+already treat a trailing hyphen as a boundary — and `app_name_upper`'s own
+designed usage is `_`+alphanumeric, e.g. `_PRESS_COMPLETE`), whether the
+declared SOURCE value shows up in the target's tracked content ONLY as a
+separator-joined prefix of a longer token — never as a whole token on its
+own. A "separator-joined prefix" means a `-` or `_` right after the value,
+followed by an alphanumeric — `demo-widget-2` — NOT a `.`: a dot right
+after the value is an extension or domain suffix (`demo-widget.git`,
+`template-press.svg`, `name.toml`), not a rename continuation, and always
+classifies whole-token. This is the signature of a target that renamed
+itself upstream (`demo-widget` -> `demo-widget-2`, or a spaced display
+name `Demo Widget` -> `Demo Widget-2`) after `press/press-source.toml` was
+written, since the rewrite matcher's own boundary rule treats a hyphen or
+underscore right after the value as a non-boundary: `demo-widget` still
+matches, and still rewrites, inside `demo-widget-2`, so nothing else flags
+the drift. When a field or display form has at least one prefix
+occurrence and zero whole-token occurrences, the plan prints a non-fatal
+`warning: <field> '<value>' occurs only as a prefix of '<longer-token>'
+(N places); if the template was renamed, update press/press-source.toml`
+line — on both `--dry-run` and a real apply, after the plan, with the
+exit code unchanged. A field with even one whole-token occurrence stays
+silent even when a prefix form also exists (`demo-widget` alongside
+`demo-widget-web`): a compound naming convention living next to the plain
+value is a deliberate, rewritable form, not a stale source config. A field
+listed in `[rules] substring_rewrite_fields` is never checked: its
+rewriter matches the value as a plain substring, so a glued occurrence
+(`xdemo_widgety`) is a real whole occurrence to that rewriter but
+invisible to this check's boundary-aware matcher, which would otherwise
+misreport it as stale.
 
 ### Declared verify exemption
 

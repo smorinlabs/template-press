@@ -530,6 +530,113 @@ def test_json_report_maps_surviving_path_to_source_coords(
 
 
 # ---------------------------------------------------------------------------
+# E8: the near-miss note must reach `press verify`'s actual CLI output — the
+# sandbox `verifier.scan()` runs in can never see "untracked" (`make_sandbox`
+# / `_restage_sandbox` `git add -f` every copied path into the sandbox's OWN
+# index), so the note has to be computed separately against the REAL target.
+# ---------------------------------------------------------------------------
+@requires_symlink
+def test_untracked_symlink_dir_only_ignore_near_miss_note_reaches_verify_output(
+    tmp_path: Path, capsys
+) -> None:
+    repo = make_pressable(tmp_path)
+    (repo / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nvendor/\n", encoding="utf-8"
+    )
+    _commit(repo)
+    outside = tmp_path / "press" / "vendor"  # link text embeds app_name "press"
+    outside.mkdir(parents=True)
+    (repo / "vendor").symlink_to(outside)
+
+    assert verify_command(["--target", str(repo)]) == 1
+    err = capsys.readouterr().err
+    assert "matches directories only" in err
+    assert "git add -A" in err
+
+    assert verify_command(["--target", str(repo), "--json"]) == 1
+    out = json.loads(capsys.readouterr().out)
+    notes = [f.get("note") for f in out["surviving"] if f["path"] == "vendor"]
+    assert any(note and "matches directories only" in note for note in notes)
+
+
+# ---------------------------------------------------------------------------
+# E8 fix round 1 (Sonnet + Codex adversarial review).
+# ---------------------------------------------------------------------------
+@requires_symlink
+def test_json_note_key_omitted_unless_near_miss(tmp_path: Path, capsys) -> None:
+    """[P3] `note` must be OMITTED (not `null`) on an ordinary finding — a
+    JSON schema change otherwise — and present only on a genuine E8
+    near-miss finding."""
+    repo = make_pressable(tmp_path)
+    (repo / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nvendor3/\n", encoding="utf-8"
+    )
+    _commit(repo)
+    # An ordinary (non-near-miss) leak: a TRACKED file whose content survives.
+    (repo / "bun.lock").write_text('"name":"demo_widget"\n', encoding="utf-8")
+    _commit(repo, "track the ordinary leak")
+    outside = tmp_path / "press" / "vendor3"
+    outside.mkdir(parents=True)
+    (repo / "vendor3").symlink_to(outside)  # untracked near-miss symlink
+
+    assert verify_command(["--target", str(repo), "--json"]) == 1
+    out = json.loads(capsys.readouterr().out)
+    ordinary = [f for f in out["surviving"] if f["path"] == "bun.lock"]
+    near_miss = [f for f in out["surviving"] if f["path"] == "vendor3"]
+    assert ordinary
+    assert all("note" not in f for f in ordinary)
+    assert near_miss
+    assert all("note" in f and f["note"] for f in near_miss)
+
+
+@requires_symlink
+def test_untracked_symlink_dir_only_note_survives_renamed_prefix(
+    tmp_path: Path, capsys
+) -> None:
+    """[Minor] The near-miss note must fire even when the untracked entry
+    sits under a directory `apply()` RENAMES inside the sandbox —
+    `forward_map`'s source-coordinate translation and the E8
+    note-attachment (which re-probes the REAL target using that translated
+    path) must compose correctly."""
+    repo = make_pressable(tmp_path)
+    (repo / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nvendor5/\n", encoding="utf-8"
+    )
+    _commit(repo)
+    outside = tmp_path / "press" / "vendor5"
+    outside.mkdir(parents=True)
+    (repo / "src" / "demo_widget" / "vendor5").symlink_to(outside)
+
+    assert verify_command(["--target", str(repo)]) == 1
+    err = capsys.readouterr().err
+    assert "src/demo_widget/vendor5" in err
+    assert "matches directories only" in err
+
+
+@requires_symlink
+def test_tracked_symlink_dir_only_pattern_gets_no_note_via_cli(
+    tmp_path: Path, capsys
+) -> None:
+    """[Minor] A TRACKED symlink matching a dir-only pattern must get NO
+    note through the full sandbox+real-target CLI path — mirrors the
+    verifier-level tracked-symlink-no-note unit test, exercised end to
+    end."""
+    repo = make_pressable(tmp_path)
+    (repo / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nvendor6/\n", encoding="utf-8"
+    )
+    outside = tmp_path / "press" / "vendor6"
+    outside.mkdir(parents=True)
+    (repo / "vendor6").symlink_to(outside)
+    _commit(repo)  # `_commit` runs `git add -A` — tracks the symlink too.
+
+    assert verify_command(["--target", str(repo)]) == 1
+    err = capsys.readouterr().err
+    assert "vendor6" in err
+    assert "matches directories only" not in err
+
+
+# ---------------------------------------------------------------------------
 # G9 (plan headline): a full verify_command run must leave the REAL target
 # byte-identical — on BOTH the clean (exit 0) and the leak (exit 1) paths. Each
 # reaches the sandbox copy/apply/scan; verify must never write to the target.

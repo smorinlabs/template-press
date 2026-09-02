@@ -3,6 +3,13 @@
 # (design 0006 §6): lockfiles regenerate under the pressed identity, and
 # the release history resets to a stub instead of leaking.
 
+# PROJECTS.md is reset below (not a default-excluded file like
+# CHANGELOG.md), so it must be declared excluded from the replace pass —
+# otherwise the reset target would also be rewritten, making the result
+# depend on pass order.
+[rules]
+extra_exclude_files = ["PROJECTS.md"]
+
 [[regenerate]]
 file = "uv.lock"
 command = ["uv", "lock"]
@@ -23,9 +30,118 @@ platforms = ["win32"]
 file = "CHANGELOG.md"
 stub = "# Changelog\n"
 
+# PROJECTS.md tracks this repo's own engine-development history; a pressed
+# fork gets a fresh trunk instead of template-press's project backlog, so it
+# resets to the header + status legend (the reusable scaffolding) and drops
+# the "## Projects" table of engine-specific rows.
+[[reset]]
+file = "PROJECTS.md"
+stub = """# PROJECTS.md
+
+Project trunk. One row per project below; detailed scope, tasks, and
+references live in per-project files under `projects/`.
+
+Route every project-state change through a project-harness skill
+(`project-add`, `project-refine`, `project-audit`) rather than editing this
+file by hand.
+
+## Status legend
+
+| Glyph | Meaning                | Reach for…                    |
+|-------|------------------------|-------------------------------|
+| `[?]` | Idea                   | `project-refine` to scope     |
+| `[ ]` | Scoped, not started    | start work; flip to `[~]`     |
+| `[~]` | In progress            | continue; check next task     |
+| `[x]` | Completed              | leave alone                   |
+| `[-]` | Decided not to do      | leave alone                   |
+| `[>]` | Proceeded to successor | follow the redirect           |
+"""
+
 # The difftree workflow references the template owner's action; a pressed
 # fork's owner rewrite would point `uses:` at a repository that does not
 # exist, so pressed outputs drop the workflow (same rule as py-launch-blueprint).
 [[remove]]
 file = ".github/workflows/difftree-pr-comment.yml"
 reason = "uses the template owner's difftree action; the rewritten uses: path would not exist for a fork owner"
+
+# Per-project history files under projects/ (P01-P12) document this engine's
+# own development, not anything a pressed fork inherits.
+[[remove]]
+file = "projects/P01-init-rebrand-robustness.md"
+reason = "template-press project history is engine history, not a fork's"
+
+[[remove]]
+file = "projects/P02-repo-simplification.md"
+reason = "template-press project history is engine history, not a fork's"
+
+[[remove]]
+file = "projects/P03-external-target-rebrand-press-.md"
+reason = "template-press project history is engine history, not a fork's"
+
+[[remove]]
+file = "projects/P04-regenerate-bun-lock.md"
+reason = "template-press project history is engine history, not a fork's"
+
+[[remove]]
+file = "projects/P05-reset-rule.md"
+reason = "template-press project history is engine history, not a fork's"
+
+[[remove]]
+file = "projects/P06-substitution-set.md"
+reason = "template-press project history is engine history, not a fork's"
+
+[[remove]]
+file = "projects/P07-platform-conditional-declared-commands.md"
+reason = "template-press project history is engine history, not a fork's"
+
+[[remove]]
+file = "projects/P08-declared-removal-and-exemption.md"
+reason = "template-press project history is engine history, not a fork's"
+
+[[remove]]
+file = "projects/P09-declared-in-place-edit.md"
+reason = "template-press project history is engine history, not a fork's"
+
+[[remove]]
+file = "projects/P10-declared-pre-press-clean.md"
+reason = "template-press project history is engine history, not a fork's"
+
+[[remove]]
+file = "projects/P11-directory-removals.md"
+reason = "template-press project history is engine history, not a fork's"
+
+[[remove]]
+file = "projects/P12-origin-guard-and-diagnostics.md"
+reason = "template-press project history is engine history, not a fork's"
+
+# projects/.gitkeep is deliberately kept (not removed): the PROJECTS.md
+# stub above refers readers to per-project files "under `projects/`", so a
+# pressed fork keeps an empty projects/ directory to hold them. .gitkeep is
+# not a rewrite candidate, so it stays silent under the E5(a)
+# declared-removal coverage warning.
+
+# docs/research/ holds this engine's own design research, not anything a
+# pressed fork inherits.
+[[remove]]
+file = "docs/research/0001-skill-trigger-optimization.md"
+reason = "engine research notes"
+
+[[remove]]
+file = "docs/research/0002-dev-tooling-wishlist.md"
+reason = "engine research notes"
+
+[[remove]]
+file = "docs/research/0003-init-post-init-analysis.md"
+reason = "engine research notes"
+
+[[remove]]
+file = "docs/research/0004-py-launch-blueprint-conformance-gaps.md"
+reason = "engine research notes"
+
+[[remove]]
+file = "docs/research/0005-scaffolder-identity-variant-handling.md"
+reason = "engine research notes"
+
+[[remove]]
+file = "docs/research/README.md"
+reason = "engine research notes"

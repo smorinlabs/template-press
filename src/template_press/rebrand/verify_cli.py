@@ -53,7 +53,10 @@ from template_press.rebrand.engine import (
 )
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_map
-from template_press.rebrand.inventory import capture_surface_snapshot
+from template_press.rebrand.inventory import (
+    capture_surface_snapshot,
+    core_excludes_from_snapshot,
+)
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.receipt import (
     read_receipt,
@@ -74,7 +77,7 @@ from template_press.rebrand.safety import (
 )
 from template_press.rebrand.sandbox import make_sandbox
 from template_press.rebrand.synthesize import synthesize_dest
-from template_press.rebrand.verifier import Finding, scan
+from template_press.rebrand.verifier import Finding, attach_ignore_hints, scan
 from template_press.rebrand.verify_config import (
     KNOWN_FIELDS,
     VerifyConfig,
@@ -342,6 +345,19 @@ def _restage_sandbox(sandbox: Path) -> None:
     )
 
 
+def _finding_json(finding: Finding) -> dict[str, object]:
+    """`Finding` as a JSON-ready dict with `note` OMITTED when ``None``
+    (Codex fix-round-1 P3) — `note` is a new (E8) field, so `note: null` on
+    every ordinary finding would be a schema change for every existing
+    consumer of `press verify --json`; only a finding that actually carries
+    a near-miss hint gets the key at all.
+    """
+    data = dataclasses.asdict(finding)
+    if data["note"] is None:
+        del data["note"]
+    return data
+
+
 def _report(
     surviving: list[Finding],
     stale: list[Ignore],
@@ -361,6 +377,8 @@ def _report(
         for f in by_file[path]:
             where = f.where if f.line is None else f"{f.where} L{f.line}:C{f.col}"
             print(f"    [{where}] {f.field}={f.value!r}", file=sys.stderr)
+            if f.note is not None:
+                print(f"      note: {f.note}", file=sys.stderr)
     for ignore in stale:
         print(
             f"  stale ignore (suppressed nothing): file={ignore.file!r} "
@@ -535,6 +553,29 @@ def verify_command(argv: list[str] | None = None) -> int:
             surviving = [
                 dataclasses.replace(f, path=forward_map(f.path)) for f in surviving
             ]
+            # E8: the sandbox `scan()` above can never see "untracked" — Fix
+            # F1's own `_restage_sandbox` (and `make_sandbox` itself) `git
+            # add -f` every copied path, so the sandbox's OWN index marks
+            # everything tracked regardless of the REAL target's git state.
+            # A near-miss note is only meaningful against the REAL target
+            # (the note literally says what `git add -A` would do THERE), so
+            # it is attached here, in SOURCE coordinates, against `target`
+            # directly — never against the sandbox. Best-effort: any failure
+            # reading the real target's surface just skips the hint, exactly
+            # like `ignore_near_miss`'s own "no note, no error" contract.
+            if surviving:
+                try:
+                    real_snapshot = capture_surface_snapshot(target)
+                except _CONFIG_ERRORS:
+                    real_snapshot = None
+                if real_snapshot is not None:
+                    real_untracked = frozenset(
+                        e.rel.as_posix() for e in real_snapshot.entries if not e.tracked
+                    )
+                    real_core_excludes = core_excludes_from_snapshot(real_snapshot)
+                    surviving = attach_ignore_hints(
+                        target, surviving, real_untracked, real_core_excludes
+                    )
             unavailable = sandbox.unavailable_submodules
     except _CONFIG_ERRORS as exc:
         return _fail(f"sandbox verify failed: {exc}")
@@ -545,7 +586,7 @@ def verify_command(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "verified": not failed,
-                    "surviving": [dataclasses.asdict(f) for f in surviving],
+                    "surviving": [_finding_json(f) for f in surviving],
                     "stale_ignores": [dataclasses.asdict(i) for i in stale],
                     "unavailable_submodules": list(unavailable),
                     "equal_fields_collision": (

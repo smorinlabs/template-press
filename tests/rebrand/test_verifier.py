@@ -20,10 +20,11 @@ from dataclasses import replace
 from pathlib import Path
 
 from template_press.rebrand.identity import Identity
+from template_press.rebrand.inventory import capture_surface_snapshot
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 from template_press.rebrand.verifier import Finding, scan
 
-from .conftest import DEST, SOURCE, requires_symlink
+from .conftest import DEST, SOURCE, posix_only, requires_symlink
 
 FIELDS: tuple[str, ...] = tuple(SOURCE.as_dict().keys())
 NO_SUBSTRING: frozenset[str] = frozenset()
@@ -404,6 +405,311 @@ def test_symlink_readlink_oserror_is_unscannable(src_target: Path, monkeypatch):
     assert hit.value == "unreadable"
     assert hit.line is None
     assert hit.col is None
+
+
+@requires_symlink
+def test_untracked_symlink_matching_dir_only_ignore_pattern_is_scanned(
+    src_target: Path, tmp_path: Path
+):
+    """E8: `node_modules/` is a DIRECTORY-only ignore pattern — an untracked
+    SYMLINK named `node_modules` is not a directory to git, so it is not
+    ignored, IS enumerated, IS scanned, and its finding must explain the
+    near-miss (the operator incident this locks in as regression coverage)."""
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nnode_modules/\n", encoding="utf-8"
+    )
+    _git(src_target, "commit", "-qam", "ignore")
+    outside = tmp_path / "press" / "node_modules"  # link text embeds app_name
+    outside.mkdir(parents=True)
+    (src_target / "node_modules").symlink_to(outside)
+    snapshot = capture_surface_snapshot(src_target)
+    assert any(e.rel.as_posix() == "node_modules" for e in snapshot.entries)
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    f = next(x for x in findings if x.where == "symlink" and x.field == "app_name")
+    assert f.note is not None
+    assert "matches directories only" in f.note
+    assert "node_modules/" in f.note
+    assert "git add -A" in f.note
+
+
+def test_untracked_file_matching_dir_only_ignore_pattern_gets_note(src_target: Path):
+    """The same near-miss note applies to a plain untracked FILE (not just a
+    symlink) whose name matches a directory-only pattern."""
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nnode_modules/\n", encoding="utf-8"
+    )
+    _git(src_target, "commit", "-qam", "ignore")
+    (src_target / "node_modules").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "node_modules"]
+    assert hits
+    assert all(
+        f.note is not None and "matches directories only" in f.note for f in hits
+    )
+
+
+@requires_symlink
+def test_tracked_symlink_matching_dir_only_ignore_pattern_gets_no_note(
+    src_target: Path, tmp_path: Path
+):
+    """A TRACKED symlink is force-addable by design (EMP-01) — the near-miss
+    note only ever applies to an UNTRACKED entry, never a tracked one."""
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nnode_modules/\n", encoding="utf-8"
+    )
+    outside = tmp_path / "press" / "node_modules"
+    outside.mkdir(parents=True)
+    (src_target / "node_modules").symlink_to(outside)
+    _git(src_target, "add", "-A", "-f")
+    _git(src_target, "commit", "-qm", "track the symlink anyway")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "node_modules"]
+    assert hits
+    assert all(f.note is None for f in hits)
+
+
+def test_dir_only_pattern_note_reprs_the_pattern(src_target: Path):
+    """[Copilot fix] The near-miss note renders the gitignore pattern with
+    `repr()` (as the closure refusal does for its own findings), not by
+    interpolating it between hand-written single quotes — an embedded
+    apostrophe must come out unambiguously `repr`-escaped rather than
+    breaking the surrounding quoting."""
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nit's/\n", encoding="utf-8"
+    )
+    _git(src_target, "commit", "-qam", "ignore")
+    (src_target / "it's").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "it's"]
+    assert hits
+    assert all(f.note is not None and repr("it's/") in f.note for f in hits)
+
+
+def test_descendant_glob_pattern_gets_directory_only_note_not_dir_form(
+    src_target: Path,
+):
+    """[Codex fix] A descendant-glob pattern (`vendor/**`) matches the path
+    only in its directory form, but the pattern itself is not directory-only
+    shaped (no trailing slash) — so the note must NOT claim "matches
+    directories only" (which implies the trailing-slash remedy git can't
+    actually offer here); it gets the narrower "matches this path only as a
+    directory" wording with the remove-or-verify_ignore remedy instead."""
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nvendor/**\n", encoding="utf-8"
+    )
+    _git(src_target, "commit", "-qam", "ignore")
+    (src_target / "vendor").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "vendor"]
+    assert hits
+    for f in hits:
+        assert f.note is not None
+        assert "matches directories only" not in f.note
+        assert "matches this path only as a directory" in f.note
+        assert repr("vendor/**") in f.note
+        assert "remove the entry, or list its name under verify_ignore" in f.note
+
+
+def test_genuinely_unignorable_untracked_path_gets_no_note(src_target: Path):
+    """An untracked entry with no near-miss pattern at all (nothing in
+    `.gitignore` even resembles its name) gets no note — the probe must not
+    invent one."""
+    (src_target / "totally_unrelated_press_file.txt").write_text(
+        "press\n", encoding="utf-8"
+    )
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "totally_unrelated_press_file.txt"]
+    assert hits
+    assert all(f.note is None for f in hits)
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1 (Sonnet + Codex adversarial review): pathspec-magic-safe
+# probing, pinned core.excludesFile, note-source rendering.
+# ---------------------------------------------------------------------------
+@posix_only
+def test_untracked_entry_with_leading_colon_name_gets_correct_note(src_target: Path):
+    """[P1] A name STARTING WITH `:` is `check-ignore` pathspec-magic
+    territory (a leading colon triggers magic-signature parsing) — verified
+    empirically to silently match the WRONG pattern under the naive
+    ``-- <path>/`` query shape. The `./`-prefixed, `--stdin`-fed probe must
+    still name the CORRECT pattern for a colon-led name, not silently
+    misfire."""
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\n:oddname/\n", encoding="utf-8"
+    )
+    _git(src_target, "commit", "-qam", "ignore")
+    (src_target / ":oddname").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == ":oddname"]
+    assert hits
+    assert all(
+        f.note is not None and "matches directories only" in f.note for f in hits
+    )
+    assert all(":oddname/" in (f.note or "") for f in hits)
+
+
+def test_untracked_entry_with_bracket_in_name_gets_correct_note(src_target: Path):
+    """[P1] A name containing `[`/`]` is `check-ignore` pathspec GLOB-magic
+    territory (character-class wildcarding) unless neutralized. Must not
+    crash and, when git resolves the query correctly (as verified
+    empirically here), must still name the correct escaped pattern —
+    the brief's own fallback ("or ... yields no note and no error") is the
+    floor, not the target."""
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\ndemo\\[x\\]/\n", encoding="utf-8"
+    )
+    _git(src_target, "commit", "-qam", "ignore")
+    (src_target / "demo[x]").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "demo[x]"]
+    assert hits
+    # Either a correct note, or a clean no-note — never a crash (the
+    # brief's own accepted floor for a pathspec git may still refuse).
+    for f in hits:
+        if f.note is not None:
+            assert "matches directories only" in f.note
+
+
+def test_note_source_for_out_of_tree_core_excludes_file_is_placeholder(
+    src_target: Path, tmp_path: Path
+):
+    """[P2] `core.excludesFile` is resolved from the SAME snapshot the
+    untracked-set came from (never re-queried ambiently), and an
+    OUT-OF-TREE excludes path is never printed verbatim in the note — only
+    the literal placeholder `<core.excludesFile>`."""
+    excludes = tmp_path / "global-ignore"
+    excludes.write_text("outside_lib/\n", encoding="utf-8")
+    _git(src_target, "config", "core.excludesFile", str(excludes))
+    (src_target / "outside_lib").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "outside_lib"]
+    assert hits
+    note = hits[0].note
+    assert note is not None
+    assert "<core.excludesFile>:1" in note
+    assert str(excludes) not in note
+
+
+def test_note_source_for_in_tree_core_excludes_file_is_repo_relative(
+    src_target: Path,
+):
+    """[P2] An excludes file INSIDE the target is rendered as a repo-relative
+    path, never an absolute filesystem path."""
+    (src_target / "team-ignore.txt").write_text("inside_lib/\n", encoding="utf-8")
+    _git(src_target, "add", "-A")
+    _git(src_target, "commit", "-qm", "add in-tree excludes file")
+    _git(src_target, "config", "core.excludesFile", "team-ignore.txt")
+    (src_target / "inside_lib").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "inside_lib"]
+    assert hits
+    note = hits[0].note
+    assert note is not None
+    assert "team-ignore.txt:1" in note
+    assert str(src_target) not in note
+
+
+def test_note_source_for_linked_worktree_common_dir_exclude_is_git_relative(
+    src_target: Path, tmp_path: Path
+):
+    """A pattern source inside the git COMMON dir (linked worktrees,
+    ``--separate-git-dir``) is repository-local, not a global excludes
+    file. ``.git/info/exclude`` in the MAIN repo resolves outside the
+    linked worktree's own directory, so without the common-dir check it
+    would be misrendered as the out-of-tree placeholder
+    ``<core.excludesFile>`` — it must instead be named
+    ``.git/info/exclude``."""
+    worktree = tmp_path / "linked-worktree"
+    _git(src_target, "worktree", "add", "-q", "-b", "wt-branch", str(worktree))
+    exclude = src_target / ".git" / "info" / "exclude"
+    exclude.write_text("hidden_dir/\n", encoding="utf-8")
+    (worktree / "hidden_dir").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        worktree,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "hidden_dir"]
+    assert hits
+    note = hits[0].note
+    assert note is not None
+    assert ".git/info/exclude:1" in note
+    assert "<core.excludesFile>" not in note
+    assert str(exclude) not in note
 
 
 def test_finding_dataclass_shape():

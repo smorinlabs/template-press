@@ -1,12 +1,18 @@
 import errno
+import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.cli import display_name_problem, main
+from template_press.rebrand.cli import (
+    _partial_rewrite_restore_hint,
+    display_name_problem,
+    main,
+)
 from template_press.rebrand.config import (
     SOURCE_CONFIG_REL,
     load_source_config,
@@ -15,7 +21,7 @@ from template_press.rebrand.config import (
 from template_press.rebrand.identity import Identity
 from template_press.rebrand.receipt import RECEIPT_REL
 
-from .conftest import DEST, SOURCE, requires_symlink, write_answers_file
+from .conftest import DEST, SOURCE, posix_only, requires_symlink, write_answers_file
 
 
 def write_source_config(target: Path) -> None:
@@ -1669,3 +1675,302 @@ class TestSubstringAwareCollisionPreflight:
             ["--target", str(src_target), "--config", str(answers), "--dry-run"]
         )
         assert code == 0
+
+
+def test_closure_refusal_prints_remedy_and_exits_2(src_target, tmp_path, capsys):
+    write_source_config(src_target)
+    (src_target / "src" / "demo_widget" / "__pycache__").mkdir()
+    (src_target / "src" / "demo_widget" / "__pycache__" / "x.pyc").write_bytes(b"\0")
+    answers = write_answers(tmp_path)
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "absent from the authorized surface" in out
+    assert (
+        "clean -ndX -- src/demo_widget" in out
+        and "clean -fdX -- src/demo_widget" in out
+    )
+    assert "--literal-pathspecs" in out
+    assert "broader than" in out  # destructive label
+    assert "(dry run" not in out  # never the success terminator
+    assert not (src_target / RECEIPT_REL).exists()
+
+
+@posix_only
+def test_closure_refusal_diagnostics_json(src_target, tmp_path, capsys):
+    write_source_config(src_target)
+    weird = src_target / "src" / "demo_widget" / "__pycache__"
+    weird.mkdir()
+    (weird / "a\nb.pyc").write_bytes(b"\0")
+    answers = write_answers(tmp_path)
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--dry-run",
+            "--diagnostics-json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload["code"] == "rename_closure_unauthorized"
+    assert payload["findings"][0]["path"] == "src/demo_widget/__pycache__/a\nb.pyc"
+    assert payload["preview_argv"][:4] == [
+        "git",
+        "--literal-pathspecs",
+        "-C",
+        str(src_target),
+    ]
+
+
+def test_closure_refusal_diagnostics_json_prints_only_the_json(
+    src_target, tmp_path, capsys
+):
+    """Nothing else on stdout — the JSON payload is the whole print."""
+    write_source_config(src_target)
+    (src_target / "src" / "demo_widget" / "__pycache__").mkdir()
+    (src_target / "src" / "demo_widget" / "__pycache__" / "x.pyc").write_bytes(b"\0")
+    answers = write_answers(tmp_path)
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--dry-run",
+            "--diagnostics-json",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert out.count("\n") == 1
+    payload = json.loads(out)
+    assert payload["schema"] == 1
+    assert payload["source_prefix"] == "src/demo_widget"
+    assert payload["total"] == 1
+    assert payload["truncated"] is False
+    assert payload["phase"] == "plan"
+    assert payload["remove_argv"][-3:] == ["-fdX", "--", "src/demo_widget"]
+
+
+@posix_only
+def test_closure_refusal_remedy_includes_rmdir_for_empty_dir_finding(
+    src_target, tmp_path, capsys
+):
+    """`git clean -fdX` cannot remove an UNIGNORED empty directory (`-X` is
+    ignored-only), so an `empty-dir` finding needs its own `rmdir` remedy —
+    printed after the `git clean` lines, and included in
+    `--diagnostics-json` as `rmdir_paths`."""
+    write_source_config(src_target)
+    (src_target / "src" / "demo_widget" / "empty").mkdir()
+    answers = write_answers(tmp_path)
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert shlex.join(["rmdir", "--", str(src_target / "src/demo_widget/empty")]) in out
+    assert "# then rmdir each newly-empty parent up to" in out
+
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--dry-run",
+            "--diagnostics-json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload["rmdir_paths"] == ["src/demo_widget/empty"]
+
+
+@posix_only
+def test_closure_refusal_remedy_rmdir_prints_leaf_before_ancestor_hint(
+    src_target, tmp_path, capsys
+):
+    """A nested empty-dir finding prints the deepest (leaf) path first, then
+    the "rmdir each newly-empty parent" hint line — never the reverse, and
+    never a single `rmdir -p` that could climb past the rename prefix."""
+    write_source_config(src_target)
+    nested = src_target / "src" / "demo_widget" / "empty" / "nested"
+    nested.mkdir(parents=True)
+    answers = write_answers(tmp_path)
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 2
+    leaf_line = shlex.join(["rmdir", "--", str(nested)])
+    assert leaf_line in out
+    lines = out.splitlines()
+    leaf_index = lines.index(leaf_line)
+    assert (
+        lines[leaf_index + 1]
+        .strip()
+        .startswith("# then rmdir each newly-empty parent up to")
+    )
+
+
+def test_closure_refusal_on_apply_takes_same_branch_and_leaves_target_untouched(
+    src_target, tmp_path, capsys
+):
+    """Apply (no --dry-run) hits the same catch — exits 2, writes nothing."""
+    write_source_config(src_target)
+    (src_target / "src" / "demo_widget" / "__pycache__").mkdir()
+    (src_target / "src" / "demo_widget" / "__pycache__" / "x.pyc").write_bytes(b"\0")
+    answers = write_answers(tmp_path)
+    readme_before = (src_target / "README.md").read_text(encoding="utf-8")
+    code = main(["--target", str(src_target), "--config", str(answers)])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "absent from the authorized surface" in out
+    assert not (src_target / RECEIPT_REL).exists()
+    assert (src_target / "README.md").read_text(encoding="utf-8") == readme_before
+
+
+def test_closure_refusal_names_press_clean_when_rules_declare_it(
+    src_target, tmp_path, capsys, monkeypatch
+):
+    write_source_config(src_target)
+    (src_target / "src" / "demo_widget" / "__pycache__").mkdir()
+    (src_target / "src" / "demo_widget" / "__pycache__" / "x.pyc").write_bytes(b"\0")
+    answers = write_answers(tmp_path)
+
+    from template_press.rebrand import cli as cli_module
+    from template_press.rebrand.rules import load_selected_rules as _real_load
+
+    def fake_load_selected_rules(target):
+        selected = _real_load(target)
+        object.__setattr__(selected.rules, "clean", ("src/demo_widget",))
+        return selected
+
+    monkeypatch.setattr(cli_module, "load_selected_rules", fake_load_selected_rules)
+
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "declared clean rules exist — run: press clean --target" in out
+
+
+def test_closure_refusal_omits_press_clean_hint_when_no_rules_declared(
+    src_target, tmp_path, capsys
+):
+    write_source_config(src_target)
+    (src_target / "src" / "demo_widget" / "__pycache__").mkdir()
+    (src_target / "src" / "demo_widget" / "__pycache__" / "x.pyc").write_bytes(b"\0")
+    answers = write_answers(tmp_path)
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "declared clean rules exist" not in out
+
+
+def test_closure_refusal_on_apply_time_revalidation_exits_1_with_remedy(
+    src_target, tmp_path, capsys, monkeypatch
+):
+    """A tree that diverges between planning and apply (a new ignored file
+    appears under the renamed prefix) is caught by revalidate_substitution_table
+    inside _press — same aggregated message + remedy, but exit 1 under the
+    partial-rewrite contract, never JSON."""
+    write_source_config(src_target)
+    answers = write_answers(tmp_path)
+    readme_before = (src_target / "README.md").read_text(encoding="utf-8")
+
+    from template_press.rebrand import cli as cli_module
+
+    real_revalidate = cli_module.revalidate_substitution_table
+
+    def planted_revalidate(target, table):
+        pycache = target / "src" / "demo_widget" / "__pycache__"
+        pycache.mkdir(parents=True, exist_ok=True)
+        (pycache / "planted.pyc").write_bytes(b"\0")
+        return real_revalidate(target, table)
+
+    monkeypatch.setattr(cli_module, "revalidate_substitution_table", planted_revalidate)
+
+    code = main(["--target", str(src_target), "--config", str(answers)])
+    captured = capsys.readouterr()
+    out, err = captured.out, captured.err
+    assert code == 1
+    assert "absent from the authorized surface" in out
+    assert (
+        "clean -ndX -- src/demo_widget" in out
+        and "clean -fdX -- src/demo_widget" in out
+    )
+    assert "phase='apply'" in out
+    assert _partial_rewrite_restore_hint(src_target) in err
+    assert not (src_target / RECEIPT_REL).exists()
+    assert (src_target / "README.md").read_text(encoding="utf-8") == readme_before
+    # never JSON at this catch site, even if requested — no --diagnostics-json
+    # plumbing reaches _press, and the assertion above already confirms prose.
+
+
+def test_closure_refusal_diagnostics_json_carries_all_findings_when_truncated(
+    src_target, tmp_path, capsys
+):
+    write_source_config(src_target)
+    pycache = src_target / "src" / "demo_widget" / "__pycache__"
+    pycache.mkdir()
+    planted_paths = set()
+    for i in range(25):
+        name = f"m{i:02d}.pyc"
+        (pycache / name).write_bytes(b"\0")
+        planted_paths.add(f"src/demo_widget/__pycache__/{name}")
+    answers = write_answers(tmp_path)
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--dry-run",
+            "--diagnostics-json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload["total"] == 25
+    assert {f["path"] for f in payload["findings"]} == planted_paths
+    assert payload["truncated"] is True
+
+
+def _try_make_invalid_utf8_name(base: Path) -> Path | None:
+    """Create a file whose name embeds an invalid UTF-8 byte; None when the
+    filesystem refuses it (e.g. macOS APFS enforces valid UTF-8 names) —
+    detected by attempting the creation, not by a static platform check."""
+    raw = base / os.fsdecode(b"bad-\xff-name.pyc")
+    try:
+        raw.write_bytes(b"\0")
+    except (OSError, ValueError):
+        return None
+    return raw
+
+
+@posix_only
+def test_closure_refusal_diagnostics_json_hostile_undecodable_filename(
+    src_target, tmp_path, capsys
+):
+    write_source_config(src_target)
+    pycache = src_target / "src" / "demo_widget" / "__pycache__"
+    pycache.mkdir()
+    hostile = _try_make_invalid_utf8_name(pycache)
+    if hostile is None:
+        pytest.skip("filesystem refuses non-UTF-8 filenames")
+    answers = write_answers(tmp_path)
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--dry-run",
+            "--diagnostics-json",
+        ]
+    )
+    out = capsys.readouterr().out
+    payload = json.loads(out)  # must not raise: ensure_ascii round-trips the surrogate
+    assert code == 2
+    assert payload["total"] == 1
+    path = payload["findings"][0]["path"]
+    assert os.fsencode(path) == b"src/demo_widget/__pycache__/bad-\xff-name.pyc"

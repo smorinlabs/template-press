@@ -55,6 +55,7 @@ __all__ = [
     "ContainmentError",
     "HardlinkError",
     "NonRegularFileError",
+    "RenameClosureUnauthorized",
     "SafeRelPath",
     "SafetyError",
     "UnsafePathError",
@@ -100,6 +101,59 @@ class HardlinkError(SafetyError, ValueError):
 
 class NonRegularFileError(SafetyError):
     """A no-follow read observed a non-regular leaf before opening it."""
+
+
+class RenameClosureUnauthorized(SafetyError):  # noqa: N818 - spec-named (E2)
+    """One rename-prefix closure walk carried unauthorized nodes (E2).
+
+    Aggregates every node absent from the surface inventory and every
+    uninventoried empty directory found during a single closure walk, instead
+    of refusing on the first one hit. Structural refusals (a missing node, an
+    unreadable directory, or an inventory-kind mismatch) and the gitlink
+    pre-check are unaffected — those stay immediate raises of ``SafetyError``
+    and never reach this aggregation.
+    """
+
+    code = "rename_closure_unauthorized"
+
+    def __init__(
+        self,
+        source_prefix: str,
+        findings: tuple[tuple[str, str], ...],
+        phase: str,
+    ) -> None:
+        cap = 20
+        total = len(findings)
+        rendered = sorted(findings)[:cap]
+        truncated = total > cap
+        lines = [
+            f"rename prefix {source_prefix!r} would carry {total} node(s) "
+            f"absent from the authorized surface inventory or as an "
+            f"uninventoried empty directory (phase={phase!r}):"
+        ]
+        lines.extend(f"  - {kind}: {path!r}" for kind, path in rendered)
+        if truncated:
+            lines.append(f"  … ({total - cap} more)")
+        super().__init__("\n".join(lines))
+        self.source_prefix = source_prefix
+        self.findings = tuple(findings)
+        self.total = total
+        self.truncated = truncated
+        self.phase = phase
+
+    def remedy_argv(self, target: Path) -> tuple[list[str], list[str]]:
+        """Literal-pathspec ``git clean`` argv to inspect/remove the prefix.
+
+        Both scoped to ``-d`` (directories) and ``-X`` (ignored files only —
+        never ``-x``, which would also sweep untracked-but-not-ignored
+        content). Broader than the specific paths in ``findings``: ``git
+        clean`` operates on everything ignored under ``source_prefix``, not
+        just the nodes this refusal listed.
+        """
+        base = ["git", "--literal-pathspecs", "-C", str(target), "clean"]
+        preview = [*base, "-ndX", "--", self.source_prefix]
+        remove = [*base, "-fdX", "--", self.source_prefix]
+        return preview, remove
 
 
 # ---------------------------------------------------------------------------

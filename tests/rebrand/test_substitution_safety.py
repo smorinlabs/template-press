@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -17,14 +18,14 @@ from template_press.rebrand.engine import (
 from template_press.rebrand.inventory import SurfaceEntry
 from template_press.rebrand.reset import preflight_reset_targets
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, ResetRule
-from template_press.rebrand.safety import SafetyError
+from template_press.rebrand.safety import RenameClosureUnauthorized, SafetyError
 from template_press.rebrand.substitutions import (
     RenamePlan,
     SubstitutionTable,
     validate_reset_visibility,
 )
 
-from .conftest import DEST, SOURCE, requires_symlink
+from .conftest import DEST, SOURCE, posix_only, requires_symlink
 
 
 def _git(target: Path, *args: str) -> str:
@@ -76,6 +77,200 @@ def test_prefix_closure_refuses_ignored_untracked_descendant(
 
     with pytest.raises(SafetyError, match="absent from the authorized surface"):
         build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+
+def test_prefix_closure_error_lists_every_ignored_descendant(src_target: Path) -> None:
+    _exclude_without_identity(src_target, "src/*/ignored*.txt")
+    pkg = src_target / "src" / "demo_widget"
+    (pkg / "ignored-a.txt").write_text("a\n", encoding="utf-8")
+    (pkg / "ignored-b.txt").write_text("b\n", encoding="utf-8")
+    (pkg / "empty").mkdir()
+    with pytest.raises(
+        RenameClosureUnauthorized, match="absent from the authorized surface"
+    ) as info:
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+    exc = info.value
+    assert exc.code == "rename_closure_unauthorized"
+    assert exc.source_prefix == "src/demo_widget"
+    assert {p for _, p in exc.findings} == {
+        "src/demo_widget/ignored-a.txt",
+        "src/demo_widget/ignored-b.txt",
+        "src/demo_widget/empty",
+    }
+    assert exc.total == 3 and exc.truncated is False
+    assert {k for k, _ in exc.findings} == {"absent", "empty-dir"}
+    assert exc.phase == "plan"
+
+
+def test_prefix_closure_gitlink_wins_over_ignored_leaves(src_target: Path) -> None:
+    _exclude_without_identity(src_target, "src/*/ignored*.txt")
+    pkg = src_target / "src" / "demo_widget"
+    (pkg / "ignored-a.txt").write_text("a\n", encoding="utf-8")
+    (pkg / "ignored-b.txt").write_text("b\n", encoding="utf-8")
+    sha = _git(src_target, "rev-parse", "HEAD")
+    rel = "src/demo_widget/submodule"
+    _git(src_target, "update-index", "--add", "--cacheinfo", f"160000,{sha},{rel}")
+
+    with pytest.raises(SafetyError, match="would carry gitlink"):
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+
+def test_prefix_closure_structural_refusal_is_immediate(
+    src_target: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A structural refusal wins even with authorization findings already
+    collected: ``0empty`` and ``0ignored.txt`` sort before ``cli.py`` in the
+    directory walk, so both an empty-dir and an absent finding are appended to
+    the in-progress ``findings`` list before the forced-missing ``cli.py``
+    node is reached and immediately raises — proving the plain ``SafetyError``
+    wins over aggregation rather than being folded into a
+    ``RenameClosureUnauthorized``.
+    """
+    from template_press.rebrand import substitutions as substitutions_module
+
+    _exclude_without_identity(src_target, "src/*/0ignored.txt")
+    pkg = src_target / "src" / "demo_widget"
+    (pkg / "0ignored.txt").write_text("a\n", encoding="utf-8")
+    (pkg / "0empty").mkdir()
+
+    real_node_kind = substitutions_module._node_kind
+    missing_child = pkg / "cli.py"
+
+    def fake_node_kind(path: Path) -> object:
+        if path == missing_child:
+            return "missing"
+        return real_node_kind(path)
+
+    monkeypatch.setattr(substitutions_module, "_node_kind", fake_node_kind)
+
+    with pytest.raises(SafetyError, match="closure changed during planning") as info:
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+    assert type(info.value) is SafetyError
+
+
+def test_prefix_closure_nested_empty_directory_does_not_cascade(
+    src_target: Path,
+) -> None:
+    """An empty directory returns 1 to its own parent's ``child_count``, so
+    only the innermost empty directory is reported — the parent that merely
+    CONTAINS it is not spuriously reported as empty too."""
+    outer = src_target / "src" / "demo_widget" / "outer"
+    inner = outer / "inner"
+    inner.mkdir(parents=True)
+
+    with pytest.raises(
+        RenameClosureUnauthorized, match="uninventoried empty directory"
+    ) as info:
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+    exc = info.value
+    assert exc.findings == (("empty-dir", "src/demo_widget/outer/inner"),)
+    assert exc.total == 1
+    assert exc.truncated is False
+
+
+def test_prefix_closure_truncates_rendered_list_past_cap(src_target: Path) -> None:
+    _exclude_without_identity(src_target, "src/*/absent-*.txt")
+    pkg = src_target / "src" / "demo_widget"
+    absent_paths = set()
+    for i in range(15):
+        name = f"absent-{i:02d}.txt"
+        (pkg / name).write_text("x\n", encoding="utf-8")
+        absent_paths.add(f"src/demo_widget/{name}")
+    empty_paths = set()
+    for i in range(10):
+        name = f"empty-{i:02d}"
+        (pkg / name).mkdir()
+        empty_paths.add(f"src/demo_widget/{name}")
+
+    with pytest.raises(
+        RenameClosureUnauthorized, match="absent from the authorized surface"
+    ) as info:
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+    exc = info.value
+    assert exc.total == 25
+    assert exc.truncated is True
+    assert {p for _, p in exc.findings} == absent_paths | empty_paths
+    message = str(exc)
+    assert message.count("\n  - ") == 20
+    assert "… (5 more)" in message
+
+
+@posix_only
+def test_prefix_closure_renders_hostile_filenames_safely(src_target: Path) -> None:
+    _exclude_without_identity(src_target, "src/*/hostile-*")
+    pkg = src_target / "src" / "demo_widget"
+    newline_name = "hostile-new\nline.txt"
+    control_name = "hostile-control-\x01\x1b.txt"
+    (pkg / newline_name).write_text("a\n", encoding="utf-8")
+    (pkg / control_name).write_text("b\n", encoding="utf-8")
+
+    with pytest.raises(
+        RenameClosureUnauthorized, match="absent from the authorized surface"
+    ) as info:
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+    exc = info.value
+    expected = {
+        f"src/demo_widget/{newline_name}",
+        f"src/demo_widget/{control_name}",
+    }
+    assert {p for _, p in exc.findings} == expected
+    message = str(exc)
+    assert repr(f"src/demo_widget/{newline_name}") in message
+    assert repr(f"src/demo_widget/{control_name}") in message
+    # repr() escapes the raw control bytes — none survive verbatim in the
+    # rendered message.
+    assert "\x01" not in message
+    assert "\x1b" not in message
+
+
+@posix_only
+def test_prefix_closure_renders_non_utf8_filename_or_skips(src_target: Path) -> None:
+    """Lossless, safe rendering of a filename that is not valid UTF-8
+    (created via a raw byte path, POSIX ``surrogateescape`` round-trip).
+    Skipped with an explicit marker on a filesystem that refuses to create
+    such a name (e.g. macOS APFS, which normalizes/validates UTF-8)."""
+    _exclude_without_identity(src_target, "src/*/hostile-bytes-*")
+    pkg = src_target / "src" / "demo_widget"
+    raw_name = b"hostile-bytes-\xff\xfe.txt"
+    raw_path = os.fsencode(str(pkg)) + b"/" + raw_name
+    try:
+        fd = os.open(raw_path, os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o644)
+        os.close(fd)
+    except OSError as exc:
+        pytest.skip(f"filesystem refuses non-UTF-8 filenames: {exc}")
+
+    name = os.fsdecode(raw_name)
+    with pytest.raises(
+        RenameClosureUnauthorized, match="absent from the authorized surface"
+    ) as info:
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+    result = info.value
+    expected_rel = f"src/demo_widget/{name}"
+    assert {p for _, p in result.findings} == {expected_rel}
+    assert repr(expected_rel) in str(result)
+
+
+def test_prefix_closure_unauthorized_phase_is_apply_after_planning(
+    src_target: Path,
+) -> None:
+    _exclude_without_identity(src_target, "src/*/late-ignored.txt")
+    plan = build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+    assert plan.table is not None
+    readme = src_target / "README.md"
+    before = readme.read_bytes()
+    late = src_target / "src" / "demo_widget" / "late-ignored.txt"
+    late.write_text("late operator data\n", encoding="utf-8")
+
+    with pytest.raises(
+        RenameClosureUnauthorized, match="absent from the authorized surface"
+    ) as info:
+        apply(src_target, SOURCE, DEST, DEFAULT_RULES, table=plan.table)
+    exc = info.value
+    assert exc.code == "rename_closure_unauthorized"
+    assert exc.phase == "apply"
+    assert {p for _, p in exc.findings} == {"src/demo_widget/late-ignored.txt"}
+    assert readme.read_bytes() == before
 
 
 def test_prefix_closure_refuses_uninventoried_empty_directory(

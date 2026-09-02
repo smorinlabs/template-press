@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import stat
+from collections import Counter
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,7 @@ from template_press.rebrand.identity import (
     ValidationError,
     display_forms,
     replace_token,
+    token_pattern,
 )
 from template_press.rebrand.inventory import (
     SurfaceEntry,
@@ -32,7 +34,9 @@ from template_press.rebrand.inventory import (
     select_copy_entries,
     select_rename_entries,
     select_verifier_entries,
+    tracked_path_strings,
 )
+from template_press.rebrand.matcher import classify_occurrence
 from template_press.rebrand.pathing import (
     REGENERATE_EXEMPTIBLE as REGENERATE_EXEMPTIBLE,
 )
@@ -77,6 +81,7 @@ from template_press.rebrand.safety import (
 )
 from template_press.rebrand.substitutions import (
     RenamePlan,
+    RenameStep,
     SubstitutionTable,
     compile_substitution_table,
     declared_rule_triples,
@@ -137,6 +142,16 @@ class Plan:
     renames: dict[str, str] = field(default_factory=dict)
     rendered_rules: list[tuple[ReplaceRule, str, str]] = field(default_factory=list)
     table: SubstitutionTable | None = None
+    # Plan-time, non-fatal E5(a) advisories (declared-removal coverage) —
+    # populated by build_plan from the SAME snapshot the plan itself was
+    # built from, so the printed plan and the warnings can never disagree.
+    removal_warnings: list[str] = field(default_factory=list)
+    # Plan-time, non-fatal E9(b) advisories: a declared source identity
+    # value that occurs in the target ONLY as a separator-joined prefix of a
+    # longer token, never as a whole token — the signature of a stale
+    # press/press-source.toml after the template was renamed upstream.
+    # Populated by build_plan from the same content scan as `items`.
+    prefix_warnings: list[str] = field(default_factory=list)
 
     def render(self) -> str:
         if not self.items:
@@ -860,12 +875,19 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
         exclude_dirs=rules.exclude_dirs,
         root_control=ROOT_CONTROL,
     )
+    prefix_fields = _prefix_check_fields(table, rules)
+    prefix_counts = {
+        field_name: _PrefixCounts(value=value)
+        for field_name, value in prefix_fields.items()
+    }
     for entry in content_entries:
         path = target / entry.rel
         rel = entry.rel
         assert_ancestors_real(path, target)
         text = _read_text(path, expected_kind=entry.worktree_kind)
         if text is not None:
+            if entry.tracked:
+                _tally_prefix_occurrences(text, prefix_fields, prefix_counts)
             preview = text
             for row in table.rows:
                 if "content" not in row.rewrite_surfaces or not row_matches_scope(
@@ -883,10 +905,241 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                 )
                 plan.items.append(PlanItem("replace", rel.as_posix(), detail))
                 preview = rewritten
+    plan.prefix_warnings = prefix_only_warnings(prefix_counts)
     for step in table.rename_plan.steps:
         plan.items.append(PlanItem("rename", step.old_prefix, f"→ {step.new_prefix}"))
     plan.renames.update(table.rename_plan.as_mapping())
+    tracked = tracked_path_strings(snapshot)
+    rewrite_paths = {item.path for item in plan.items if item.kind == "replace"} | (
+        _rename_covered_paths(table.rename_plan.steps) & tracked
+    )
+    plan.removal_warnings = removal_coverage_warnings(
+        rules, source, rewrite_paths, tracked
+    )
     return plan
+
+
+def _rename_covered_paths(steps: Collection[RenameStep]) -> set[str]:
+    """Every SOURCE-coordinate leaf path a planned rename moves.
+
+    ``RenameStep.old_prefix`` is only a source coordinate for a step's OWN
+    pass; a later fixed-point pass (spec E5a round 2 fix) computes
+    ``old_prefix`` from the CURRENT path left by earlier passes — an
+    intermediate coordinate a tracked (pre-rename) path would never match.
+    ``RenameStep.source_entries`` is the field the rename planner itself
+    keeps in true SOURCE coordinates across every pass (it is threaded
+    through ``current_by_source`` keyed by the original path, never the
+    intermediate one — see ``compile_substitution_table``'s rename-plan
+    loop), so reading it directly here is correct for a chained rename
+    regardless of how many passes resolved it, with no prefix arithmetic
+    needed.
+    """
+
+    covered: set[str] = set()
+    for step in steps:
+        covered.update(step.source_entries)
+    return covered
+
+
+def removal_coverage_warnings(
+    rules: Rules,
+    source: Identity,
+    rewrite_paths: Collection[str],
+    tracked_paths: Collection[str],
+) -> list[str]:
+    """Plan-time, non-fatal advisory (spec E5a): flag a top-level directory
+    that LOOKS like undeclared template history because the press is about
+    to rewrite every tracked file under it and no rule says what should
+    happen to it.
+
+    Depth 1 only for v1 (POSIX rel path's first component) — deeper
+    directories are out of scope until a real need for them shows up.
+    Grouping by TOP-LEVEL directory, not by every directory level, keeps
+    the signal coarse and cheap to reason about: one line per top-level
+    dir, not a warning per nested history folder.
+
+    A directory triggers the warning only when EVERY one of its tracked
+    files is a rewrite candidate — ``rewrite_paths`` is the union of (a)
+    every file with a content substitution hit (``PlanItem(kind="replace")``
+    from ``build_plan``) and (b) every tracked file whose PATH falls under
+    a planned rename prefix (SOURCE coordinates), since a rename-only file
+    (identity in its name, not its body — e.g. a logo PNG or a directory
+    named after the package) is just as much "rewritten to the new
+    identity" as a content hit. A directory with even one untouched tracked
+    file is not, by this heuristic, template history — it is ordinary
+    content that happens to sit next to rewritten files.
+
+    A directory is silently skipped (never warned on) when:
+    - its name is ``"src"`` or ``"tests"`` — conventional Python layout
+      dirs where full-directory rewrite is the ordinary, expected case
+      (the whole package/test tree legitimately mentions the identity); or
+    - its name equals ``source.package_name`` — the flat-layout package
+      root (the src-layout case is already covered by the ``"src"``
+      exclusion above, since the package then sits at depth 2); or
+    - any ``[[remove]]`` or ``[[reset]]`` rule targets a path under it — a
+      human has already declared what happens to this directory, whether
+      or not that declaration covers every file in it; or
+    - the directory's name is in ``[rules] verify_ignore`` — the
+      deliberate, committed exemption (matched by name, like
+      ``verify_ignore`` elsewhere: this is a top-level dir name, so no
+      component-at-any-depth scan is needed here).
+    """
+
+    tracked_set = set(tracked_paths)
+    rewrite_set = set(rewrite_paths)
+    by_dir: dict[str, list[str]] = {}
+    for path in tracked_set:
+        head, sep, _ = path.partition("/")
+        if sep:
+            by_dir.setdefault(head, []).append(path)
+    declared_dirs = {
+        rule.file.split("/", 1)[0]
+        for rule in (*rules.remove, *rules.reset)
+        if "/" in rule.file
+    }
+    warnings: list[str] = []
+    for dirname in sorted(by_dir):
+        if dirname in ("src", "tests", source.package_name):
+            continue
+        if dirname in declared_dirs:
+            continue
+        if dirname in rules.verify_ignore:
+            continue
+        files = by_dir[dirname]
+        if all(f in rewrite_set for f in files):
+            warnings.append(
+                f"warning: {len(files)} tracked files under {dirname}/ will "
+                "be rewritten to the new identity and no rule removes or "
+                "resets them — declare [[remove]] or [rules] verify_ignore "
+                "if this is template history"
+            )
+    return warnings
+
+
+# app_name and app_name_upper are excluded (spec E9(b)): their own rewrite
+# matchers already treat a trailing hyphen as a boundary
+# (identity.token_pattern:205-208 — app_name's right lookahead is
+# `(?![A-Za-z0-9-])`, app_name_upper's is `(?![A-Za-z-])`), so neither can
+# ever occur as a separator-joined prefix in the first place. app_name_upper
+# additionally has underscore-then-alnum as its OWN designed usage
+# (``_PRESS_COMPLETE``, ``PRESS000`` env/const prefixes per
+# identity.token_pattern's docstring) — checking it would misclassify that
+# intentional shape as a stale-config signal.
+_PREFIX_CHECK_EXCLUDED_FIELDS = frozenset({"app_name", "app_name_upper"})
+
+
+@dataclass
+class _PrefixCounts:
+    """Occurrence tally for one identity field, across the whole corpus."""
+
+    value: str
+    whole: int = 0
+    prefix_tokens: Counter[str] = field(default_factory=Counter)
+
+
+_PREFIX_CHECK_PROVENANCE_KINDS = frozenset({"identity", "display_form"})
+
+
+def _prefix_check_fields(table: SubstitutionTable, rules: Rules) -> dict[str, str]:
+    """Every checked identity field/display form this press changes, name ->
+    value.
+
+    Sourced from ``table.rows``' own "identity" and "display_form"
+    provenance (the same rows `build_plan` already renders into
+    `PlanItem`s) rather than re-deriving "changed field" from
+    `source`/`dest` directly, so a field the table declined to render (e.g.
+    because from == to, or a display form disabled by `[rules]
+    display_forms`) can never be checked here either. A rendered display
+    form (``display_name_spaced``/``display_name_pascal``/
+    ``display_name_camel``) is exactly as checkable as a plain identity
+    field (spec E9(b) fix round 1): the same stale-rename signature can hide
+    behind ``Demo Widget`` becoming ``Demo Widget-2`` upstream just as
+    easily as behind ``demo-widget``.
+
+    A field listed in ``[rules] substring_rewrite_fields`` is excluded too:
+    its rewriter (`rewrite_with_row`/`replace_token`, per `field in
+    rules.substring_rewrite_fields`) matches the value as a plain substring,
+    not via `token_pattern`'s boundary-aware match, so a glued occurrence
+    (``xdemo_widgety``) is a real, correctly-rewritten whole occurrence to
+    that rewriter but would tally here as a bare "prefix" (or not tally at
+    all) under `token_pattern`'s stricter boundaries — producing a false
+    stale-config warning telling a correct target to update
+    `press-source.toml`.
+    """
+
+    excluded = _PREFIX_CHECK_EXCLUDED_FIELDS | rules.substring_rewrite_fields
+    fields: dict[str, str] = {}
+    for row in table.rows:
+        if "content" not in row.rewrite_surfaces:
+            continue
+        for provenance in row.provenance:
+            if (
+                provenance.kind in _PREFIX_CHECK_PROVENANCE_KINDS
+                and provenance.name not in excluded
+            ):
+                fields[provenance.name] = row.from_value
+    return fields
+
+
+def _tally_prefix_occurrences(
+    text: str,
+    fields: Mapping[str, str],
+    counts: Mapping[str, _PrefixCounts],
+) -> None:
+    """Classify every occurrence of every checked field's value in `text`.
+
+    Candidate positions come from `identity.token_pattern` — the same
+    literal, boundary-safe pattern `rewrite_with_row`/`replace_token` use to
+    perform the actual content rewrite — NOT `matcher.find_occurrences`
+    (the paranoid `press verify` scanner): that matcher's core is built by
+    splitting the value on any separator and rejoining with a
+    separator-TOLERANT class (`matcher.py` `identity_pattern`), so it treats
+    `demo-widget` and `demo_widget` as the same pattern and would cross-
+    contaminate two different fields (e.g. `repo_name` and `package_name`)
+    that share the same letters with different separators. `token_pattern`
+    matches only the field's own literal value, so a hyphen right after it
+    is exactly the boundary the rewriter itself would happily cross —
+    which is the E9(b) signal.
+    """
+
+    for field_name, value in fields.items():
+        tally = counts[field_name]
+        pattern = token_pattern(field_name, value)
+        if pattern is None:  # every field currently returns a pattern
+            continue
+        for match in pattern.finditer(text):
+            kind, token = classify_occurrence(text, match.span())
+            if kind == "prefix":
+                tally.prefix_tokens[token] += 1
+            else:
+                tally.whole += 1
+
+
+def prefix_only_warnings(counts: Mapping[str, _PrefixCounts]) -> list[str]:
+    """Plan-time, non-fatal advisory (spec E9(b)).
+
+    Fires for a field that occurs ONLY as a separator-joined prefix of a
+    longer token and never as a whole token — the signature of a stale
+    ``press/press-source.toml`` after the template was renamed upstream
+    (``demo-widget`` -> ``demo-widget-2``). A field with at least one
+    whole-token occurrence is unflagged: a compound form living alongside
+    the plain value (``demo-widget`` AND ``demo-widget-web``) is a
+    deliberate, rewritable naming convention (spec E9), not a stale config.
+    """
+
+    warnings: list[str] = []
+    for field_name in sorted(counts):
+        tally = counts[field_name]
+        if tally.whole != 0 or not tally.prefix_tokens:
+            continue
+        token, _ = tally.prefix_tokens.most_common(1)[0]
+        places = sum(tally.prefix_tokens.values())
+        warnings.append(
+            f"warning: {field_name} {tally.value!r} occurs only as a prefix "
+            f"of {token!r} ({places} places); if the template was renamed, "
+            "update press/press-source.toml"
+        )
+    return warnings
 
 
 def _preflight_source_prefixes(

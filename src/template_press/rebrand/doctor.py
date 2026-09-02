@@ -8,6 +8,7 @@ no receipt. Port of init_doctor.check_no_identity_leftover, generalized to
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,7 @@ from template_press.rebrand.identity import (
 )
 from template_press.rebrand.inventory import (
     capture_surface_snapshot,
+    core_excludes_from_snapshot,
     select_inline_doctor_entries,
 )
 from template_press.rebrand.rules import (
@@ -46,6 +48,7 @@ from template_press.rebrand.substitutions import (
     hunt_occurs,
     row_matches_scope,
 )
+from template_press.rebrand.verifier import ignore_near_miss
 
 PATH_FIELDS: tuple[str, ...] = (
     "package_name",
@@ -61,6 +64,37 @@ class Leak:
     field: str
     value: str
     where: str  # "content" | "path" | "symlink" | "unverifiable"
+    # E8: populated only when this leak's entry is UNTRACKED and a
+    # directory-only `.gitignore` pattern near-misses it — see
+    # `verifier.ignore_near_miss`. Diagnostic only; never affects pass/fail.
+    note: str | None = None
+
+
+def _attach_ignore_hints(
+    target: Path,
+    leaks: list[Leak],
+    untracked: frozenset[str],
+    core_excludes: Path | None,
+) -> list[Leak]:
+    """Doctor-side counterpart of `verifier.attach_ignore_hints` (E8) — same
+    cached-per-path near-miss probe, over `Leak` instead of `Finding`.
+    ``core_excludes`` should come from `core_excludes_from_snapshot` on the
+    SAME snapshot ``untracked`` was derived from."""
+    if not untracked:
+        return leaks
+    cache: dict[str, str | None] = {}
+    out: list[Leak] = []
+    for leak in leaks:
+        if leak.path in untracked:
+            if leak.path not in cache:
+                cache[leak.path] = ignore_near_miss(
+                    target, Path(leak.path), core_excludes
+                )
+            note = cache[leak.path]
+            if note is not None:
+                leak = dataclasses.replace(leak, note=note)
+        out.append(leak)
+    return out
 
 
 def _read_for_scan(path: Path) -> str | None:
@@ -188,6 +222,8 @@ def _find_table_leaks(
         verify_ignore=rules.verify_ignore,
         root_control=ROOT_CONTROL,
     )
+    untracked = frozenset(e.rel.as_posix() for e in entries if not e.tracked)
+    core_excludes = core_excludes_from_snapshot(snapshot)
     leaks: list[Leak] = []
     for entry in entries:
         if entry.worktree_kind == "missing" and entry.index_kind != "gitlink":
@@ -272,7 +308,7 @@ def _find_table_leaks(
                         "content",
                     )
                 )
-    return leaks
+    return _attach_ignore_hints(target, leaks, untracked, core_excludes)
 
 
 def find_leaks(
@@ -356,6 +392,8 @@ def find_leaks(
         verify_ignore=rules.verify_ignore,
         root_control=ROOT_CONTROL,
     )
+    untracked = frozenset(e.rel.as_posix() for e in entries if not e.tracked)
+    core_excludes = core_excludes_from_snapshot(snapshot)
     for entry in entries:
         if entry.worktree_kind == "missing" and entry.index_kind != "gitlink":
             # Apply renames the worktree before updating Git's index. The old
@@ -436,7 +474,7 @@ def find_leaks(
                 and frm in text
             ):
                 leaks.append(Leak(rel_posix, "replace_rule", frm, "content"))
-    return leaks
+    return _attach_ignore_hints(target, leaks, untracked, core_excludes)
 
 
 def render_leak_report(leaks: list[Leak], limit: int = 20) -> str:
@@ -446,6 +484,8 @@ def render_leak_report(leaks: list[Leak], limit: int = 20) -> str:
     ]
     for leak in leaks[:limit]:
         lines.append(f"  [{leak.where}] {leak.path}: {leak.field}={leak.value!r}")
+        if leak.note is not None:
+            lines.append(f"    note: {leak.note}")
     if len(leaks) > limit:
         lines.append(f"  … and {len(leaks) - limit} more")
     lines.append(

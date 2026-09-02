@@ -57,12 +57,14 @@ requires_symlink = pytest.mark.skipif(
 )
 
 # Applied to tests whose MECHANISM is POSIX-only — sh scripts as declared
-# executables, exec bits, permission-mode assertions. The engine behavior
-# they exercise stays correct on Windows (an unresolvable tool is reported
-# missing); only the fixture apparatus cannot exist there.
+# executables, exec bits, permission-mode assertions, or filenames illegal
+# on Win32 (colons, control characters, non-UTF-8 bytes). The engine
+# behavior they exercise stays correct on Windows (an unresolvable tool is
+# reported missing); only the fixture apparatus cannot exist there.
 posix_only = pytest.mark.skipif(
     sys.platform == "win32",
-    reason="POSIX-only test mechanism (sh scripts / permission bits)",
+    reason="POSIX-only test mechanism (sh scripts / permission bits / "
+    "filenames illegal on Win32)",
 )
 
 SOURCE = Identity(
