@@ -96,6 +96,13 @@ def _fail(msg: str) -> int:
     return 2
 
 
+def _shell_join(argv: list[str]) -> str:
+    """Render `argv` as a copy-pasteable shell command for this platform."""
+    if sys.platform == "win32":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
 def _partial_rewrite_restore_hint(target: Path) -> str:
     """Shared restoration guidance for a mid-mutation `_press()` failure.
 
@@ -103,8 +110,8 @@ def _partial_rewrite_restore_hint(target: Path) -> str:
     `RenameClosureUnauthorized` branch, which prints its own aggregated
     findings + remedy first and then appends this same hint.
     """
-    checkout = shlex.join(["git", "-C", str(target), "checkout", "--", "."])
-    clean = shlex.join(["git", "-C", str(target), "clean", "-fd"])
+    checkout = _shell_join(["git", "-C", str(target), "checkout", "--", "."])
+    clean = _shell_join(["git", "-C", str(target), "clean", "-fd"])
     return f"target may be PARTIALLY rewritten; restore with `{checkout} && {clean}`"
 
 
@@ -137,8 +144,8 @@ def _print_closure_refusal_prose(
     """
     preview, remove = exc.remedy_argv(target)
     print(str(exc))
-    print(f"preview: {shlex.join(preview)}")
-    print(f"remove:  {shlex.join(remove)}")
+    print(f"preview: {_shell_join(preview)}")
+    print(f"remove:  {_shell_join(remove)}")
     print(
         "(destructive, and broader than the paths listed — run only if "
         "the preview shows nothing you keep)"
@@ -146,8 +153,15 @@ def _print_closure_refusal_prose(
     empty_dirs = _empty_dir_paths(exc)
     if empty_dirs:
         cap = 20
+        prefix_abs = target / exc.source_prefix
         for path in empty_dirs[:cap]:
-            print(shlex.join(["rmdir", "--", str(target / path)]))
+            leaf = target / path
+            if sys.platform == "win32":
+                argv = ["rmdir", str(leaf)]
+            else:
+                argv = ["rmdir", "--", str(leaf)]
+            print(_shell_join(argv))
+            print(f"  # then rmdir each newly-empty parent up to {prefix_abs}")
         if len(empty_dirs) > cap:
             print(f"  … ({len(empty_dirs) - cap} more)")
     if getattr(rules, "clean", ()):

@@ -680,6 +680,38 @@ def test_note_source_for_in_tree_core_excludes_file_is_repo_relative(
     assert str(src_target) not in note
 
 
+def test_note_source_for_linked_worktree_common_dir_exclude_is_git_relative(
+    src_target: Path, tmp_path: Path
+):
+    """A pattern source inside the git COMMON dir (linked worktrees,
+    ``--separate-git-dir``) is repository-local, not a global excludes
+    file. ``.git/info/exclude`` in the MAIN repo resolves outside the
+    linked worktree's own directory, so without the common-dir check it
+    would be misrendered as the out-of-tree placeholder
+    ``<core.excludesFile>`` — it must instead be named
+    ``.git/info/exclude``."""
+    worktree = tmp_path / "linked-worktree"
+    _git(src_target, "worktree", "add", "-q", "-b", "wt-branch", str(worktree))
+    exclude = src_target / ".git" / "info" / "exclude"
+    exclude.write_text("hidden_dir/\n", encoding="utf-8")
+    (worktree / "hidden_dir").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        worktree,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "hidden_dir"]
+    assert hits
+    note = hits[0].note
+    assert note is not None
+    assert ".git/info/exclude:1" in note
+    assert "<core.excludesFile>" not in note
+    assert str(exclude) not in note
+
+
 def test_finding_dataclass_shape():
     f = Finding(
         path="a",

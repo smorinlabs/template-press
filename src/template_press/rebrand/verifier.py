@@ -285,8 +285,15 @@ def _render_note_source(source: str, target: Path) -> str:
     names ``core.excludesFile``; a per-directory ``.gitignore`` or
     ``.git/info/exclude`` is always already repo-relative and is returned
     as-is. An absolute ``core.excludesFile`` INSIDE the target is rendered
-    relative to it (never a raw absolute filesystem path in the note); one
-    OUTSIDE the target — the common case, a user-global excludes file — is
+    relative to it (never a raw absolute filesystem path in the note).
+
+    An absolute path inside the git COMMON dir (``git rev-parse
+    --git-common-dir``) is repository-local, not a global excludes file —
+    this happens for a linked worktree or ``--separate-git-dir``, where
+    ``.git/info/exclude`` resolves outside ``target`` but still names a
+    pattern source that lives with the repo. That case is rendered
+    ``.git/<relative-to-common-dir>`` rather than the placeholder. Any other
+    out-of-tree path — the common case, a user-global excludes file — is
     replaced with the literal placeholder text ``<core.excludesFile>``
     rather than ever surfacing that out-of-tree path verbatim.
     """
@@ -294,10 +301,28 @@ def _render_note_source(source: str, target: Path) -> str:
     if not path.is_absolute():
         return source
     try:
-        rel = path.resolve().relative_to(target.resolve())
-    except (OSError, ValueError):
+        resolved = path.resolve()
+    except OSError:
         return "<core.excludesFile>"
-    return rel.as_posix()
+    try:
+        return resolved.relative_to(target.resolve()).as_posix()
+    except (OSError, ValueError):
+        pass
+    try:
+        common = _run_git(target, "rev-parse", "--git-common-dir", check=False)
+    except (OSError, subprocess.SubprocessError):
+        return "<core.excludesFile>"
+    if common.returncode == 0:
+        common_dir = Path(common.stdout.decode("utf-8", "surrogateescape").strip())
+        if not common_dir.is_absolute():
+            common_dir = target / common_dir
+        try:
+            rel_common = resolved.relative_to(common_dir.resolve())
+        except (OSError, ValueError):
+            pass
+        else:
+            return f".git/{rel_common.as_posix()}"
+    return "<core.excludesFile>"
 
 
 def _format_ignore_near_miss(stdout: bytes, target: Path) -> str | None:

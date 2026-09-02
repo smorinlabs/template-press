@@ -1751,6 +1751,7 @@ def test_closure_refusal_diagnostics_json_prints_only_the_json(
     assert payload["remove_argv"][-3:] == ["-fdX", "--", "src/demo_widget"]
 
 
+@posix_only
 def test_closure_refusal_remedy_includes_rmdir_for_empty_dir_finding(
     src_target, tmp_path, capsys
 ):
@@ -1765,6 +1766,7 @@ def test_closure_refusal_remedy_includes_rmdir_for_empty_dir_finding(
     out = capsys.readouterr().out
     assert code == 2
     assert shlex.join(["rmdir", "--", str(src_target / "src/demo_widget/empty")]) in out
+    assert "# then rmdir each newly-empty parent up to" in out
 
     code = main(
         [
@@ -1779,6 +1781,31 @@ def test_closure_refusal_remedy_includes_rmdir_for_empty_dir_finding(
     payload = json.loads(capsys.readouterr().out)
     assert code == 2
     assert payload["rmdir_paths"] == ["src/demo_widget/empty"]
+
+
+@posix_only
+def test_closure_refusal_remedy_rmdir_prints_leaf_before_ancestor_hint(
+    src_target, tmp_path, capsys
+):
+    """A nested empty-dir finding prints the deepest (leaf) path first, then
+    the "rmdir each newly-empty parent" hint line — never the reverse, and
+    never a single `rmdir -p` that could climb past the rename prefix."""
+    write_source_config(src_target)
+    nested = src_target / "src" / "demo_widget" / "empty" / "nested"
+    nested.mkdir(parents=True)
+    answers = write_answers(tmp_path)
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 2
+    leaf_line = shlex.join(["rmdir", "--", str(nested)])
+    assert leaf_line in out
+    lines = out.splitlines()
+    leaf_index = lines.index(leaf_line)
+    assert (
+        lines[leaf_index + 1]
+        .strip()
+        .startswith("# then rmdir each newly-empty parent up to")
+    )
 
 
 def test_closure_refusal_on_apply_takes_same_branch_and_leaves_target_untouched(
