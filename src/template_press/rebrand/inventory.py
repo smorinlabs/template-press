@@ -993,6 +993,23 @@ def gitlink_path_strings(snapshot: SurfaceSnapshot) -> frozenset[str]:
     )
 
 
+def core_excludes_from_snapshot(snapshot: SurfaceSnapshot) -> Path | None:
+    """The resolved ``core.excludesFile`` path this snapshot's own
+    enumeration PINNED (``_enumerate_entries``'s ``pin_core_excludes``), or
+    ``None`` when none is configured.
+
+    Recovered from the snapshot's own ``visibility_inputs`` rather than a
+    fresh ``git config`` query, so a downstream consumer (E8's near-miss
+    probe) always agrees with exactly what THIS snapshot's own
+    ``git ls-files --exclude-standard`` enumeration used — never a value
+    that could have drifted since capture.
+    """
+    for item in snapshot.visibility_inputs:
+        if item.origin == "core_excludes_file":
+            return item.path
+    return None
+
+
 def _excluded(
     entry: SurfaceEntry,
     *,

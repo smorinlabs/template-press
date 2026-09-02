@@ -509,6 +509,120 @@ def test_genuinely_unignorable_untracked_path_gets_no_note(src_target: Path):
     assert all(f.note is None for f in hits)
 
 
+# ---------------------------------------------------------------------------
+# Fix round 1 (Sonnet + Codex adversarial review): pathspec-magic-safe
+# probing, pinned core.excludesFile, note-source rendering.
+# ---------------------------------------------------------------------------
+def test_untracked_entry_with_leading_colon_name_gets_correct_note(src_target: Path):
+    """[P1] A name STARTING WITH `:` is `check-ignore` pathspec-magic
+    territory (a leading colon triggers magic-signature parsing) — verified
+    empirically to silently match the WRONG pattern under the naive
+    ``-- <path>/`` query shape. The `./`-prefixed, `-c
+    core.literalPathspecs=true`, stdin-fed probe must still name the
+    CORRECT pattern for a colon-led name, not silently misfire."""
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\n:oddname/\n", encoding="utf-8"
+    )
+    _git(src_target, "commit", "-qam", "ignore")
+    (src_target / ":oddname").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == ":oddname"]
+    assert hits
+    assert all(
+        f.note is not None and "matches directories only" in f.note for f in hits
+    )
+    assert all(":oddname/" in (f.note or "") for f in hits)
+
+
+def test_untracked_entry_with_bracket_in_name_gets_correct_note(src_target: Path):
+    """[P1] A name containing `[`/`]` is `check-ignore` pathspec GLOB-magic
+    territory (character-class wildcarding) unless neutralized. Must not
+    crash and, when git resolves the query correctly (as verified
+    empirically here), must still name the correct escaped pattern —
+    the brief's own fallback ("or ... yields no note and no error") is the
+    floor, not the target."""
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\ndemo\\[x\\]/\n", encoding="utf-8"
+    )
+    _git(src_target, "commit", "-qam", "ignore")
+    (src_target / "demo[x]").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "demo[x]"]
+    assert hits
+    # Either a correct note, or a clean no-note — never a crash (the
+    # brief's own accepted floor for a pathspec git may still refuse).
+    for f in hits:
+        if f.note is not None:
+            assert "matches directories only" in f.note
+
+
+def test_note_source_for_out_of_tree_core_excludes_file_is_placeholder(
+    src_target: Path, tmp_path: Path
+):
+    """[P2] `core.excludesFile` is resolved from the SAME snapshot the
+    untracked-set came from (never re-queried ambiently), and an
+    OUT-OF-TREE excludes path is never printed verbatim in the note — only
+    the literal placeholder `<core.excludesFile>`."""
+    excludes = tmp_path / "global-ignore"
+    excludes.write_text("outside_lib/\n", encoding="utf-8")
+    _git(src_target, "config", "core.excludesFile", str(excludes))
+    (src_target / "outside_lib").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "outside_lib"]
+    assert hits
+    note = hits[0].note
+    assert note is not None
+    assert "<core.excludesFile>:1" in note
+    assert str(excludes) not in note
+
+
+def test_note_source_for_in_tree_core_excludes_file_is_repo_relative(
+    src_target: Path,
+):
+    """[P2] An excludes file INSIDE the target is rendered as a repo-relative
+    path, never an absolute filesystem path."""
+    (src_target / "team-ignore.txt").write_text("inside_lib/\n", encoding="utf-8")
+    _git(src_target, "add", "-A")
+    _git(src_target, "commit", "-qm", "add in-tree excludes file")
+    _git(src_target, "config", "core.excludesFile", "team-ignore.txt")
+    (src_target / "inside_lib").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "inside_lib"]
+    assert hits
+    note = hits[0].note
+    assert note is not None
+    assert "team-ignore.txt:1" in note
+    assert str(src_target) not in note
+
+
 def test_finding_dataclass_shape():
     f = Finding(
         path="a",

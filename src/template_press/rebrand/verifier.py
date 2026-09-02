@@ -33,6 +33,7 @@ scanned. Raw findings only — no ignoring, no deduping (Task 8's job); no
 from __future__ import annotations
 
 import dataclasses
+import os
 import subprocess  # nosec B404 -- hardened check-ignore probes of an untrusted target
 import tempfile
 from collections.abc import Collection, Sequence
@@ -44,6 +45,7 @@ from template_press.rebrand.inventory import (
     SurfaceSnapshot,
     _run_git,
     capture_surface_snapshot,
+    core_excludes_from_snapshot,
     select_rename_entries,
     select_verifier_entries,
 )
@@ -158,28 +160,85 @@ def _copy_ignore_chain(target: Path, rel: Path, mirror: Path) -> None:
         _copy_one_gitignore(current_target, current_mirror)
 
 
-def _dir_form_probe(target: Path, rel: Path, posix: str) -> bytes | None:
-    """``git check-ignore --no-index -v -- <posix>/`` stdout, or ``None``.
+def _literal_query(posix: str, *, as_dir: bool) -> str:
+    """A `check-ignore` query string that can never be reinterpreted as
+    pathspec MAGIC (Codex fix-round-1 P1).
+
+    ``core.literalPathspecs=true`` (passed by every caller below) disables
+    ``*``/``?``/``[...]`` wildcard-magic interpretation, but `check-ignore`
+    still parses a query string that STARTS with ``:`` as a magic-signature
+    marker even under that setting (verified empirically: ``:oddname/``
+    silently matched an UNRELATED pattern named ``oddname/``, not a
+    literal ``:oddname/`` — a git-level parser quirk specific to a LEADING
+    colon). Prefixing every query with ``./`` moves any leading ``:`` off
+    position 0, which git accepts as ordinary path normalization (does not
+    change what the query resolves to) and which empirically restores
+    correct literal matching for a colon-led name.
+    """
+    return f"./{posix}/" if as_dir else f"./{posix}"
+
+
+def _check_ignore(
+    target: Path, query: str, *, core_excludes: Path | None
+) -> subprocess.CompletedProcess[bytes] | None:
+    """One ``git check-ignore --no-index -v -z --stdin`` probe for a SINGLE
+    query path, or ``None`` on any git/OS failure.
+
+    The query is fed via STDIN (never a CLI pathspec argument) and
+    ``-c core.literalPathspecs=true`` is set — together these stop
+    `check-ignore` from reinterpreting a query containing pathspec-magic
+    characters (``*``, ``?``, ``[...]``, a leading ``:``) as anything other
+    than the literal path it names (Codex fix-round-1 P1). Output is
+    NUL-delimited (``-z``, both directions) so it round-trips any byte
+    sequence including non-UTF-8 names. ``core.excludesFile`` is PINNED to
+    the caller's already-resolved value — mirroring
+    ``inventory._enumerate_entries``'s own ``pin_core_excludes`` — so this
+    probe can never disagree with what the surface snapshot's OWN
+    enumeration used (Codex/sonnet fix-round-1 P2).
+    """
+    try:
+        return _run_git(
+            target,
+            "-c",
+            "core.literalPathspecs=true",
+            "check-ignore",
+            "--no-index",
+            "-v",
+            "-z",
+            "--stdin",
+            check=False,
+            stdin=query.encode("utf-8", "surrogateescape") + b"\0",
+            pin_core_excludes=True,
+            core_excludes=core_excludes,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _dir_form_probe(
+    target: Path, rel: Path, posix: str, core_excludes: Path | None
+) -> bytes | None:
+    """``git check-ignore --no-index -v -z --stdin`` for ``<posix>/``
+    stdout, or ``None``.
 
     A LIVE symlink at ``rel`` makes git's own pathspec resolution refuse a
     trailing-slash (directory-shaped) query against its real, on-disk path
-    — ``fatal: pathspec '<posix>/' is beyond a symbolic link`` (verified
-    empirically; a long-standing git pathspec-safety check, not a
-    ``--no-index`` quirk) — which would otherwise silently defeat this
-    probe for exactly the symlink case E8 exists to catch. On any result
-    other than 0 (matched) or 1 (no match), the SAME query is re-run
-    against a throwaway mirror carrying only the `.gitignore` ancestor
-    chain (`_copy_ignore_chain`) and no node at ``rel`` at all — so git's
-    own pattern-matching still renders the verdict (never a private
-    reimplementation of gitignore syntax), just without a real symlink for
-    its safety check to trip on. Gated on the RETURN CODE only, never
-    stderr text (git localizes messages).
+    — ``fatal: pathspec './<posix>/' is beyond a symbolic link`` (verified
+    empirically; a long-standing git pathspec-safety check, unaffected by
+    ``--no-index``, ``--stdin``, or ``core.literalPathspecs``) — which
+    would otherwise silently defeat this probe for exactly the symlink
+    case E8 exists to catch. On any result other than 0 (matched) or 1 (no
+    match), the SAME query is re-run against a throwaway mirror carrying
+    only the `.gitignore` ancestor chain (`_copy_ignore_chain`) and no node
+    at ``rel`` at all — so git's own pattern-matching still renders the
+    verdict (never a private reimplementation of gitignore syntax), just
+    without a real symlink for its safety check to trip on. Gated on the
+    RETURN CODE only, never stderr text (git localizes messages).
     """
-    try:
-        direct = _run_git(
-            target, "check-ignore", "--no-index", "-v", "--", f"{posix}/", check=False
-        )
-    except (OSError, subprocess.SubprocessError):
+    direct = _check_ignore(
+        target, _literal_query(posix, as_dir=True), core_excludes=core_excludes
+    )
+    if direct is None:
         return None
     if direct.returncode == 0:
         return direct.stdout
@@ -195,14 +254,22 @@ def _dir_form_probe(target: Path, rel: Path, posix: str) -> bytes | None:
                 str(target),
                 f"--work-tree={mirror}",
                 *git_hardening_args(),
+                "-c",
+                "core.literalPathspecs=true",
+                "-c",
+                f"core.excludesFile={core_excludes or Path(os.devnull)}",
                 "check-ignore",
                 "--no-index",
                 "-v",
-                "--",
-                f"{posix}/",
+                "-z",
+                "--stdin",
             ]
             mirrored = subprocess.run(  # noqa: S603 # nosec B603 B607
                 cmd,
+                input=_literal_query(posix, as_dir=True).encode(
+                    "utf-8", "surrogateescape"
+                )
+                + b"\0",
                 check=False,
                 capture_output=True,
                 env=scrubbed_git_env(),
@@ -214,15 +281,42 @@ def _dir_form_probe(target: Path, rel: Path, posix: str) -> bytes | None:
     return mirrored.stdout
 
 
-def _format_ignore_near_miss(stdout: bytes) -> str | None:
-    """Parse one `check-ignore -v` output line (``source:line:pattern\\tpath``)
-    into the E8 note text; ``None`` on any unrecognized shape."""
-    line = stdout.decode("utf-8", "surrogateescape").split("\n", 1)[0]
-    head = line.split("\t", 1)[0]
-    parts = head.split(":", 2)
-    if len(parts) != 3:
+def _render_note_source(source: str, target: Path) -> str:
+    """A `check-ignore -v` ``source`` field, made safe to print (Codex/sonnet
+    fix-round-1 P2).
+
+    Per ``git-check-ignore(1)``, ``source`` is an ABSOLUTE path only when it
+    names ``core.excludesFile``; a per-directory ``.gitignore`` or
+    ``.git/info/exclude`` is always already repo-relative and is returned
+    as-is. An absolute ``core.excludesFile`` INSIDE the target is rendered
+    relative to it (never a raw absolute filesystem path in the note); one
+    OUTSIDE the target — the common case, a user-global excludes file — is
+    replaced with the literal placeholder text ``<core.excludesFile>``
+    rather than ever surfacing that out-of-tree path verbatim.
+    """
+    path = Path(source)
+    if not path.is_absolute():
+        return source
+    try:
+        rel = path.resolve().relative_to(target.resolve())
+    except (OSError, ValueError):
+        return "<core.excludesFile>"
+    return rel.as_posix()
+
+
+def _format_ignore_near_miss(stdout: bytes, target: Path) -> str | None:
+    """Parse one NUL-delimited `check-ignore -v -z` record
+    (``source\\0lineno\\0pattern\\0path\\0``) into the E8 note text;
+    ``None`` on any unrecognized shape."""
+    parts = stdout.split(b"\0")
+    if len(parts) < 4:
         return None
-    source, lineno, pattern = parts
+    source = parts[0].decode("utf-8", "surrogateescape")
+    lineno = parts[1].decode("utf-8", "surrogateescape")
+    pattern = parts[2].decode("utf-8", "surrogateescape")
+    if not source or not lineno or not pattern:
+        return None
+    source = _render_note_source(source, target)
     return (
         f"this untracked entry is not ignored — {source}:{lineno} pattern "
         f"'{pattern}' matches directories only. git add -A would commit it. "
@@ -231,7 +325,9 @@ def _format_ignore_near_miss(stdout: bytes) -> str | None:
     )
 
 
-def ignore_near_miss(target: Path, rel: Path) -> str | None:
+def ignore_near_miss(
+    target: Path, rel: Path, core_excludes: Path | None = None
+) -> str | None:
     """E8: diagnose a directory-only `.gitignore` pattern near-miss for one
     UNTRACKED entry.
 
@@ -241,25 +337,30 @@ def ignore_near_miss(target: Path, rel: Path) -> str | None:
     exactly the ``foo/`` ignore-pattern-matches-directories-only trap.
     Never follows the entry itself (`check-ignore` only ever consults
     `.gitignore` text and path names); never mutates; any git failure
-    (missing binary, malformed repo, …) yields ``None``, never an error.
+    (missing binary, malformed repo, a pathspec git refuses even
+    literally, …) yields ``None``, never an error. ``core_excludes`` is the
+    resolved ``core.excludesFile`` path this probe should PIN to — pass
+    ``inventory.core_excludes_from_snapshot(snapshot)`` from the SAME
+    snapshot the caller's untracked-set came from, so this probe agrees
+    with what was actually enumerated.
     """
     posix = rel.as_posix()
-    try:
-        as_leaf = _run_git(
-            target, "check-ignore", "--no-index", "-v", "--", posix, check=False
-        )
-    except (OSError, subprocess.SubprocessError):
+    as_leaf = _check_ignore(
+        target, _literal_query(posix, as_dir=False), core_excludes=core_excludes
+    )
+    if as_leaf is None or as_leaf.returncode != 1:
         return None
-    if as_leaf.returncode != 1:
-        return None
-    dir_stdout = _dir_form_probe(target, rel, posix)
+    dir_stdout = _dir_form_probe(target, rel, posix, core_excludes)
     if dir_stdout is None:
         return None
-    return _format_ignore_near_miss(dir_stdout)
+    return _format_ignore_near_miss(dir_stdout, target)
 
 
 def attach_ignore_hints(
-    target: Path, findings: list[Finding], untracked: frozenset[str]
+    target: Path,
+    findings: list[Finding],
+    untracked: frozenset[str],
+    core_excludes: Path | None = None,
 ) -> list[Finding]:
     """Attach an `ignore_near_miss` note to every finding whose ``path``
     names an UNTRACKED entry (E8). Cached per path so one entry backing
@@ -273,7 +374,9 @@ def attach_ignore_hints(
     for finding in findings:
         if finding.path in untracked:
             if finding.path not in cache:
-                cache[finding.path] = ignore_near_miss(target, Path(finding.path))
+                cache[finding.path] = ignore_near_miss(
+                    target, Path(finding.path), core_excludes
+                )
             note = cache[finding.path]
             if note is not None:
                 finding = dataclasses.replace(finding, note=note)
@@ -681,6 +784,7 @@ def scan(
         exempt_paths=exempt_paths,
     )
     untracked = frozenset(e.rel.as_posix() for e in selected if not e.tracked)
+    core_excludes = core_excludes_from_snapshot(snapshot)
     entries: list[_ScanEntry] = []
     for entry in selected:
         if entry.worktree_kind == "symlink":
@@ -736,4 +840,4 @@ def scan(
                 target, rel, posix, changed, substring_fields, rule_specs, renamed
             )
         )
-    return attach_ignore_hints(target, findings, untracked)
+    return attach_ignore_hints(target, findings, untracked, core_excludes)

@@ -26,6 +26,7 @@ from template_press.rebrand.identity import (
 )
 from template_press.rebrand.inventory import (
     capture_surface_snapshot,
+    core_excludes_from_snapshot,
     select_inline_doctor_entries,
 )
 from template_press.rebrand.rules import (
@@ -70,10 +71,15 @@ class Leak:
 
 
 def _attach_ignore_hints(
-    target: Path, leaks: list[Leak], untracked: frozenset[str]
+    target: Path,
+    leaks: list[Leak],
+    untracked: frozenset[str],
+    core_excludes: Path | None,
 ) -> list[Leak]:
     """Doctor-side counterpart of `verifier.attach_ignore_hints` (E8) — same
-    cached-per-path near-miss probe, over `Leak` instead of `Finding`."""
+    cached-per-path near-miss probe, over `Leak` instead of `Finding`.
+    ``core_excludes`` should come from `core_excludes_from_snapshot` on the
+    SAME snapshot ``untracked`` was derived from."""
     if not untracked:
         return leaks
     cache: dict[str, str | None] = {}
@@ -81,7 +87,9 @@ def _attach_ignore_hints(
     for leak in leaks:
         if leak.path in untracked:
             if leak.path not in cache:
-                cache[leak.path] = ignore_near_miss(target, Path(leak.path))
+                cache[leak.path] = ignore_near_miss(
+                    target, Path(leak.path), core_excludes
+                )
             note = cache[leak.path]
             if note is not None:
                 leak = dataclasses.replace(leak, note=note)
@@ -215,6 +223,7 @@ def _find_table_leaks(
         root_control=ROOT_CONTROL,
     )
     untracked = frozenset(e.rel.as_posix() for e in entries if not e.tracked)
+    core_excludes = core_excludes_from_snapshot(snapshot)
     leaks: list[Leak] = []
     for entry in entries:
         if entry.worktree_kind == "missing" and entry.index_kind != "gitlink":
@@ -299,7 +308,7 @@ def _find_table_leaks(
                         "content",
                     )
                 )
-    return _attach_ignore_hints(target, leaks, untracked)
+    return _attach_ignore_hints(target, leaks, untracked, core_excludes)
 
 
 def find_leaks(
@@ -384,6 +393,7 @@ def find_leaks(
         root_control=ROOT_CONTROL,
     )
     untracked = frozenset(e.rel.as_posix() for e in entries if not e.tracked)
+    core_excludes = core_excludes_from_snapshot(snapshot)
     for entry in entries:
         if entry.worktree_kind == "missing" and entry.index_kind != "gitlink":
             # Apply renames the worktree before updating Git's index. The old
@@ -464,7 +474,7 @@ def find_leaks(
                 and frm in text
             ):
                 leaks.append(Leak(rel_posix, "replace_rule", frm, "content"))
-    return _attach_ignore_hints(target, leaks, untracked)
+    return _attach_ignore_hints(target, leaks, untracked, core_excludes)
 
 
 def render_leak_report(leaks: list[Leak], limit: int = 20) -> str:

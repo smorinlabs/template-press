@@ -53,7 +53,10 @@ from template_press.rebrand.engine import (
 )
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_map
-from template_press.rebrand.inventory import capture_surface_snapshot
+from template_press.rebrand.inventory import (
+    capture_surface_snapshot,
+    core_excludes_from_snapshot,
+)
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.receipt import (
     read_receipt,
@@ -342,6 +345,19 @@ def _restage_sandbox(sandbox: Path) -> None:
     )
 
 
+def _finding_json(finding: Finding) -> dict[str, object]:
+    """`Finding` as a JSON-ready dict with `note` OMITTED when ``None``
+    (Codex fix-round-1 P3) — `note` is a new (E8) field, so `note: null` on
+    every ordinary finding would be a schema change for every existing
+    consumer of `press verify --json`; only a finding that actually carries
+    a near-miss hint gets the key at all.
+    """
+    data = dataclasses.asdict(finding)
+    if data["note"] is None:
+        del data["note"]
+    return data
+
+
 def _report(
     surviving: list[Finding],
     stale: list[Ignore],
@@ -556,7 +572,10 @@ def verify_command(argv: list[str] | None = None) -> int:
                     real_untracked = frozenset(
                         e.rel.as_posix() for e in real_snapshot.entries if not e.tracked
                     )
-                    surviving = attach_ignore_hints(target, surviving, real_untracked)
+                    real_core_excludes = core_excludes_from_snapshot(real_snapshot)
+                    surviving = attach_ignore_hints(
+                        target, surviving, real_untracked, real_core_excludes
+                    )
             unavailable = sandbox.unavailable_submodules
     except _CONFIG_ERRORS as exc:
         return _fail(f"sandbox verify failed: {exc}")
@@ -567,7 +586,7 @@ def verify_command(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "verified": not failed,
-                    "surviving": [dataclasses.asdict(f) for f in surviving],
+                    "surviving": [_finding_json(f) for f in surviving],
                     "stale_ignores": [dataclasses.asdict(i) for i in stale],
                     "unavailable_submodules": list(unavailable),
                     "equal_fields_collision": (
