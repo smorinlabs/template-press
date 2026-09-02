@@ -143,14 +143,3 @@ reason = "engine research notes"
 [[remove]]
 file = "docs/research/README.md"
 reason = "engine research notes"
-
-# These skills operate the press engine itself (dry-run/apply/verify a
-# press, run the acceptance matrix) — a pressed fork has no press engine to
-# operate.
-[[remove]]
-file = ".claude/skills/press-target/SKILL.md"
-reason = "skills for operating the press engine itself, not a fork's"
-
-[[remove]]
-file = ".claude/skills/rebrand-matrix/SKILL.md"
-reason = "skills for operating the press engine itself, not a fork's"
