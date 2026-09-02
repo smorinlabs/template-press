@@ -886,7 +886,8 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
         assert_ancestors_real(path, target)
         text = _read_text(path, expected_kind=entry.worktree_kind)
         if text is not None:
-            _tally_prefix_occurrences(text, prefix_fields, prefix_counts)
+            if entry.tracked:
+                _tally_prefix_occurrences(text, prefix_fields, prefix_counts)
             preview = text
             for row in table.rows:
                 if "content" not in row.rewrite_surfaces or not row_matches_scope(
@@ -1120,7 +1121,8 @@ def prefix_only_warnings(counts: Mapping[str, _PrefixCounts]) -> list[str]:
         tally = counts[field_name]
         if tally.whole != 0 or not tally.prefix_tokens:
             continue
-        token, places = tally.prefix_tokens.most_common(1)[0]
+        token, _ = tally.prefix_tokens.most_common(1)[0]
+        places = sum(tally.prefix_tokens.values())
         warnings.append(
             f"warning: {field_name} {tally.value!r} occurs only as a prefix "
             f"of {token!r} ({places} places); if the template was renamed, "

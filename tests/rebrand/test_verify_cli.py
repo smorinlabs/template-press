@@ -574,6 +574,7 @@ def test_json_note_key_omitted_unless_near_miss(tmp_path: Path, capsys) -> None:
     _commit(repo)
     # An ordinary (non-near-miss) leak: a TRACKED file whose content survives.
     (repo / "bun.lock").write_text('"name":"demo_widget"\n', encoding="utf-8")
+    _commit(repo, "track the ordinary leak")
     outside = tmp_path / "press" / "vendor3"
     outside.mkdir(parents=True)
     (repo / "vendor3").symlink_to(outside)  # untracked near-miss symlink

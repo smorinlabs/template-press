@@ -726,6 +726,124 @@ class TestPrefixOnlyWarning:
         )
         assert "update press/press-source.toml" in out
 
+    def test_places_count_sums_every_prefix_token_not_just_the_named_one(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """[Greptile fix] `(N places)` must count every prefix-token
+        occurrence across the WHOLE corpus, not just the occurrences of the
+        one example token named in the message. Two distinct longer tokens
+        stand in for `demo-widget` here — 2x `demo-widget-api`, 3x
+        `demo-widget-cli` — so `places` must be 5 (the sum), while the named
+        example token stays the most-common one, `demo-widget-cli`."""
+        readme = src_target / "README.md"
+        text = readme.read_text(encoding="utf-8")
+        text = text.replace("# demo-widget", "# demo-widget-api", 1)
+        text = text.replace(
+            "https://github.com/demolabs/demo-widget",
+            "https://github.com/demolabs/demo-widget-cli",
+            1,
+        )
+        text += (
+            "\nSee also demo-widget-cli quickstart and demo-widget-cli docs, "
+            "and demo-widget-api reference.\n"
+        )
+        readme.write_text(text, encoding="utf-8")
+        _git(src_target, "commit", "-qam", "renamed upstream, two ways")
+        write_source_config(src_target)  # still declares repo_name = demo-widget
+        _git(src_target, "remote", "remove", "origin")  # guard skips owner/repo_name
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert (
+            "warning: repo_name 'demo-widget' occurs only as a prefix of "
+            "'demo-widget-cli' (5 places)" in out
+        )
+
+    def test_untracked_whole_token_occurrence_does_not_suppress_warning(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """[Codex fix] The prefix tally must only count TRACKED content —
+        `select_content_rewrite_entries` also walks non-ignored UNTRACKED
+        files, and an untracked scratch file containing the whole token
+        would otherwise silently suppress a genuine prefix-only warning
+        that the tracked corpus (`demo-widget-2` only) actually earns."""
+        for rel in ("README.md", "pyproject.toml"):
+            p = src_target / rel
+            p.write_text(
+                p.read_text(encoding="utf-8").replace("demo-widget", "demo-widget-2"),
+                encoding="utf-8",
+            )
+        _git(src_target, "commit", "-qam", "renamed upstream")
+        write_source_config(src_target)  # still declares repo_name = demo-widget
+        # AFTER write_source_config's own `git add -A` + commit, so this
+        # scratch file stays genuinely UNTRACKED (writing it any earlier
+        # would sweep it into that commit and defeat the test).
+        (src_target / "scratch.md").write_text(
+            "an untracked mention of demo-widget, whole token\n", encoding="utf-8"
+        )
+        _git(src_target, "remote", "remove", "origin")  # guard skips owner/repo_name
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+                "--allow-dirty",  # the untracked scratch file is the point
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert (
+            "warning: repo_name 'demo-widget' occurs only as a prefix of "
+            "'demo-widget-2'" in out
+        )
+
+    def test_untracked_prefix_only_file_does_not_create_a_warning(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """[Codex fix] An untracked prefix-only mention must not, on its own,
+        manufacture a warning — with zero TRACKED occurrences of repo_name
+        at all, excluding the untracked entry from the tally leaves
+        `prefix_tokens` empty too, so `prefix_only_warnings` stays silent
+        (it requires a nonempty `prefix_tokens`, not just an absent whole)."""
+        readme = src_target / "README.md"
+        readme.write_text(
+            readme.read_text(encoding="utf-8").replace("demo-widget", "widget-only"),
+            encoding="utf-8",
+        )
+        _git(src_target, "commit", "-qam", "drop the tracked repo_name mention")
+        write_source_config(src_target)  # still declares repo_name = demo-widget
+        # AFTER write_source_config's own `git add -A` + commit, so this
+        # scratch file stays genuinely UNTRACKED (writing it any earlier
+        # would sweep it into that commit and defeat the test).
+        (src_target / "scratch.md").write_text(
+            "an untracked mention of demo-widget-untracked, prefix only\n",
+            encoding="utf-8",
+        )
+        _git(src_target, "remote", "remove", "origin")  # guard skips owner/repo_name
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+                "--allow-dirty",  # the untracked scratch file is the point
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "occurs only as a prefix of" not in out
+
     def test_no_prefix_warning_on_plain_src_target(
         self, src_target: Path, tmp_path: Path, capsys
     ):

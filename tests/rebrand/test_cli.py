@@ -1,6 +1,7 @@
 import errno
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -1750,6 +1751,36 @@ def test_closure_refusal_diagnostics_json_prints_only_the_json(
     assert payload["remove_argv"][-3:] == ["-fdX", "--", "src/demo_widget"]
 
 
+def test_closure_refusal_remedy_includes_rmdir_for_empty_dir_finding(
+    src_target, tmp_path, capsys
+):
+    """`git clean -fdX` cannot remove an UNIGNORED empty directory (`-X` is
+    ignored-only), so an `empty-dir` finding needs its own `rmdir` remedy —
+    printed after the `git clean` lines, and included in
+    `--diagnostics-json` as `rmdir_paths`."""
+    write_source_config(src_target)
+    (src_target / "src" / "demo_widget" / "empty").mkdir()
+    answers = write_answers(tmp_path)
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert shlex.join(["rmdir", "src/demo_widget/empty"]) in out
+
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--dry-run",
+            "--diagnostics-json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload["rmdir_paths"] == ["src/demo_widget/empty"]
+
+
 def test_closure_refusal_on_apply_takes_same_branch_and_leaves_target_untouched(
     src_target, tmp_path, capsys
 ):
@@ -1839,7 +1870,8 @@ def test_closure_refusal_on_apply_time_revalidation_exits_1_with_remedy(
     assert "phase='apply'" in out
     assert (
         "target may be PARTIALLY rewritten; restore with "
-        f"`git -C {src_target} checkout . && git clean -fd`" in err
+        f"`git -C {shlex.quote(str(src_target))} checkout -- . && "
+        f"git -C {shlex.quote(str(src_target))} clean -fd`" in err
     )
     assert not (src_target / RECEIPT_REL).exists()
     assert (src_target / "README.md").read_text(encoding="utf-8") == readme_before

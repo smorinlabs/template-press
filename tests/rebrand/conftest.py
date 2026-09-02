@@ -63,7 +63,8 @@ requires_symlink = pytest.mark.skipif(
 # reported missing); only the fixture apparatus cannot exist there.
 posix_only = pytest.mark.skipif(
     sys.platform == "win32",
-    reason="POSIX-only test mechanism (sh scripts / permission bits / filenames illegal on Win32)",
+    reason="POSIX-only test mechanism (sh scripts / permission bits / "
+    "filenames illegal on Win32)",
 )
 
 SOURCE = Identity(

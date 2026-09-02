@@ -103,10 +103,20 @@ def _partial_rewrite_restore_hint(target: Path) -> str:
     `RenameClosureUnauthorized` branch, which prints its own aggregated
     findings + remedy first and then appends this same hint.
     """
-    return (
-        f"target may be PARTIALLY rewritten; restore with "
-        f"`git -C {target} checkout . && git clean -fd`"
-    )
+    checkout = shlex.join(["git", "-C", str(target), "checkout", "--", "."])
+    clean = shlex.join(["git", "-C", str(target), "clean", "-fd"])
+    return f"target may be PARTIALLY rewritten; restore with `{checkout} && {clean}`"
+
+
+def _empty_dir_paths(exc: RenameClosureUnauthorized) -> list[str]:
+    """Sorted ``empty-dir`` finding paths from `exc` (E2).
+
+    ``git clean -fdX`` (the remedy `remedy_argv` prints) cannot remove these:
+    ``-X`` only removes IGNORED paths, and an uninventoried empty directory
+    is by definition unignored (nothing in it for `.gitignore` to match) —
+    so each needs its own `rmdir`.
+    """
+    return sorted(path for kind, path in exc.findings if kind == "empty-dir")
 
 
 def _print_closure_refusal_prose(
@@ -127,6 +137,13 @@ def _print_closure_refusal_prose(
         "(destructive, and broader than the paths listed — run only if "
         "the preview shows nothing you keep)"
     )
+    empty_dirs = _empty_dir_paths(exc)
+    if empty_dirs:
+        cap = 20
+        for path in empty_dirs[:cap]:
+            print(shlex.join(["rmdir", path]))
+        if len(empty_dirs) > cap:
+            print(f"  … ({len(empty_dirs) - cap} more)")
     if getattr(rules, "clean", ()):
         print(f"declared clean rules exist — run: press clean --target {target}")
 
@@ -151,6 +168,7 @@ def _report_closure_refusal(
             "phase": exc.phase,
             "preview_argv": preview,
             "remove_argv": remove,
+            "rmdir_paths": _empty_dir_paths(exc),
         }
         print(json.dumps(payload, ensure_ascii=True))
         return 2

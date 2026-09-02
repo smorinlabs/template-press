@@ -102,10 +102,13 @@ def test_closure_refusal_prints_remedy_and_exits_2(src_target, tmp_path, capsys)
     out = capsys.readouterr().out
     assert code == 2
     assert "absent from the authorized surface" in out
-    assert "clean -ndX -- src/demo_widget" in out and "clean -fdX -- src/demo_widget" in out
+    assert (
+        "clean -ndX -- src/demo_widget" in out
+        and "clean -fdX -- src/demo_widget" in out
+    )
     assert "--literal-pathspecs" in out
-    assert "broader than" in out            # destructive label
-    assert "(dry run" not in out            # never the success terminator
+    assert "broader than" in out  # destructive label
+    assert "(dry run" not in out  # never the success terminator
     assert not (src_target / RECEIPT_REL).exists()
 
 
@@ -115,13 +118,26 @@ def test_closure_refusal_diagnostics_json(src_target, tmp_path, capsys):
     weird.mkdir()
     (weird / "a\nb.pyc").write_bytes(b"\0")
     answers = write_answers(tmp_path)
-    code = main(["--target", str(src_target), "--config", str(answers),
-                 "--dry-run", "--diagnostics-json"])
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--dry-run",
+            "--diagnostics-json",
+        ]
+    )
     payload = json.loads(capsys.readouterr().out)
     assert code == 2
     assert payload["code"] == "rename_closure_unauthorized"
     assert payload["findings"][0]["path"] == "src/demo_widget/__pycache__/a\nb.pyc"
-    assert payload["preview_argv"][:4] == ["git", "--literal-pathspecs", "-C", str(src_target)]
+    assert payload["preview_argv"][:4] == [
+        "git",
+        "--literal-pathspecs",
+        "-C",
+        str(src_target),
+    ]
 ```
 
 - [ ] **Step 2:** Run both → FAIL (no flag; no remedy text).
@@ -141,14 +157,25 @@ def test_closure_refusal_diagnostics_json(src_target, tmp_path, capsys):
 - [ ] **Step 1: Failing tests**
 
 ```python
-def test_plan_warns_when_a_rewritten_directory_has_no_removal(src_target, tmp_path, capsys):
+def test_plan_warns_when_a_rewritten_directory_has_no_removal(
+    src_target, tmp_path, capsys
+):
     hist = src_target / "projects"
     hist.mkdir()
     (hist / "P01.md").write_text("demo_widget history\n", encoding="utf-8")
     (hist / "P02.md").write_text("more demo_widget\n", encoding="utf-8")
-    _git(src_target, "add", "-A"); _git(src_target, "commit", "-q", "-m", "hist")
+    _git(src_target, "add", "-A")
+    _git(src_target, "commit", "-q", "-m", "hist")
     write_source_config(src_target)
-    code = main(["--target", str(src_target), "--config", str(write_answers(tmp_path)), "--dry-run"])
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--dry-run",
+        ]
+    )
     out = capsys.readouterr().out
     assert code == 0
     assert "warning: 2 tracked files under projects/ will be rewritten" in out
@@ -160,15 +187,27 @@ def test_no_warning_when_directory_is_declared_removed(src_target, tmp_path, cap
     hist.mkdir()
     (hist / "P01.md").write_text("demo_widget history\n", encoding="utf-8")
     (hist / "P02.md").write_text("more demo_widget\n", encoding="utf-8")
-    _write_rules(src_target, '[[remove]]\nfile = "projects/P01.md"\nreason = "hist"\n'
-                             '[[remove]]\nfile = "projects/P02.md"\nreason = "hist"\n')
-    _git(src_target, "add", "-A"); _git(src_target, "commit", "-q", "-m", "hist")
+    _write_rules(
+        src_target,
+        '[[remove]]\nfile = "projects/P01.md"\nreason = "hist"\n'
+        '[[remove]]\nfile = "projects/P02.md"\nreason = "hist"\n',
+    )
+    _git(src_target, "add", "-A")
+    _git(src_target, "commit", "-q", "-m", "hist")
     write_source_config(src_target)
-    code = main(["--target", str(src_target), "--config", str(write_answers(tmp_path)), "--dry-run"])
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--dry-run",
+        ]
+    )
     out = capsys.readouterr().out
     assert code == 0
     assert "warning:" not in out
-    assert "removing 2 files under projects/" in out          # (b)
+    assert "removing 2 files under projects/" in out  # (b)
 ```
 
 - [ ] **Step 2:** Run → FAIL.
@@ -193,17 +232,35 @@ def test_no_warning_when_directory_is_declared_removed(src_target, tmp_path, cap
 - [ ] **Step 1: Failing test**
 
 ```python
-def test_plan_warns_when_source_value_occurs_only_as_prefix(src_target, tmp_path, capsys):
+def test_plan_warns_when_source_value_occurs_only_as_prefix(
+    src_target, tmp_path, capsys
+):
     for rel in ("README.md", "pyproject.toml"):
         p = src_target / rel
-        p.write_text(p.read_text(encoding="utf-8").replace("demo-widget", "demo-widget-2"), encoding="utf-8")
+        p.write_text(
+            p.read_text(encoding="utf-8").replace("demo-widget", "demo-widget-2"),
+            encoding="utf-8",
+        )
     _git(src_target, "commit", "-qam", "renamed upstream")
-    write_source_config(src_target)          # still declares repo_name = demo-widget
-    _git(src_target, "remote", "remove", "origin")   # no origin: guard skips owner/repo_name
-    code = main(["--target", str(src_target), "--config", str(write_answers(tmp_path)), "--dry-run"])
+    write_source_config(src_target)  # still declares repo_name = demo-widget
+    _git(
+        src_target, "remote", "remove", "origin"
+    )  # no origin: guard skips owner/repo_name
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--dry-run",
+        ]
+    )
     out = capsys.readouterr().out
     assert code == 0
-    assert "warning: repo_name 'demo-widget' occurs only as a prefix of 'demo-widget-2'" in out
+    assert (
+        "warning: repo_name 'demo-widget' occurs only as a prefix of 'demo-widget-2'"
+        in out
+    )
     assert "update press/press-source.toml" in out
 ```
 
@@ -219,15 +276,21 @@ def test_plan_warns_when_source_value_occurs_only_as_prefix(src_target, tmp_path
 
 ```python
 @requires_symlink
-def test_untracked_symlink_matching_dir_only_ignore_pattern_is_scanned(src_target, tmp_path):
-    (src_target / ".gitignore").write_text(".venv/\n__pycache__/\nnode_modules/\n", encoding="utf-8")
+def test_untracked_symlink_matching_dir_only_ignore_pattern_is_scanned(
+    src_target, tmp_path
+):
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nnode_modules/\n", encoding="utf-8"
+    )
     _git(src_target, "commit", "-qam", "ignore")
-    outside = tmp_path / "press" / "node_modules"          # link text contains app_name 'press'
+    outside = tmp_path / "press" / "node_modules"  # link text contains app_name 'press'
     outside.mkdir(parents=True)
     (src_target / "node_modules").symlink_to(outside)
     snapshot = capture_surface_snapshot(src_target)
     assert any(e.rel.as_posix() == "node_modules" for e in snapshot.entries)
-    findings = scan_target(src_target, SOURCE, DEST, DEFAULT_RULES)     # existing verifier entry point
+    findings = scan_target(
+        src_target, SOURCE, DEST, DEFAULT_RULES
+    )  # existing verifier entry point
     f = next(x for x in findings if x.where == "symlink" and x.field == "app_name")
     assert "matches directories only" in f.note
     assert "node_modules/" in f.note and "git add -A" in f.note
@@ -243,8 +306,11 @@ def test_untracked_symlink_matching_dir_only_ignore_pattern_is_scanned(src_targe
 
 ```python
 def test_regenerate_against_identity_bearing_source_file_is_refused(src_target):
-    _write_rules(src_target, '[rules]\nextra_exclude_files = ["src/demo_widget/cli.py"]\n'
-                              '[[regenerate]]\nfile = "src/demo_widget/cli.py"\ncommand = ["ruff", "format", "src"]\n')
+    _write_rules(
+        src_target,
+        '[rules]\nextra_exclude_files = ["src/demo_widget/cli.py"]\n'
+        '[[regenerate]]\nfile = "src/demo_widget/cli.py"\ncommand = ["ruff", "format", "src"]\n',
+    )
     with pytest.raises((ValidationError, SafetyError)):
         build_plan(src_target, SOURCE, DEST, load_rules(src_target))
 ```
@@ -276,45 +342,83 @@ If this passes today because the refusal happens at the excluded-file preflight 
 def _set_origin(target: Path, url: str) -> None:
     _git(target, "remote", "set-url", "origin", url)
 
-def test_origin_already_names_destination_is_accepted_with_notice(src_target, tmp_path, capsys):
+
+def test_origin_already_names_destination_is_accepted_with_notice(
+    src_target, tmp_path, capsys
+):
     write_source_config(src_target)
     _set_origin(src_target, "https://github.com/potatolabs/potato-launcher.git")
     answers = write_answers(tmp_path)
     code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
     out = capsys.readouterr().out
     assert code == 0
-    assert "notice: repo_name: origin already names the destination ('potato-launcher')" in out
+    assert (
+        "notice: repo_name: origin already names the destination ('potato-launcher')"
+        in out
+    )
     assert "notice: owner: origin already names the destination ('potatolabs')" in out
+
 
 def test_origin_naming_third_repo_still_exits_2(src_target, tmp_path, capsys):
     write_source_config(src_target)
     _set_origin(src_target, "https://github.com/someone/else.git")
-    code = main(["--target", str(src_target), "--config", str(write_answers(tmp_path)), "--dry-run"])
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--dry-run",
+        ]
+    )
     out = capsys.readouterr().out
     assert code == 2 and "repo_name" in out and "owner" in out
     assert not (src_target / RECEIPT_REL).exists()
 
+
 def test_receipt_records_origin_relaxation(src_target, tmp_path):
     write_source_config(src_target)
     _set_origin(src_target, "https://github.com/potatolabs/potato-launcher.git")
-    assert main(["--target", str(src_target), "--config", str(write_answers(tmp_path))]) == 0
+    assert (
+        main(["--target", str(src_target), "--config", str(write_answers(tmp_path))])
+        == 0
+    )
     receipt = (src_target / RECEIPT_REL).read_text(encoding="utf-8")
     assert 'origin_named_destination = ["owner", "repo_name"]' in receipt
 
-def test_documented_blind_spot_stale_repo_name_with_destination_origin(src_target, tmp_path):
+
+def test_documented_blind_spot_stale_repo_name_with_destination_origin(
+    src_target, tmp_path
+):
     # DOCUMENTED ACCEPTANCE (spec E1/E9): template renamed upstream to demo-widget-2, source-config
     # stale, origin already the destination → accepted. A change here must be deliberate.
     for rel in ("README.md",):
         p = src_target / rel
-        p.write_text(p.read_text(encoding="utf-8").replace("demo-widget", "demo-widget-2"), encoding="utf-8")
+        p.write_text(
+            p.read_text(encoding="utf-8").replace("demo-widget", "demo-widget-2"),
+            encoding="utf-8",
+        )
     _git(src_target, "commit", "-qam", "renamed upstream")
     write_source_config(src_target)
     _set_origin(src_target, "https://github.com/potatolabs/potato-launcher.git")
-    assert main(["--target", str(src_target), "--config", str(write_answers(tmp_path)), "--dry-run"]) == 0
+    assert (
+        main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+
 
 def test_malformed_answers_reports_before_guard(src_target, tmp_path, capsys):
     write_source_config(src_target)
-    bad = tmp_path / "answers.toml"; bad.write_text("[answers\n", encoding="utf-8")
+    bad = tmp_path / "answers.toml"
+    bad.write_text("[answers\n", encoding="utf-8")
     assert main(["--target", str(src_target), "--config", str(bad)]) == 2
     assert not (src_target / SOURCE_CONFIG_REL).read_text().startswith("garbage")
 ```
@@ -328,21 +432,53 @@ def test_malformed_answers_reports_before_guard(src_target, tmp_path, capsys):
 - [ ] **Step 1: Failing tests**
 
 ```python
-def test_accept_origin_mismatch_proceeds_with_warning_and_receipt(src_target, tmp_path, capsys):
+def test_accept_origin_mismatch_proceeds_with_warning_and_receipt(
+    src_target, tmp_path, capsys
+):
     write_source_config(src_target)
     _set_origin(src_target, "https://github.com/someone/else.git")
-    code = main(["--target", str(src_target), "--config", str(write_answers(tmp_path)),
-                 "--accept-origin-mismatch"])
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--accept-origin-mismatch",
+        ]
+    )
     out = capsys.readouterr().out
     assert code == 0
-    assert "warning: repo_name: source-config 'demo-widget', repository 'else', destination 'potato-launcher' — proceeding on --accept-origin-mismatch" in out
-    assert 'origin_mismatch_accepted = ["owner", "repo_name"]' in (src_target / RECEIPT_REL).read_text()
+    assert (
+        "warning: repo_name: source-config 'demo-widget', repository 'else', destination 'potato-launcher' — proceeding on --accept-origin-mismatch"
+        in out
+    )
+    assert (
+        'origin_mismatch_accepted = ["owner", "repo_name"]'
+        in (src_target / RECEIPT_REL).read_text()
+    )
 
-def test_accept_origin_mismatch_never_covers_pyproject_fields(src_target, tmp_path, capsys):
-    wrong = SOURCE.__class__(**{**SOURCE.as_dict_prompted(), "package_name": "other_pkg"})
-    (src_target / "press").mkdir(); (src_target / SOURCE_CONFIG_REL).write_text(render_source_config(wrong), encoding="utf-8")
-    _git(src_target, "add", "-A"); _git(src_target, "commit", "-qm", "cfg")
-    code = main(["--target", str(src_target), "--config", str(write_answers(tmp_path)), "--accept-origin-mismatch"])
+
+def test_accept_origin_mismatch_never_covers_pyproject_fields(
+    src_target, tmp_path, capsys
+):
+    wrong = SOURCE.__class__(
+        **{**SOURCE.as_dict_prompted(), "package_name": "other_pkg"}
+    )
+    (src_target / "press").mkdir()
+    (src_target / SOURCE_CONFIG_REL).write_text(
+        render_source_config(wrong), encoding="utf-8"
+    )
+    _git(src_target, "add", "-A")
+    _git(src_target, "commit", "-qm", "cfg")
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--accept-origin-mismatch",
+        ]
+    )
     assert code == 2 and "package_name" in capsys.readouterr().out
 ```
 
@@ -365,17 +501,42 @@ def test_accept_origin_mismatch_never_covers_pyproject_fields(src_target, tmp_pa
 
 ```python
 def test_edit_rule_parses(src_target):
-    _write_rules(src_target, '[[edit]]\nfile = "pyproject.toml"\ncommand = ["uv", "version", "0.1.0", "--frozen"]\nexpect = \'version = "0.1.0"\'\n')
+    _write_rules(
+        src_target,
+        '[[edit]]\nfile = "pyproject.toml"\ncommand = ["uv", "version", "0.1.0", "--frozen"]\nexpect = \'version = "0.1.0"\'\n',
+    )
     rules = load_rules(src_target)
-    assert rules.edit[0].file == "pyproject.toml" and rules.edit[0].expect == 'version = "0.1.0"'
+    assert (
+        rules.edit[0].file == "pyproject.toml"
+        and rules.edit[0].expect == 'version = "0.1.0"'
+    )
 
-@pytest.mark.parametrize("body,needle", [
-    ('[rules]\nextra_exclude_files=["pyproject.toml"]\n[[edit]]\nfile="pyproject.toml"\ncommand=["uv","version","0.1.0"]\nexpect="x"\n', "must not be listed in exclude_files"),
-    ('[[edit]]\nfile="pyproject.toml"\ncommand=["uv","version","0.1.0"]\n', "expect is required"),
-    ('[[edit]]\nfile="pyproject.toml"\ncommand=["uv","version","0.1.0"]\nexpect="x"\nverify_exempt=true\n', "unknown key"),
-    ('[[edit]]\nfile="pyproject.toml"\ncommand=["uv","version","0.1.0"]\nexpect="x"\nscan="boundary"\n', "unknown key"),
-    ('[[edit]]\nfile="pyproject.toml"\ncommand=["uv","version","0.1.0"]\nexpect="x"\n[[reset]]\nfile="pyproject.toml"\nstub=""\n', "may not also be"),
-])
+
+@pytest.mark.parametrize(
+    "body,needle",
+    [
+        (
+            '[rules]\nextra_exclude_files=["pyproject.toml"]\n[[edit]]\nfile="pyproject.toml"\ncommand=["uv","version","0.1.0"]\nexpect="x"\n',
+            "must not be listed in exclude_files",
+        ),
+        (
+            '[[edit]]\nfile="pyproject.toml"\ncommand=["uv","version","0.1.0"]\n',
+            "expect is required",
+        ),
+        (
+            '[[edit]]\nfile="pyproject.toml"\ncommand=["uv","version","0.1.0"]\nexpect="x"\nverify_exempt=true\n',
+            "unknown key",
+        ),
+        (
+            '[[edit]]\nfile="pyproject.toml"\ncommand=["uv","version","0.1.0"]\nexpect="x"\nscan="boundary"\n',
+            "unknown key",
+        ),
+        (
+            '[[edit]]\nfile="pyproject.toml"\ncommand=["uv","version","0.1.0"]\nexpect="x"\n[[reset]]\nfile="pyproject.toml"\nstub=""\n',
+            "may not also be",
+        ),
+    ],
+)
 def test_edit_rule_refusals(src_target, body, needle):
     _write_rules(src_target, body)
     with pytest.raises(ValidationError, match=needle):

@@ -203,10 +203,12 @@ only, per `gitignore(5)`. A worktree tool that links a shared package
 cache in as `node_modules -> /path/to/real/node_modules` replaces the
 real directory with a symlink — which the `node_modules/` pattern no
 longer matches. That symlink is now untracked-and-not-ignored, so
-`press verify` and the post-apply doctor both enumerate and scan it like
-any other entry, and `git add -A` would commit it. `press verify`'s
-report attaches a note identifying exactly this near-miss when it fires.
-Three fixes, in order of preference:
+`press verify` enumerates and scans it like any other entry, and
+`git add -A` would commit it; the post-apply doctor applies its own
+built-in exclusions (`DEFAULT_RULES.exclude_dirs` includes
+`node_modules`), so it never enumerates the symlink in the first place.
+`press verify`'s report attaches a note identifying exactly this
+near-miss when it fires. Three fixes, in order of preference:
 
 1. **Best** — run `bun install --frozen-lockfile` (or your package
    manager's equivalent real-install) inside the worktree instead of

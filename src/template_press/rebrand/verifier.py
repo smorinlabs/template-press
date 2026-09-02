@@ -313,11 +313,18 @@ def _format_ignore_near_miss(stdout: bytes, target: Path) -> str | None:
     if not source or not lineno or not pattern:
         return None
     source = _render_note_source(source, target)
+    if pattern.endswith("/"):
+        return (
+            f"this untracked entry is not ignored — {source}:{lineno} pattern "
+            f"{pattern!r} matches directories only. git add -A would commit it. "
+            "Ignore it without the trailing slash, remove it, or list its name "
+            "under verify_ignore."
+        )
     return (
         f"this untracked entry is not ignored — {source}:{lineno} pattern "
-        f"'{pattern}' matches directories only. git add -A would commit it. "
-        "Ignore it without the trailing slash, remove it, or list its name "
-        "under verify_ignore."
+        f"{pattern!r} matches this path only as a directory. git add -A "
+        "would commit it. remove the entry, or list its name under "
+        "verify_ignore."
     )
 
 

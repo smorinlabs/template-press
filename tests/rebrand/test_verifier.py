@@ -489,6 +489,62 @@ def test_tracked_symlink_matching_dir_only_ignore_pattern_gets_no_note(
     assert all(f.note is None for f in hits)
 
 
+def test_dir_only_pattern_note_reprs_the_pattern(src_target: Path):
+    """[Copilot fix] The near-miss note renders the gitignore pattern with
+    `repr()` (as the closure refusal does for its own findings), not by
+    interpolating it between hand-written single quotes — an embedded
+    apostrophe must come out unambiguously `repr`-escaped rather than
+    breaking the surrounding quoting."""
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nit's/\n", encoding="utf-8"
+    )
+    _git(src_target, "commit", "-qam", "ignore")
+    (src_target / "it's").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "it's"]
+    assert hits
+    assert all(f.note is not None and repr("it's/") in f.note for f in hits)
+
+
+def test_descendant_glob_pattern_gets_directory_only_note_not_dir_form(
+    src_target: Path,
+):
+    """[Codex fix] A descendant-glob pattern (`vendor/**`) matches the path
+    only in its directory form, but the pattern itself is not directory-only
+    shaped (no trailing slash) — so the note must NOT claim "matches
+    directories only" (which implies the trailing-slash remedy git can't
+    actually offer here); it gets the narrower "matches this path only as a
+    directory" wording with the remove-or-verify_ignore remedy instead."""
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nvendor/**\n", encoding="utf-8"
+    )
+    _git(src_target, "commit", "-qam", "ignore")
+    (src_target / "vendor").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "vendor"]
+    assert hits
+    for f in hits:
+        assert f.note is not None
+        assert "matches directories only" not in f.note
+        assert "matches this path only as a directory" in f.note
+        assert repr("vendor/**") in f.note
+        assert "remove the entry, or list its name under verify_ignore" in f.note
+
+
 def test_genuinely_unignorable_untracked_path_gets_no_note(src_target: Path):
     """An untracked entry with no near-miss pattern at all (nothing in
     `.gitignore` even resembles its name) gets no note — the probe must not
