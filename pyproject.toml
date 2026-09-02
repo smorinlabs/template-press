@@ -217,7 +217,8 @@ strict_markers = true
 [tool.codespell]
 skip = ".git,.venv,build,dist,node_modules,uv.lock,bun.lock,*.lock,docs/_build,*.svg,*.cast,.ruff_cache,.pytest_cache,.mypy_cache,.ty_cache,*.log"
 # *.log: raw run output, not prose.
-ignore-words-list = "ans,porjects,replcae,froms"
+ignore-words-list = "ans,porjects,replcae,froms,disjointness"
+# disjointness: set-theory term used verbatim in docs/superpowers/specs/reviews-2026-09-01.
 # ans: variable name used in prompt-handling code; codespell wants to "fix"
 # it to "and". Whitelist to keep the short variable name.
 # porjects: intentional typo — the did-you-mean example in cli/groups.py and
