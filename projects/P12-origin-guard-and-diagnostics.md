@@ -14,6 +14,7 @@ test.
 - [ ] [P12-T-defer-2] Removal-coverage warning: count excluded descendants carried by directory renames (closure), not only `source_entries` — under-warns today.
 - [ ] [P12-T-defer-3] Removal-coverage warning: count tracked symlinks whose target is retargeted as rewritten paths.
 - [ ] [P12-T-defer-4] Self-press rules: retained docs (`docs/README.md`, `docs/design/0004`, `0008`) link to `docs/research/*` files the rules remove — reset/update the referrers or retain the targets.
+- [ ] [P12-T-defer-5] Windows-safe remedy rendering: escape cmd.exe metacharacters (`&`, `|`, `^`) in copy-pasteable hints or present structured argv; POSIX remedies keep `shlex.join` — from PR #109 review.
 
 **References**
 
