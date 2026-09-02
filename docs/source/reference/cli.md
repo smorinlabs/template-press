@@ -59,7 +59,11 @@ confirming the preview shows nothing worth keeping. When the target declares
 first. Pass `--diagnostics-json` to get the same information as one JSON
 object on stdout instead of prose (schema `{"schema", "code", "source_prefix",
 "findings", "total", "truncated", "phase", "preview_argv", "remove_argv"}`) —
-the exit code is unchanged.
+the exit code is unchanged. The prose form, like the JSON, is printed to
+stdout — unlike every other exit-`2` refusal, it does not go to stderr
+with the `error:` prefix that `_fail` puts there, so a check that greps
+stderr for `error:` will not see it. The removal-coverage and prefix-only
+warnings documented below print to stdout as well.
 
 If the target tree changes between planning and apply — e.g. a new ignored
 file appears under a prefix being renamed — the same check runs again as an
@@ -84,7 +88,7 @@ verify` and the post-apply doctor only ever see what
 `git ls-files --exclude-standard` lists, so an untracked `foo` that is
 anything other than a real directory (most commonly a symlink standing in for
 a vendored directory, e.g. `node_modules` created by `bun install
---frozen-lockfile` — see the [`press-target`](../../../.claude/skills/press-target/SKILL.md)
+--frozen-lockfile` — see the `press-target` skill's
 troubleshooting notes) is enumerated and scanned like any other untracked
 entry, and `git add -A` would commit it. When a finding lands on such an
 entry, the report attaches a note identifying the exact `.gitignore` line and
@@ -180,9 +184,9 @@ unlike regeneration there is no exemption and no coverage gap. An optional
 `platforms` selector scopes a removal like reset/regenerate.
 
 When `[[remove]]` declares at least one file under a directory, the plan
-appends a `removing N files under <dir>/` summary line beneath the
-per-file lines — a quick count check, grouped by the removal's declared
-SOURCE path, top-level directory only.
+appends a `removing N file(s) under <dir>/` summary line (singular for
+`N == 1`) beneath the per-file lines — a quick count check, grouped by the
+removal's declared SOURCE path, top-level directory only.
 
 ### Declared-removal coverage warning
 

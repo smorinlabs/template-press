@@ -164,16 +164,16 @@ def _literal_query(posix: str, *, as_dir: bool) -> str:
     """A `check-ignore` query string that can never be reinterpreted as
     pathspec MAGIC (Codex fix-round-1 P1).
 
-    ``core.literalPathspecs=true`` (passed by every caller below) disables
-    ``*``/``?``/``[...]`` wildcard-magic interpretation, but `check-ignore`
-    still parses a query string that STARTS with ``:`` as a magic-signature
-    marker even under that setting (verified empirically: ``:oddname/``
-    silently matched an UNRELATED pattern named ``oddname/``, not a
-    literal ``:oddname/`` — a git-level parser quirk specific to a LEADING
-    colon). Prefixing every query with ``./`` moves any leading ``:`` off
-    position 0, which git accepts as ordinary path normalization (does not
-    change what the query resolves to) and which empirically restores
-    correct literal matching for a colon-led name.
+    Feeding the query via ``--stdin`` (never a CLI pathspec argument)
+    already disables ``*``/``?``/``[...]`` wildcard-magic interpretation,
+    but `check-ignore` still parses a query string that STARTS with ``:``
+    as a magic-signature marker even over stdin (verified empirically:
+    ``:oddname/`` silently matched an UNRELATED pattern named
+    ``oddname/``, not a literal ``:oddname/`` — a git-level parser quirk
+    specific to a LEADING colon). Prefixing every query with ``./`` moves
+    any leading ``:`` off position 0, which git accepts as ordinary path
+    normalization (does not change what the query resolves to) and which
+    empirically restores correct literal matching for a colon-led name.
     """
     return f"./{posix}/" if as_dir else f"./{posix}"
 
@@ -185,7 +185,7 @@ def _check_ignore(
     query path, or ``None`` on any git/OS failure.
 
     The query is fed via STDIN (never a CLI pathspec argument) and
-    ``-c core.literalPathspecs=true`` is set — together these stop
+    prefixed with ``./`` (`_literal_query`) — together these stop
     `check-ignore` from reinterpreting a query containing pathspec-magic
     characters (``*``, ``?``, ``[...]``, a leading ``:``) as anything other
     than the literal path it names (Codex fix-round-1 P1). Output is
@@ -199,8 +199,6 @@ def _check_ignore(
     try:
         return _run_git(
             target,
-            "-c",
-            "core.literalPathspecs=true",
             "check-ignore",
             "--no-index",
             "-v",
@@ -254,8 +252,6 @@ def _dir_form_probe(
                 str(target),
                 f"--work-tree={mirror}",
                 *git_hardening_args(),
-                "-c",
-                "core.literalPathspecs=true",
                 "-c",
                 f"core.excludesFile={core_excludes or Path(os.devnull)}",
                 "check-ignore",

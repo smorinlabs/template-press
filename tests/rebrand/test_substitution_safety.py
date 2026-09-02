@@ -18,14 +18,14 @@ from template_press.rebrand.engine import (
 from template_press.rebrand.inventory import SurfaceEntry
 from template_press.rebrand.reset import preflight_reset_targets
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, ResetRule
-from template_press.rebrand.safety import SafetyError
+from template_press.rebrand.safety import RenameClosureUnauthorized, SafetyError
 from template_press.rebrand.substitutions import (
     RenamePlan,
     SubstitutionTable,
     validate_reset_visibility,
 )
 
-from .conftest import DEST, SOURCE, requires_symlink
+from .conftest import DEST, SOURCE, posix_only, requires_symlink
 
 
 def _git(target: Path, *args: str) -> str:
@@ -85,7 +85,9 @@ def test_prefix_closure_error_lists_every_ignored_descendant(src_target: Path) -
     (pkg / "ignored-a.txt").write_text("a\n", encoding="utf-8")
     (pkg / "ignored-b.txt").write_text("b\n", encoding="utf-8")
     (pkg / "empty").mkdir()
-    with pytest.raises(SafetyError, match="absent from the authorized surface") as info:
+    with pytest.raises(
+        RenameClosureUnauthorized, match="absent from the authorized surface"
+    ) as info:
         build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
     exc = info.value
     assert exc.code == "rename_closure_unauthorized"
@@ -157,7 +159,9 @@ def test_prefix_closure_nested_empty_directory_does_not_cascade(
     inner = outer / "inner"
     inner.mkdir(parents=True)
 
-    with pytest.raises(SafetyError, match="uninventoried empty directory") as info:
+    with pytest.raises(
+        RenameClosureUnauthorized, match="uninventoried empty directory"
+    ) as info:
         build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
     exc = info.value
     assert exc.findings == (("empty-dir", "src/demo_widget/outer/inner"),)
@@ -179,7 +183,9 @@ def test_prefix_closure_truncates_rendered_list_past_cap(src_target: Path) -> No
         (pkg / name).mkdir()
         empty_paths.add(f"src/demo_widget/{name}")
 
-    with pytest.raises(SafetyError, match="absent from the authorized surface") as info:
+    with pytest.raises(
+        RenameClosureUnauthorized, match="absent from the authorized surface"
+    ) as info:
         build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
     exc = info.value
     assert exc.total == 25
@@ -190,6 +196,7 @@ def test_prefix_closure_truncates_rendered_list_past_cap(src_target: Path) -> No
     assert "… (5 more)" in message
 
 
+@posix_only
 def test_prefix_closure_renders_hostile_filenames_safely(src_target: Path) -> None:
     _exclude_without_identity(src_target, "src/*/hostile-*")
     pkg = src_target / "src" / "demo_widget"
@@ -198,7 +205,9 @@ def test_prefix_closure_renders_hostile_filenames_safely(src_target: Path) -> No
     (pkg / newline_name).write_text("a\n", encoding="utf-8")
     (pkg / control_name).write_text("b\n", encoding="utf-8")
 
-    with pytest.raises(SafetyError, match="absent from the authorized surface") as info:
+    with pytest.raises(
+        RenameClosureUnauthorized, match="absent from the authorized surface"
+    ) as info:
         build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
     exc = info.value
     expected = {
@@ -215,6 +224,7 @@ def test_prefix_closure_renders_hostile_filenames_safely(src_target: Path) -> No
     assert "\x1b" not in message
 
 
+@posix_only
 def test_prefix_closure_renders_non_utf8_filename_or_skips(src_target: Path) -> None:
     """Lossless, safe rendering of a filename that is not valid UTF-8
     (created via a raw byte path, POSIX ``surrogateescape`` round-trip).
@@ -231,7 +241,9 @@ def test_prefix_closure_renders_non_utf8_filename_or_skips(src_target: Path) -> 
         pytest.skip(f"filesystem refuses non-UTF-8 filenames: {exc}")
 
     name = os.fsdecode(raw_name)
-    with pytest.raises(SafetyError, match="absent from the authorized surface") as info:
+    with pytest.raises(
+        RenameClosureUnauthorized, match="absent from the authorized surface"
+    ) as info:
         build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
     result = info.value
     expected_rel = f"src/demo_widget/{name}"
@@ -250,7 +262,9 @@ def test_prefix_closure_unauthorized_phase_is_apply_after_planning(
     late = src_target / "src" / "demo_widget" / "late-ignored.txt"
     late.write_text("late operator data\n", encoding="utf-8")
 
-    with pytest.raises(SafetyError, match="absent from the authorized surface") as info:
+    with pytest.raises(
+        RenameClosureUnauthorized, match="absent from the authorized surface"
+    ) as info:
         apply(src_target, SOURCE, DEST, DEFAULT_RULES, table=plan.table)
     exc = info.value
     assert exc.code == "rename_closure_unauthorized"

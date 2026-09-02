@@ -40,6 +40,8 @@ Tests: parser (paths list, placeholder rendering, unknown placeholder refused, p
 ### E3 — post-apply formatting
 Docs + test only. `press-target` SKILL.md step 6: run the target's formatter before the first commit. `docs/source/reference/cli.md` `[[regenerate]]` section: one rebuilt output, excluded from rewrite; not a hook for repo-wide tools; formatters run in the target after the press. Test (`tests/rebrand/test_verify_exemption.py`): a `[[regenerate]]` whose `file` is an identity-bearing source file added to `extra_exclude_files` is refused at plan time.
 
+**Amendment (final-review wave, PR1):** no plan-time refusal exists for this case (a plan-time guard was ruled out), so the shipped pin is `test_regenerate_on_excluded_identity_bearing_source_fails_after_apply_without_receipt` (`tests/rebrand/test_verify_exemption.py`): a *post-apply* leak failure — `apply()` rewrites the tree, `execute_regenerations`'s post-command scan finds the excluded file still carrying source identity, and `main()` returns exit `1` with no receipt written, restorable via `git checkout -- .`.
+
 ### E4 — `[[edit]]` (new mechanism) with E11 folded in
 - Declaration: `[[edit]] file = "pyproject.toml"  command = ["uv", "version", "0.1.0", "--frozen"]  expect = 'version = "0.1.0"'` (+ optional `env`, `platforms`). `file` must NOT be in `exclude_files` (mirror of the regenerate check with the inverted message); `verify_exempt`/`scan` keys are not accepted; `expect` is required and must be a non-empty printable string.
 - Phase: all edits run as a fixed phase **before** all regenerations, after renames; declaration order within edits. Edited paths translate through renames like regenerate outputs.

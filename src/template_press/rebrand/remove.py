@@ -102,12 +102,13 @@ def preflight_remove_targets(
 def render_remove_plan(rules: Rules) -> str:
     """The plan's removal section — every deletion visible before approval.
 
-    Ends with a per-directory summary (spec E5b): one ``removing N files
-    under <dir>/`` line per top-level directory (the removal's SOURCE-path
-    first component) that holds at least one declared removal — a quick
-    count check against the per-file lines above it, not a replacement for
-    them. A removal at the target root (no directory component) has
-    nothing to group under and contributes no summary line.
+    Ends with a per-directory summary (spec E5b): one ``removing N file(s)
+    under <dir>/`` line (singular for ``N == 1``) per top-level directory
+    (the removal's SOURCE-path first component) that holds at least one
+    declared removal — a quick count check against the per-file lines
+    above it, not a replacement for them. A removal at the target root
+    (no directory component) has nothing to group under and contributes
+    no summary line.
     """
 
     lines = ["Remove (declared deletions, applied after the rewrite pass):"]
@@ -119,7 +120,9 @@ def render_remove_plan(rules: Rules) -> str:
         if sep:
             counts[head] = counts.get(head, 0) + 1
     for dirname in sorted(counts):
-        lines.append(f"  removing {counts[dirname]} files under {dirname}/")
+        count = counts[dirname]
+        noun = "file" if count == 1 else "files"
+        lines.append(f"  removing {count} {noun} under {dirname}/")
     return "\n".join(lines)
 
 

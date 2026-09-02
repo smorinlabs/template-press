@@ -24,7 +24,7 @@ from template_press.rebrand.inventory import capture_surface_snapshot
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 from template_press.rebrand.verifier import Finding, scan
 
-from .conftest import DEST, SOURCE, requires_symlink
+from .conftest import DEST, SOURCE, posix_only, requires_symlink
 
 FIELDS: tuple[str, ...] = tuple(SOURCE.as_dict().keys())
 NO_SUBSTRING: frozenset[str] = frozenset()
@@ -513,13 +513,14 @@ def test_genuinely_unignorable_untracked_path_gets_no_note(src_target: Path):
 # Fix round 1 (Sonnet + Codex adversarial review): pathspec-magic-safe
 # probing, pinned core.excludesFile, note-source rendering.
 # ---------------------------------------------------------------------------
+@posix_only
 def test_untracked_entry_with_leading_colon_name_gets_correct_note(src_target: Path):
     """[P1] A name STARTING WITH `:` is `check-ignore` pathspec-magic
     territory (a leading colon triggers magic-signature parsing) — verified
     empirically to silently match the WRONG pattern under the naive
-    ``-- <path>/`` query shape. The `./`-prefixed, `-c
-    core.literalPathspecs=true`, stdin-fed probe must still name the
-    CORRECT pattern for a colon-led name, not silently misfire."""
+    ``-- <path>/`` query shape. The `./`-prefixed, `--stdin`-fed probe must
+    still name the CORRECT pattern for a colon-led name, not silently
+    misfire."""
     (src_target / ".gitignore").write_text(
         ".venv/\n__pycache__/\n:oddname/\n", encoding="utf-8"
     )

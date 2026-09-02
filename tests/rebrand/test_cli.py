@@ -16,7 +16,7 @@ from template_press.rebrand.config import (
 from template_press.rebrand.identity import Identity
 from template_press.rebrand.receipt import RECEIPT_REL
 
-from .conftest import DEST, SOURCE, requires_symlink, write_answers_file
+from .conftest import DEST, SOURCE, posix_only, requires_symlink, write_answers_file
 
 
 def write_source_config(target: Path) -> None:
@@ -1691,6 +1691,7 @@ def test_closure_refusal_prints_remedy_and_exits_2(src_target, tmp_path, capsys)
     assert not (src_target / RECEIPT_REL).exists()
 
 
+@posix_only
 def test_closure_refusal_diagnostics_json(src_target, tmp_path, capsys):
     write_source_config(src_target)
     weird = src_target / "src" / "demo_widget" / "__pycache__"

@@ -43,7 +43,7 @@ references live in per-project files under `projects/`.
 
 Route every project-state change through a project-harness skill
 (`project-add`, `project-refine`, `project-audit`) rather than editing this
-file by hand — see Conventions.
+file by hand.
 
 ## Status legend
 
@@ -114,9 +114,11 @@ reason = "template-press project history is engine history, not a fork's"
 file = "projects/P12-origin-guard-and-diagnostics.md"
 reason = "template-press project history is engine history, not a fork's"
 
-[[remove]]
-file = "projects/.gitkeep"
-reason = "template-press project history is engine history, not a fork's"
+# projects/.gitkeep is deliberately kept (not removed): the PROJECTS.md
+# stub above refers readers to per-project files "under `projects/`", so a
+# pressed fork keeps an empty projects/ directory to hold them. .gitkeep is
+# not a rewrite candidate, so it stays silent under the E5(a)
+# declared-removal coverage warning.
 
 # docs/research/ holds this engine's own design research, not anything a
 # pressed fork inherits.
