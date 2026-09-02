@@ -127,6 +127,13 @@ The same file may appear in multiple `[[regenerate]]` declarations, multiple
 platform sets are disjoint. If two declarations can write the same file on
 the same platform, configuration loading fails with exit code `2`.
 
+A `[[regenerate]]` declaration rebuilds exactly one output — the declared
+`file`, which must already be excluded from the identity rewrite. It is not a
+hook for repo-wide tools: a declared command must not edit files other than
+its declared output, and a whole-tree formatter cannot be declared this way.
+Run the target's own formatter in the target after the press, before the
+first commit.
+
 ### Regeneration scan policy
 
 A `[[regenerate]]` declaration may set `scan` to choose how the post-command

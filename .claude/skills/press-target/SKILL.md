@@ -44,7 +44,9 @@ mismatch; a completed run is verified leak-free before a receipt is written.
    the receipt (`<TARGET>/press/press-receipt.toml`) and remind the user to
    review `git -C <TARGET> status` — the receipt and a first-run
    source-config are new/untracked files that `diff --stat` won't show —
-   then commit in the target.
+   then run the target's own formatter before committing; identity values
+   change length so wrapped lines can exceed the target's line-length limit
+   and fail its own pre-commit; then commit in the target.
 
 ## Answers file shape
 

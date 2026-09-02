@@ -22,6 +22,7 @@ import pytest
 from template_press.rebrand.cli import main
 from template_press.rebrand.engine import (
     REGENERATE_EXEMPTIBLE,
+    build_plan,
     scan_paths,
 )
 from template_press.rebrand.identity import ValidationError
@@ -361,3 +362,63 @@ class TestDeclaredExemption:
             'reason = "rendered from source at build time; '
             'press cannot rewrite it"' in receipt
         )
+
+
+def _write_rules(target: Path, body: str) -> Path:
+    d = target / "press"
+    d.mkdir(exist_ok=True, parents=True)
+    (d / "press-rules.toml").write_text(body, encoding="utf-8")
+    return target
+
+
+def test_regenerate_against_identity_bearing_source_file_is_refused(
+    src_target: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """E3 — regression PIN, not TDD (see E3-review.md §4's "one test that
+    must exist").
+
+    Neither `load_rules` nor `build_plan` refuses a `[[regenerate]]`
+    declared against a normal, identity-bearing source file once that file
+    is added to `extra_exclude_files` (confirmed empirically: both succeed
+    for this exact rules body — the file-in-exclude_files check at parse
+    time and the excluded-file preflight are satisfied because a
+    `[[regenerate]]` declaration for the file exists, regardless of what
+    its command actually does). The refusal that exists today is later and
+    functional, not an exception: `execute_regenerations`' post-command
+    leak scan (`regen.py`) finds the excluded file still carrying source
+    identity — the `[[replace]]` pass never touched it — and `main()`
+    reports `PressOutcome(success=False)`, printing to stderr and
+    returning exit code 1 with NO receipt written. This is the same
+    "leaks found, no receipt, target already rewritten — restore it
+    first" contract every other leak failure uses (`press-target`
+    SKILL.md step 5), not a plan-time exit-2 refusal.
+    """
+    _write_rules(
+        src_target,
+        '[rules]\nextra_exclude_files = ["src/demo_widget/cli.py"]\n'
+        "[[regenerate]]\n"
+        'file = "src/demo_widget/cli.py"\n'
+        'command = ["ruff", "format", "src"]\n',
+    )
+    _commit(src_target)
+
+    # Pin: neither load-time nor plan-time raises for this rules body.
+    rules = load_rules(src_target)
+    build_plan(src_target, SOURCE, DEST, rules)
+
+    answers = write_answers_file(src_target.parent, DEST)
+    rc = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--accept-discovery",
+        ]
+    )
+    err = capsys.readouterr().err
+
+    assert rc == 1
+    assert not (src_target / RECEIPT_REL).exists()
+    assert "src/demo_widget/cli.py" in err
+    assert "still carries source" in err
