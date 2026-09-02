@@ -193,3 +193,23 @@ every symlink stored under `links/` will not match a link under `links/`
 whose target points somewhere else (e.g. `../vendor/data`) — the rule's
 literal can survive there unflagged. Scope symlink-covering rules by
 where their targets point, not by where the links themselves live.
+
+### Gotcha: `node_modules/` in `.gitignore` does not ignore a symlinked `node_modules`
+
+A `foo/` line in `.gitignore` (the trailing slash) matches DIRECTORIES
+only, per `gitignore(5)`. A worktree tool that links a shared package
+cache in as `node_modules -> /path/to/real/node_modules` replaces the
+real directory with a symlink — which the `node_modules/` pattern no
+longer matches. That symlink is now untracked-and-not-ignored, so
+`press verify` and the post-apply doctor both enumerate and scan it like
+any other entry, and `git add -A` would commit it. `press verify`'s
+report attaches a note identifying exactly this near-miss when it fires.
+Three fixes, in order of preference:
+
+1. **Best** — run `bun install --frozen-lockfile` (or your package
+   manager's equivalent real-install) inside the worktree instead of
+   symlinking a shared `node_modules` in; no symlink, no near-miss.
+2. Write `node_modules` in `.gitignore` WITHOUT the trailing slash — this
+   also matches a symlink of that name.
+3. List `node_modules` under `verify_ignore` in
+   `<target>/press/press-rules.toml`.

@@ -32,6 +32,9 @@ scanned. Raw findings only — no ignoring, no deduping (Task 8's job); no
 
 from __future__ import annotations
 
+import dataclasses
+import subprocess  # nosec B404 -- hardened check-ignore probes of an untrusted target
+import tempfile
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +42,7 @@ from pathlib import Path
 from template_press.rebrand.identity import Identity
 from template_press.rebrand.inventory import (
     SurfaceSnapshot,
+    _run_git,
     capture_surface_snapshot,
     select_rename_entries,
     select_verifier_entries,
@@ -61,9 +65,11 @@ from template_press.rebrand.rules import (
 from template_press.rebrand.safety import (
     SafetyError,
     assert_ancestors_real,
+    git_hardening_args,
     is_regular_lstat,
     read_regular_nofollow,
     readlink_nofollow,
+    scrubbed_git_env,
 )
 
 
@@ -83,6 +89,12 @@ class Finding:
     a `field` + path-anchor ignore rule (Task 8): it carries
     ``field="io", value="unreadable"``, mirroring the existing
     ``doctor.Leak(rel, "io", "unreadable", ...)`` convention.
+
+    ``note`` (E8) is ``None`` for almost every finding: it is populated only
+    when the finding's entry is UNTRACKED and a directory-only `.gitignore`
+    pattern near-misses it (the entry's bare name is not ignored, but the
+    same name WOULD be ignored as a directory) — see `ignore_near_miss`.
+    Diagnostic only; never affects pass/fail.
     """
 
     path: str
@@ -92,6 +104,7 @@ class Finding:
     line: int | None
     col: int | None
     context: str
+    note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +123,162 @@ class _RuleScanSpec:
     from_value: str
     to_value: str
     trigger_prefixes: tuple[str, ...]
+
+
+def _copy_one_gitignore(target_dir: Path, mirror_dir: Path) -> None:
+    """Best-effort, no-follow copy of ``target_dir/.gitignore`` into
+    ``mirror_dir`` — silently does nothing when absent/unreadable/unsafe
+    (mirrors the "no note, no error" posture of the whole E8 probe)."""
+    try:
+        src = target_dir / ".gitignore"
+        if not is_regular_lstat(src):
+            return
+        data = read_regular_nofollow(src)
+    except (OSError, SafetyError):
+        return
+    (mirror_dir / ".gitignore").write_bytes(data)
+
+
+def _copy_ignore_chain(target: Path, rel: Path, mirror: Path) -> None:
+    """Mirror the `.gitignore` ANCESTOR CHAIN (root down to ``rel``'s
+    parent) into ``mirror``, preserving relative structure — WITHOUT ever
+    creating a node at ``rel`` itself. Used by `_dir_form_probe` so a
+    directory-shaped `check-ignore` query never touches the real (possibly
+    symlink) leaf on disk.
+    """
+    mirror.mkdir(parents=True, exist_ok=True)
+    _copy_one_gitignore(target, mirror)
+    current_target, current_mirror = target, mirror
+    parent = rel.parent
+    parts = () if parent == Path(".") else parent.parts
+    for part in parts:
+        current_target = current_target / part
+        current_mirror = current_mirror / part
+        current_mirror.mkdir(parents=True, exist_ok=True)
+        _copy_one_gitignore(current_target, current_mirror)
+
+
+def _dir_form_probe(target: Path, rel: Path, posix: str) -> bytes | None:
+    """``git check-ignore --no-index -v -- <posix>/`` stdout, or ``None``.
+
+    A LIVE symlink at ``rel`` makes git's own pathspec resolution refuse a
+    trailing-slash (directory-shaped) query against its real, on-disk path
+    — ``fatal: pathspec '<posix>/' is beyond a symbolic link`` (verified
+    empirically; a long-standing git pathspec-safety check, not a
+    ``--no-index`` quirk) — which would otherwise silently defeat this
+    probe for exactly the symlink case E8 exists to catch. On any result
+    other than 0 (matched) or 1 (no match), the SAME query is re-run
+    against a throwaway mirror carrying only the `.gitignore` ancestor
+    chain (`_copy_ignore_chain`) and no node at ``rel`` at all — so git's
+    own pattern-matching still renders the verdict (never a private
+    reimplementation of gitignore syntax), just without a real symlink for
+    its safety check to trip on. Gated on the RETURN CODE only, never
+    stderr text (git localizes messages).
+    """
+    try:
+        direct = _run_git(
+            target, "check-ignore", "--no-index", "-v", "--", f"{posix}/", check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if direct.returncode == 0:
+        return direct.stdout
+    if direct.returncode == 1:
+        return None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            mirror = Path(tmp)
+            _copy_ignore_chain(target, rel, mirror)
+            cmd = [
+                "git",
+                "-C",
+                str(target),
+                f"--work-tree={mirror}",
+                *git_hardening_args(),
+                "check-ignore",
+                "--no-index",
+                "-v",
+                "--",
+                f"{posix}/",
+            ]
+            mirrored = subprocess.run(  # noqa: S603 # nosec B603 B607
+                cmd,
+                check=False,
+                capture_output=True,
+                env=scrubbed_git_env(),
+            )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if mirrored.returncode != 0:
+        return None
+    return mirrored.stdout
+
+
+def _format_ignore_near_miss(stdout: bytes) -> str | None:
+    """Parse one `check-ignore -v` output line (``source:line:pattern\\tpath``)
+    into the E8 note text; ``None`` on any unrecognized shape."""
+    line = stdout.decode("utf-8", "surrogateescape").split("\n", 1)[0]
+    head = line.split("\t", 1)[0]
+    parts = head.split(":", 2)
+    if len(parts) != 3:
+        return None
+    source, lineno, pattern = parts
+    return (
+        f"this untracked entry is not ignored — {source}:{lineno} pattern "
+        f"'{pattern}' matches directories only. git add -A would commit it. "
+        "Ignore it without the trailing slash, remove it, or list its name "
+        "under verify_ignore."
+    )
+
+
+def ignore_near_miss(target: Path, rel: Path) -> str | None:
+    """E8: diagnose a directory-only `.gitignore` pattern near-miss for one
+    UNTRACKED entry.
+
+    ``None`` unless the entry's bare name is confirmed NOT ignored
+    (``check-ignore -v -- <rel>`` exits 1) AND the SAME name WOULD be
+    ignored as a directory (``-- <rel>/`` exits 0 with a pattern) —
+    exactly the ``foo/`` ignore-pattern-matches-directories-only trap.
+    Never follows the entry itself (`check-ignore` only ever consults
+    `.gitignore` text and path names); never mutates; any git failure
+    (missing binary, malformed repo, …) yields ``None``, never an error.
+    """
+    posix = rel.as_posix()
+    try:
+        as_leaf = _run_git(
+            target, "check-ignore", "--no-index", "-v", "--", posix, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if as_leaf.returncode != 1:
+        return None
+    dir_stdout = _dir_form_probe(target, rel, posix)
+    if dir_stdout is None:
+        return None
+    return _format_ignore_near_miss(dir_stdout)
+
+
+def attach_ignore_hints(
+    target: Path, findings: list[Finding], untracked: frozenset[str]
+) -> list[Finding]:
+    """Attach an `ignore_near_miss` note to every finding whose ``path``
+    names an UNTRACKED entry (E8). Cached per path so one entry backing
+    several findings (e.g. a symlink's path-component AND readlink-text
+    findings) is never probed twice.
+    """
+    if not untracked:
+        return findings
+    cache: dict[str, str | None] = {}
+    out: list[Finding] = []
+    for finding in findings:
+        if finding.path in untracked:
+            if finding.path not in cache:
+                cache[finding.path] = ignore_near_miss(target, Path(finding.path))
+            note = cache[finding.path]
+            if note is not None:
+                finding = dataclasses.replace(finding, note=note)
+        out.append(finding)
+    return out
 
 
 def _rule_scan_specs(
@@ -511,6 +680,7 @@ def scan(
         root_control=ROOT_CONTROL,
         exempt_paths=exempt_paths,
     )
+    untracked = frozenset(e.rel.as_posix() for e in selected if not e.tracked)
     entries: list[_ScanEntry] = []
     for entry in selected:
         if entry.worktree_kind == "symlink":
@@ -566,4 +736,4 @@ def scan(
                 target, rel, posix, changed, substring_fields, rule_specs, renamed
             )
         )
-    return findings
+    return attach_ignore_hints(target, findings, untracked)

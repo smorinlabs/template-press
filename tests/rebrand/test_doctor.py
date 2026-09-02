@@ -162,6 +162,42 @@ def test_dir_symlink_without_token_is_clean(src_target: Path):
 
 
 @requires_symlink
+def test_untracked_symlink_matching_dir_only_ignore_pattern_gets_note(
+    src_target: Path, tmp_path: Path
+):
+    """E8, doctor side: the post-apply doctor must carry the SAME near-miss
+    note as `press verify` for an UNTRACKED entry that a directory-only
+    `.gitignore` pattern near-misses — the doctor scans the REAL target
+    directly (no sandbox), so this exercises the note end to end.
+
+    Uses ``vendor`` rather than ``node_modules``: the latter is a
+    `DEFAULT_RULES.exclude_dirs` built-in, so the doctor never sees it at
+    all (by design, unrelated to E8) — a name outside that built-in set
+    isolates the near-miss note itself.
+    """
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nvendor/\n", encoding="utf-8"
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(src_target), "commit", "-qam", "ignore"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    outside = tmp_path / "press" / "vendor"  # link text embeds app_name
+    outside.mkdir(parents=True)
+    (src_target / "vendor").symlink_to(outside)
+    leaks = find_leaks(src_target, SOURCE, DEFAULT_RULES)
+    hit = next(
+        leak for leak in leaks if leak.path == "vendor" and leak.where == "symlink"
+    )
+    assert hit.note is not None
+    assert "matches directories only" in hit.note
+    assert "git add -A" in hit.note
+    report = render_leak_report(leaks)
+    assert "matches directories only" in report
+
+
+@requires_symlink
 def test_symlink_to_file_leak_not_double_reported(src_target: Path):
     """A symlink-to-file (covered by the main loop) must be reported EXACTLY
     once — the new dir/dangling pass dedupes against it."""

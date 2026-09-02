@@ -78,6 +78,19 @@ those directories from being rewritten, list the same names under
 `extra_exclude_dirs`. Both keys match a single directory *name* at any depth,
 not a path.
 
+A `foo/` line in `.gitignore` (the trailing slash) matches DIRECTORIES only —
+it does not ignore a symlink or a regular file also named `foo`. `press
+verify` and the post-apply doctor only ever see what
+`git ls-files --exclude-standard` lists, so an untracked `foo` that is
+anything other than a real directory (most commonly a symlink standing in for
+a vendored directory, e.g. `node_modules` created by `bun install
+--frozen-lockfile` — see the [`press-target`](../../../.claude/skills/press-target/SKILL.md)
+troubleshooting notes) is enumerated and scanned like any other untracked
+entry, and `git add -A` would commit it. When a finding lands on such an
+entry, the report attaches a note identifying the exact `.gitignore` line and
+naming the fix: drop the trailing slash, remove the entry, or list its name
+under `verify_ignore`.
+
 ### Platform-conditional reset and regeneration
 
 `[[regenerate]]` and `[[reset]]` declarations may include an optional

@@ -20,6 +20,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from template_press.rebrand.identity import Identity
+from template_press.rebrand.inventory import capture_surface_snapshot
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule
 from template_press.rebrand.verifier import Finding, scan
 
@@ -404,6 +405,108 @@ def test_symlink_readlink_oserror_is_unscannable(src_target: Path, monkeypatch):
     assert hit.value == "unreadable"
     assert hit.line is None
     assert hit.col is None
+
+
+@requires_symlink
+def test_untracked_symlink_matching_dir_only_ignore_pattern_is_scanned(
+    src_target: Path, tmp_path: Path
+):
+    """E8: `node_modules/` is a DIRECTORY-only ignore pattern — an untracked
+    SYMLINK named `node_modules` is not a directory to git, so it is not
+    ignored, IS enumerated, IS scanned, and its finding must explain the
+    near-miss (the operator incident this locks in as regression coverage)."""
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nnode_modules/\n", encoding="utf-8"
+    )
+    _git(src_target, "commit", "-qam", "ignore")
+    outside = tmp_path / "press" / "node_modules"  # link text embeds app_name
+    outside.mkdir(parents=True)
+    (src_target / "node_modules").symlink_to(outside)
+    snapshot = capture_surface_snapshot(src_target)
+    assert any(e.rel.as_posix() == "node_modules" for e in snapshot.entries)
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    f = next(x for x in findings if x.where == "symlink" and x.field == "app_name")
+    assert f.note is not None
+    assert "matches directories only" in f.note
+    assert "node_modules/" in f.note
+    assert "git add -A" in f.note
+
+
+def test_untracked_file_matching_dir_only_ignore_pattern_gets_note(src_target: Path):
+    """The same near-miss note applies to a plain untracked FILE (not just a
+    symlink) whose name matches a directory-only pattern."""
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nnode_modules/\n", encoding="utf-8"
+    )
+    _git(src_target, "commit", "-qam", "ignore")
+    (src_target / "node_modules").write_text("press\n", encoding="utf-8")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "node_modules"]
+    assert hits
+    assert all(
+        f.note is not None and "matches directories only" in f.note for f in hits
+    )
+
+
+@requires_symlink
+def test_tracked_symlink_matching_dir_only_ignore_pattern_gets_no_note(
+    src_target: Path, tmp_path: Path
+):
+    """A TRACKED symlink is force-addable by design (EMP-01) — the near-miss
+    note only ever applies to an UNTRACKED entry, never a tracked one."""
+    (src_target / ".gitignore").write_text(
+        ".venv/\n__pycache__/\nnode_modules/\n", encoding="utf-8"
+    )
+    outside = tmp_path / "press" / "node_modules"
+    outside.mkdir(parents=True)
+    (src_target / "node_modules").symlink_to(outside)
+    _git(src_target, "add", "-A", "-f")
+    _git(src_target, "commit", "-qm", "track the symlink anyway")
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "node_modules"]
+    assert hits
+    assert all(f.note is None for f in hits)
+
+
+def test_genuinely_unignorable_untracked_path_gets_no_note(src_target: Path):
+    """An untracked entry with no near-miss pattern at all (nothing in
+    `.gitignore` even resembles its name) gets no note — the probe must not
+    invent one."""
+    (src_target / "totally_unrelated_press_file.txt").write_text(
+        "press\n", encoding="utf-8"
+    )
+    findings = scan(
+        src_target,
+        SOURCE,
+        DEST,
+        fields=FIELDS,
+        substring_fields=NO_SUBSTRING,
+        rules=DEFAULT_RULES,
+    )
+    hits = [f for f in findings if f.path == "totally_unrelated_press_file.txt"]
+    assert hits
+    assert all(f.note is None for f in hits)
 
 
 def test_finding_dataclass_shape():
