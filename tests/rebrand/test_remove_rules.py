@@ -29,7 +29,8 @@ from template_press.rebrand.remove import (
 from template_press.rebrand.rules import RemoveRule, load_rules, load_selected_rules
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import DEST, write_answers_file
+from .conftest import DEST, _git, write_answers_file
+from .test_cli import write_answers, write_source_config
 from .test_verify_cli import _commit, make_pressable
 
 REMOVE_NOTES = (
@@ -435,3 +436,82 @@ class TestRemoveReceiptChain:
         )
         with pytest.raises(ValidationError):
             load_rules(target)
+
+
+# ---------------------------------------------------------------------------
+# E5(a)/(b) — declared-removal coverage warning and plan removal counts
+# ---------------------------------------------------------------------------
+class TestRemovalCoverageWarning:
+    def test_plan_warns_when_a_rewritten_directory_has_no_removal(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        hist = src_target / "projects"
+        hist.mkdir()
+        (hist / "P01.md").write_text("demo_widget history\n", encoding="utf-8")
+        (hist / "P02.md").write_text("more demo_widget\n", encoding="utf-8")
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "hist")
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "warning: 2 tracked files under projects/ will be rewritten" in out
+        assert "declare [[remove]] or [rules] verify_ignore" in out
+
+    def test_no_warning_when_directory_is_declared_removed(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        hist = src_target / "projects"
+        hist.mkdir()
+        (hist / "P01.md").write_text("demo_widget history\n", encoding="utf-8")
+        (hist / "P02.md").write_text("more demo_widget\n", encoding="utf-8")
+        _write_rules(
+            src_target,
+            '[[remove]]\nfile = "projects/P01.md"\nreason = "hist"\n'
+            '[[remove]]\nfile = "projects/P02.md"\nreason = "hist"\n',
+        )
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "hist")
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "warning:" not in out
+        assert "removing 2 files under projects/" in out  # (b)
+
+    def test_no_warning_on_plain_src_target(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """A plain fixture with no undeclared, fully-rewritten directory
+        (the src/ package itself is excluded per the heuristic) must stay
+        silent — the warning is for surprising template history, not for
+        every press."""
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "warning:" not in out

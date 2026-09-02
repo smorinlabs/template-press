@@ -889,6 +889,79 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
     return plan
 
 
+def removal_coverage_warnings(
+    rules: Rules,
+    rewrite_paths: Collection[str],
+    tracked_paths: Collection[str],
+) -> list[str]:
+    """Plan-time, non-fatal advisory (spec E5a): flag a top-level directory
+    that LOOKS like undeclared template history because the press is about
+    to rewrite every tracked file under it and no rule says what should
+    happen to it.
+
+    Depth 1 only for v1 (POSIX rel path's first component) — deeper
+    directories are out of scope until a real need for them shows up.
+    Grouping by TOP-LEVEL directory, not by every directory level, keeps
+    the signal coarse and cheap to reason about: one line per top-level
+    dir, not a warning per nested history folder.
+
+    A directory triggers the warning only when EVERY one of its tracked
+    files is a rewrite candidate (``rewrite_paths`` — a file with at least
+    one content/path substitution hit, i.e. ``PlanItem(kind="replace")``
+    from ``build_plan``): a directory with even one untouched tracked file
+    is not, by this heuristic, template history — it is ordinary content
+    that happens to sit next to rewritten files.
+
+    A directory is silently skipped (never warned on) when:
+    - its name is ``"src"`` or ``"tests"`` — conventional Python layout
+      dirs where full-directory rewrite is the ordinary, expected case
+      (the whole package/test tree legitimately mentions the identity); or
+    - it directly contains a tracked ``"<dir>/__init__.py"`` — a flat-layout
+      package root, the same rationale as ``src/`` for a target that does
+      not use src-layout. Detected structurally (not via ``Identity.
+      package_name``) because this function is plan-shape-only and takes
+      no identity; or
+    - any ``[[remove]]`` or ``[[reset]]`` rule targets a path under it — a
+      human has already declared what happens to this directory, whether
+      or not that declaration covers every file in it; or
+    - the directory's name is in ``[rules] verify_ignore`` — the
+      deliberate, committed exemption (matched by name, like
+      ``verify_ignore`` elsewhere: this is a top-level dir name, so no
+      component-at-any-depth scan is needed here).
+    """
+
+    tracked_set = set(tracked_paths)
+    rewrite_set = set(rewrite_paths)
+    by_dir: dict[str, list[str]] = {}
+    for path in tracked_set:
+        head, sep, _ = path.partition("/")
+        if sep:
+            by_dir.setdefault(head, []).append(path)
+    package_dirs = {head for head in by_dir if f"{head}/__init__.py" in tracked_set}
+    declared_dirs = {
+        rule.file.split("/", 1)[0]
+        for rule in (*rules.remove, *rules.reset)
+        if "/" in rule.file
+    }
+    warnings: list[str] = []
+    for dirname in sorted(by_dir):
+        if dirname in ("src", "tests"):
+            continue
+        if dirname in package_dirs or dirname in declared_dirs:
+            continue
+        if dirname in rules.verify_ignore:
+            continue
+        files = by_dir[dirname]
+        if all(f in rewrite_set for f in files):
+            warnings.append(
+                f"warning: {len(files)} tracked files under {dirname}/ will "
+                "be rewritten to the new identity and no rule removes or "
+                "resets them — declare [[remove]] or [rules] verify_ignore "
+                "if this is template history"
+            )
+    return warnings
+
+
 def _preflight_source_prefixes(
     renames: Mapping[str, str] | RenamePlan,
 ) -> list[str]:
