@@ -1801,3 +1801,107 @@ def test_closure_refusal_omits_press_clean_hint_when_no_rules_declared(
     out = capsys.readouterr().out
     assert code == 2
     assert "declared clean rules exist" not in out
+
+
+def test_closure_refusal_on_apply_time_revalidation_exits_1_with_remedy(
+    src_target, tmp_path, capsys, monkeypatch
+):
+    """A tree that diverges between planning and apply (a new ignored file
+    appears under the renamed prefix) is caught by revalidate_substitution_table
+    inside _press — same aggregated message + remedy, but exit 1 under the
+    partial-rewrite contract, never JSON."""
+    write_source_config(src_target)
+    answers = write_answers(tmp_path)
+    readme_before = (src_target / "README.md").read_text(encoding="utf-8")
+
+    from template_press.rebrand import cli as cli_module
+
+    real_revalidate = cli_module.revalidate_substitution_table
+
+    def planted_revalidate(target, table):
+        pycache = target / "src" / "demo_widget" / "__pycache__"
+        pycache.mkdir(parents=True, exist_ok=True)
+        (pycache / "planted.pyc").write_bytes(b"\0")
+        return real_revalidate(target, table)
+
+    monkeypatch.setattr(cli_module, "revalidate_substitution_table", planted_revalidate)
+
+    code = main(["--target", str(src_target), "--config", str(answers)])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "absent from the authorized surface" in out
+    assert (
+        "clean -ndX -- src/demo_widget" in out
+        and "clean -fdX -- src/demo_widget" in out
+    )
+    assert "phase='apply'" in out
+    assert not (src_target / RECEIPT_REL).exists()
+    assert (src_target / "README.md").read_text(encoding="utf-8") == readme_before
+    # never JSON at this catch site, even if requested — no --diagnostics-json
+    # plumbing reaches _press, and the assertion above already confirms prose.
+
+
+def test_closure_refusal_diagnostics_json_carries_all_findings_when_truncated(
+    src_target, tmp_path, capsys
+):
+    write_source_config(src_target)
+    pycache = src_target / "src" / "demo_widget" / "__pycache__"
+    pycache.mkdir()
+    for i in range(25):
+        (pycache / f"m{i:02d}.pyc").write_bytes(b"\0")
+    answers = write_answers(tmp_path)
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--dry-run",
+            "--diagnostics-json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload["total"] > 20
+    assert len(payload["findings"]) == payload["total"]
+    assert payload["truncated"] is True
+
+
+def _try_make_invalid_utf8_name(base: Path) -> Path | None:
+    """Create a file whose name embeds an invalid UTF-8 byte; None when the
+    filesystem refuses it (e.g. macOS APFS enforces valid UTF-8 names) —
+    detected by attempting the creation, not by a static platform check."""
+    raw = base / os.fsdecode(b"bad-\xff-name.pyc")
+    try:
+        raw.write_bytes(b"\0")
+    except (OSError, ValueError):
+        return None
+    return raw
+
+
+def test_closure_refusal_diagnostics_json_hostile_undecodable_filename(
+    src_target, tmp_path, capsys
+):
+    write_source_config(src_target)
+    pycache = src_target / "src" / "demo_widget" / "__pycache__"
+    pycache.mkdir()
+    hostile = _try_make_invalid_utf8_name(pycache)
+    if hostile is None:
+        pytest.skip("filesystem refuses non-UTF-8 filenames")
+    answers = write_answers(tmp_path)
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--dry-run",
+            "--diagnostics-json",
+        ]
+    )
+    out = capsys.readouterr().out
+    payload = json.loads(out)  # must not raise: ensure_ascii round-trips the surrogate
+    assert code == 2
+    assert payload["total"] == 1
+    path = payload["findings"][0]["path"]
+    assert os.fsencode(path) == b"src/demo_widget/__pycache__/bad-\xff-name.pyc"

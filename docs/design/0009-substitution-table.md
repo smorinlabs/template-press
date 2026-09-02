@@ -350,8 +350,10 @@ directories are structural containers and are authorized by their descendants,
 but an uninventoried empty directory is refused because Git cannot restore it.
 Authorization findings — every absent node and every uninventoried empty
 directory — are aggregated across the whole closure walk and raised together
-in one `RenameClosureUnauthorized`, naming every offending path instead of
-only the first one hit.
+in one `RenameClosureUnauthorized`, instead of raising on the first one hit.
+The rendered message caps the list at 20 (sorted) entries plus a total/
+truncated count; the typed exception's `findings` tuple, and the JSON emitted
+under `--diagnostics-json`, carry every one of them uncapped.
 
 This closure is a movement-safety guard, not a second consumer inventory. Apply
 revalidates the closure and destination occupancy before the top-level press

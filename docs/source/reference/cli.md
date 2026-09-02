@@ -42,13 +42,17 @@ The exit code is the contract — scripts and CI can branch on it:
 ### Structured refusals
 
 A rename-prefix closure that carries content absent from the authorized
-surface inventory (`code = rename_closure_unauthorized`) refuses with exit
-`2` under both `--dry-run` and a real apply — dry-run never prints the
-`(dry run — nothing applied)` success terminator on a refusal. The prose form
-names every offending path (up to 20, with a total/truncated count) and
-prints a remedy as literal-pathspec `git clean` argv: a preview
-(`clean -ndX`) and a remove (`clean -fdX`). Both are restricted to `-d`
-(directories) and `-X` (ignored files only — never `-x`), and are
+surface inventory (`code = rename_closure_unauthorized`) refuses at the
+plan-time check with exit `2` — "nothing written" — under both `--dry-run`
+and a real apply, since a real apply runs the same plan-time check before
+writing anything; dry-run never prints the `(dry run — nothing applied)`
+success terminator on a refusal. The prose form names every offending path
+in the rendered message (up to 20, sorted, plus a total/truncated count —
+`truncated` describes only this rendering; the typed exception's `findings`
+and the `--diagnostics-json` payload's `findings` always carry every one of
+them, uncapped) and prints a remedy as literal-pathspec `git clean` argv: a
+preview (`clean -ndX`) and a remove (`clean -fdX`). Both are restricted to
+`-d` (directories) and `-X` (ignored files only — never `-x`), and are
 deliberately broader than the specific paths listed — run only after
 confirming the preview shows nothing worth keeping. When the target declares
 `[[clean]]` rules, the refusal also names `press clean` as the fix to run
@@ -56,6 +60,14 @@ first. Pass `--diagnostics-json` to get the same information as one JSON
 object on stdout instead of prose (schema `{"schema", "code", "source_prefix",
 "findings", "total", "truncated", "phase", "preview_argv", "remove_argv"}`) —
 the exit code is unchanged.
+
+If the target tree changes between planning and apply — e.g. a new ignored
+file appears under a prefix being renamed — the same check runs again as an
+apply-time revalidation immediately before the first mutation. It prints the
+same aggregated findings and remedy argv, but never as JSON (the plan has
+already printed to stdout by then), and it exits `1` under the partial-
+rewrite contract (target may be partially rewritten; restore with
+`git -C <target> checkout . && git clean -fd`), not `2`.
 
 ### The ignore set
 
