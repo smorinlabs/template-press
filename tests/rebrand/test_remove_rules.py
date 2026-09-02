@@ -515,3 +515,116 @@ class TestRemovalCoverageWarning:
         out = capsys.readouterr().out
         assert code == 0
         assert "warning:" not in out
+
+    def test_no_warning_when_directory_name_in_verify_ignore(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        hist = src_target / "vendor"
+        hist.mkdir()
+        (hist / "NOTES.md").write_text("demo_widget vendor notes\n", encoding="utf-8")
+        (hist / "MORE.md").write_text("more demo_widget notes\n", encoding="utf-8")
+        _write_rules(src_target, '[rules]\nverify_ignore = ["vendor"]\n')
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "vendor")
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "warning:" not in out
+
+    def test_no_warning_when_a_reset_rule_targets_the_directory(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """A [[reset]] (not [[remove]]) declared under the directory is
+        also a human decision about it — suppresses the warning.
+
+        The directory is the same rename-covered shape as
+        ``test_plan_warns_on_rename_only_directory_with_no_content_hits``
+        (its name embeds the source package_name, so it renames as a unit
+        and every file under it counts as a rewrite candidate via the
+        path, independent of content) — that keeps full coverage true even
+        though the declared reset target is excluded from the content
+        pass, isolating the [[reset]]-declares-the-directory suppression
+        from requirement (4)'s own content-coverage check."""
+        hist = src_target / "legacy_demo_widget_notes"
+        hist.mkdir()
+        (hist / "a.md").write_text("nothing identity-related here\n", encoding="utf-8")
+        (hist / "b.md").write_text("plain unrelated text\n", encoding="utf-8")
+        _write_rules(
+            src_target,
+            '[rules]\nextra_exclude_files = ["legacy_demo_widget_notes/a.md"]\n'
+            '[[reset]]\nfile = "legacy_demo_widget_notes/a.md"\nstub = "stub\\n"\n',
+        )
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "legacy notes")
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "warning:" not in out
+
+    def test_plan_warns_on_rename_only_directory_with_no_content_hits(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """Item 1 fix: a directory whose top-level name itself embeds the
+        source package_name gets renamed as a whole unit, so every tracked
+        file under it is a rewrite candidate even though none of them
+        contain the identity in their CONTENT — a path-only rewrite must
+        still count."""
+        hist = src_target / "legacy_demo_widget_notes"
+        hist.mkdir()
+        (hist / "a.md").write_text("nothing identity-related here\n", encoding="utf-8")
+        (hist / "b.md").write_text("plain unrelated text\n", encoding="utf-8")
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "legacy notes")
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert (
+            "warning: 2 tracked files under legacy_demo_widget_notes/ "
+            "will be rewritten" in out
+        )
+
+    def test_no_warning_on_flat_layout_package_directory(
+        self, flat_target: Path, tmp_path: Path, capsys
+    ):
+        """The flat-layout package root (named after source.package_name)
+        is excluded the same way src/ is for a src-layout target."""
+        write_source_config(flat_target)
+        code = main(
+            [
+                "--target",
+                str(flat_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "warning:" not in out

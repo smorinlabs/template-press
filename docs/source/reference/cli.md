@@ -156,8 +156,8 @@ and count as a §6 neutralization for excluded files. Hermetic
 unlike regeneration there is no exemption and no coverage gap. An optional
 `platforms` selector scopes a removal like reset/regenerate.
 
-When `[[remove]]` declares two or more files under the same directory, the
-plan appends a `removing N files under <dir>/` summary line beneath the
+When `[[remove]]` declares at least one file under a directory, the plan
+appends a `removing N files under <dir>/` summary line beneath the
 per-file lines — a quick count check, grouped by the removal's declared
 SOURCE path, top-level directory only.
 
@@ -166,21 +166,24 @@ SOURCE path, top-level directory only.
 Plan time also checks, independently of any `[[remove]]` declaration,
 whether a top-level directory (depth 1 — a target's `<dir>/`, not any
 directory nested inside it) looks like undeclared template history: every
-one of its git-tracked files is a rewrite candidate (it gets at least one
-content or path substitution), and no `[[remove]]` or `[[reset]]` rule
-touches anything under it. When that happens, the plan prints a non-fatal
+one of its git-tracked files is a rewrite candidate — it either gets a
+content substitution, or its path falls under a planned rename (a
+rename-only file, such as a logo image or a directory named after the
+package, counts too) — and no `[[remove]]` or `[[reset]]` rule touches
+anything under it. When that happens, the plan prints a non-fatal
 `warning: N tracked files under <dir>/ will be rewritten to the new
 identity and no rule removes or resets them — declare [[remove]] or
 [rules] verify_ignore if this is template history` line — on both
 `--dry-run` and a real apply, after the plan, with the exit code
-unchanged. The directories `src/`, `tests/`, and any top-level directory
-that is itself a Python package root (it directly contains an
-`__init__.py`) are never flagged: a fully rewritten package or test tree is
-the expected, unremarkable case, not a sign of leftover history. A
-directory named in `[rules] verify_ignore` is likewise never flagged. This
-is advisory only — it never blocks a press, and a directory with even one
-untouched tracked file (an image, an unrelated config) does not count as
-"fully rewritten" and stays silent.
+unchanged. The directories `src/`, `tests/`, and the top-level directory
+named after the SOURCE identity's `package_name` (the flat-layout package
+root — under `src/` layout the package sits a level deeper, already
+covered by the `src/` exclusion) are never flagged: a fully rewritten
+package or test tree is the expected, unremarkable case, not a sign of
+leftover history. A directory named in `[rules] verify_ignore` is likewise
+never flagged. This is advisory only — it never blocks a press, and a
+directory with even one untouched tracked file (an image, an unrelated
+config) does not count as "fully rewritten" and stays silent.
 
 ### Declared verify exemption
 

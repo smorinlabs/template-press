@@ -30,7 +30,6 @@ from template_press.rebrand.engine import (
     apply,
     build_plan,
     preflight_rename_noreplace,
-    removal_coverage_warnings,
     stray_press_dirs,
     translate_path,
 )
@@ -56,7 +55,6 @@ from template_press.rebrand.regen import (
     restore_control_files,
     snapshot_control_files,
     snapshot_visibility_state,
-    tracked_paths,
     validate_control_files,
     validate_visibility_state,
 )
@@ -418,10 +416,7 @@ def main(argv: list[str] | None = None) -> int:
             print(render_reset_plan(reset_previews, verbose=args.verbose))
         if rules.remove:
             print(render_remove_plan(rules))
-        rewrite_paths = {item.path for item in plan.items if item.kind == "replace"}
-        for warning in removal_coverage_warnings(
-            rules, rewrite_paths, tracked_paths(target)
-        ):
+        for warning in plan.removal_warnings:
             print(warning)
         strays = stray_press_dirs(target)
         if strays:

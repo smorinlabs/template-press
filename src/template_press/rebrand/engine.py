@@ -32,6 +32,7 @@ from template_press.rebrand.inventory import (
     select_copy_entries,
     select_rename_entries,
     select_verifier_entries,
+    tracked_path_strings,
 )
 from template_press.rebrand.pathing import (
     REGENERATE_EXEMPTIBLE as REGENERATE_EXEMPTIBLE,
@@ -137,6 +138,10 @@ class Plan:
     renames: dict[str, str] = field(default_factory=dict)
     rendered_rules: list[tuple[ReplaceRule, str, str]] = field(default_factory=list)
     table: SubstitutionTable | None = None
+    # Plan-time, non-fatal E5(a) advisories (declared-removal coverage) —
+    # populated by build_plan from the SAME snapshot the plan itself was
+    # built from, so the printed plan and the warnings can never disagree.
+    removal_warnings: list[str] = field(default_factory=list)
 
     def render(self) -> str:
         if not self.items:
@@ -886,11 +891,25 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
     for step in table.rename_plan.steps:
         plan.items.append(PlanItem("rename", step.old_prefix, f"→ {step.new_prefix}"))
     plan.renames.update(table.rename_plan.as_mapping())
+    tracked = tracked_path_strings(snapshot)
+    rename_prefixes = [step.old_prefix for step in table.rename_plan.steps]
+    rewrite_paths = {item.path for item in plan.items if item.kind == "replace"} | {
+        path
+        for path in tracked
+        if any(
+            path == prefix or path.startswith(f"{prefix}/")
+            for prefix in rename_prefixes
+        )
+    }
+    plan.removal_warnings = removal_coverage_warnings(
+        rules, source, rewrite_paths, tracked
+    )
     return plan
 
 
 def removal_coverage_warnings(
     rules: Rules,
+    source: Identity,
     rewrite_paths: Collection[str],
     tracked_paths: Collection[str],
 ) -> list[str]:
@@ -906,21 +925,23 @@ def removal_coverage_warnings(
     dir, not a warning per nested history folder.
 
     A directory triggers the warning only when EVERY one of its tracked
-    files is a rewrite candidate (``rewrite_paths`` — a file with at least
-    one content/path substitution hit, i.e. ``PlanItem(kind="replace")``
-    from ``build_plan``): a directory with even one untouched tracked file
-    is not, by this heuristic, template history — it is ordinary content
-    that happens to sit next to rewritten files.
+    files is a rewrite candidate — ``rewrite_paths`` is the union of (a)
+    every file with a content substitution hit (``PlanItem(kind="replace")``
+    from ``build_plan``) and (b) every tracked file whose PATH falls under
+    a planned rename prefix (SOURCE coordinates), since a rename-only file
+    (identity in its name, not its body — e.g. a logo PNG or a directory
+    named after the package) is just as much "rewritten to the new
+    identity" as a content hit. A directory with even one untouched tracked
+    file is not, by this heuristic, template history — it is ordinary
+    content that happens to sit next to rewritten files.
 
     A directory is silently skipped (never warned on) when:
     - its name is ``"src"`` or ``"tests"`` — conventional Python layout
       dirs where full-directory rewrite is the ordinary, expected case
       (the whole package/test tree legitimately mentions the identity); or
-    - it directly contains a tracked ``"<dir>/__init__.py"`` — a flat-layout
-      package root, the same rationale as ``src/`` for a target that does
-      not use src-layout. Detected structurally (not via ``Identity.
-      package_name``) because this function is plan-shape-only and takes
-      no identity; or
+    - its name equals ``source.package_name`` — the flat-layout package
+      root (the src-layout case is already covered by the ``"src"``
+      exclusion above, since the package then sits at depth 2); or
     - any ``[[remove]]`` or ``[[reset]]`` rule targets a path under it — a
       human has already declared what happens to this directory, whether
       or not that declaration covers every file in it; or
@@ -937,7 +958,6 @@ def removal_coverage_warnings(
         head, sep, _ = path.partition("/")
         if sep:
             by_dir.setdefault(head, []).append(path)
-    package_dirs = {head for head in by_dir if f"{head}/__init__.py" in tracked_set}
     declared_dirs = {
         rule.file.split("/", 1)[0]
         for rule in (*rules.remove, *rules.reset)
@@ -945,9 +965,9 @@ def removal_coverage_warnings(
     }
     warnings: list[str] = []
     for dirname in sorted(by_dir):
-        if dirname in ("src", "tests"):
+        if dirname in ("src", "tests", source.package_name):
             continue
-        if dirname in package_dirs or dirname in declared_dirs:
+        if dirname in declared_dirs:
             continue
         if dirname in rules.verify_ignore:
             continue
