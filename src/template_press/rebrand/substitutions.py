@@ -42,6 +42,7 @@ from template_press.rebrand.rules import (
     render_replace_pattern,
 )
 from template_press.rebrand.safety import (
+    RenameClosureUnauthorized,
     SafetyError,
     assert_ancestors_real,
     read_regular_nofollow,
@@ -506,8 +507,19 @@ def _prefix_closure(
     target: Path,
     source_prefix: str,
     snapshot: SurfaceSnapshot,
+    phase: str,
 ) -> tuple[tuple[str, WorktreeKind], ...]:
-    """Capture and authorize every no-follow node carried by one move."""
+    """Capture and authorize every no-follow node carried by one move.
+
+    Structural refusals — a node that vanished mid-walk, a directory that
+    cannot be read, or a worktree/inventory kind mismatch — stay immediate
+    ``SafetyError`` raises: those indicate the closure changed underneath the
+    planner, not an authorization gap. Authorization findings (a node absent
+    from the surface inventory, or an uninventoried empty directory) are
+    instead collected across the whole walk and reported together as one
+    ``RenameClosureUnauthorized`` (E2), so an operator sees every offending
+    path in one refusal instead of fixing them one at a time.
+    """
 
     indexed = {entry.rel.as_posix(): entry for entry in snapshot.entries}
     covered_gitlinks = [
@@ -525,6 +537,7 @@ def _prefix_closure(
     root = target / source_prefix
     assert_ancestors_real(root, target)
     closure: list[tuple[str, WorktreeKind]] = []
+    findings: list[tuple[str, str]] = []
 
     def walk(path: Path) -> int:
         rel = path.relative_to(target).as_posix()
@@ -546,17 +559,20 @@ def _prefix_closure(
             for child in children:
                 child_count += walk(Path(child.path))
             if child_count == 0:
-                raise SafetyError(
-                    f"rename prefix {source_prefix!r} would carry uninventoried "
-                    f"empty directory {rel!r} — Git cannot restore it"
-                )
+                # Collected, not raised immediately (E2) — return 1 so this
+                # directory still counts as one node toward its own parent's
+                # child_count, the same as it would have counted had it not
+                # been empty. Otherwise an uninventoried empty directory
+                # would make its parent look empty too, cascading a single
+                # finding into a spurious chain of empty-dir findings.
+                findings.append(("empty-dir", rel))
+                return 1
             return child_count + 1
         entry = indexed.get(rel)
         if entry is None:
-            raise SafetyError(
-                f"rename prefix {source_prefix!r} would carry {rel!r}, which is "
-                f"absent from the authorized surface inventory"
-            )
+            # Collected, not raised immediately (E2).
+            findings.append(("absent", rel))
+            return 1
         if kind == "other" or entry.worktree_kind != kind:
             raise SafetyError(
                 f"rename prefix closure kind mismatch for {rel!r}: "
@@ -565,6 +581,8 @@ def _prefix_closure(
         return 1
 
     walk(root)
+    if findings:
+        raise RenameClosureUnauthorized(source_prefix, tuple(findings), phase)
     return tuple(sorted(closure))
 
 
@@ -581,7 +599,7 @@ def _enrich_rename_plan(
         enriched.append(
             replace(
                 step,
-                closure=_prefix_closure(target, source_prefix, snapshot),
+                closure=_prefix_closure(target, source_prefix, snapshot, "plan"),
                 destination_kind=_node_kind(target / step.new_prefix),
             )
         )
@@ -595,7 +613,7 @@ def revalidate_rename_plan(target: Path, plan: RenamePlan) -> None:
     prior: list[RenameStep] = []
     for step in plan.steps:
         source_prefix = _source_prefix_for_step(step, tuple(prior))
-        current_closure = _prefix_closure(target, source_prefix, snapshot)
+        current_closure = _prefix_closure(target, source_prefix, snapshot, "apply")
         if current_closure != step.closure:
             raise SafetyError(
                 f"rename prefix closure changed after planning: {source_prefix!r}"

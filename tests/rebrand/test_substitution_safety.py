@@ -78,6 +78,60 @@ def test_prefix_closure_refuses_ignored_untracked_descendant(
         build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
 
 
+def test_prefix_closure_error_lists_every_ignored_descendant(src_target: Path) -> None:
+    _exclude_without_identity(src_target, "src/*/ignored*.txt")
+    pkg = src_target / "src" / "demo_widget"
+    (pkg / "ignored-a.txt").write_text("a\n", encoding="utf-8")
+    (pkg / "ignored-b.txt").write_text("b\n", encoding="utf-8")
+    (pkg / "empty").mkdir()
+    with pytest.raises(SafetyError, match="absent from the authorized surface") as info:
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+    exc = info.value
+    assert exc.code == "rename_closure_unauthorized"
+    assert exc.source_prefix == "src/demo_widget"
+    assert {p for _, p in exc.findings} == {
+        "src/demo_widget/ignored-a.txt",
+        "src/demo_widget/ignored-b.txt",
+        "src/demo_widget/empty",
+    }
+    assert exc.total == 3 and exc.truncated is False
+    assert {k for k, _ in exc.findings} == {"absent", "empty-dir"}
+
+
+def test_prefix_closure_gitlink_wins_over_ignored_leaves(src_target: Path) -> None:
+    _exclude_without_identity(src_target, "src/*/ignored*.txt")
+    pkg = src_target / "src" / "demo_widget"
+    (pkg / "ignored-a.txt").write_text("a\n", encoding="utf-8")
+    (pkg / "ignored-b.txt").write_text("b\n", encoding="utf-8")
+    sha = _git(src_target, "rev-parse", "HEAD")
+    rel = "src/demo_widget/submodule"
+    _git(src_target, "update-index", "--add", "--cacheinfo", f"160000,{sha},{rel}")
+
+    with pytest.raises(SafetyError, match="would carry gitlink"):
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+
+
+def test_prefix_closure_structural_refusal_is_immediate(
+    src_target: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from template_press.rebrand import substitutions as substitutions_module
+
+    real_node_kind = substitutions_module._node_kind
+    missing_child = src_target / "src" / "demo_widget" / "__init__.py"
+
+    def fake_node_kind(path: Path) -> object:
+        if path == missing_child:
+            return "missing"
+        return real_node_kind(path)
+
+    monkeypatch.setattr(substitutions_module, "_node_kind", fake_node_kind)
+
+    with pytest.raises(SafetyError, match="closure changed during planning") as info:
+        build_plan(src_target, SOURCE, DEST, DEFAULT_RULES)
+    assert type(info.value) is SafetyError
+
+
 def test_prefix_closure_refuses_uninventoried_empty_directory(
     src_target: Path,
 ) -> None:
