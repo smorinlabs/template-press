@@ -173,7 +173,7 @@ def test_receipt_records_origin_relaxation(src_target: Path, tmp_path: Path):
 
 
 def test_documented_blind_spot_stale_repo_name_with_destination_origin(
-    src_target: Path, tmp_path: Path
+    src_target: Path, tmp_path: Path, capsys
 ):
     # DOCUMENTED ACCEPTANCE (spec E1/E9): template renamed upstream to demo-widget-2,
     # source-config stale, origin already the destination -> accepted. A change here
@@ -199,20 +199,86 @@ def test_documented_blind_spot_stale_repo_name_with_destination_origin(
         )
         == 0
     )
+    # E9(b) is the documented mitigation for this blind spot: the stale
+    # repo_name survives the guard, but the plan says so out loud.
+    assert "occurs only as a prefix of" in capsys.readouterr().out
 
 
-def test_malformed_answers_reports_before_guard(src_target: Path, tmp_path: Path):
+def test_malformed_answers_reports_before_guard(
+    src_target: Path, tmp_path: Path, capsys
+):
     """The answers file is loaded BEFORE the guard, so a malformed one is
-    reported first — exit 2, and nothing is written to the target."""
+    reported first — exit 2, and nothing is written to the target.
+
+    The origin here would trip the guard on its own (it names a third
+    repo), so the absence of the guard's banner is what pins the ordering:
+    with the load hoisted back below the guard, the banner appears.
+    """
     write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/someone/else.git")
     bad = tmp_path / "answers.toml"
     bad.write_text("[answers\n", encoding="utf-8")
     assert main(["--target", str(src_target), "--config", str(bad)]) == 2
+    assert "silent-half-rebrand guard" not in capsys.readouterr().out
     assert not (
         (src_target / SOURCE_CONFIG_REL)
         .read_text(encoding="utf-8")
         .startswith("garbage")
     )
+
+
+def test_origin_notice_never_precedes_a_diagnostics_json_refusal(
+    src_target: Path, tmp_path: Path, capsys
+):
+    """The relaxation is real (cross-owner origin, owner accepted) but a
+    plan-time closure refusal owns stdout: `--diagnostics-json` promises one
+    JSON object and nothing else, so the notice must not be printed yet."""
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/potatolabs/demo-widget.git")
+    pycache = src_target / "src" / "demo_widget" / "__pycache__"
+    pycache.mkdir()
+    (pycache / "x.pyc").write_bytes(b"\0")
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--dry-run",
+            "--diagnostics-json",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "notice:" not in out
+    assert json.loads(out)["code"] == "rename_closure_unauthorized"
+
+
+def test_partial_relaxation_prints_no_notice_when_the_guard_still_refuses(
+    src_target: Path, tmp_path: Path, capsys
+):
+    """owner names the destination, repo_name names neither: the guard still
+    exits 2, and an "accepted" line alongside the refusal would read as a
+    contradiction, so no notice is printed."""
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/potatolabs/else.git")
+    before = (src_target / SOURCE_CONFIG_REL).read_text(encoding="utf-8")
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--dry-run",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "silent-half-rebrand guard" in out
+    assert "repo_name" in out
+    assert "accepted" not in out
+    assert (src_target / SOURCE_CONFIG_REL).read_text(encoding="utf-8") == before
+    assert not (src_target / RECEIPT_REL).exists()
 
 
 def test_dry_run_prints_plan_and_writes_nothing(

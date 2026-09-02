@@ -61,7 +61,7 @@ therefore recognizes three states:
 | The **destination** identity (matches the `--config` answers for that same field) | Accepted, with a notice; the press proceeds. |
 | **Neither** identity | Exit `2` with the mismatch message, as before. |
 
-The accepted case prints one line per relaxed field to stdout:
+The accepted case prints one line per relaxed field to stdout, immediately before the plan:
 
 ```text
 notice: repo_name: origin already names the destination ('potato-launcher'); source-config says 'demo-widget' — accepted
@@ -77,6 +77,15 @@ origin_named_destination = ["owner", "repo_name"]
 The key is written only when the relaxation actually fired, so a receipt
 without it means `origin` agreed with the source-config.
 
+The notice appears only on a run that clears every plan-time gate — it is
+printed with the plan, not when the guard makes the decision. A run that
+still refuses carries no notice: its refusal text is complete on its own,
+and the `--diagnostics-json` payload keeps its promise that the JSON object
+is the whole of stdout. This includes the partial case, where one field
+names the destination and the other names neither: the guard exits `2`
+naming the field that failed, and says nothing about the field it would
+have accepted.
+
 Three limits are deliberate:
 
 - **`owner` and `repo_name` only.** A `package_name`, `app_name`, `author`,
@@ -84,8 +93,8 @@ Three limits are deliberate:
   the answers file says.
 - **Per field, not whole-identity.** A cross-owner press relaxes `owner`
   alone if `repo_name` still matches the source-config; and if one field
-  names the destination while the other names a third repository, the notice
-  prints for the first and the guard still exits `2` on the second.
+  names the destination while the other names a third repository, the guard
+  still exits `2` on the second (silently, as described above).
 - **Exact comparison.** `github.com/PotatoLabs/potato-launcher` against an
   answers file saying `potatolabs` is a mismatch, not a match: the case
   difference trips the guard and exits `2`. Fix the answers file (or the

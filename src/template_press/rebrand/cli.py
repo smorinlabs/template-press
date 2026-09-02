@@ -247,6 +247,12 @@ def _relax_origin_named_destination(
     clone whose origin was repointed before the press ran. Comparison is
     exact, so a case-different origin still refuses. Every other mismatch,
     and an origin naming neither identity, still exits 2.
+
+    The decision is only RECORDED here; `_render_origin_notices` announces
+    it once the run is past every plan-time gate. Announcing it here would
+    put a `notice:` line on stdout ahead of a later refusal — including the
+    `--diagnostics-json` payload, whose contract is that the JSON object is
+    the whole of stdout.
     """
     if dest is None or not problems:
         return problems, OriginDecision()
@@ -260,12 +266,24 @@ def _relax_origin_named_destination(
             continue
         relaxed.append(field_name)
         problems = [p for p in problems if not p.startswith(f"{field_name}: ")]
-        print(
-            f"notice: {field_name}: origin already names the destination "
-            f"('{discovered_value}'); source-config says "
-            f"'{declared[field_name]}' — accepted"
-        )
     return problems, OriginDecision(named_destination=tuple(sorted(relaxed)))
+
+
+def _render_origin_notices(
+    origin: OriginDecision, source: Identity, dest: Identity
+) -> list[str]:
+    """One notice line per field the origin guard relaxed (E1).
+
+    The origin value is the destination's value for that field — equality
+    with it is what the relaxation tested — so the line is reconstructible
+    from the two identities alone.
+    """
+    return [
+        f"notice: {field_name}: origin already names the destination "
+        f"('{getattr(dest, field_name)}'); source-config says "
+        f"'{getattr(source, field_name)}' — accepted"
+        for field_name in origin.named_destination
+    ]
 
 
 def _resolve_source(
@@ -495,6 +513,11 @@ def main(argv: list[str] | None = None) -> int:
             for problem in gate_problems:
                 print(f"  {problem}", file=sys.stderr)
             return 2
+        # Announced only now: every plan-time gate (including the closure
+        # refusal that owns stdout under --diagnostics-json) is behind us,
+        # so a notice can no longer precede a refusal on the same stream.
+        for notice in _render_origin_notices(origin, source, dest):
+            print(notice)
         print(f"Platform: {selected.platform}")
         print(plan.render())
         if regen_plans:
