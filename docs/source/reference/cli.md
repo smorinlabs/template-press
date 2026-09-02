@@ -39,6 +39,24 @@ The exit code is the contract — scripts and CI can branch on it:
 
 `--dry-run` exits `0` after printing the plan — it is a preview and writes nothing (no receipt). It performs a read-only host check; a statically unsupported host produces a warning that real apply requires `--force`. The target filesystem's operational atomic-rename capability is probed only during real apply. Other plan-time refusals (a missing declared tool, a stale argv, an undeclared excluded file) exit `2` before the plan renders, exactly as they would without `--dry-run`.
 
+### Structured refusals
+
+A rename-prefix closure that carries content absent from the authorized
+surface inventory (`code = rename_closure_unauthorized`) refuses with exit
+`2` under both `--dry-run` and a real apply — dry-run never prints the
+`(dry run — nothing applied)` success terminator on a refusal. The prose form
+names every offending path (up to 20, with a total/truncated count) and
+prints a remedy as literal-pathspec `git clean` argv: a preview
+(`clean -ndX`) and a remove (`clean -fdX`). Both are restricted to `-d`
+(directories) and `-X` (ignored files only — never `-x`), and are
+deliberately broader than the specific paths listed — run only after
+confirming the preview shows nothing worth keeping. When the target declares
+`[[clean]]` rules, the refusal also names `press clean` as the fix to run
+first. Pass `--diagnostics-json` to get the same information as one JSON
+object on stdout instead of prose (schema `{"schema", "code", "source_prefix",
+"findings", "total", "truncated", "phase", "preview_argv", "remove_argv"}`) —
+the exit code is unchanged.
+
 ### The ignore set
 
 If a target legitimately keeps some source-identity content (vendored code,

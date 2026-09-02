@@ -141,6 +141,20 @@ class RenameClosureUnauthorized(SafetyError):  # noqa: N818 - spec-named (E2)
         self.truncated = truncated
         self.phase = phase
 
+    def remedy_argv(self, target: Path) -> tuple[list[str], list[str]]:
+        """Literal-pathspec ``git clean`` argv to inspect/remove the prefix.
+
+        Both scoped to ``-d`` (directories) and ``-X`` (ignored files only —
+        never ``-x``, which would also sweep untracked-but-not-ignored
+        content). Broader than the specific paths in ``findings``: ``git
+        clean`` operates on everything ignored under ``source_prefix``, not
+        just the nodes this refusal listed.
+        """
+        base = ["git", "--literal-pathspecs", "-C", str(target), "clean"]
+        preview = [*base, "-ndX", "--", self.source_prefix]
+        remove = [*base, "-fdX", "--", self.source_prefix]
+        return preview, remove
+
 
 # ---------------------------------------------------------------------------
 # G2 / G2+ — SafeRelPath

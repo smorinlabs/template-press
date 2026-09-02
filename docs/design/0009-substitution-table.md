@@ -348,6 +348,10 @@ the closure never descends into a checked-out gitlink. A non-directory
 worktree node must appear in the authorized `SurfaceSnapshot`. Ordinary
 directories are structural containers and are authorized by their descendants,
 but an uninventoried empty directory is refused because Git cannot restore it.
+Authorization findings — every absent node and every uninventoried empty
+directory — are aggregated across the whole closure walk and raised together
+in one `RenameClosureUnauthorized`, naming every offending path instead of
+only the first one hit.
 
 This closure is a movement-safety guard, not a second consumer inventory. Apply
 revalidates the closure and destination occupancy before the top-level press

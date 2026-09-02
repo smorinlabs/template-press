@@ -9,6 +9,8 @@ found after apply (no receipt), 2 precondition/config error (no writes).
 from __future__ import annotations
 
 import argparse
+import json
+import shlex
 import subprocess  # nosec B404 — invokes git/uv on user-supplied targets
 import sys
 import tomllib
@@ -75,6 +77,7 @@ from template_press.rebrand.rules import (
     load_selected_rules,
 )
 from template_press.rebrand.safety import (
+    RenameClosureUnauthorized,
     SafetyError,
     git_hardening_args,
     scrubbed_git_env,
@@ -90,6 +93,37 @@ from template_press.rebrand.substitutions import (
 
 def _fail(msg: str) -> int:
     print(f"error: {msg}", file=sys.stderr)
+    return 2
+
+
+def _report_closure_refusal(
+    exc: RenameClosureUnauthorized, target: Path, rules: Rules, diagnostics_json: bool
+) -> int:
+    """Print the E2 remedy (or `--diagnostics-json` payload) and return 2."""
+    preview, remove = exc.remedy_argv(target)
+    if diagnostics_json:
+        payload = {
+            "schema": 1,
+            "code": exc.code,
+            "source_prefix": exc.source_prefix,
+            "findings": [{"kind": kind, "path": path} for kind, path in exc.findings],
+            "total": exc.total,
+            "truncated": exc.truncated,
+            "phase": exc.phase,
+            "preview_argv": preview,
+            "remove_argv": remove,
+        }
+        print(json.dumps(payload, ensure_ascii=True))
+        return 2
+    print(str(exc))
+    print(f"preview: {shlex.join(preview)}")
+    print(f"remove:  {shlex.join(remove)}")
+    print(
+        "(destructive, and broader than the paths listed — run only if "
+        "the preview shows nothing you keep)"
+    )
+    if getattr(rules, "clean", ()):
+        print(f"declared clean rules exist — run: press clean --target {target}")
     return 2
 
 
@@ -211,6 +245,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument(
+        "--diagnostics-json",
+        action="store_true",
+        help=(
+            "on a structured refusal, print a JSON diagnostic instead of "
+            "prose; exit code unchanged"
+        ),
+    )
     parser.add_argument(
         "--verbose",
         action="store_true",
@@ -375,6 +417,8 @@ def main(argv: list[str] | None = None) -> int:
         subprocess.CalledProcessError,
         SafetyError,
     ) as exc:
+        if isinstance(exc, RenameClosureUnauthorized):
+            return _report_closure_refusal(exc, target, rules, args.diagnostics_json)
         return _fail(str(exc))
     outcome = _press(
         target,

@@ -1,4 +1,5 @@
 import errno
+import json
 import os
 import subprocess
 import sys
@@ -1669,3 +1670,134 @@ class TestSubstringAwareCollisionPreflight:
             ["--target", str(src_target), "--config", str(answers), "--dry-run"]
         )
         assert code == 0
+
+
+def test_closure_refusal_prints_remedy_and_exits_2(src_target, tmp_path, capsys):
+    write_source_config(src_target)
+    (src_target / "src" / "demo_widget" / "__pycache__").mkdir()
+    (src_target / "src" / "demo_widget" / "__pycache__" / "x.pyc").write_bytes(b"\0")
+    answers = write_answers(tmp_path)
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "absent from the authorized surface" in out
+    assert (
+        "clean -ndX -- src/demo_widget" in out
+        and "clean -fdX -- src/demo_widget" in out
+    )
+    assert "--literal-pathspecs" in out
+    assert "broader than" in out  # destructive label
+    assert "(dry run" not in out  # never the success terminator
+    assert not (src_target / RECEIPT_REL).exists()
+
+
+def test_closure_refusal_diagnostics_json(src_target, tmp_path, capsys):
+    write_source_config(src_target)
+    weird = src_target / "src" / "demo_widget" / "__pycache__"
+    weird.mkdir()
+    (weird / "a\nb.pyc").write_bytes(b"\0")
+    answers = write_answers(tmp_path)
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--dry-run",
+            "--diagnostics-json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload["code"] == "rename_closure_unauthorized"
+    assert payload["findings"][0]["path"] == "src/demo_widget/__pycache__/a\nb.pyc"
+    assert payload["preview_argv"][:4] == [
+        "git",
+        "--literal-pathspecs",
+        "-C",
+        str(src_target),
+    ]
+
+
+def test_closure_refusal_diagnostics_json_prints_only_the_json(
+    src_target, tmp_path, capsys
+):
+    """Nothing else on stdout — the JSON payload is the whole print."""
+    write_source_config(src_target)
+    (src_target / "src" / "demo_widget" / "__pycache__").mkdir()
+    (src_target / "src" / "demo_widget" / "__pycache__" / "x.pyc").write_bytes(b"\0")
+    answers = write_answers(tmp_path)
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(answers),
+            "--dry-run",
+            "--diagnostics-json",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert out.count("\n") == 1
+    payload = json.loads(out)
+    assert payload["schema"] == 1
+    assert payload["source_prefix"] == "src/demo_widget"
+    assert payload["total"] == 1
+    assert payload["truncated"] is False
+    assert payload["phase"] == "plan"
+    assert payload["remove_argv"][-3:] == ["-fdX", "--", "src/demo_widget"]
+
+
+def test_closure_refusal_on_apply_takes_same_branch_and_leaves_target_untouched(
+    src_target, tmp_path, capsys
+):
+    """Apply (no --dry-run) hits the same catch — exits 2, writes nothing."""
+    write_source_config(src_target)
+    (src_target / "src" / "demo_widget" / "__pycache__").mkdir()
+    (src_target / "src" / "demo_widget" / "__pycache__" / "x.pyc").write_bytes(b"\0")
+    answers = write_answers(tmp_path)
+    readme_before = (src_target / "README.md").read_text(encoding="utf-8")
+    code = main(["--target", str(src_target), "--config", str(answers)])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "absent from the authorized surface" in out
+    assert not (src_target / RECEIPT_REL).exists()
+    assert (src_target / "README.md").read_text(encoding="utf-8") == readme_before
+
+
+def test_closure_refusal_names_press_clean_when_rules_declare_it(
+    src_target, tmp_path, capsys, monkeypatch
+):
+    write_source_config(src_target)
+    (src_target / "src" / "demo_widget" / "__pycache__").mkdir()
+    (src_target / "src" / "demo_widget" / "__pycache__" / "x.pyc").write_bytes(b"\0")
+    answers = write_answers(tmp_path)
+
+    from template_press.rebrand import cli as cli_module
+    from template_press.rebrand.rules import load_selected_rules as _real_load
+
+    def fake_load_selected_rules(target):
+        selected = _real_load(target)
+        object.__setattr__(selected.rules, "clean", ("src/demo_widget",))
+        return selected
+
+    monkeypatch.setattr(cli_module, "load_selected_rules", fake_load_selected_rules)
+
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "declared clean rules exist — run: press clean --target" in out
+
+
+def test_closure_refusal_omits_press_clean_hint_when_no_rules_declared(
+    src_target, tmp_path, capsys
+):
+    write_source_config(src_target)
+    (src_target / "src" / "demo_widget" / "__pycache__").mkdir()
+    (src_target / "src" / "demo_widget" / "__pycache__" / "x.pyc").write_bytes(b"\0")
+    answers = write_answers(tmp_path)
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "declared clean rules exist" not in out
