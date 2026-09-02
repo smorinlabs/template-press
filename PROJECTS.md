@@ -33,7 +33,7 @@ file by hand — see Conventions.
 | P09 | `[ ]` | [Declared in-place edit ([[edit]]) and command-phase snapshot gate](projects/P09-declared-in-place-edit.md) — new [[edit]] mechanism with required `expect` post-condition; snapshot gate for any declared command (E4, E11) |
 | P10 | `[ ]` | [Declared pre-press clean ([[clean]] paths, press clean)](projects/P10-declared-pre-press-clean.md) — restricted `[[clean]] paths` declaration + standalone `press clean` subcommand (E10) |
 | P11 | `[ ]` | [Directory removals ([[remove]] dir) and removal phase](projects/P11-directory-removals.md) — frozen plan-time expansion, per-directory clean check, gitlink/symlink refusal, receipt/verify parity (E5c) |
-| P12 | `[ ]` | [Origin guard relaxation, closure diagnostics, warnings and docs](projects/P12-origin-guard-and-diagnostics.md) — E1 origin guard, E2 closure diagnostics, E3/E5/E8/E9 warnings and docs |
+| P12 | `[~]` | [Origin guard relaxation, closure diagnostics, warnings and docs](projects/P12-origin-guard-and-diagnostics.md) — E1 origin guard, E2 closure diagnostics, E3/E5/E8/E9 warnings and docs |
 
 ## Conventions
 

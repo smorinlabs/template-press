@@ -115,6 +115,12 @@ def _empty_dir_paths(exc: RenameClosureUnauthorized) -> list[str]:
     ``-X`` only removes IGNORED paths, and an uninventoried empty directory
     is by definition unignored (nothing in it for `.gitignore` to match) —
     so each needs its own `rmdir`.
+
+    Stays repo-relative here: the `--diagnostics-json` payload's
+    ``rmdir_paths`` renders this return value as-is (a machine consumer
+    joins it with its own known target root), while the prose remedy
+    (`_print_closure_refusal_prose`) renders each path through `target /
+    path` so the printed `rmdir` command works from any caller cwd.
     """
     return sorted(path for kind, path in exc.findings if kind == "empty-dir")
 
@@ -141,7 +147,7 @@ def _print_closure_refusal_prose(
     if empty_dirs:
         cap = 20
         for path in empty_dirs[:cap]:
-            print(shlex.join(["rmdir", path]))
+            print(shlex.join(["rmdir", "--", str(target / path)]))
         if len(empty_dirs) > cap:
             print(f"  … ({len(empty_dirs) - cap} more)")
     if getattr(rules, "clean", ()):

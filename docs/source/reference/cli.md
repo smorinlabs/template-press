@@ -238,7 +238,12 @@ line — on both `--dry-run` and a real apply, after the plan, with the
 exit code unchanged. A field with even one whole-token occurrence stays
 silent even when a prefix form also exists (`demo-widget` alongside
 `demo-widget-web`): a compound naming convention living next to the plain
-value is a deliberate, rewritable form, not a stale source config.
+value is a deliberate, rewritable form, not a stale source config. A field
+listed in `[rules] substring_rewrite_fields` is never checked: its
+rewriter matches the value as a plain substring, so a glued occurrence
+(`xdemo_widgety`) is a real whole occurrence to that rewriter but
+invisible to this check's boundary-aware matcher, which would otherwise
+misreport it as stale.
 
 ### Declared verify exemption
 

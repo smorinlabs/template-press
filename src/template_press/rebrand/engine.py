@@ -875,7 +875,7 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
         exclude_dirs=rules.exclude_dirs,
         root_control=ROOT_CONTROL,
     )
-    prefix_fields = _prefix_check_fields(table)
+    prefix_fields = _prefix_check_fields(table, rules)
     prefix_counts = {
         field_name: _PrefixCounts(value=value)
         for field_name, value in prefix_fields.items()
@@ -1040,7 +1040,7 @@ class _PrefixCounts:
 _PREFIX_CHECK_PROVENANCE_KINDS = frozenset({"identity", "display_form"})
 
 
-def _prefix_check_fields(table: SubstitutionTable) -> dict[str, str]:
+def _prefix_check_fields(table: SubstitutionTable, rules: Rules) -> dict[str, str]:
     """Every checked identity field/display form this press changes, name ->
     value.
 
@@ -1055,8 +1055,19 @@ def _prefix_check_fields(table: SubstitutionTable) -> dict[str, str]:
     field (spec E9(b) fix round 1): the same stale-rename signature can hide
     behind ``Demo Widget`` becoming ``Demo Widget-2`` upstream just as
     easily as behind ``demo-widget``.
+
+    A field listed in ``[rules] substring_rewrite_fields`` is excluded too:
+    its rewriter (`rewrite_with_row`/`replace_token`, per `field in
+    rules.substring_rewrite_fields`) matches the value as a plain substring,
+    not via `token_pattern`'s boundary-aware match, so a glued occurrence
+    (``xdemo_widgety``) is a real, correctly-rewritten whole occurrence to
+    that rewriter but would tally here as a bare "prefix" (or not tally at
+    all) under `token_pattern`'s stricter boundaries — producing a false
+    stale-config warning telling a correct target to update
+    `press-source.toml`.
     """
 
+    excluded = _PREFIX_CHECK_EXCLUDED_FIELDS | rules.substring_rewrite_fields
     fields: dict[str, str] = {}
     for row in table.rows:
         if "content" not in row.rewrite_surfaces:
@@ -1064,7 +1075,7 @@ def _prefix_check_fields(table: SubstitutionTable) -> dict[str, str]:
         for provenance in row.provenance:
             if (
                 provenance.kind in _PREFIX_CHECK_PROVENANCE_KINDS
-                and provenance.name not in _PREFIX_CHECK_EXCLUDED_FIELDS
+                and provenance.name not in excluded
             ):
                 fields[provenance.name] = row.from_value
     return fields

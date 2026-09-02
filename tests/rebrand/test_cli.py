@@ -1764,7 +1764,7 @@ def test_closure_refusal_remedy_includes_rmdir_for_empty_dir_finding(
     code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
     out = capsys.readouterr().out
     assert code == 2
-    assert shlex.join(["rmdir", "src/demo_widget/empty"]) in out
+    assert shlex.join(["rmdir", "--", str(src_target / "src/demo_widget/empty")]) in out
 
     code = main(
         [

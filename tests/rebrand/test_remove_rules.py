@@ -1078,6 +1078,64 @@ class TestPrefixOnlyWarning:
         )
         assert (src_target / RECEIPT_REL).is_file()
 
+    def test_substring_rewrite_field_is_excluded_from_prefix_check(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """[PR #109 review] A field listed in `[rules]
+        substring_rewrite_fields` is rewritten by plain substring matching
+        (`rewrite_with_row`), not `token_pattern`'s boundary-aware match — a
+        glued occurrence (`xdemo_widgety`) is a real, correctly-rewritten
+        whole occurrence to that rewriter but invisible to `token_pattern`
+        (its own boundary lookbehind blocks a directly-attached alnum char
+        on the left). Without excluding the field from this check, the
+        tally would only see the corpus's lone `demo_widget_2` prefix-form
+        occurrence and wrongly tell a correctly configured target to update
+        `press-source.toml`."""
+        pyproject = src_target / "pyproject.toml"
+        text = pyproject.read_text(encoding="utf-8")
+        # Hyphenated form: discover()'s `raw_name.replace("-", "_")` still
+        # resolves package_name to "demo_widget" (satisfying the source-
+        # config cross-check), but the literal underscored value never
+        # appears here — keeping this occurrence out of the tally entirely,
+        # same as the glued occurrences below.
+        text = text.replace('name = "demo_widget"', 'name = "demo-widget"', 1)
+        text = text.replace("demo_widget.cli:main", "xdemo_widgety.cli:main")
+        pyproject.write_text(text, encoding="utf-8")
+        for rel in (
+            "press_config.toml",
+            "src/demo_widget/__init__.py",
+            "src/demo_widget/cli.py",
+        ):
+            p = src_target / rel
+            p.write_text(
+                p.read_text(encoding="utf-8").replace("demo_widget", "xdemo_widgety"),
+                encoding="utf-8",
+            )
+        readme = src_target / "README.md"
+        readme.write_text(
+            readme.read_text(encoding="utf-8") + "\nSee also demo_widget_2.\n",
+            encoding="utf-8",
+        )
+        _git(src_target, "commit", "-qam", "glue package_name, add prefix form")
+        write_source_config(src_target)  # still declares package_name=demo_widget
+        (src_target / "press" / "press-rules.toml").write_text(
+            '[rules]\nsubstring_rewrite_fields = ["package_name"]\n',
+            encoding="utf-8",
+        )
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+                "--allow-dirty",  # press-rules.toml written after the commit above
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "occurs only as a prefix of" not in out
+
     def test_diagnostics_json_omits_prefix_warning_text(
         self, src_target: Path, tmp_path: Path, capsys
     ):
