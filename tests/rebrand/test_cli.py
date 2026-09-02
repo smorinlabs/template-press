@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.cli import display_name_problem, main
+from template_press.rebrand.cli import (
+    _partial_rewrite_restore_hint,
+    display_name_problem,
+    main,
+)
 from template_press.rebrand.config import (
     SOURCE_CONFIG_REL,
     load_source_config,
@@ -1895,11 +1899,7 @@ def test_closure_refusal_on_apply_time_revalidation_exits_1_with_remedy(
         and "clean -fdX -- src/demo_widget" in out
     )
     assert "phase='apply'" in out
-    assert (
-        "target may be PARTIALLY rewritten; restore with "
-        f"`git -C {shlex.quote(str(src_target))} checkout -- . && "
-        f"git -C {shlex.quote(str(src_target))} clean -fd`" in err
-    )
+    assert _partial_rewrite_restore_hint(src_target) in err
     assert not (src_target / RECEIPT_REL).exists()
     assert (src_target / "README.md").read_text(encoding="utf-8") == readme_before
     # never JSON at this catch site, even if requested — no --diagnostics-json
