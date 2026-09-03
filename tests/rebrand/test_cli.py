@@ -349,7 +349,9 @@ def test_flag_accepted_press_leaves_verify_refusing_until_origin_repointed(
     assert verify_command(["--target", str(src_target)]) == 2
     err = capsys.readouterr().err
     assert "owner: source-config says 'potatolabs' but target shows 'someone'" in err
-    assert "repo_name: source-config says 'potato-launcher'" in err
+    assert (
+        "repo_name: source-config says 'potato-launcher' but target shows 'else'" in err
+    )
 
 
 def test_flagless_receipt_carries_no_origin_mismatch_row(src_target, tmp_path, capsys):

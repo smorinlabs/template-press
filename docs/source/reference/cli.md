@@ -103,9 +103,14 @@ The receipt *records* the acceptance; it does not waive it. The press never
 touches git remotes, so after a flag-accepted press `press-source.toml` names
 the destination while `origin` still names the third repository. `press
 verify` compares the two with the same unrelaxed check and exits `2` with
-the same mismatch message until `origin` is repointed at the destination
-(`git remote set-url origin …`). A verify-side policy for flag-accepted
-targets is tracked as `P12-T-defer-6`.
+the same mismatch message until `origin` is repointed at the destination:
+
+```bash
+git -C <target> remote set-url origin https://github.com/<owner>/<repo_name>.git
+press verify --target <target>
+```
+
+A verify-side policy for flag-accepted targets is tracked as `P12-T-defer-6`.
 
 Notices and warnings appear only on a run that clears every plan-time gate —
 they are printed with the plan, not when the guard makes the decision. A run
