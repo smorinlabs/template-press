@@ -482,6 +482,43 @@ def test_receipt_is_not_written_when_the_source_config_write_fails(
     assert "injected source-config write failure" in capsys.readouterr().err
 
 
+def test_retry_after_a_receiptless_press_names_the_restore_path(
+    src_target: Path, tmp_path: Path, capsys, monkeypatch
+):
+    """A press interrupted after its source-config write is recoverable.
+
+    Injecting a receipt-write failure leaves the target declaring the
+    DESTINATION with no receipt, so a plain retry meets the identical-identity
+    guard. That message alone explains nothing, so it names the restore path
+    (greptile P1 on PR #112).
+    """
+    from template_press.rebrand import cli as cli_module
+
+    write_source_config(src_target)
+
+    def failing_write_receipt(*args, **kwargs):
+        raise OSError(errno.EIO, "injected receipt write failure")
+
+    monkeypatch.setattr(cli_module, "write_receipt", failing_write_receipt)
+    answers = write_answers(tmp_path)
+    assert main(["--target", str(src_target), "--config", str(answers)]) != 0
+    assert "injected receipt write failure" in capsys.readouterr().err
+    assert not (src_target / RECEIPT_REL).exists()
+
+    monkeypatch.undo()
+    # The press rewrote press-source.toml to the DESTINATION; point origin
+    # there too, so the retry clears the origin guard and reaches the
+    # identical-identity guard this test is about.
+    _set_origin(src_target, "https://github.com/potatolabs/potato-launcher.git")
+    _git(src_target, "add", "-A")
+    _git(src_target, "commit", "-qm", "interrupted press")
+    assert main(["--target", str(src_target), "--config", str(answers)]) == 2
+    err = capsys.readouterr().err
+    assert "nothing to press" in err
+    assert "an interrupted press may have left this state" in err
+    assert "checkout" in err and "clean -fd" in err
+
+
 def test_legacy_list_form_receipt_is_not_honored_by_verify(
     src_target, tmp_path, capsys
 ):

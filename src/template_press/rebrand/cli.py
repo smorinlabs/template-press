@@ -483,9 +483,22 @@ def main(argv: list[str] | None = None) -> int:
             return _fail(display_problem)
 
         if source == dest:
-            return _fail(
+            message = (
                 "source and destination identities are identical — nothing to press"
             )
+            if read_receipt(target) is None:
+                # A press that rewrote press-source.toml but died before its
+                # receipt landed leaves exactly this state: the target already
+                # declares the DESTINATION while nothing records a completed
+                # press, so a plain retry stops here with nothing to do. Name
+                # the restore path rather than leaving the operator to infer
+                # it from a message about identical identities.
+                message += (
+                    f"\nno receipt either: an interrupted press may have left "
+                    f"this state — {_partial_rewrite_restore_hint(target)}, "
+                    f"then press again"
+                )
+            return _fail(message)
         # Pipeline stability, ambiguity, and termination are validated together
         # by build_plan before any write.  Keeping the target rules here ensures
         # the adapter preserves each field's effective substring posture.
