@@ -370,13 +370,24 @@ def test_flag_accepted_press_verify_honors_the_receipt(src_target, tmp_path, cap
 def test_flag_accepted_receipt_does_not_waive_a_different_origin(
     src_target, tmp_path, capsys
 ):
-    """The waiver is by VALUE, not by field name: repoint ``origin`` at yet
-    another third repository and verify refuses again, naming the field."""
+    """The waiver is by VALUE, not by field name.
+
+    Ordered so the test fails on the parent commit: the receipt is FIRST
+    shown to be honored (exit 0 with both notes), and only then is ``origin``
+    repointed at yet another third repository, which must refuse again. A
+    waiver keyed on the field name alone would pass the second half while
+    failing nothing, so the honored half is what makes this a real guard.
+    """
     from template_press.rebrand.verify_cli import verify_command
 
     _flag_accepted_press(src_target, tmp_path)
-    _set_origin(src_target, "https://github.com/elsewhere/other.git")
     capsys.readouterr()
+    assert verify_command(["--target", str(src_target)]) == 0
+    honored = capsys.readouterr().out
+    assert "note: owner: origin 'someone' accepted by the press receipt" in honored
+    assert "note: repo_name: origin 'else' accepted by the press receipt" in honored
+
+    _set_origin(src_target, "https://github.com/elsewhere/other.git")
     assert verify_command(["--target", str(src_target)]) == 2
     err = capsys.readouterr().err
     assert "owner: source-config says 'potatolabs' but target shows 'elsewhere'" in err
@@ -384,6 +395,85 @@ def test_flag_accepted_receipt_does_not_waive_a_different_origin(
         "repo_name: source-config says 'potato-launcher' but target shows 'other'"
         in err
     )
+
+
+def test_receipt_from_another_repo_is_not_honored(src_target, tmp_path, capsys):
+    """The receipt must be BOUND to the target it sits in: its ``[press.to]``
+    identity is the press's own record of what it wrote into
+    ``press-source.toml``, so a receipt copied in from another repository
+    describes a different identity and waives nothing."""
+    from template_press.rebrand.verify_cli import verify_command
+
+    receipt = _flag_accepted_press(src_target, tmp_path)
+    foreign = receipt.replace('owner = "potatolabs"', 'owner = "otherlabs"')
+    assert foreign != receipt
+    (src_target / RECEIPT_REL).write_text(foreign, encoding="utf-8")
+    capsys.readouterr()
+    assert verify_command(["--target", str(src_target)]) == 2
+    err = capsys.readouterr().err
+    assert (
+        "press receipt not honored: [press.to] does not match press-source.toml" in err
+    )
+    assert "owner: source-config says 'potatolabs' but target shows 'someone'" in err
+
+
+def test_hand_written_minimal_receipt_is_not_honored(src_target, tmp_path, capsys):
+    """A two-line receipt asserting an acceptance is not a press record: it
+    carries no ``verified = true`` and no ``[press.to]``, so it proves
+    nothing and waives nothing."""
+    from template_press.rebrand.verify_cli import verify_command
+
+    _flag_accepted_press(src_target, tmp_path)
+    (src_target / RECEIPT_REL).write_text(
+        '[press]\norigin_mismatch_accepted = { owner = "someone", repo_name = "else" }\n',
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    assert verify_command(["--target", str(src_target)]) == 2
+    err = capsys.readouterr().err
+    assert "press receipt not honored: receipt is not a verified press" in err
+    assert "owner: source-config says 'potatolabs' but target shows 'someone'" in err
+
+
+def test_unverified_receipt_is_not_honored(src_target, tmp_path, capsys):
+    """`verified = true` is the receipt's whole claim — a press that did not
+    complete cannot waive anything."""
+    from template_press.rebrand.verify_cli import verify_command
+
+    receipt = _flag_accepted_press(src_target, tmp_path)
+    unverified = receipt.replace("verified = true", "verified = false")
+    assert unverified != receipt
+    (src_target / RECEIPT_REL).write_text(unverified, encoding="utf-8")
+    capsys.readouterr()
+    assert verify_command(["--target", str(src_target)]) == 2
+    err = capsys.readouterr().err
+    assert "press receipt not honored: receipt is not a verified press" in err
+
+
+def test_receipt_is_not_written_when_the_source_config_write_fails(
+    src_target: Path, tmp_path: Path, monkeypatch
+):
+    """The receipt is the LAST write of a successful press (P12 fix round 1).
+
+    It means "this rebrand completed and was verified", and it guards
+    re-presses. If the final ``press-source.toml`` write fails, the press did
+    NOT complete — a receipt surviving that failure would advertise a press
+    that never finished and would then require ``--force`` to retry.
+    """
+    from template_press.rebrand import cli as cli_module
+
+    write_source_config(src_target)
+    real_write_control = cli_module.write_control
+
+    def failing_write_control(target, rel, content):
+        if rel == SOURCE_CONFIG_REL:
+            raise OSError(errno.EIO, "injected source-config write failure")
+        return real_write_control(target, rel, content)
+
+    monkeypatch.setattr(cli_module, "write_control", failing_write_control)
+    code = main(["--target", str(src_target), "--config", str(write_answers(tmp_path))])
+    assert code != 0
+    assert not (src_target / RECEIPT_REL).exists()
 
 
 def test_legacy_list_form_receipt_is_not_honored_by_verify(

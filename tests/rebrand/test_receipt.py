@@ -12,6 +12,7 @@ from template_press.rebrand.receipt import (
     OriginDecision,
     accepted_origin_from_receipt,
     read_receipt,
+    receipt_binding_problem,
     write_receipt,
 )
 from template_press.rebrand.safety import ContainmentError
@@ -142,3 +143,47 @@ def test_accepted_origin_from_receipt_tolerates_garbage(text: str | None):
 def test_accepted_origin_from_receipt_drops_non_string_values():
     text = "[press]\norigin_mismatch_accepted = { owner = 3, repo_name = 'else' }\n"
     assert accepted_origin_from_receipt(text) == {"repo_name": "else"}
+
+
+def test_receipt_binding_problem_accepts_a_verified_press_of_this_identity(
+    tmp_path: Path,
+):
+    """`[press.to]` is the press's own record of the identity it wrote into
+    `press-source.toml`, so a genuine receipt binds to that same identity."""
+    write_receipt(tmp_path, SOURCE, DEST, ApplyReport())
+    raw = read_receipt(tmp_path)
+    assert raw is not None
+    assert receipt_binding_problem(raw, DEST) is None
+
+
+def test_receipt_binding_problem_rejects_another_repo_s_identity(tmp_path: Path):
+    write_receipt(tmp_path, SOURCE, DEST, ApplyReport())
+    raw = read_receipt(tmp_path)
+    assert raw is not None
+    other = replace(DEST, owner="otherlabs")
+    assert receipt_binding_problem(raw, other) == (
+        "[press.to] does not match press-source.toml"
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        None,
+        "",
+        "[press\nnot toml",
+        # No `verified = true`: not a completed, verified press.
+        '[press]\norigin_mismatch_accepted = { owner = "someone" }\n',
+        "[press]\nverified = false\n",
+    ],
+)
+def test_receipt_binding_problem_rejects_a_non_press(text: str | None):
+    assert receipt_binding_problem(text, DEST) == "receipt is not a verified press"
+
+
+def test_receipt_binding_problem_rejects_a_verified_receipt_without_an_identity():
+    """`verified = true` alone proves nothing about WHICH target: with no
+    `[press.to]` there is no identity to bind against."""
+    assert receipt_binding_problem("[press]\nverified = true\n", DEST) == (
+        "[press.to] does not match press-source.toml"
+    )

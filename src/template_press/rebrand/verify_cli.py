@@ -16,8 +16,10 @@ Flow (Decisions 2-6):
    once in the target's ``scan_paths`` corpus. A wholly-undiscoverable-and-absent
    identity is ``unverifiable``. An ``owner``/``repo_name`` mismatch whose
    discovered value is the EXACT one a prior ``--accept-origin-mismatch`` press
-   recorded in the receipt is waived (a ``note:``); any other value still
-   refuses. Any remaining problem -> **2**.
+   recorded in the receipt is waived (a ``note:``) — but only when that receipt
+   is BOUND to this target (``verified = true`` and a ``[press.to]`` equal to
+   the target's own source-config identity); any other value, and any unbound
+   receipt, still refuses. Any remaining problem -> **2**.
 3. Load the ``[verify]`` config (shared file with ``[rules]``). Any two SOURCE
    fields equal -> WARN; with ``equal_fields == "error"`` the equality is
    remembered to force **1**.
@@ -64,6 +66,7 @@ from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.receipt import (
     accepted_origin_from_receipt,
     read_receipt,
+    receipt_binding_problem,
     removed_files_from_receipt,
 )
 from template_press.rebrand.reset import load_stub_content
@@ -222,6 +225,10 @@ def _honor_accepted_origin(
     `"{field}: "` prefix the press-side guard uses. Returns the surviving
     problems and the fields actually honored (a field whose origin already
     agrees raises no problem and so is never "honored").
+
+    `accepted` arrives already bound to this target by the caller (see
+    `receipt.receipt_binding_problem`); an unbound receipt reaches here as an
+    empty mapping and waives nothing.
     """
     honored: dict[str, str] = {}
     for field_name in ("owner", "repo_name"):
@@ -480,13 +487,34 @@ def verify_command(argv: list[str] | None = None) -> int:
         # The target's OWN receipt (not the sandbox copy's): a prior
         # `--accept-origin-mismatch` press records the exact origin values it
         # accepted, and preflight waives precisely those.
-        accepted_origin = accepted_origin_from_receipt(read_receipt(target))
+        #
+        # A receipt is evidence only about the repository it was written
+        # into, so it is honored only when it is BOUND to this target: a
+        # completed, verified press whose `[press.to]` is this target's
+        # current source-config identity. A receipt copied in from another
+        # repository, or a hand-written `[press]` table asserting an
+        # acceptance, is refused — and the refusal says which condition
+        # failed, because "verify still exits 2" is otherwise indistinguishable
+        # from "the flag never worked".
+        receipt_text = read_receipt(target)
+        unbound = receipt_binding_problem(receipt_text, source)
+        accepted_origin = (
+            {} if unbound is not None else accepted_origin_from_receipt(receipt_text)
+        )
+        recorded_but_unbound = unbound is not None and bool(
+            accepted_origin_from_receipt(receipt_text)
+        )
         problems, honored_origin = _preflight(
             target, source, rules, scan_fields, scan_substring, accepted_origin
         )
     except _CONFIG_ERRORS as exc:
         return _fail(f"preflight failed: {exc}")
     if problems:
+        # Only alongside the refusal it explains, and only in prose mode: on a
+        # run that passes anyway (origin agrees now) the receipt's binding is
+        # not what the operator is asking about.
+        if recorded_but_unbound and not args.as_json:
+            print(f"error: press receipt not honored: {unbound}", file=sys.stderr)
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)
         return 2

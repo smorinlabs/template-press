@@ -831,6 +831,13 @@ def _press(
             return PressOutcome(
                 True, report.renamed, report.regenerated, env_error=None
             )
+        write_control(target, SOURCE_CONFIG_REL, render_source_config(dest))
+        # The receipt is the LAST write of a successful press (P12 fix
+        # round 1): it means "this rebrand completed and was verified" and it
+        # guards re-runs, so it must not survive a failure of the
+        # source-config write ABOVE. Ordered this way, an OSError there leaves
+        # no receipt and the press can be re-run without --force. Nothing
+        # between the two writes reads the receipt.
         receipt_path = write_receipt(
             target,
             source,
@@ -891,7 +898,6 @@ def _press(
                 ),
             ],
         )
-        write_control(target, SOURCE_CONFIG_REL, render_source_config(dest))
         print(report.render())
         if report.skipped:
             print("skipped (review):")

@@ -115,8 +115,29 @@ field before its verdict:
 note: owner: origin 'someone' accepted by the press receipt (--accept-origin-mismatch)
 ```
 
-The waiver is by value, not by field name, so it cannot go stale into a free
-pass:
+A receipt is evidence only about the repository it was written into, so verify
+honors one only when it is **bound to this target**. Both conditions must hold:
+
+1. **It is a verified press.** The `[press]` table carries `verified = true` —
+   the receipt is written only after the no-leak pass, so anything else is not
+   a completed press.
+2. **Its `[press.to]` is this target's identity.** The press writes the same
+   field mapping into `[press.to]` and into `press/press-source.toml`, so a
+   genuine receipt matches its own target on every field the source-config
+   declares. Comparison is exact, like the guard's.
+
+A receipt copied in from another repository fails the second condition; a
+hand-written `[press]` table asserting an acceptance fails the first. Either
+way verify exits `2` and says which condition failed, on stderr, next to the
+mismatch it refused:
+
+```text
+error: press receipt not honored: [press.to] does not match press-source.toml
+error: owner: source-config says 'potatolabs' but target shows 'someone'
+```
+
+Past that binding, the waiver is by value, not by field name, so it cannot go
+stale into a free pass:
 
 - Repoint `origin` at *yet another* repository and verify exits `2` again,
   naming the field — the receipt says nothing about that new value.
@@ -165,8 +186,8 @@ Three limits are deliberate:
   answers file saying `potatolabs` is a mismatch, not a match: the case
   difference trips the guard and exits `2`. Fix the answers file (or the
   remote) so the two agree exactly. Such a field is in the "neither" state,
-  so `--accept-origin-mismatch` does accept it — as a warning and a
-  `origin_mismatch_accepted` receipt row, not as a destination match.
+  so `--accept-origin-mismatch` does accept it — as a warning and an
+  `origin_mismatch_accepted` receipt entry, not as a destination match.
 
 Without `--config` there is no destination identity to compare against, and
 the guard behaves exactly as it did before; `--accept-origin-mismatch` is

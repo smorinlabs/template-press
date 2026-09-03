@@ -178,6 +178,49 @@ def write_receipt(
     return write_control(target, RECEIPT_REL, "\n".join(lines) + "\n")
 
 
+def _press_table(text: str | None) -> dict[str, object]:
+    """The receipt's ``[press]`` table; an empty mapping for no receipt,
+    unparsable TOML, or a ``press`` key that is not a table."""
+    if not text:
+        return {}
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return {}
+    table = data.get("press", {})
+    return table if isinstance(table, dict) else {}
+
+
+def receipt_binding_problem(text: str | None, source: Identity) -> str | None:
+    """Why this receipt does not describe a completed press OF THIS target —
+    ``None`` when it does.
+
+    A receipt is evidence only about the repository it was written into, so
+    a reader that TRUSTS its contents (see `accepted_origin_from_receipt`)
+    must first bind it there. Two conditions do that:
+
+    1. ``verified = true`` — the receipt is written only after the no-leak
+       pass, so anything else is not a completed, verified press.
+    2. ``[press.to]`` equals the target's CURRENT source-config identity on
+       every field that identity declares. The press writes the same
+       ``Identity.as_dict_prompted()`` mapping into both ``[press.to]`` and
+       ``press/press-source.toml``, so a genuine receipt matches its own
+       target exactly — while a receipt copied in from another repository,
+       or a hand-written one asserting an acceptance, does not. Comparison
+       is exact, like the origin guard's.
+    """
+    press_table = _press_table(text)
+    if press_table.get("verified") is not True:
+        return "receipt is not a verified press"
+    to_table = press_table.get("to")
+    if not isinstance(to_table, dict) or any(
+        to_table.get(field_name) != value
+        for field_name, value in source.as_dict_prompted().items()
+    ):
+        return "[press.to] does not match press-source.toml"
+    return None
+
+
 def accepted_origin_from_receipt(text: str | None) -> dict[str, str]:
     """The exact `origin` values a prior `--accept-origin-mismatch` press
     accepted, as ``{field: value}``.
@@ -188,22 +231,18 @@ def accepted_origin_from_receipt(text: str | None) -> dict[str, str]:
     mismatch whose DISCOVERED value equals the one recorded here — never by
     field name alone, which would waive whatever the remote says next.
 
+    This is a pure parser: it says what the receipt CLAIMS, not whether the
+    receipt may be trusted. The caller must pair it with
+    `receipt_binding_problem`, or a receipt copied in from another
+    repository would waive this target's mismatch.
+
     Tolerant reader, like `removed_files_from_receipt`: no receipt,
     unparsable TOML, an absent key, the 4.1 list-of-field-names shape, or a
     non-string value all yield nothing for that entry. Failing closed here
     means verify refuses exactly as it did before the receipt was honored —
     it can never waive more than the receipt actually proves.
     """
-    if not text:
-        return {}
-    try:
-        data = tomllib.loads(text)
-    except tomllib.TOMLDecodeError:
-        return {}
-    press_table = data.get("press", {})
-    if not isinstance(press_table, dict):
-        return {}
-    accepted = press_table.get("origin_mismatch_accepted", {})
+    accepted = _press_table(text).get("origin_mismatch_accepted", {})
     if not isinstance(accepted, dict):
         return {}
     return {k: v for k, v in accepted.items() if isinstance(v, str)}
