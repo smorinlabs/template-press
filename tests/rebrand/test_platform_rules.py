@@ -255,17 +255,39 @@ def _edit(file: str, command: str, platforms: str | None = None) -> str:
 def test_exclude_files_follows_the_selected_platforms_writer(tmp_path: Path) -> None:
     """An [[edit]] target must be reachable by the replace pass; a [[reset]]
     target must not be. A file declared both ways on disjoint platforms
-    therefore carries a per-platform exclusion, not one global answer."""
+    therefore carries a per-platform exclusion, not one global answer.
+
+    The path is TARGET-added (`[rules] extra_exclude_files`) on purpose: only
+    the target's own exclusions bend this way."""
+    target = _write_rules(
+        tmp_path,
+        '[rules]\nextra_exclude_files = ["docs/api.md"]\n'
+        + _edit("docs/api.md", "amend", '["darwin"]')
+        + _reset("docs/api.md", "windows", '["win32"]'),
+    )
+
+    darwin = _load_selected(target, "darwin").rules
+    win32 = _load_selected(target, "win32").rules
+
+    assert [rule.file for rule in darwin.edit] == ["docs/api.md"]
+    assert "docs/api.md" not in darwin.exclude_files
+    assert [rule.file for rule in win32.reset] == ["docs/api.md"]
+    assert "docs/api.md" in win32.exclude_files
+    # press's own default exclusions are never the thing that bends.
+    assert rules_module.DEFAULT_RULES.exclude_files <= darwin.exclude_files
+    assert rules_module.DEFAULT_RULES.exclude_files <= win32.exclude_files
+
+
+def test_default_exclusion_is_never_handed_to_the_replace_pass(
+    tmp_path: Path,
+) -> None:
+    """`bun.lock` is press's own exclusion, so a disjoint [[reset]] cannot
+    make it an editable path — the refusal stands at config load."""
     target = _write_rules(
         tmp_path,
         _edit("bun.lock", "amend", '["darwin"]')
         + _reset("bun.lock", "windows", '["win32"]'),
     )
 
-    darwin = _load_selected(target, "darwin").rules
-    win32 = _load_selected(target, "win32").rules
-
-    assert [rule.file for rule in darwin.edit] == ["bun.lock"]
-    assert "bun.lock" not in darwin.exclude_files
-    assert [rule.file for rule in win32.reset] == ["bun.lock"]
-    assert "bun.lock" in win32.exclude_files
+    with pytest.raises(ValidationError, match="must not be listed in exclude_files"):
+        _load_selected(target, "darwin")

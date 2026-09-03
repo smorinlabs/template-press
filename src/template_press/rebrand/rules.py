@@ -760,10 +760,28 @@ def _validate_exclude_membership(
     darwin, a [[reset]] on win32) — so the edit refusal stands down for
     exactly that pairing, and _select_rules drops the path from the
     exclusions of the platforms where the edit is the active writer.
+
+    That stand-down reaches TARGET-added exclusions only. A path in
+    DEFAULT_RULES.exclude_files is press's own answer, not the target's: a
+    lockfile or a changelog is excluded because the replace pass must never
+    rewrite it, whatever else the file is declared as. Letting a disjoint
+    [[reset]]/[[regenerate]] license it would turn a pairing the author
+    controls into a lever that hands those files to the replace pass.
+
+    Every same-file test here is by filesystem-alias identity
+    (_control_alias_key), not raw string — the union _reject_reserved
+    documents. A raw comparison fails OPEN: `BUN.lock.` is `bun.lock` on the
+    filesystems press supports, so the exclusion would simply be out-spelled.
     """
-    paired = {declaration.rule.file for declaration in regenerate} | {
-        declaration.rule.file for declaration in reset
-    }
+    paired = {
+        _control_alias_key(declaration.rule.file) for declaration in regenerate
+    } | {_control_alias_key(declaration.rule.file) for declaration in reset}
+    default_keys = {_control_alias_key(file) for file in DEFAULT_RULES.exclude_files}
+    # Alias key -> one declared spelling, so a diagnostic can name the entry
+    # the author actually wrote rather than the normalized key.
+    excluded: dict[str, str] = {}
+    for entry in sorted(exclude_files):
+        excluded.setdefault(_control_alias_key(entry), entry)
     for regenerate_declaration in regenerate:
         file = regenerate_declaration.rule.file
         if file not in exclude_files:
@@ -784,13 +802,32 @@ def _validate_exclude_membership(
             )
     for edit_declaration in edit:
         file = edit_declaration.rule.file
-        # `paired` is only reachable across disjoint platforms — a shared one
-        # was already refused as two writers by _validate_writer_overlaps.
-        if file in exclude_files and file not in paired:
+        key = _control_alias_key(file)
+        if key not in excluded:
+            continue
+        listed = excluded[key]
+        alias_note = (
+            ""
+            if listed == file
+            else f" (listed as {listed!r} — one file on a case-insensitive or "
+            f"Windows filesystem)"
+        )
+        if key in default_keys:
             raise ValidationError(
                 f"{RULES_REL}: [[edit]] target {file!r} must not be listed in "
-                f"exclude_files — an edit target is rewritten by the replace "
-                f"pass first, then edited in place"
+                f"exclude_files{alias_note} — an edit target is rewritten by "
+                f"the replace pass first, then edited in place; press excludes "
+                f"this path by default, so no target declaration makes it "
+                f"editable (a platform-disjoint [[reset]]/[[regenerate]] "
+                f"included)"
+            )
+        # `paired` is only reachable across disjoint platforms — a shared one
+        # was already refused as two writers by _validate_writer_overlaps.
+        if key not in paired:
+            raise ValidationError(
+                f"{RULES_REL}: [[edit]] target {file!r} must not be listed in "
+                f"exclude_files{alias_note} — an edit target is rewritten by "
+                f"the replace pass first, then edited in place"
             )
 
 
@@ -881,37 +918,56 @@ def _validate_writer_overlaps(
                         f"removed file cannot also be rebuilt or reset"
                     )
 
-    seen_edit: dict[str, list[frozenset[str]]] = {}
+    # Keyed by filesystem-alias identity, not by declared string: `meta.toml`
+    # and `META.TOML.` are ONE file everywhere press runs (see
+    # _reject_reserved), so a raw-string ledger would let the second writer
+    # in under a different spelling. Diagnostics still quote what was written.
+    seen_edit: dict[str, list[tuple[str, frozenset[str]]]] = {}
     for declaration in edit:
         file = declaration.rule.file
-        for earlier in seen_edit.get(file, []):
+        key = _control_alias_key(file)
+        for earlier_file, earlier in seen_edit.get(key, []):
             overlap = earlier & declaration.platforms
             if overlap:
+                alias_note = (
+                    ""
+                    if earlier_file == file
+                    else f"; {file!r} and {earlier_file!r} are one file on a "
+                    f"case-insensitive or Windows filesystem"
+                )
                 raise ValidationError(
                     f"{RULES_REL}: duplicate [[edit]] target {file!r} has "
                     f"platform overlap {sorted(overlap)!r} — each platform "
-                    f"permits one writer"
+                    f"permits one writer{alias_note}"
                 )
-        seen_edit.setdefault(file, []).append(declaration.platforms)
+        seen_edit.setdefault(key, []).append((file, declaration.platforms))
     # An edit AMENDS what the replace pass wrote; a reset, removal, or
     # regeneration DISCARDS it. Both on one file is not an ordering question
     # with a right answer — it is two writers, so it is refused.
     for edit_declaration in edit:
+        file = edit_declaration.rule.file
+        key = _control_alias_key(file)
         for other_kind, others in (
             ("[[regenerate]]", regenerate),
             ("[[reset]]", reset),
             ("[[remove]]", remove),
         ):
             for other in others:
-                if other.rule.file != edit_declaration.rule.file:
+                other_file = other.rule.file
+                if _control_alias_key(other_file) != key:
                     continue
                 overlap = other.platforms & edit_declaration.platforms
                 if overlap:
-                    file = edit_declaration.rule.file
+                    alias_note = (
+                        ""
+                        if other_file == file
+                        else f" as {other_file!r} (the two spellings are one "
+                        f"file on a case-insensitive or Windows filesystem)"
+                    )
                     raise ValidationError(
                         f"{RULES_REL}: [[edit]] target {file!r} may not also "
                         f"be a reset/remove/regenerate target — {other_kind} "
-                        f"declares it on {sorted(overlap)!r}"
+                        f"declares it on {sorted(overlap)!r}{alias_note}"
                     )
 
 
@@ -1028,15 +1084,24 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
         for declaration in parsed.edit
         if platform in declaration.platforms
     )
+    # Alias identity again: the exclusion entry and the edit may be spelled
+    # differently and still name one file, so an exact-string subtraction
+    # would leave the edit target excluded and unreachable.
+    active_edit_keys = {_control_alias_key(rule.file) for rule in active_edits}
     rules = replace(
         parsed.rules,
-        # An edit target must be reachable by the replace pass. It can only
-        # be in exclude_files at all when a [[reset]]/[[regenerate]] on a
-        # DISJOINT platform put it there (config load refuses every other
-        # case), so dropping the active edit paths is exactly that exception
-        # — the discarding platform, where no edit is active, keeps them.
-        exclude_files=parsed.rules.exclude_files
-        - frozenset(rule.file for rule in active_edits),
+        # An edit target must be reachable by the replace pass. It can only be
+        # in exclude_files at all when the TARGET added it (via [rules]
+        # extra_exclude_files) and a [[reset]]/[[regenerate]] on a DISJOINT
+        # platform needs it there; config load refuses every other case,
+        # DEFAULT_RULES.exclude_files paths included. Dropping the active edit
+        # paths is exactly that exception — the discarding platform, where no
+        # edit is active, keeps them.
+        exclude_files=frozenset(
+            path
+            for path in parsed.rules.exclude_files
+            if _control_alias_key(path) not in active_edit_keys
+        ),
         regenerate=tuple(
             declaration.rule
             for declaration in parsed.regenerate

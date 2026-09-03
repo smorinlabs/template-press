@@ -20,6 +20,7 @@ import pytest
 
 from template_press.rebrand.identity import ValidationError
 from template_press.rebrand.rules import (
+    DEFAULT_RULES,
     EditRule,
     RegenerateRule,
     RemoveRule,
@@ -422,15 +423,20 @@ class TestPlatformDisjointExcludedTarget:
     MUST be excluded, an [[edit]] target must NOT be. When the declarations
     are platform-disjoint the one-writer invariant is already satisfied, so
     exclusion follows the platform's own active writer.
+
+    This applies to TARGET-ADDED exclusions only — a path the target itself
+    put in [rules] extra_exclude_files. A DEFAULT_RULES.exclude_files entry
+    is press's own, and no target declaration unlocks it.
     """
 
     @pytest.mark.parametrize(
         ("file", "preamble"),
         [
-            # Excluded by the target's own [rules] extra_exclude_files.
+            # Excluded by the target's own [rules] extra_exclude_files — the
+            # ONLY exclusions this exception reaches. press's own defaults are
+            # tool-owned (see TestDefaultExclusionsAreToolOwned).
             ("pyproject.toml", '[rules]\nextra_exclude_files = ["pyproject.toml"]\n'),
-            # Excluded by DEFAULT_RULES.exclude_files, with no target opt-in.
-            ("CHANGELOG.md", ""),
+            ("docs/api.md", '[rules]\nextra_exclude_files = ["docs/api.md"]\n'),
         ],
     )
     @pytest.mark.parametrize("other", ["reset", "regenerate"])
@@ -514,6 +520,156 @@ class TestPlatformDisjointExcludedTarget:
             ValidationError, match=r"\[\[reset\]\] target .* must be listed in"
         ):
             load_rules(target)
+
+
+# ---------------------------------------------------------------------------
+# Default exclusions are press's own
+# ---------------------------------------------------------------------------
+class TestDefaultExclusionsAreToolOwned:
+    """DEFAULT_RULES.exclude_files is press's set, not the target's.
+
+    The platform-disjoint exception exists so a target can declare one file
+    two ways across platforms. It may not be turned into a lever that hands
+    the replace pass a lockfile or a changelog: a disjoint [[reset]] or
+    [[regenerate]] on a default-excluded path licenses nothing, so the edit
+    refusal stands.
+    """
+
+    @pytest.mark.parametrize("file", sorted(DEFAULT_RULES.exclude_files))
+    @pytest.mark.parametrize("other", ["reset", "regenerate"])
+    def test_disjoint_writer_does_not_license_a_default_exclusion(
+        self, tmp_path: Path, file: str, other: str
+    ):
+        table = _reset_table if other == "reset" else _regenerate_table
+        target = _write_rules(
+            tmp_path,
+            _edit_table(file, "amend", '["darwin"]') + table(file, '["linux"]'),
+        )
+        with pytest.raises(
+            ValidationError, match="must not be listed in exclude_files"
+        ):
+            load_rules(target)
+
+    def test_disjoint_writer_does_not_license_a_default_alias_either(
+        self, tmp_path: Path
+    ):
+        """Spelling the edit target as a filesystem alias of the default entry
+        is the same refusal — the pairing check compares alias identity."""
+        target = _write_rules(
+            tmp_path,
+            _edit_table("BUN.lock.", "amend", '["darwin"]')
+            + _reset_table("bun.lock", '["linux"]'),
+        )
+        with pytest.raises(
+            ValidationError, match="must not be listed in exclude_files"
+        ):
+            load_rules(target)
+
+    def test_default_exclusions_survive_an_unrelated_edit(self, tmp_path: Path):
+        """An accepted edit removes its own path and nothing else."""
+        target = _write_rules(tmp_path, EDIT_PYPROJECT)
+        for platform in ("darwin", "linux", "win32"):
+            selected = load_selected_rules(target, platform=platform).rules
+            assert DEFAULT_RULES.exclude_files <= selected.exclude_files
+
+
+# ---------------------------------------------------------------------------
+# Filesystem-alias identity (the union press validates against everywhere)
+# ---------------------------------------------------------------------------
+class TestFilesystemAliasIdentity:
+    """Two declared spellings can name ONE file on a real filesystem.
+
+    press validates every rule against the conservative union of the aliases
+    any supported filesystem collapses — case-insensitivity (Windows, default
+    macOS) and Windows' per-component trailing dot/space strip — exactly as
+    _reject_reserved already documents for the control paths. An [[edit]]
+    same-file check that compared raw strings would fail OPEN: the second
+    writer, or the excluded path, would simply be spelled differently.
+    """
+
+    ALIAS = "META.TOML."  # `meta.toml` on every filesystem press supports
+
+    def test_duplicate_edit_aliases_refused(self, tmp_path: Path):
+        target = _write_rules(
+            tmp_path,
+            _edit_table("meta.toml", "a", '["darwin"]')
+            + _edit_table(self.ALIAS, "b", '["darwin"]'),
+        )
+        with pytest.raises(ValidationError, match="overlap"):
+            load_rules(target)
+
+    @pytest.mark.parametrize(
+        "other",
+        [
+            '[[reset]]\nfile = "META.TOML."\nstub = ""\n',
+            '[[remove]]\nfile = "META.TOML."\nreason = "template-only"\n',
+            '[[regenerate]]\nfile = "META.TOML."\ncommand = ["true"]\n',
+        ],
+    )
+    def test_alias_of_another_writer_refused(self, tmp_path: Path, other: str):
+        target = _write_rules(
+            tmp_path,
+            '[[edit]]\nfile = "meta.toml"\ncommand = ["a"]\nexpect = "x"\n' + other,
+        )
+        with pytest.raises(ValidationError) as exc:
+            load_rules(target)
+        assert "may not also be a reset/remove/regenerate target" in str(exc.value)
+
+    @pytest.mark.parametrize("file", ["CHANGELOG.MD", "BUN.lock.", "UV.LOCK"])
+    def test_standalone_alias_of_a_default_exclusion_refused(
+        self, tmp_path: Path, file: str
+    ):
+        target = _write_rules(
+            tmp_path,
+            f'[[edit]]\nfile = "{file}"\ncommand = ["true"]\nexpect = "x"\n',
+        )
+        with pytest.raises(
+            ValidationError, match="must not be listed in exclude_files"
+        ):
+            load_rules(target)
+
+    def test_standalone_alias_of_a_target_added_exclusion_refused(self, tmp_path: Path):
+        target = _write_rules(
+            tmp_path,
+            '[rules]\nextra_exclude_files = ["pyproject.toml"]\n'
+            '[[edit]]\nfile = "PyProject.TOML "\ncommand = ["true"]\n'
+            'expect = "x"\n',
+        )
+        with pytest.raises(
+            ValidationError, match="must not be listed in exclude_files"
+        ):
+            load_rules(target)
+
+    @pytest.mark.parametrize("other", ["reset", "regenerate"])
+    def test_disjoint_alias_pair_on_a_target_added_exclusion_accepted(
+        self, tmp_path: Path, other: str
+    ):
+        """The licensed case, spelled two ways: the exclusion entry and the
+        discarding writer agree on `META.TOML.`, the edit says `meta.toml`.
+        Selection must drop the exclusion by alias identity, not by string."""
+        table = _reset_table if other == "reset" else _regenerate_table
+        target = _write_rules(
+            tmp_path,
+            f'[rules]\nextra_exclude_files = ["{self.ALIAS}"]\n'
+            + _edit_table("meta.toml", "amend", '["darwin"]')
+            + table(self.ALIAS, '["linux"]'),
+        )
+
+        darwin = load_selected_rules(target, platform="darwin").rules
+        linux = load_selected_rules(target, platform="linux").rules
+
+        assert [rule.file for rule in darwin.edit] == ["meta.toml"]
+        assert self.ALIAS not in darwin.exclude_files
+        assert "meta.toml" not in darwin.exclude_files
+
+        assert linux.edit == ()
+        selected = linux.reset if other == "reset" else linux.regenerate
+        assert [rule.file for rule in selected] == [self.ALIAS]
+        assert self.ALIAS in linux.exclude_files
+
+        # Only the edit's own alias leaves; every default exclusion stays.
+        assert DEFAULT_RULES.exclude_files <= darwin.exclude_files
+        assert DEFAULT_RULES.exclude_files <= linux.exclude_files
 
 
 # ---------------------------------------------------------------------------
