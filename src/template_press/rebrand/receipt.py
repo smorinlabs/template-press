@@ -89,8 +89,9 @@ def write_receipt(
 ) -> Path:
     stamp = datetime.now(UTC).isoformat(timespec="seconds")
     # Each key is written only when that relaxation actually fired (E1): a
-    # receipt without them means "origin agreed with the source-config", so
-    # every reader must tolerate their absence.
+    # receipt without them means the guard relaxed nothing — origin agreed
+    # with the source-config, or had no discoverable value (no remote, or a
+    # non-GitHub one) — so every reader must tolerate their absence.
     named = origin.named_destination if origin is not None else ()
     accepted = origin.mismatch_accepted if origin is not None else ()
     origin_lines = [

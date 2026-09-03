@@ -1,7 +1,7 @@
 """press rebrand — point the press at a target repo (ARCH-01).
 
-Pipeline: preconditions → source identity (config-first, discovery
-validates) → answers → plan → [--dry-run stops here] → apply → regenerate
+Pipeline: preconditions → answers → source identity (config-first,
+discovery validates) → plan → [--dry-run stops here] → apply → regenerate
 lockfiles → VERIFY (no-leak doctor) → receipt. Exit codes: 0 ok, 1 leaks
 found after apply (no receipt), 2 precondition/config error (no writes).
 """
@@ -299,8 +299,8 @@ def _render_origin_notices(
     """
     return [
         f"notice: {field_name}: origin already names the destination "
-        f"('{getattr(dest, field_name)}'); source-config says "
-        f"'{getattr(source, field_name)}' — accepted"
+        f"({getattr(dest, field_name)!r}); source-config says "
+        f"{getattr(source, field_name)!r} — accepted"
         for field_name in origin.named_destination
     ]
 
@@ -311,13 +311,16 @@ def _render_origin_mismatch_warnings(
     """One warning line per field accepted under `--accept-origin-mismatch`.
 
     The repository's value is a third value — equal to neither identity —
-    so it is read from the discovery result rather than reconstructed.
+    so it is read from the discovery result rather than reconstructed. It is
+    also the one value here that was never validated (it comes straight from
+    `.git/config`), so it is rendered with `repr`, which escapes control
+    characters and leaves an ordinary value quoted exactly as before.
     """
     return [
         f"warning: {field_name}: source-config "
-        f"'{getattr(source, field_name)}', repository "
-        f"'{getattr(found, field_name)}', destination "
-        f"'{getattr(dest, field_name)}' — proceeding on --accept-origin-mismatch"
+        f"{getattr(source, field_name)!r}, repository "
+        f"{getattr(found, field_name)!r}, destination "
+        f"{getattr(dest, field_name)!r} — proceeding on --accept-origin-mismatch"
         for field_name in origin.mismatch_accepted
     ]
 

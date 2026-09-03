@@ -365,6 +365,28 @@ def test_flagless_receipt_carries_no_origin_mismatch_row(src_target, tmp_path, c
     assert "origin_named_destination" not in receipt
 
 
+def test_origin_warning_escapes_control_characters_from_the_remote(
+    src_target, tmp_path, capsys
+):
+    """The discovered value comes straight from .git/config; render it safely."""
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/some\x1b[2Jone/else.git")
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--accept-origin-mismatch",
+            "--dry-run",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "\x1b" not in out
+    assert "repository 'some\\x1b[2Jone'" in out
+
+
 def _write_wrong_package_source_config(target: Path) -> None:
     wrong = SOURCE.__class__(
         **{**SOURCE.as_dict_prompted(), "package_name": "other_pkg"}

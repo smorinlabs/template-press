@@ -76,7 +76,9 @@ origin_named_destination = ["owner", "repo_name"]
 ```
 
 The key is written only when the relaxation actually fired, so a receipt
-without it means `origin` agreed with the source-config.
+without it means the guard relaxed nothing for that press: `origin` agreed
+with the source-config, or had no discoverable value (no `origin` remote, or
+one that is not a GitHub URL — discovery skips such fields).
 
 `--accept-origin-mismatch` covers the third state, where `origin` names
 neither identity — an `owner` or `repo_name` the press has never been told
