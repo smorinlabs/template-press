@@ -136,6 +136,18 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
+      - name: Sync locked dev tools
+        # WL-001: locked via uv.lock, matching the pre-commit hook exactly.
+        run: uv sync --locked --only-group dev
       - name: Run editorconfig-checker
-        # Reads .editorconfig-checker.json (ITM-009).
-        uses: editorconfig-checker/action-editorconfig-checker@v2.2.0
+        # Reads .editorconfig-checker.json (ITM-009). The PyPI wheel bundles
+        # the Go binary at the version uv.lock pins, so CI, lefthook and
+        # `just check-editorconfig` all run the same checker. The former
+        # third-party action resolved its binary from the LATEST upstream
+        # release: editorconfig-checker v4.0.0 (2026-09-03) renamed every
+        # release asset `ec-*` -> `editorconfig-checker-*`, and the action
+        # broke on every branch the same day with "The binary
+        # 'ec-linux-amd64*' not found".
+        run: uv run --no-sync ec -config .editorconfig-checker.json
