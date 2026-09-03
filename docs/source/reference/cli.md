@@ -99,6 +99,14 @@ A field appears in at most one of the two lists: destination-equality is
 tried first, so a field the origin already names the destination for is a
 notice under `origin_named_destination` even when the flag is passed.
 
+The receipt *records* the acceptance; it does not waive it. The press never
+touches git remotes, so after a flag-accepted press `press-source.toml` names
+the destination while `origin` still names the third repository. `press
+verify` compares the two with the same unrelaxed check and exits `2` with
+the same mismatch message until `origin` is repointed at the destination
+(`git remote set-url origin …`). A verify-side policy for flag-accepted
+targets is tracked as `P12-T-defer-6`.
+
 Notices and warnings appear only on a run that clears every plan-time gate —
 they are printed with the plan, not when the guard makes the decision. A run
 that refuses at a plan-time gate carries neither: its refusal text is
@@ -131,7 +139,8 @@ Three limits are deliberate:
 
 Without `--config` there is no destination identity to compare against, and
 the guard behaves exactly as it did before; `--accept-origin-mismatch` is
-inert on that path too, since a press without `--config` exits `2` anyway.
+inert on that path too — both relaxations require a destination to compare
+against, so without one the guard's decision is never relaxed.
 
 **Documented blind spot.** If the template repository was renamed upstream
 (`demo-widget` → `demo-widget-2`) *without* a package rename, the target's

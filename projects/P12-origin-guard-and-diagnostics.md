@@ -15,6 +15,7 @@ test.
 - [ ] [P12-T-defer-3] Removal-coverage warning: count tracked symlinks whose target is retargeted as rewritten paths.
 - [ ] [P12-T-defer-4] Self-press rules: retained docs (`docs/README.md`, `docs/design/0004`, `0008`) link to `docs/research/*` files the rules remove — reset/update the referrers or retain the targets.
 - [ ] [P12-T-defer-5] Windows-safe remedy rendering: escape cmd.exe metacharacters (`&`, `|`, `^`) in copy-pasteable hints or present structured argv; POSIX remedies keep `shlex.join` — from PR #109 review.
+- [ ] [P12-T-defer-6] `press verify` policy for a flag-accepted press: today verify exits 2 (unrelaxed `mismatches()`) until `origin` is repointed. Options: a matching `--accept-origin-mismatch` on verify, or record the exact accepted origin values in the receipt and accept only those. A field-name-only receipt list must not be trusted automatically (a stale receipt would waive any future value) — from the Task 10 Codex review.
 
 **References**
 

@@ -317,6 +317,52 @@ def test_accept_origin_mismatch_proceeds_with_warning_and_receipt(
     ).read_text(encoding="utf-8")
 
 
+def test_flag_accepted_press_leaves_verify_refusing_until_origin_repointed(
+    src_target, tmp_path, capsys
+):
+    """The receipt RECORDS the acceptance; it does not waive it for verify.
+
+    After the press, press-source.toml names the destination but ``origin``
+    still names the third repository, so ``press verify`` — which calls the
+    untouched ``mismatches()`` — refuses with the same message. Documented
+    limitation (cli.md); a verify-side policy is P12-T-defer-6.
+    """
+    from template_press.rebrand.verify_cli import verify_command
+
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/someone/else.git")
+    assert (
+        main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--accept-origin-mismatch",
+            ]
+        )
+        == 0
+    )
+    receipt = (src_target / RECEIPT_REL).read_text(encoding="utf-8")
+    assert 'origin_mismatch_accepted = ["owner", "repo_name"]' in receipt
+    capsys.readouterr()
+    assert verify_command(["--target", str(src_target)]) == 2
+    err = capsys.readouterr().err
+    assert "owner: source-config says 'potatolabs' but target shows 'someone'" in err
+    assert "repo_name: source-config says 'potato-launcher'" in err
+
+
+def test_flagless_receipt_carries_no_origin_mismatch_row(src_target, tmp_path, capsys):
+    write_source_config(src_target)
+    assert (
+        main(["--target", str(src_target), "--config", str(write_answers(tmp_path))])
+        == 0
+    )
+    receipt = (src_target / RECEIPT_REL).read_text(encoding="utf-8")
+    assert "origin_mismatch_accepted" not in receipt
+    assert "origin_named_destination" not in receipt
+
+
 def _write_wrong_package_source_config(target: Path) -> None:
     wrong = SOURCE.__class__(
         **{**SOURCE.as_dict_prompted(), "package_name": "other_pkg"}
