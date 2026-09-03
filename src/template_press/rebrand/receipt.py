@@ -29,14 +29,20 @@ class OriginDecision:
     discovered value disagreed with the source-config but matched the
     DESTINATION identity, so the guard accepted them instead of refusing.
     It is recorded in the receipt so the relaxation stays auditable after
-    the press. `mismatch_accepted` lists the fields whose discovered value
-    matched NEITHER identity and were accepted only because the operator
-    passed `--accept-origin-mismatch`. A field appears in at most one of
-    the two lists: destination-equality is tried first.
+    the press. `mismatch_accepted` pairs each field whose discovered value
+    matched NEITHER identity — accepted only because the operator passed
+    `--accept-origin-mismatch` — with that discovered value. A field appears
+    in at most one of the two: destination-equality is tried first.
+
+    `named_destination` needs no value (it equals the destination's, which
+    the press writes into the source-config, so `press verify` never sees it
+    as a mismatch). `mismatch_accepted` carries its value because that is
+    the only thing that lets `press verify` waive the acceptance safely: a
+    field-name-only record would waive whatever `origin` says NEXT.
     """
 
     named_destination: tuple[str, ...] = ()
-    mismatch_accepted: tuple[str, ...] = ()
+    mismatch_accepted: tuple[tuple[str, str], ...] = ()
 
 
 def read_receipt(target: Path) -> str | None:
@@ -94,14 +100,23 @@ def write_receipt(
     # non-GitHub one) — so every reader must tolerate their absence.
     named = origin.named_destination if origin is not None else ()
     accepted = origin.mismatch_accepted if origin is not None else ()
-    origin_lines = [
-        f"{key} = [" + ", ".join(toml_string(f) for f in sorted(fields)) + "]"
-        for key, fields in (
-            ("origin_named_destination", named),
-            ("origin_mismatch_accepted", accepted),
+    origin_lines = []
+    if named:
+        origin_lines.append(
+            "origin_named_destination = ["
+            + ", ".join(toml_string(f) for f in sorted(named))
+            + "]"
         )
-        if fields
-    ]
+    if accepted:
+        # An inline table of field -> the EXACT origin value accepted, keys
+        # sorted. `press verify` waives a mismatch only when the value it
+        # discovers equals the one recorded here; a name-only list (the 4.1
+        # shape) would waive any future value, so it is not honored.
+        origin_lines.append(
+            "origin_mismatch_accepted = { "
+            + ", ".join(f"{f} = {toml_string(v)}" for f, v in sorted(accepted))
+            + " }"
+        )
     lines = [
         "# press/press-receipt.toml — written by template-press AFTER the no-leak",
         "# verification pass. Presence means: this rebrand completed and was",
@@ -161,6 +176,83 @@ def write_receipt(
             f"reason = {toml_string(reason)}",
         ]
     return write_control(target, RECEIPT_REL, "\n".join(lines) + "\n")
+
+
+def _press_table(text: str | None) -> dict[str, object]:
+    """The receipt's ``[press]`` table; an empty mapping for no receipt,
+    unparsable TOML, or a ``press`` key that is not a table."""
+    if not text:
+        return {}
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return {}
+    table = data.get("press", {})
+    return table if isinstance(table, dict) else {}
+
+
+def receipt_binding_problem(text: str | None, source: Identity) -> str | None:
+    """Why this receipt does not describe a completed press OF THIS target —
+    ``None`` when it does.
+
+    A receipt describes one identity's press, so a reader that TRUSTS its
+    contents (see `accepted_origin_from_receipt`) must first check that it
+    describes THIS target. Two conditions do that:
+
+    1. ``verified = true`` — the receipt is written only after the no-leak
+       pass, so anything else is not a completed, verified press.
+    2. ``[press.to]`` is EQUAL to the target's current source-config
+       identity — the same key set and the same value for every key. The
+       press writes the same ``Identity.as_dict_prompted()`` mapping into
+       both ``[press.to]`` and ``press/press-source.toml``, so a genuine
+       receipt matches its own target exactly, while a hand-written table
+       asserting an acceptance does not.
+
+       Whole-mapping equality, not one-way containment (fix round 2):
+       checking only the fields the source-config declares would ignore an
+       EXTRA field in the receipt, so deleting an optional field (say
+       ``display_name``) from ``press-source.toml`` would leave the stale
+       receipt — which still carries it — honored against an identity it no
+       longer describes.
+
+       The binding is by IDENTITY, not by provenance: two targets that
+       declare the same identity are indistinguishable here, and a receipt
+       moved between them is honored by design. What the check excludes is
+       a receipt describing a DIFFERENT identity than the target's own.
+    """
+    press_table = _press_table(text)
+    if press_table.get("verified") is not True:
+        return "receipt is not a verified press"
+    if press_table.get("to") != source.as_dict_prompted():
+        return "[press.to] does not match press-source.toml"
+    return None
+
+
+def accepted_origin_from_receipt(text: str | None) -> dict[str, str]:
+    """The exact `origin` values a prior `--accept-origin-mismatch` press
+    accepted, as ``{field: value}``.
+
+    The press never touches git remotes, so a flag-accepted target keeps an
+    ``origin`` naming a third repository while its source-config names the
+    destination. `press verify` honors that acceptance by dropping a
+    mismatch whose DISCOVERED value equals the one recorded here — never by
+    field name alone, which would waive whatever the remote says next.
+
+    This is a pure parser: it says what the receipt CLAIMS, not whether the
+    receipt may be trusted. The caller must pair it with
+    `receipt_binding_problem`, or a receipt copied in from another
+    repository would waive this target's mismatch.
+
+    Tolerant reader, like `removed_files_from_receipt`: no receipt,
+    unparsable TOML, an absent key, the 4.1 list-of-field-names shape, or a
+    non-string value all yield nothing for that entry. Failing closed here
+    means verify refuses exactly as it did before the receipt was honored —
+    it can never waive more than the receipt actually proves.
+    """
+    accepted = _press_table(text).get("origin_mismatch_accepted", {})
+    if not isinstance(accepted, dict):
+        return {}
+    return {k: v for k, v in accepted.items() if isinstance(v, str)}
 
 
 def removed_files_from_receipt(text: str | None) -> dict[str, str]:

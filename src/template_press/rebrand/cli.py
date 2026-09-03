@@ -270,7 +270,7 @@ def _relax_origin_guard(
         return problems, OriginDecision()
     declared = source.as_dict()
     relaxed: list[str] = []
-    accepted: list[str] = []
+    accepted: list[tuple[str, str]] = []
     for field_name in ("owner", "repo_name"):
         discovered_value = getattr(found, field_name)
         if discovered_value is None or discovered_value == declared[field_name]:
@@ -278,7 +278,10 @@ def _relax_origin_guard(
         if discovered_value == getattr(dest, field_name):
             relaxed.append(field_name)
         elif accept_origin_mismatch:
-            accepted.append(field_name)
+            # The EXACT value, not just the field name: it is what the
+            # receipt records and what lets `press verify` waive this one
+            # acceptance without waiving whatever `origin` says next.
+            accepted.append((field_name, discovered_value))
         else:
             continue
         problems = [p for p in problems if not p.startswith(f"{field_name}: ")]
@@ -321,7 +324,7 @@ def _render_origin_mismatch_warnings(
         f"{getattr(source, field_name)!r}, repository "
         f"{getattr(found, field_name)!r}, destination "
         f"{getattr(dest, field_name)!r} — proceeding on --accept-origin-mismatch"
-        for field_name in origin.mismatch_accepted
+        for field_name, _ in origin.mismatch_accepted
     ]
 
 
@@ -480,9 +483,22 @@ def main(argv: list[str] | None = None) -> int:
             return _fail(display_problem)
 
         if source == dest:
-            return _fail(
+            message = (
                 "source and destination identities are identical — nothing to press"
             )
+            if read_receipt(target) is None:
+                # A press that rewrote press-source.toml but died before its
+                # receipt landed leaves exactly this state: the target already
+                # declares the DESTINATION while nothing records a completed
+                # press, so a plain retry stops here with nothing to do. Name
+                # the restore path rather than leaving the operator to infer
+                # it from a message about identical identities.
+                message += (
+                    f"\nno receipt either: an interrupted press may have left "
+                    f"this state — {_partial_rewrite_restore_hint(target)}, "
+                    f"then press again"
+                )
+            return _fail(message)
         # Pipeline stability, ambiguity, and termination are validated together
         # by build_plan before any write.  Keeping the target rules here ensures
         # the adapter preserves each field's effective substring posture.
@@ -828,6 +844,13 @@ def _press(
             return PressOutcome(
                 True, report.renamed, report.regenerated, env_error=None
             )
+        write_control(target, SOURCE_CONFIG_REL, render_source_config(dest))
+        # The receipt is the LAST write of a successful press (P12 fix
+        # round 1): it means "this rebrand completed and was verified" and it
+        # guards re-runs, so it must not survive a failure of the
+        # source-config write ABOVE. Ordered this way, an OSError there leaves
+        # no receipt and the press can be re-run without --force. Nothing
+        # between the two writes reads the receipt.
         receipt_path = write_receipt(
             target,
             source,
@@ -888,7 +911,6 @@ def _press(
                 ),
             ],
         )
-        write_control(target, SOURCE_CONFIG_REL, render_source_config(dest))
         print(report.render())
         if report.skipped:
             print("skipped (review):")
