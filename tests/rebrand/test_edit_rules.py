@@ -19,7 +19,16 @@ from pathlib import Path
 import pytest
 
 from template_press.rebrand.identity import ValidationError
-from template_press.rebrand.rules import EditRule, load_rules, load_selected_rules
+from template_press.rebrand.rules import (
+    EditRule,
+    RegenerateRule,
+    RemoveRule,
+    ReplaceRule,
+    ResetRule,
+    Rules,
+    load_rules,
+    load_selected_rules,
+)
 
 
 def _write_rules(target: Path, body: str) -> Path:
@@ -117,19 +126,21 @@ class TestExpectValidation:
     in the plan or the receipt."""
 
     @pytest.mark.parametrize(
-        "expect_toml",
+        ("expect_toml", "needle"),
         [
-            "",  # missing entirely
-            'expect = ""',  # empty
-            'expect = "   "',  # whitespace-only — asserts nothing
-            "expect = 3",  # non-string
-            'expect = ["0.1.0"]',  # list, not string
-            'expect = "ver\\u0000sion"',  # NUL
-            'expect = "ver\\u001b[2Jsion"',  # ANSI escape
-            'expect = "ver\\nsion"',  # newline
+            ("", "expect is required"),  # missing entirely
+            ('expect = ""', "expect is required"),  # empty
+            ('expect = "   "', "expect is required"),  # whitespace-only
+            ("expect = 3", "expect is required"),  # non-string
+            ('expect = ["0.1.0"]', "expect is required"),  # list, not string
+            ('expect = "ver\\u0000sion"', "control or non-printable"),  # NUL
+            ('expect = "ver\\u001b[2Jsion"', "control or non-printable"),  # ANSI
+            ('expect = "ver\\nsion"', "control or non-printable"),  # newline
         ],
     )
-    def test_malformed_expect_rejected(self, tmp_path: Path, expect_toml: str):
+    def test_malformed_expect_rejected(
+        self, tmp_path: Path, expect_toml: str, needle: str
+    ):
         target = _write_rules(
             tmp_path,
             "[[edit]]\n"
@@ -137,7 +148,7 @@ class TestExpectValidation:
             'command = ["uv", "version", "0.1.0"]\n'
             f"{expect_toml}\n",
         )
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError, match=needle):
             load_rules(target)
 
     def test_missing_expect_names_the_key(self, tmp_path: Path):
@@ -382,3 +393,161 @@ class TestPlatformSelection:
             '[[edit]]\nfile = "a.toml"\ncommand = ["b"]\nexpect = "y"\n',
         )
         assert [rule.file for rule in load_rules(target).edit] == ["z.toml", "a.toml"]
+
+
+# ---------------------------------------------------------------------------
+# One file, two mechanisms, disjoint platforms
+# ---------------------------------------------------------------------------
+def _edit_table(file: str, command: str, platforms: str) -> str:
+    return (
+        f'[[edit]]\nfile = "{file}"\ncommand = ["{command}"]\n'
+        f'expect = "x"\nplatforms = {platforms}\n'
+    )
+
+
+def _reset_table(file: str, platforms: str) -> str:
+    return f'[[reset]]\nfile = "{file}"\nstub = ""\nplatforms = {platforms}\n'
+
+
+def _regenerate_table(file: str, platforms: str) -> str:
+    return (
+        f'[[regenerate]]\nfile = "{file}"\ncommand = ["regen"]\n'
+        f"platforms = {platforms}\n"
+    )
+
+
+class TestPlatformDisjointExcludedTarget:
+    """The two exclusion contracts are inverse, so they cannot both bind the
+    one platform-neutral exclude_files set: a [[reset]]/[[regenerate]] target
+    MUST be excluded, an [[edit]] target must NOT be. When the declarations
+    are platform-disjoint the one-writer invariant is already satisfied, so
+    exclusion follows the platform's own active writer.
+    """
+
+    @pytest.mark.parametrize(
+        ("file", "preamble"),
+        [
+            # Excluded by the target's own [rules] extra_exclude_files.
+            ("pyproject.toml", '[rules]\nextra_exclude_files = ["pyproject.toml"]\n'),
+            # Excluded by DEFAULT_RULES.exclude_files, with no target opt-in.
+            ("CHANGELOG.md", ""),
+        ],
+    )
+    @pytest.mark.parametrize("other", ["reset", "regenerate"])
+    def test_disjoint_edit_and_discarding_writer_accepted(
+        self, tmp_path: Path, file: str, preamble: str, other: str
+    ):
+        table = _reset_table if other == "reset" else _regenerate_table
+        target = _write_rules(
+            tmp_path,
+            preamble
+            + _edit_table(file, "amend", '["darwin"]')
+            + table(file, '["linux"]'),
+        )
+
+        darwin = load_selected_rules(target, platform="darwin").rules
+        linux = load_selected_rules(target, platform="linux").rules
+
+        # Edit platform: the edit is active and the replace pass can reach
+        # the file, so the command amends a file already carrying DESTINATION.
+        assert [rule.file for rule in darwin.edit] == [file]
+        assert darwin.reset == () and darwin.regenerate == ()
+        assert file not in darwin.exclude_files
+
+        # Discarding platform: the edit is gone and the exclusion stands, so
+        # the reset/regeneration is not raced by the replace pass.
+        assert linux.edit == ()
+        selected = linux.reset if other == "reset" else linux.regenerate
+        assert [rule.file for rule in selected] == [file]
+        assert file in linux.exclude_files
+
+    def test_same_platform_edit_and_reset_still_refused(self, tmp_path: Path):
+        """Sharing a platform is two writers for one file, exclusion or not —
+        and the writer diagnostic wins over the exclusion one."""
+        target = _write_rules(
+            tmp_path,
+            '[rules]\nextra_exclude_files = ["pyproject.toml"]\n'
+            + _edit_table("pyproject.toml", "amend", '["darwin"]')
+            + _reset_table("pyproject.toml", '["darwin", "linux"]'),
+        )
+        with pytest.raises(ValidationError) as exc:
+            load_rules(target)
+        assert "may not also be a reset/remove/regenerate target" in str(exc.value)
+
+    def test_standalone_excluded_edit_still_refused(self, tmp_path: Path):
+        """No paired writer, no exception: the plain refusal is unchanged."""
+        target = _write_rules(
+            tmp_path,
+            '[rules]\nextra_exclude_files = ["pyproject.toml"]\n'
+            + _edit_table("pyproject.toml", "amend", '["darwin"]'),
+        )
+        with pytest.raises(
+            ValidationError, match="must not be listed in exclude_files"
+        ):
+            load_rules(target)
+
+    def test_disjoint_remove_does_not_license_an_excluded_edit(self, tmp_path: Path):
+        """[[remove]] carries no exclusion requirement of its own, so it
+        cannot be the reason a file is excluded — the exception is only for a
+        [[reset]]/[[regenerate]] pairing."""
+        target = _write_rules(
+            tmp_path,
+            '[rules]\nextra_exclude_files = ["pyproject.toml"]\n'
+            + _edit_table("pyproject.toml", "amend", '["darwin"]')
+            + '[[remove]]\nfile = "pyproject.toml"\nreason = "template-only"\n'
+            'platforms = ["linux"]\n',
+        )
+        with pytest.raises(
+            ValidationError, match="must not be listed in exclude_files"
+        ):
+            load_rules(target)
+
+    def test_pairing_does_not_excuse_the_reset_sides_own_contract(self, tmp_path: Path):
+        """The exception loosens the edit side only. An unexcluded file is
+        still refused for the reset that needs it excluded."""
+        target = _write_rules(
+            tmp_path,
+            _edit_table("pyproject.toml", "amend", '["darwin"]')
+            + _reset_table("pyproject.toml", '["linux"]'),
+        )
+        with pytest.raises(
+            ValidationError, match=r"\[\[reset\]\] target .* must be listed in"
+        ):
+            load_rules(target)
+
+
+# ---------------------------------------------------------------------------
+# Rules field order
+# ---------------------------------------------------------------------------
+def test_rules_positional_signature_predates_edit():
+    """`edit` is appended AFTER every pre-existing field, so the historical
+    positional argument sequence still binds each value to its own field. A
+    mid-list insertion would rebind them silently — the dataclass keeps
+    accepting the call and only the values move."""
+    replace_rule = ReplaceRule(pattern="{app_name}", reason="brand")
+    regenerate_rule = RegenerateRule(file="uv.lock", command=("uv", "lock"))
+    reset_rule = ResetRule(file="CHANGELOG.md", stub="")
+    remove_rule = RemoveRule(file="ci.yml", reason="template-only")
+
+    rules = Rules(
+        frozenset({"vendor"}),  # exclude_dirs
+        frozenset({"uv.lock"}),  # exclude_files
+        (regenerate_rule,),  # regenerate
+        (reset_rule,),  # reset
+        (remove_rule,),  # remove
+        frozenset({"legacy"}),  # verify_ignore
+        (replace_rule,),  # replace
+        frozenset({"app_name"}),  # substring_rewrite_fields
+        ("display_name_spaced",),  # display_forms
+    )
+
+    assert rules.exclude_dirs == frozenset({"vendor"})
+    assert rules.exclude_files == frozenset({"uv.lock"})
+    assert rules.regenerate == (regenerate_rule,)
+    assert rules.reset == (reset_rule,)
+    assert rules.remove == (remove_rule,)
+    assert rules.verify_ignore == frozenset({"legacy"})
+    assert rules.replace == (replace_rule,)
+    assert rules.substring_rewrite_fields == frozenset({"app_name"})
+    assert rules.display_forms == ("display_name_spaced",)
+    assert rules.edit == ()

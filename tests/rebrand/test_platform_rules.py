@@ -243,3 +243,29 @@ def test_schema_error_precedes_unsupported_runtime_error(tmp_path: Path) -> None
 
     with pytest.raises(ValidationError, match="platforms"):
         _load_selected(target, "freebsd14")
+
+
+def _edit(file: str, command: str, platforms: str | None = None) -> str:
+    selector = "" if platforms is None else f"platforms = {platforms}\n"
+    return (
+        f'[[edit]]\nfile = "{file}"\ncommand = ["{command}"]\nexpect = "x"\n{selector}'
+    )
+
+
+def test_exclude_files_follows_the_selected_platforms_writer(tmp_path: Path) -> None:
+    """An [[edit]] target must be reachable by the replace pass; a [[reset]]
+    target must not be. A file declared both ways on disjoint platforms
+    therefore carries a per-platform exclusion, not one global answer."""
+    target = _write_rules(
+        tmp_path,
+        _edit("bun.lock", "amend", '["darwin"]')
+        + _reset("bun.lock", "windows", '["win32"]'),
+    )
+
+    darwin = _load_selected(target, "darwin").rules
+    win32 = _load_selected(target, "win32").rules
+
+    assert [rule.file for rule in darwin.edit] == ["bun.lock"]
+    assert "bun.lock" not in darwin.exclude_files
+    assert [rule.file for rule in win32.reset] == ["bun.lock"]
+    assert "bun.lock" in win32.exclude_files

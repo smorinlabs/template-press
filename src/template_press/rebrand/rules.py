@@ -209,7 +209,6 @@ class Rules:
     regenerate: tuple[RegenerateRule, ...]  # declared-command regenerations
     reset: tuple[ResetRule, ...] = ()  # declared file resets (blank to stub)
     remove: tuple[RemoveRule, ...] = ()  # declared file removals (issue #80)
-    edit: tuple[EditRule, ...] = ()  # declared in-place edits (E4)
     # The deliberate, committed ignore set: directories whose surviving
     # source-identity content is VALID (vendored trees, historical docs).
     # Exempts them from the doctor's leak scan only — never from rewriting.
@@ -223,6 +222,10 @@ class Rules:
     # value here WILL corrupt prose; that risk is the author's to accept.
     substring_rewrite_fields: frozenset[str] = frozenset()
     display_forms: tuple[str, ...] = DISPLAY_FORM_NAMES
+    # Declared in-place edits (E4). Appended AFTER every pre-existing field
+    # on purpose: Rules is constructed positionally in places, and an
+    # insertion higher up rebinds every later argument silently.
+    edit: tuple[EditRule, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -751,7 +754,16 @@ def _validate_exclude_membership(
     inside the per-entry parsers made the real fault (two writers for one
     file) unreachable behind an exclusion message its author could not act
     on. Overlaps are settled first; only then does membership speak.
+
+    That inversion also means one platform-neutral exclude_files cannot
+    answer for a file whose writers are platform-disjoint (an [[edit]] on
+    darwin, a [[reset]] on win32) — so the edit refusal stands down for
+    exactly that pairing, and _select_rules drops the path from the
+    exclusions of the platforms where the edit is the active writer.
     """
+    paired = {declaration.rule.file for declaration in regenerate} | {
+        declaration.rule.file for declaration in reset
+    }
     for regenerate_declaration in regenerate:
         file = regenerate_declaration.rule.file
         if file not in exclude_files:
@@ -772,7 +784,9 @@ def _validate_exclude_membership(
             )
     for edit_declaration in edit:
         file = edit_declaration.rule.file
-        if file in exclude_files:
+        # `paired` is only reachable across disjoint platforms — a shared one
+        # was already refused as two writers by _validate_writer_overlaps.
+        if file in exclude_files and file not in paired:
             raise ValidationError(
                 f"{RULES_REL}: [[edit]] target {file!r} must not be listed in "
                 f"exclude_files — an edit target is rewritten by the replace "
@@ -1009,8 +1023,20 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
             f"unsupported runtime platform {platform!r}; expected one of "
             f"{sorted(SUPPORTED_PLATFORMS)!r}"
         )
+    active_edits = tuple(
+        declaration.rule
+        for declaration in parsed.edit
+        if platform in declaration.platforms
+    )
     rules = replace(
         parsed.rules,
+        # An edit target must be reachable by the replace pass. It can only
+        # be in exclude_files at all when a [[reset]]/[[regenerate]] on a
+        # DISJOINT platform put it there (config load refuses every other
+        # case), so dropping the active edit paths is exactly that exception
+        # — the discarding platform, where no edit is active, keeps them.
+        exclude_files=parsed.rules.exclude_files
+        - frozenset(rule.file for rule in active_edits),
         regenerate=tuple(
             declaration.rule
             for declaration in parsed.regenerate
@@ -1026,11 +1052,7 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
             for declaration in parsed.remove
             if platform in declaration.platforms
         ),
-        edit=tuple(
-            declaration.rule
-            for declaration in parsed.edit
-            if platform in declaration.platforms
-        ),
+        edit=active_edits,
     )
     return SelectedRules(platform=platform, rules=rules)
 
