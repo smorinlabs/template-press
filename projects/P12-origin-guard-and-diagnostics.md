@@ -19,6 +19,7 @@ test.
       Done (Task 10b): the receipt records `origin_mismatch_accepted = { owner = "…", repo_name = "…" }` and verify waives a mismatch only when the discovered value equals the recorded one, and only from a receipt BOUND to that target (`verified = true` plus a `[press.to]` equal to its own `press-source.toml`); the 4.1 list form, a receipt describing a different identity, and a hand-written one are all not honored (fail closed); binding is by identity, not provenance.
 - [ ] [P12-T-defer-7] Document `rmdir_paths` in the `--diagnostics-json` schema section of `docs/source/reference/cli.md` (emitted today, undocumented) — promised in PR #109 triage.
 - [ ] [P12-T-defer-8] Prefix-only tally: count occurrences after earlier `[[replace]]` rows have consumed their matches, so a token rewritten by a prior row is not reported as a prefix-only survivor — promised in PR #109 triage.
+- [ ] [P12-T-defer-9] `press verify --json` emits no JSON object on a preflight refusal (source-config, identity mismatch, unhonored receipt): stderr + exit 2 with empty stdout, pre-existing. Give it a structured refusal object like `press rebrand --diagnostics-json` — from the Task 10b Codex re-check.
 
 **References**
 
