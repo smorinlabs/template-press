@@ -187,3 +187,44 @@ def test_receipt_binding_problem_rejects_a_verified_receipt_without_an_identity(
     assert receipt_binding_problem("[press]\nverified = true\n", DEST) == (
         "[press.to] does not match press-source.toml"
     )
+
+
+def test_receipt_binding_problem_rejects_an_extra_receipt_field(tmp_path: Path):
+    """Key-set equality, not one-way containment (fix round 2): deleting an
+    optional field from press-source.toml must not leave the old receipt —
+    which still carries it — honored."""
+    write_receipt(
+        tmp_path, SOURCE, replace(DEST, display_name="Potato Launcher"), ApplyReport()
+    )
+    raw = read_receipt(tmp_path)
+    assert raw is not None
+    assert "display_name" in raw
+    assert receipt_binding_problem(raw, DEST) == (
+        "[press.to] does not match press-source.toml"
+    )
+
+
+def test_receipt_binding_problem_rejects_a_missing_receipt_field(tmp_path: Path):
+    """The mirror case: the source-config declares a field the receipt never
+    recorded, so the receipt describes a different identity."""
+    write_receipt(tmp_path, SOURCE, DEST, ApplyReport())
+    raw = read_receipt(tmp_path)
+    assert raw is not None
+    assert receipt_binding_problem(
+        raw, replace(DEST, display_name="Potato Launcher")
+    ) == ("[press.to] does not match press-source.toml")
+
+
+def test_receipt_binding_problem_display_name_participates_on_both_sides(
+    tmp_path: Path,
+):
+    """A display name declared on both sides is compared like any other
+    field: equal binds, different does not."""
+    dest = replace(DEST, display_name="Potato Launcher")
+    write_receipt(tmp_path, SOURCE, dest, ApplyReport())
+    raw = read_receipt(tmp_path)
+    assert raw is not None
+    assert receipt_binding_problem(raw, dest) is None
+    assert receipt_binding_problem(raw, replace(dest, display_name="Spud Thrower")) == (
+        "[press.to] does not match press-source.toml"
+    )

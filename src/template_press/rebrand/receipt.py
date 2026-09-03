@@ -195,28 +195,35 @@ def receipt_binding_problem(text: str | None, source: Identity) -> str | None:
     """Why this receipt does not describe a completed press OF THIS target —
     ``None`` when it does.
 
-    A receipt is evidence only about the repository it was written into, so
-    a reader that TRUSTS its contents (see `accepted_origin_from_receipt`)
-    must first bind it there. Two conditions do that:
+    A receipt describes one identity's press, so a reader that TRUSTS its
+    contents (see `accepted_origin_from_receipt`) must first check that it
+    describes THIS target. Two conditions do that:
 
     1. ``verified = true`` — the receipt is written only after the no-leak
        pass, so anything else is not a completed, verified press.
-    2. ``[press.to]`` equals the target's CURRENT source-config identity on
-       every field that identity declares. The press writes the same
-       ``Identity.as_dict_prompted()`` mapping into both ``[press.to]`` and
-       ``press/press-source.toml``, so a genuine receipt matches its own
-       target exactly — while a receipt copied in from another repository,
-       or a hand-written one asserting an acceptance, does not. Comparison
-       is exact, like the origin guard's.
+    2. ``[press.to]`` is EQUAL to the target's current source-config
+       identity — the same key set and the same value for every key. The
+       press writes the same ``Identity.as_dict_prompted()`` mapping into
+       both ``[press.to]`` and ``press/press-source.toml``, so a genuine
+       receipt matches its own target exactly, while a hand-written table
+       asserting an acceptance does not.
+
+       Whole-mapping equality, not one-way containment (fix round 2):
+       checking only the fields the source-config declares would ignore an
+       EXTRA field in the receipt, so deleting an optional field (say
+       ``display_name``) from ``press-source.toml`` would leave the stale
+       receipt — which still carries it — honored against an identity it no
+       longer describes.
+
+       The binding is by IDENTITY, not by provenance: two targets that
+       declare the same identity are indistinguishable here, and a receipt
+       moved between them is honored by design. What the check excludes is
+       a receipt describing a DIFFERENT identity than the target's own.
     """
     press_table = _press_table(text)
     if press_table.get("verified") is not True:
         return "receipt is not a verified press"
-    to_table = press_table.get("to")
-    if not isinstance(to_table, dict) or any(
-        to_table.get(field_name) != value
-        for field_name, value in source.as_dict_prompted().items()
-    ):
+    if press_table.get("to") != source.as_dict_prompted():
         return "[press.to] does not match press-source.toml"
     return None
 

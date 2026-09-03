@@ -115,21 +115,26 @@ field before its verdict:
 note: owner: origin 'someone' accepted by the press receipt (--accept-origin-mismatch)
 ```
 
-A receipt is evidence only about the repository it was written into, so verify
-honors one only when it is **bound to this target**. Both conditions must hold:
+A receipt describes one identity's press, so verify honors one only when it is
+**bound to this target**. Both conditions must hold:
 
 1. **It is a verified press.** The `[press]` table carries `verified = true` —
    the receipt is written only after the no-leak pass, so anything else is not
    a completed press.
-2. **Its `[press.to]` is this target's identity.** The press writes the same
-   field mapping into `[press.to]` and into `press/press-source.toml`, so a
-   genuine receipt matches its own target on every field the source-config
-   declares. Comparison is exact, like the guard's.
+2. **Its `[press.to]` equals this target's identity.** The press writes the
+   same field mapping into `[press.to]` and into `press/press-source.toml`, so
+   a genuine receipt matches its own target exactly — the same field names and
+   the same values, so an extra or a missing field is a mismatch too. Value
+   comparison is exact, like the guard's.
 
-A receipt copied in from another repository fails the second condition; a
-hand-written `[press]` table asserting an acceptance fails the first. Either
-way verify exits `2` and says which condition failed, on stderr, next to the
-mismatch it refused:
+The binding is by **identity, not provenance**. A receipt describing a
+different identity fails the second condition; a hand-written `[press]` table
+asserting an acceptance fails the first. Two targets that declare the *same*
+identity are indistinguishable to this check, so a receipt moved between them
+is honored — by design: the check exists to stop a receipt speaking for an
+identity it does not describe, not to trace which directory it was written in.
+On either failure verify exits `2` and says which condition failed, on stderr,
+next to the mismatch it refused:
 
 ```text
 error: press receipt not honored: [press.to] does not match press-source.toml
@@ -157,7 +162,10 @@ stale into a free pass:
   receipt at all.
 
 The `note:` lines are prose-mode only; `press verify --json` keeps its contract
-that the JSON object is the whole of stdout, and its payload is unchanged.
+that the JSON object is the whole of stdout, and its payload is unchanged. The
+`error: press receipt not honored:` line is *not* mode-gated — it goes to
+stderr, which the stdout contract does not cover, so a machine-mode run gets
+the same explanation a prose run does.
 
 Notices and warnings appear only on a run that clears every plan-time gate —
 they are printed with the plan, not when the guard makes the decision. A run

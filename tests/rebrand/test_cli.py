@@ -398,10 +398,12 @@ def test_flag_accepted_receipt_does_not_waive_a_different_origin(
 
 
 def test_receipt_from_another_repo_is_not_honored(src_target, tmp_path, capsys):
-    """The receipt must be BOUND to the target it sits in: its ``[press.to]``
-    identity is the press's own record of what it wrote into
-    ``press-source.toml``, so a receipt copied in from another repository
-    describes a different identity and waives nothing."""
+    """The receipt must be BOUND to this target's IDENTITY: ``[press.to]`` is
+    the press's own record of what it wrote into ``press-source.toml``, so a
+    receipt describing a different identity — the usual way one arrives is
+    being copied in from another repository — waives nothing. (Provenance is
+    not the test: a receipt moved between two targets declaring the same
+    identity is honored, by design.)"""
     from template_press.rebrand.verify_cli import verify_command
 
     receipt = _flag_accepted_press(src_target, tmp_path)
@@ -451,7 +453,7 @@ def test_unverified_receipt_is_not_honored(src_target, tmp_path, capsys):
 
 
 def test_receipt_is_not_written_when_the_source_config_write_fails(
-    src_target: Path, tmp_path: Path, monkeypatch
+    src_target: Path, tmp_path: Path, capsys, monkeypatch
 ):
     """The receipt is the LAST write of a successful press (P12 fix round 1).
 
@@ -474,6 +476,10 @@ def test_receipt_is_not_written_when_the_source_config_write_fails(
     code = main(["--target", str(src_target), "--config", str(write_answers(tmp_path))])
     assert code != 0
     assert not (src_target / RECEIPT_REL).exists()
+    # The absence of a receipt only proves the ordering if the INJECTED
+    # failure is what stopped the press — an earlier, unrelated refusal would
+    # leave no receipt either.
+    assert "injected source-config write failure" in capsys.readouterr().err
 
 
 def test_legacy_list_form_receipt_is_not_honored_by_verify(
@@ -2544,3 +2550,23 @@ def test_closure_refusal_diagnostics_json_hostile_undecodable_filename(
     assert payload["total"] == 1
     path = payload["findings"][0]["path"]
     assert os.fsencode(path) == b"src/demo_widget/__pycache__/bad-\xff-name.pyc"
+
+
+def test_unhonored_receipt_reason_reaches_stderr_under_json(
+    src_target, tmp_path, capsys
+):
+    """The binding reason is a stderr diagnostic, so `--json` gets it too: the
+    one-JSON-object contract is about STDOUT, and an operator debugging a
+    machine-mode run needs the same explanation a prose run gets."""
+    from template_press.rebrand.verify_cli import verify_command
+
+    _flag_accepted_press(src_target, tmp_path)
+    (src_target / RECEIPT_REL).write_text(
+        '[press]\norigin_mismatch_accepted = { owner = "someone", repo_name = "else" }\n',
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    assert verify_command(["--target", str(src_target), "--json"]) == 2
+    captured = capsys.readouterr()
+    assert "press receipt not honored: receipt is not a verified press" in captured.err
+    assert captured.out == ""
