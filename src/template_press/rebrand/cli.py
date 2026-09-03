@@ -233,24 +233,36 @@ def check_preconditions(target: Path, force: bool, allow_dirty: bool) -> str | N
     return None
 
 
-def _relax_origin_named_destination(
+def _relax_origin_guard(
     source: Identity,
     found: Discovered,
     dest: Identity | None,
     problems: list[str],
+    accept_origin_mismatch: bool,
 ) -> tuple[list[str], OriginDecision]:
-    """Accept an origin remote that already names the DESTINATION (E1).
+    """Relax the source-identity guard for the `origin` remote (E1).
 
-    `owner` and `repo_name` are the only relaxed fields, and only per field:
-    a discovered value that disagrees with the source-config is accepted iff
-    it equals the destination's value for that SAME field — the gh-created
-    clone whose origin was repointed before the press ran. Comparison is
-    exact, so a case-different origin still refuses. Every other mismatch,
-    and an origin naming neither identity, still exits 2.
+    Two passes, in this order, over `owner` and `repo_name` only — never
+    over the pyproject-derived fields, which still exit 2 whatever the
+    operator asked for:
 
-    The decision is only RECORDED here; `_render_origin_notices` announces
-    it once the run is past every plan-time gate. Announcing it here would
-    put a `notice:` line on stdout ahead of a later refusal — including the
+    1. **Origin already names the DESTINATION.** A discovered value that
+       disagrees with the source-config is accepted iff it equals the
+       destination's value for that SAME field — the gh-created clone whose
+       origin was repointed before the press ran. Comparison is exact, so a
+       case-different origin falls through to pass 2.
+    2. **`--accept-origin-mismatch`.** Whatever still disagrees (origin
+       names neither identity) is accepted only when the operator passed
+       the flag.
+
+    Destination-equality is tried first, so a field lands in at most one of
+    the decision's two lists. Without the flag, an origin naming neither
+    identity still exits 2.
+
+    The decision is only RECORDED here; `_render_origin_notices` and
+    `_render_origin_mismatch_warnings` announce it once the run is past
+    every plan-time gate. Announcing it here would put a `notice:`/
+    `warning:` line on stdout ahead of a later refusal — including the
     `--diagnostics-json` payload, whose contract is that the JSON object is
     the whole of stdout.
     """
@@ -258,15 +270,22 @@ def _relax_origin_named_destination(
         return problems, OriginDecision()
     declared = source.as_dict()
     relaxed: list[str] = []
+    accepted: list[str] = []
     for field_name in ("owner", "repo_name"):
         discovered_value = getattr(found, field_name)
         if discovered_value is None or discovered_value == declared[field_name]:
             continue
-        if discovered_value != getattr(dest, field_name):
+        if discovered_value == getattr(dest, field_name):
+            relaxed.append(field_name)
+        elif accept_origin_mismatch:
+            accepted.append(field_name)
+        else:
             continue
-        relaxed.append(field_name)
         problems = [p for p in problems if not p.startswith(f"{field_name}: ")]
-    return problems, OriginDecision(named_destination=tuple(sorted(relaxed)))
+    return problems, OriginDecision(
+        named_destination=tuple(sorted(relaxed)),
+        mismatch_accepted=tuple(sorted(accepted)),
+    )
 
 
 def _render_origin_notices(
@@ -286,16 +305,36 @@ def _render_origin_notices(
     ]
 
 
+def _render_origin_mismatch_warnings(
+    origin: OriginDecision, source: Identity, dest: Identity, found: Discovered
+) -> list[str]:
+    """One warning line per field accepted under `--accept-origin-mismatch`.
+
+    The repository's value is a third value — equal to neither identity —
+    so it is read from the discovery result rather than reconstructed.
+    """
+    return [
+        f"warning: {field_name}: source-config "
+        f"'{getattr(source, field_name)}', repository "
+        f"'{getattr(found, field_name)}', destination "
+        f"'{getattr(dest, field_name)}' — proceeding on --accept-origin-mismatch"
+        for field_name in origin.mismatch_accepted
+    ]
+
+
 def _resolve_source(
     target: Path,
     override: Path | None,
     accept_discovery: bool,
     dest: Identity | None,
-) -> tuple[Identity, bool, OriginDecision] | int:
+    accept_origin_mismatch: bool,
+) -> tuple[Identity, bool, OriginDecision, Discovered] | int:
     """Resolve the FROM identity; second element = write source-config later.
 
     The write is DEFERRED to main() so it happens only after every exit-2
     gate has passed — keeping "exit 2 means no writes" true by construction.
+    The discovery result is returned so the origin warnings can name the
+    repository's own value.
     """
     write_pending = False
     source = load_source_config(target, override)
@@ -325,8 +364,8 @@ def _resolve_source(
             return _fail(f"discovered identity is invalid: {exc}")
         source = candidate
         write_pending = True
-    problems, origin = _relax_origin_named_destination(
-        source, found, dest, mismatches(source, found)
+    problems, origin = _relax_origin_guard(
+        source, found, dest, mismatches(source, found), accept_origin_mismatch
     )
     if problems:
         print(
@@ -336,7 +375,7 @@ def _resolve_source(
         for p in problems:
             print(f"  {p}")
         return 2
-    return source, write_pending, origin
+    return source, write_pending, origin, found
 
 
 def display_name_problem(source: Identity, dest: Identity) -> str | None:
@@ -363,6 +402,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, help="answers TOML (TO identity)")
     parser.add_argument("--source-config", type=Path, dest="source_config")
     parser.add_argument("--accept-discovery", action="store_true")
+    parser.add_argument(
+        "--accept-origin-mismatch",
+        action="store_true",
+        dest="accept_origin_mismatch",
+        help=(
+            "proceed when origin's owner/repo_name match neither the "
+            "source-config nor the destination; prints each mismatch and "
+            "records it in the receipt. Never covers pyproject-derived fields."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--force",
@@ -402,11 +451,15 @@ def main(argv: list[str] | None = None) -> int:
         dest = load_answers(args.config) if args.config is not None else None
 
         resolved = _resolve_source(
-            target, args.source_config, args.accept_discovery, dest
+            target,
+            args.source_config,
+            args.accept_discovery,
+            dest,
+            args.accept_origin_mismatch,
         )
         if isinstance(resolved, int):
             return resolved
-        source, write_pending, origin = resolved
+        source, write_pending, origin, found = resolved
         if write_pending and not args.accept_discovery:
             print(
                 f"no source-config found at {SOURCE_CONFIG_REL}.\n"
@@ -515,9 +568,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         # Announced only now: every plan-time gate (including the closure
         # refusal that owns stdout under --diagnostics-json) is behind us,
-        # so a notice can no longer precede a refusal on the same stream.
+        # so a notice or warning can no longer precede a refusal on the same
+        # stream.
         for notice in _render_origin_notices(origin, source, dest):
             print(notice)
+        for warning in _render_origin_mismatch_warnings(origin, source, dest, found):
+            print(warning)
         print(f"Platform: {selected.platform}")
         print(plan.render())
         if regen_plans:

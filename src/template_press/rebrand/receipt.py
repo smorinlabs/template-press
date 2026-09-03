@@ -29,8 +29,10 @@ class OriginDecision:
     discovered value disagreed with the source-config but matched the
     DESTINATION identity, so the guard accepted them instead of refusing.
     It is recorded in the receipt so the relaxation stays auditable after
-    the press. `mismatch_accepted` is reserved for the operator-accepted
-    case (origin names neither identity) and is always empty today.
+    the press. `mismatch_accepted` lists the fields whose discovered value
+    matched NEITHER identity and were accepted only because the operator
+    passed `--accept-origin-mismatch`. A field appears in at most one of
+    the two lists: destination-equality is tried first.
     """
 
     named_destination: tuple[str, ...] = ()
@@ -86,19 +88,19 @@ def write_receipt(
     origin: OriginDecision | None = None,
 ) -> Path:
     stamp = datetime.now(UTC).isoformat(timespec="seconds")
-    # Only written when the guard actually relaxed something (E1): a receipt
-    # without the key means "origin agreed with the source-config", so every
-    # reader must tolerate its absence.
+    # Each key is written only when that relaxation actually fired (E1): a
+    # receipt without them means "origin agreed with the source-config", so
+    # every reader must tolerate their absence.
     named = origin.named_destination if origin is not None else ()
-    origin_lines = (
-        [
-            "origin_named_destination = ["
-            + ", ".join(toml_string(f) for f in sorted(named))
-            + "]"
-        ]
-        if named
-        else []
-    )
+    accepted = origin.mismatch_accepted if origin is not None else ()
+    origin_lines = [
+        f"{key} = [" + ", ".join(toml_string(f) for f in sorted(fields)) + "]"
+        for key, fields in (
+            ("origin_named_destination", named),
+            ("origin_mismatch_accepted", accepted),
+        )
+        if fields
+    ]
     lines = [
         "# press/press-receipt.toml — written by template-press AFTER the no-leak",
         "# verification pass. Presence means: this rebrand completed and was",
