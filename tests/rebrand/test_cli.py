@@ -21,7 +21,14 @@ from template_press.rebrand.config import (
 from template_press.rebrand.identity import Identity
 from template_press.rebrand.receipt import RECEIPT_REL
 
-from .conftest import DEST, SOURCE, posix_only, requires_symlink, write_answers_file
+from .conftest import (
+    DEST,
+    SOURCE,
+    _git,
+    posix_only,
+    requires_symlink,
+    write_answers_file,
+)
 
 
 def write_source_config(target: Path) -> None:
@@ -110,6 +117,410 @@ def test_mismatched_source_config_fails_loudly_no_writes(
     assert "package_name" in capsys.readouterr().out
     assert (src_target / "README.md").read_text(encoding="utf-8") == before
     assert not (src_target / RECEIPT_REL).exists()
+
+
+def _set_origin(target: Path, url: str) -> None:
+    _git(target, "remote", "set-url", "origin", url)
+
+
+def test_origin_already_names_destination_is_accepted_with_notice(
+    src_target: Path, tmp_path: Path, capsys
+):
+    """E1: origin already points at the DESTINATION repo (the gh-created
+    clone case). Per field (owner/repo_name only) the discovered value is
+    accepted because it equals the destination's value for that field."""
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/potatolabs/potato-launcher.git")
+    answers = write_answers(tmp_path)
+    code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert (
+        "notice: repo_name: origin already names the destination "
+        "('potato-launcher')" in out
+    )
+    assert "notice: owner: origin already names the destination ('potatolabs')" in out
+
+
+def test_origin_naming_third_repo_still_exits_2(
+    src_target: Path, tmp_path: Path, capsys
+):
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/someone/else.git")
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--dry-run",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 2 and "repo_name" in out and "owner" in out
+    assert not (src_target / RECEIPT_REL).exists()
+
+
+def test_receipt_records_origin_relaxation(src_target: Path, tmp_path: Path, capsys):
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/potatolabs/potato-launcher.git")
+    assert (
+        main(["--target", str(src_target), "--config", str(write_answers(tmp_path))])
+        == 0
+    )
+    # The notice is a real-apply behavior too, not a dry-run-only courtesy.
+    out = capsys.readouterr().out
+    assert (
+        "notice: repo_name: origin already names the destination "
+        "('potato-launcher'); source-config says 'demo-widget' — accepted" in out
+    )
+    assert "notice: owner: origin already names the destination ('potatolabs')" in out
+    receipt = (src_target / RECEIPT_REL).read_text(encoding="utf-8")
+    assert 'origin_named_destination = ["owner", "repo_name"]' in receipt
+
+
+def test_documented_blind_spot_stale_repo_name_with_destination_origin(
+    src_target: Path, tmp_path: Path, capsys
+):
+    # DOCUMENTED ACCEPTANCE (spec E1/E9): template renamed upstream to demo-widget-2,
+    # source-config stale, origin already the destination -> accepted. A change here
+    # must be deliberate.
+    for rel in ("README.md",):
+        f = src_target / rel
+        f.write_text(
+            f.read_text(encoding="utf-8").replace("demo-widget", "demo-widget-2"),
+            encoding="utf-8",
+        )
+    _git(src_target, "commit", "-qam", "renamed upstream")
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/potatolabs/potato-launcher.git")
+    assert (
+        main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+    # E9(b) is the documented mitigation for this blind spot: the stale
+    # repo_name survives the guard, but the plan says so out loud.
+    assert "occurs only as a prefix of" in capsys.readouterr().out
+
+
+def test_malformed_answers_reports_before_guard(
+    src_target: Path, tmp_path: Path, capsys
+):
+    """The answers file is loaded BEFORE the guard, so a malformed one is
+    reported first — exit 2, and nothing is written to the target.
+
+    The origin here would trip the guard on its own (it names a third
+    repo), so the absence of the guard's banner is what pins the ordering:
+    with the load hoisted back below the guard, the banner appears.
+    """
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/someone/else.git")
+    bad = tmp_path / "answers.toml"
+    bad.write_text("[answers\n", encoding="utf-8")
+    assert main(["--target", str(src_target), "--config", str(bad)]) == 2
+    assert "silent-half-rebrand guard" not in capsys.readouterr().out
+    assert not (
+        (src_target / SOURCE_CONFIG_REL)
+        .read_text(encoding="utf-8")
+        .startswith("garbage")
+    )
+
+
+def test_origin_notice_never_precedes_a_diagnostics_json_refusal(
+    src_target: Path, tmp_path: Path, capsys
+):
+    """The relaxation is real (cross-owner origin, owner accepted) but a
+    plan-time closure refusal owns stdout: `--diagnostics-json` promises one
+    JSON object and nothing else, so the notice must not be printed yet."""
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/potatolabs/demo-widget.git")
+    pycache = src_target / "src" / "demo_widget" / "__pycache__"
+    pycache.mkdir()
+    (pycache / "x.pyc").write_bytes(b"\0")
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--dry-run",
+            "--diagnostics-json",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "notice:" not in out
+    assert json.loads(out)["code"] == "rename_closure_unauthorized"
+
+
+def test_partial_relaxation_prints_no_notice_when_the_guard_still_refuses(
+    src_target: Path, tmp_path: Path, capsys
+):
+    """owner names the destination, repo_name names neither: the guard still
+    exits 2, and an "accepted" line alongside the refusal would read as a
+    contradiction, so no notice is printed."""
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/potatolabs/else.git")
+    before = (src_target / SOURCE_CONFIG_REL).read_text(encoding="utf-8")
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--dry-run",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "silent-half-rebrand guard" in out
+    assert "repo_name" in out
+    assert "accepted" not in out
+    assert (src_target / SOURCE_CONFIG_REL).read_text(encoding="utf-8") == before
+    assert not (src_target / RECEIPT_REL).exists()
+
+
+def test_accept_origin_mismatch_proceeds_with_warning_and_receipt(
+    src_target, tmp_path, capsys
+):
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/someone/else.git")
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--accept-origin-mismatch",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert (
+        "warning: repo_name: source-config 'demo-widget', repository 'else', "
+        "destination 'potato-launcher' — proceeding on --accept-origin-mismatch"
+    ) in out
+    assert (
+        "warning: owner: source-config 'demolabs', repository 'someone', "
+        "destination 'potatolabs' — proceeding on --accept-origin-mismatch"
+    ) in out
+    assert 'origin_mismatch_accepted = ["owner", "repo_name"]' in (
+        src_target / RECEIPT_REL
+    ).read_text(encoding="utf-8")
+
+
+def test_flag_accepted_press_leaves_verify_refusing_until_origin_repointed(
+    src_target, tmp_path, capsys
+):
+    """The receipt RECORDS the acceptance; it does not waive it for verify.
+
+    After the press, press-source.toml names the destination but ``origin``
+    still names the third repository, so ``press verify`` — which calls the
+    untouched ``mismatches()`` — refuses with the same message. Documented
+    limitation (cli.md); a verify-side policy is P12-T-defer-6.
+    """
+    from template_press.rebrand.verify_cli import verify_command
+
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/someone/else.git")
+    assert (
+        main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--accept-origin-mismatch",
+            ]
+        )
+        == 0
+    )
+    receipt = (src_target / RECEIPT_REL).read_text(encoding="utf-8")
+    assert 'origin_mismatch_accepted = ["owner", "repo_name"]' in receipt
+    capsys.readouterr()
+    assert verify_command(["--target", str(src_target)]) == 2
+    err = capsys.readouterr().err
+    assert "owner: source-config says 'potatolabs' but target shows 'someone'" in err
+    assert (
+        "repo_name: source-config says 'potato-launcher' but target shows 'else'" in err
+    )
+
+
+def test_flagless_receipt_carries_no_origin_mismatch_row(src_target, tmp_path, capsys):
+    write_source_config(src_target)
+    assert (
+        main(["--target", str(src_target), "--config", str(write_answers(tmp_path))])
+        == 0
+    )
+    receipt = (src_target / RECEIPT_REL).read_text(encoding="utf-8")
+    assert "origin_mismatch_accepted" not in receipt
+    assert "origin_named_destination" not in receipt
+
+
+def test_origin_warning_escapes_control_characters_from_the_remote(
+    src_target, tmp_path, capsys
+):
+    """The discovered value comes straight from .git/config; render it safely."""
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/some\x1b[2Jone/else.git")
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--accept-origin-mismatch",
+            "--dry-run",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "\x1b" not in out
+    assert "repository 'some\\x1b[2Jone'" in out
+
+
+def _write_wrong_package_source_config(target: Path) -> None:
+    wrong = SOURCE.__class__(
+        **{**SOURCE.as_dict_prompted(), "package_name": "other_pkg"}
+    )
+    (target / "press").mkdir(exist_ok=True)
+    (target / SOURCE_CONFIG_REL).write_text(
+        render_source_config(wrong), encoding="utf-8"
+    )
+    _git(target, "add", "-A")
+    _git(target, "commit", "-qm", "cfg")
+
+
+def test_accept_origin_mismatch_never_covers_pyproject_fields(
+    src_target, tmp_path, capsys
+):
+    """The flag is about the `origin` remote only: a pyproject-derived field
+    that disagrees with the source-config still exits 2."""
+    _write_wrong_package_source_config(src_target)
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--accept-origin-mismatch",
+        ]
+    )
+    assert code == 2 and "package_name" in capsys.readouterr().out
+
+
+def test_accept_origin_mismatch_pyproject_refusal_writes_nothing(
+    src_target: Path, tmp_path: Path
+):
+    """Sibling of the brief's test: exit 2 still means nothing written."""
+    _write_wrong_package_source_config(src_target)
+    before = (src_target / "README.md").read_text(encoding="utf-8")
+    assert (
+        main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--accept-origin-mismatch",
+            ]
+        )
+        == 2
+    )
+    assert (src_target / "README.md").read_text(encoding="utf-8") == before
+    assert not (src_target / RECEIPT_REL).exists()
+
+
+def test_accept_origin_mismatch_dry_run_warns_and_writes_no_receipt(
+    src_target: Path, tmp_path: Path, capsys
+):
+    """A dry run prints the warning and, being a preview, writes no receipt."""
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/someone/else.git")
+    before = (src_target / "README.md").read_text(encoding="utf-8")
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--accept-origin-mismatch",
+            "--dry-run",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "proceeding on --accept-origin-mismatch" in out
+    assert not (src_target / RECEIPT_REL).exists()
+    assert (src_target / "README.md").read_text(encoding="utf-8") == before
+
+
+def test_origin_relaxations_are_recorded_in_separate_receipt_lists(
+    src_target: Path, tmp_path: Path, capsys
+):
+    """Destination-equality is tried first: `owner` names the destination and
+    is a notice, `repo_name` names a third repo and needs the flag. A field
+    lands in exactly one of the two receipt lists."""
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/potatolabs/else.git")
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--accept-origin-mismatch",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "notice: owner: origin already names the destination ('potatolabs')" in out
+    assert (
+        "warning: repo_name: source-config 'demo-widget', repository 'else', "
+        "destination 'potato-launcher' — proceeding on --accept-origin-mismatch"
+    ) in out
+    assert "notice: repo_name" not in out
+    assert "warning: owner" not in out
+    receipt = (src_target / RECEIPT_REL).read_text(encoding="utf-8")
+    assert 'origin_named_destination = ["owner"]' in receipt
+    assert 'origin_mismatch_accepted = ["repo_name"]' in receipt
+
+
+def test_origin_warning_never_precedes_a_diagnostics_json_refusal(
+    src_target: Path, tmp_path: Path, capsys
+):
+    """The flag would accept this origin outright, but a plan-time closure
+    refusal owns stdout: `--diagnostics-json` promises one JSON object and
+    nothing else, so neither warning nor notice may be printed yet."""
+    write_source_config(src_target)
+    _set_origin(src_target, "https://github.com/someone/else.git")
+    pycache = src_target / "src" / "demo_widget" / "__pycache__"
+    pycache.mkdir()
+    (pycache / "x.pyc").write_bytes(b"\0")
+    code = main(
+        [
+            "--target",
+            str(src_target),
+            "--config",
+            str(write_answers(tmp_path)),
+            "--accept-origin-mismatch",
+            "--dry-run",
+            "--diagnostics-json",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "warning:" not in out
+    assert "notice:" not in out
+    assert json.loads(out)["code"] == "rename_closure_unauthorized"
 
 
 def test_dry_run_prints_plan_and_writes_nothing(

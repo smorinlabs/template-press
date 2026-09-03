@@ -25,19 +25,25 @@ import pytest
 
 from template_press.rebrand.engine import ApplyReport
 from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.pipeline import MatcherSpec
 from template_press.rebrand.receipt import RECEIPT_REL, write_receipt
 from template_press.rebrand.regen import (
-    scan_regenerated_output,
     RegenerationPlan,
     execute_regenerations,
     final_validation_pass,
     preflight_regenerate_outputs,
+    scan_regenerated_output,
     snapshot_control_files,
     snapshot_visibility_state,
     validate_control_files,
     validate_visibility_state,
 )
-from template_press.rebrand.pipeline import MatcherSpec
+from template_press.rebrand.rules import (
+    DEFAULT_RULES,
+    RegenerateRule,
+    ResetRule,
+    load_rules,
+)
 from template_press.rebrand.substitutions import (
     HuntPolicy,
     Provenance,
@@ -45,12 +51,6 @@ from template_press.rebrand.substitutions import (
     RenderedSubstitution,
     Scope,
     SubstitutionTable,
-)
-from template_press.rebrand.rules import (
-    DEFAULT_RULES,
-    RegenerateRule,
-    ResetRule,
-    load_rules,
 )
 
 from .conftest import DEST, SOURCE, requires_symlink

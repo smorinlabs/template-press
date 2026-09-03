@@ -1,7 +1,7 @@
 """press rebrand — point the press at a target repo (ARCH-01).
 
-Pipeline: preconditions → source identity (config-first, discovery
-validates) → answers → plan → [--dry-run stops here] → apply → regenerate
+Pipeline: preconditions → answers → source identity (config-first,
+discovery validates) → plan → [--dry-run stops here] → apply → regenerate
 lockfiles → VERIFY (no-leak doctor) → receipt. Exit codes: 0 ok, 1 leaks
 found after apply (no receipt), 2 precondition/config error (no writes).
 """
@@ -23,7 +23,7 @@ from template_press.rebrand.config import (
     load_source_config,
     render_source_config,
 )
-from template_press.rebrand.discovery import discover, mismatches
+from template_press.rebrand.discovery import Discovered, discover, mismatches
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import (
     RenamePreflight,
@@ -39,6 +39,7 @@ from template_press.rebrand.identity import (
 )
 from template_press.rebrand.receipt import (
     RECEIPT_REL,
+    OriginDecision,
     invalidate_receipt,
     read_receipt,
     removed_files_from_receipt,
@@ -232,18 +233,116 @@ def check_preconditions(target: Path, force: bool, allow_dirty: bool) -> str | N
     return None
 
 
+def _relax_origin_guard(
+    source: Identity,
+    found: Discovered,
+    dest: Identity | None,
+    problems: list[str],
+    accept_origin_mismatch: bool,
+) -> tuple[list[str], OriginDecision]:
+    """Relax the source-identity guard for the `origin` remote (E1).
+
+    Two passes, in this order, over `owner` and `repo_name` only — never
+    over the pyproject-derived fields, which still exit 2 whatever the
+    operator asked for:
+
+    1. **Origin already names the DESTINATION.** A discovered value that
+       disagrees with the source-config is accepted iff it equals the
+       destination's value for that SAME field — the gh-created clone whose
+       origin was repointed before the press ran. Comparison is exact, so a
+       case-different origin falls through to pass 2.
+    2. **`--accept-origin-mismatch`.** Whatever still disagrees (origin
+       names neither identity) is accepted only when the operator passed
+       the flag.
+
+    Destination-equality is tried first, so a field lands in at most one of
+    the decision's two lists. Without the flag, an origin naming neither
+    identity still exits 2.
+
+    The decision is only RECORDED here; `_render_origin_notices` and
+    `_render_origin_mismatch_warnings` announce it once the run is past
+    every plan-time gate. Announcing it here would put a `notice:`/
+    `warning:` line on stdout ahead of a later refusal — including the
+    `--diagnostics-json` payload, whose contract is that the JSON object is
+    the whole of stdout.
+    """
+    if dest is None or not problems:
+        return problems, OriginDecision()
+    declared = source.as_dict()
+    relaxed: list[str] = []
+    accepted: list[str] = []
+    for field_name in ("owner", "repo_name"):
+        discovered_value = getattr(found, field_name)
+        if discovered_value is None or discovered_value == declared[field_name]:
+            continue
+        if discovered_value == getattr(dest, field_name):
+            relaxed.append(field_name)
+        elif accept_origin_mismatch:
+            accepted.append(field_name)
+        else:
+            continue
+        problems = [p for p in problems if not p.startswith(f"{field_name}: ")]
+    return problems, OriginDecision(
+        named_destination=tuple(sorted(relaxed)),
+        mismatch_accepted=tuple(sorted(accepted)),
+    )
+
+
+def _render_origin_notices(
+    origin: OriginDecision, source: Identity, dest: Identity
+) -> list[str]:
+    """One notice line per field the origin guard relaxed (E1).
+
+    The origin value is the destination's value for that field — equality
+    with it is what the relaxation tested — so the line is reconstructible
+    from the two identities alone.
+    """
+    return [
+        f"notice: {field_name}: origin already names the destination "
+        f"({getattr(dest, field_name)!r}); source-config says "
+        f"{getattr(source, field_name)!r} — accepted"
+        for field_name in origin.named_destination
+    ]
+
+
+def _render_origin_mismatch_warnings(
+    origin: OriginDecision, source: Identity, dest: Identity, found: Discovered
+) -> list[str]:
+    """One warning line per field accepted under `--accept-origin-mismatch`.
+
+    The repository's value is a third value — equal to neither identity —
+    so it is read from the discovery result rather than reconstructed. It is
+    also the one value here that was never validated (it comes straight from
+    `.git/config`), so it is rendered with `repr`, which escapes control
+    characters and leaves an ordinary value quoted exactly as before.
+    """
+    return [
+        f"warning: {field_name}: source-config "
+        f"{getattr(source, field_name)!r}, repository "
+        f"{getattr(found, field_name)!r}, destination "
+        f"{getattr(dest, field_name)!r} — proceeding on --accept-origin-mismatch"
+        for field_name in origin.mismatch_accepted
+    ]
+
+
 def _resolve_source(
-    target: Path, override: Path | None, accept_discovery: bool
-) -> tuple[Identity, bool] | int:
+    target: Path,
+    override: Path | None,
+    accept_discovery: bool,
+    dest: Identity | None,
+    accept_origin_mismatch: bool,
+) -> tuple[Identity, bool, OriginDecision, Discovered] | int:
     """Resolve the FROM identity; second element = write source-config later.
 
     The write is DEFERRED to main() so it happens only after every exit-2
     gate has passed — keeping "exit 2 means no writes" true by construction.
+    The discovery result is returned so the origin warnings can name the
+    repository's own value.
     """
     write_pending = False
     source = load_source_config(target, override)
+    found = discover(target)
     if source is None:
-        found = discover(target)
         proposal = {
             "package_name": found.package_name,
             "repo_name": found.repo_name,
@@ -268,7 +367,9 @@ def _resolve_source(
             return _fail(f"discovered identity is invalid: {exc}")
         source = candidate
         write_pending = True
-    problems = mismatches(source, discover(target))
+    problems, origin = _relax_origin_guard(
+        source, found, dest, mismatches(source, found), accept_origin_mismatch
+    )
     if problems:
         print(
             "error: source-config does not match the target "
@@ -277,7 +378,7 @@ def _resolve_source(
         for p in problems:
             print(f"  {p}")
         return 2
-    return source, write_pending
+    return source, write_pending, origin, found
 
 
 def display_name_problem(source: Identity, dest: Identity) -> str | None:
@@ -304,6 +405,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, help="answers TOML (TO identity)")
     parser.add_argument("--source-config", type=Path, dest="source_config")
     parser.add_argument("--accept-discovery", action="store_true")
+    parser.add_argument(
+        "--accept-origin-mismatch",
+        action="store_true",
+        dest="accept_origin_mismatch",
+        help=(
+            "proceed when origin's owner/repo_name match neither the "
+            "source-config nor the destination; prints each mismatch and "
+            "records it in the receipt. Never covers pyproject-derived fields."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--force",
@@ -335,10 +446,23 @@ def main(argv: list[str] | None = None) -> int:
         if problem is not None:
             return _fail(problem)
 
-        resolved = _resolve_source(target, args.source_config, args.accept_discovery)
+        # The answers file is read BEFORE the guard so the guard can ask
+        # whether origin already names the destination (E1). It is a pure
+        # read: the only write in this function stays deferred behind every
+        # exit-2 gate, so "exit 2 means no writes" is unaffected. A malformed
+        # answers file now reports before the guard does.
+        dest = load_answers(args.config) if args.config is not None else None
+
+        resolved = _resolve_source(
+            target,
+            args.source_config,
+            args.accept_discovery,
+            dest,
+            args.accept_origin_mismatch,
+        )
         if isinstance(resolved, int):
             return resolved
-        source, write_pending = resolved
+        source, write_pending, origin, found = resolved
         if write_pending and not args.accept_discovery:
             print(
                 f"no source-config found at {SOURCE_CONFIG_REL}.\n"
@@ -348,9 +472,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
 
-        if args.config is None:
+        if dest is None:
             return _fail("--config ANSWERS.toml is required")
-        dest = load_answers(args.config)
 
         display_problem = display_name_problem(source, dest)
         if display_problem is not None:
@@ -446,6 +569,14 @@ def main(argv: list[str] | None = None) -> int:
             for problem in gate_problems:
                 print(f"  {problem}", file=sys.stderr)
             return 2
+        # Announced only now: every plan-time gate (including the closure
+        # refusal that owns stdout under --diagnostics-json) is behind us,
+        # so a notice or warning can no longer precede a refusal on the same
+        # stream.
+        for notice in _render_origin_notices(origin, source, dest):
+            print(notice)
+        for warning in _render_origin_mismatch_warnings(origin, source, dest, found):
+            print(warning)
         print(f"Platform: {selected.platform}")
         print(plan.render())
         if regen_plans:
@@ -506,6 +637,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_unsafe_rename=args.force,
         rendered_rules=plan.rendered_rules,
         table=plan.table,
+        origin=origin,
     )
     return 1 if (outcome.env_error is not None or outcome.leaked) else 0
 
@@ -538,6 +670,7 @@ def _press(
     allow_unsafe_rename: bool = False,
     rendered_rules: list[tuple[ReplaceRule, str, str]] | None = None,
     table: SubstitutionTable | None = None,
+    origin: OriginDecision | None = None,
 ) -> PressOutcome:
     if previously_removed is None:
         previously_removed = {}
@@ -701,6 +834,7 @@ def _press(
             dest,
             report,
             platform=platform,
+            origin=origin,
             regenerations=[
                 (plan.rule.file, (plan.executable, *plan.rule.command[1:]))
                 for plan in regen_plans
