@@ -519,6 +519,29 @@ def test_retry_after_a_receiptless_press_names_the_restore_path(
     assert "checkout" in err and "clean -fd" in err
 
 
+def test_force_does_not_bypass_the_identical_identity_guard(
+    src_target: Path, tmp_path: Path, capsys
+):
+    """A pressed target cannot be re-pressed to its own identity (docs claim).
+
+    This is why a 4.1-era receipt has no in-place upgrade: ``--force`` clears
+    the receipt precondition but the identity guard runs later and refuses.
+    The receipt exists here, so the guard keeps its plain message — the
+    interrupted-press hint is for the receiptless state only.
+    """
+    write_source_config(src_target)
+    answers = write_answers(tmp_path)
+    assert main(["--target", str(src_target), "--config", str(answers)]) == 0
+    capsys.readouterr()
+    _git(src_target, "add", "-A")
+    _git(src_target, "commit", "-qm", "pressed")
+    _set_origin(src_target, "https://github.com/potatolabs/potato-launcher.git")
+    assert main(["--target", str(src_target), "--config", str(answers), "--force"]) == 2
+    err = capsys.readouterr().err
+    assert "identities are identical" in err
+    assert "an interrupted press may have left this state" not in err
+
+
 def test_legacy_list_form_receipt_is_not_honored_by_verify(
     src_target, tmp_path, capsys
 ):

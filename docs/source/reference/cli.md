@@ -149,8 +149,10 @@ stale into a free pass:
 - A receipt written by template-press **4.1 or earlier** records field names
   only (`origin_mismatch_accepted = ["owner", "repo_name"]`) and so cannot say
   which value was accepted. It is not honored: verify exits `2` exactly as it
-  did before. Re-press with `--force --accept-origin-mismatch` to write a
-  value-bearing receipt, or repoint `origin` at the destination:
+  did before. There is no in-place upgrade — a target already carrying the
+  destination identity meets the `source and destination identities are
+  identical` guard, which `--force` does not bypass. Repoint `origin` at the
+  destination instead:
 
   ```bash
   git -C <target> remote set-url origin https://github.com/<owner>/<repo_name>.git
