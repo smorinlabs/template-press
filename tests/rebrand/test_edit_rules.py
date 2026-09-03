@@ -122,21 +122,29 @@ def test_edit_rule_refusals(tmp_path: Path, body: str, needle: str):
 # ---------------------------------------------------------------------------
 class TestExpectValidation:
     """`expect` is the post-condition substring the edited file must contain
-    after the command runs. An empty or whitespace-only value matches almost
-    any file, so it would assert nothing; a non-printable one cannot be shown
-    in the plan or the receipt."""
+    after the command runs.
+
+    E4 binds the contract exactly: a NON-EMPTY PRINTABLE string. Only three
+    shapes are refused — a non-string, the empty string, and a string
+    carrying a control or otherwise non-printable character (which could not
+    be shown in the rendered plan or the receipt). A run of printable spaces
+    is a weak assertion but a legal one, and the parser is not the place to
+    second-guess the spec.
+    """
 
     @pytest.mark.parametrize(
         ("expect_toml", "needle"),
         [
             ("", "expect is required"),  # missing entirely
             ('expect = ""', "expect is required"),  # empty
-            ('expect = "   "', "expect is required"),  # whitespace-only
             ("expect = 3", "expect is required"),  # non-string
             ('expect = ["0.1.0"]', "expect is required"),  # list, not string
             ('expect = "ver\\u0000sion"', "control or non-printable"),  # NUL
             ('expect = "ver\\u001b[2Jsion"', "control or non-printable"),  # ANSI
             ('expect = "ver\\nsion"', "control or non-printable"),  # newline
+            # A tab is whitespace but NOT printable under str.isprintable, so
+            # it lands in the non-printable refusal, not the accepted set.
+            ('expect = "ver\\tsion"', "control or non-printable"),  # tab
         ],
     )
     def test_malformed_expect_rejected(
@@ -151,6 +159,22 @@ class TestExpectValidation:
         )
         with pytest.raises(ValidationError, match=needle):
             load_rules(target)
+
+    @pytest.mark.parametrize("expect_toml", ['expect = " "', 'expect = "   "'])
+    def test_printable_whitespace_accepted(self, tmp_path: Path, expect_toml: str):
+        """A single printable space is non-empty and printable, so E4 accepts
+        it. Rejecting it would be the parser inventing a stricter contract
+        than the binding spec, and `" "` is a real post-condition for a
+        command whose only job is to restore an indentation column."""
+        target = _write_rules(
+            tmp_path,
+            "[[edit]]\n"
+            'file = "pyproject.toml"\n'
+            'command = ["uv", "version", "0.1.0"]\n'
+            f"{expect_toml}\n",
+        )
+        (rule,) = load_rules(target).edit
+        assert rule.expect == expect_toml.split("=", 1)[1].strip().strip('"')
 
     def test_missing_expect_names_the_key(self, tmp_path: Path):
         target = _write_rules(
@@ -585,6 +609,13 @@ class TestFilesystemAliasIdentity:
     _reject_reserved already documents for the control paths. An [[edit]]
     same-file check that compared raw strings would fail OPEN: the second
     writer, or the excluded path, would simply be spelled differently.
+
+    That union is a REFUSAL instrument only. It widens what counts as the
+    same file, which is safe when the answer is "refuse" and unsafe when the
+    answer is "permit": alias-equal spellings ARE distinct files on Linux and
+    case-sensitive APFS, so permitting on alias identity would un-exclude a
+    second path that no declaration writes. The platform-disjoint licence and
+    the selection-time subtraction therefore demand exact strings.
     """
 
     # Aliases `meta.toml` on case-insensitive filesystems and Windows.
@@ -642,12 +673,18 @@ class TestFilesystemAliasIdentity:
             load_rules(target)
 
     @pytest.mark.parametrize("other", ["reset", "regenerate"])
-    def test_disjoint_alias_pair_on_a_target_added_exclusion_accepted(
+    def test_disjoint_alias_pair_on_a_target_added_exclusion_refused(
         self, tmp_path: Path, other: str
     ):
-        """The licensed case, spelled two ways: the exclusion entry and the
-        discarding writer agree on `META.TOML.`, the edit says `meta.toml`.
-        Selection must drop the exclusion by alias identity, not by string."""
+        """Alias identity may REFUSE an edit; it may never license one.
+
+        Here the exclusion entry and the discarding writer both say
+        `META.TOML.` while the edit says `meta.toml`. Those are one file on
+        case-insensitive macOS and Windows — and two distinct files on Linux
+        and case-sensitive APFS, where `META.TOML.` has no writer at all.
+        Granting the licence on alias identity would un-exclude that second,
+        writerless file and hand it to the replace pass, so the pairing is
+        refused unless every side is spelled identically."""
         table = _reset_table if other == "reset" else _regenerate_table
         target = _write_rules(
             tmp_path,
@@ -655,20 +692,71 @@ class TestFilesystemAliasIdentity:
             + _edit_table("meta.toml", "amend", '["darwin"]')
             + table(self.ALIAS, '["linux"]'),
         )
+        with pytest.raises(
+            ValidationError, match="must not be listed in exclude_files"
+        ) as exc:
+            load_rules(target)
+        assert "spelled identically" in str(exc.value)
+
+    @pytest.mark.parametrize("other", ["reset", "regenerate"])
+    def test_disjoint_pair_whose_writer_matches_only_by_alias_refused(
+        self, tmp_path: Path, other: str
+    ):
+        """The exclusion side is spelled exactly, the WRITER side is not.
+
+        Both spellings are excluded, so the discarding writer's own contract
+        is satisfied and the edit's path really is listed verbatim. The
+        licence still fails: on a case-sensitive filesystem the reset writes
+        `META.TOML.` while the edit amends a different file, `meta.toml`,
+        that no disjoint declaration ever asked to have excluded."""
+        table = _reset_table if other == "reset" else _regenerate_table
+        target = _write_rules(
+            tmp_path,
+            f'[rules]\nextra_exclude_files = ["meta.toml", "{self.ALIAS}"]\n'
+            + _edit_table("meta.toml", "amend", '["darwin"]')
+            + table(self.ALIAS, '["linux"]'),
+        )
+        with pytest.raises(
+            ValidationError, match="must not be listed in exclude_files"
+        ) as exc:
+            load_rules(target)
+        assert "spelled identically" in str(exc.value)
+
+    @pytest.mark.parametrize("other", ["reset", "regenerate"])
+    def test_exact_pair_leaves_an_alias_spelled_exclusion_in_place(
+        self, tmp_path: Path, other: str
+    ):
+        """The licensed case is exact on every side — and it un-excludes ONE
+        path, by string.
+
+        `meta.toml` and `META.TOML.` are both excluded; only `meta.toml` is
+        the edit target and only `meta.toml` is the disjoint writer's target.
+        On the edit platform exactly that spelling leaves the exclusion set;
+        the alias-equivalent entry is a different file on Linux, has no
+        writer, and must stay excluded."""
+        table = _reset_table if other == "reset" else _regenerate_table
+        target = _write_rules(
+            tmp_path,
+            f'[rules]\nextra_exclude_files = ["meta.toml", "{self.ALIAS}"]\n'
+            + _edit_table("meta.toml", "amend", '["darwin"]')
+            + table("meta.toml", '["linux"]'),
+        )
 
         darwin = load_selected_rules(target, platform="darwin").rules
         linux = load_selected_rules(target, platform="linux").rules
 
         assert [rule.file for rule in darwin.edit] == ["meta.toml"]
-        assert self.ALIAS not in darwin.exclude_files
         assert "meta.toml" not in darwin.exclude_files
+        # The un-excluding is exact: the alias-equivalent spelling is a
+        # separate, writerless path and keeps its exclusion.
+        assert self.ALIAS in darwin.exclude_files
 
         assert linux.edit == ()
         selected = linux.reset if other == "reset" else linux.regenerate
-        assert [rule.file for rule in selected] == [self.ALIAS]
-        assert self.ALIAS in linux.exclude_files
+        assert [rule.file for rule in selected] == ["meta.toml"]
+        assert {"meta.toml", self.ALIAS} <= linux.exclude_files
 
-        # Only the edit's own alias leaves; every default exclusion stays.
+        # Only the edit's own path leaves; every default exclusion stays.
         assert DEFAULT_RULES.exclude_files <= darwin.exclude_files
         assert DEFAULT_RULES.exclude_files <= linux.exclude_files
 

@@ -718,11 +718,13 @@ def _parse_edit(entry: object) -> _EditDeclaration:
     command = _parse_command(entry, "[[edit]]", file)
     env = _parse_env(entry, "[[edit]]", file)
     expect = entry.get("expect")
-    # Required and meaningful: the post-condition is the only thing standing
-    # between a silently no-op command and a pressed tree that ships wrong.
-    # Whitespace-only would be satisfied by almost any file, so it asserts
-    # nothing; non-printable cannot be shown in the plan or the receipt.
-    if not isinstance(expect, str) or not expect.strip():
+    # E4 binds this exactly: a NON-EMPTY PRINTABLE string. Three shapes fail —
+    # a non-string, the empty string, and anything carrying a character
+    # `str.isprintable` rejects (it could not be shown in the rendered plan or
+    # the receipt; that check also catches every whitespace character except
+    # the plain space, tabs included). A run of spaces is a weak post-condition
+    # but a legal one, and the parser does not get to tighten the spec.
+    if not isinstance(expect, str) or not expect:
         raise ValidationError(
             f"{RULES_REL}: [[edit]] {file!r}: expect is required and must be a "
             f"non-empty string — it is the post-condition substring the edited "
@@ -761,6 +763,15 @@ def _validate_exclude_membership(
     exactly that pairing, and _select_rules drops the path from the
     exclusions of the platforms where the edit is the active writer.
 
+    That stand-down is EXACT-SPELLING only: the edit target must appear
+    verbatim in exclude_files and the paired [[reset]]/[[regenerate]] must
+    name that same verbatim path. Alias identity widens what counts as one
+    file, which is the safe direction for a refusal and the unsafe direction
+    for a grant — `meta.toml` and `META.TOML.` really are two files on Linux
+    and case-sensitive APFS, so licensing on alias identity would let an edit
+    on one of them un-exclude the other, a path no declaration writes at all.
+    Anything matching only by alias is refused here instead.
+
     That stand-down reaches TARGET-added exclusions only. A path in
     DEFAULT_RULES.exclude_files is press's own answer, not the target's: a
     lockfile or a changelog is excluded because the replace pass must never
@@ -768,15 +779,23 @@ def _validate_exclude_membership(
     [[reset]]/[[regenerate]] license it would turn a pairing the author
     controls into a lever that hands those files to the replace pass.
 
-    Every same-file test here is by filesystem-alias identity
+    Every REFUSAL here tests by filesystem-alias identity
     (_control_alias_key), not raw string — the union _reject_reserved
     documents. A raw comparison fails OPEN: `BUN.lock.` aliases `bun.lock` on
     case-insensitive filesystems and Windows, so the exclusion could simply be
-    out-spelled.
+    out-spelled. Only the licence above reads exact strings, and only because
+    it grants rather than denies.
     """
-    paired = {
-        _control_alias_key(declaration.rule.file) for declaration in regenerate
-    } | {_control_alias_key(declaration.rule.file) for declaration in reset}
+    paired_files = [declaration.rule.file for declaration in regenerate] + [
+        declaration.rule.file for declaration in reset
+    ]
+    paired = {_control_alias_key(file) for file in paired_files}
+    paired_exact = set(paired_files)
+    # Alias key -> one declared writer spelling, so the licence diagnostic can
+    # quote the path the discarding writer actually names.
+    paired_spelling: dict[str, str] = {}
+    for file in sorted(paired_files):
+        paired_spelling.setdefault(_control_alias_key(file), file)
     default_keys = {_control_alias_key(file) for file in DEFAULT_RULES.exclude_files}
     # Alias key -> one declared spelling, so a diagnostic can name the entry
     # the author actually wrote rather than the normalized key.
@@ -806,7 +825,9 @@ def _validate_exclude_membership(
         key = _control_alias_key(file)
         if key not in excluded:
             continue
-        listed = excluded[key]
+        # Name the exact entry when there is one; the alias note fires only
+        # when the exclusion really is spelled differently from the edit.
+        listed = file if file in exclude_files else excluded[key]
         alias_note = (
             ""
             if listed == file
@@ -829,6 +850,27 @@ def _validate_exclude_membership(
                 f"{RULES_REL}: [[edit]] target {file!r} must not be listed in "
                 f"exclude_files{alias_note} — an edit target is rewritten by "
                 f"the replace pass first, then edited in place"
+            )
+        # The licence GRANTS, so it may not widen: alias-equal spellings are
+        # distinct files wherever the filesystem is case-sensitive, and
+        # un-excluding by alias would expose one that has no writer.
+        if file not in exclude_files or file not in paired_exact:
+            mismatches: list[str] = []
+            if file not in exclude_files:
+                mismatches.append(f"the exclude_files entry reads {listed!r}")
+            if file not in paired_exact:
+                mismatches.append(
+                    f"the paired [[reset]]/[[regenerate]] target reads "
+                    f"{paired_spelling[key]!r}"
+                )
+            raise ValidationError(
+                f"{RULES_REL}: [[edit]] target {file!r} must not be listed in "
+                f"exclude_files — the platform-disjoint exception requires the "
+                f"edit target, the exclusion entry, and the discarding "
+                f"[[reset]]/[[regenerate]] target to be spelled identically, "
+                f"but {' and '.join(mismatches)}; those spellings name one "
+                f"file only where the filesystem is case-insensitive, so "
+                f"honoring the pairing would un-exclude a path nothing writes"
             )
 
 
@@ -1086,10 +1128,13 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
         for declaration in parsed.edit
         if platform in declaration.platforms
     )
-    # Alias identity again: the exclusion entry and the edit may be spelled
-    # differently and still name one file, so an exact-string subtraction
-    # would leave the edit target excluded and unreachable.
-    active_edit_keys = {_control_alias_key(rule.file) for rule in active_edits}
+    # Exact strings, deliberately: config load already refused every pairing
+    # whose exclusion entry or discarding writer was spelled differently from
+    # the edit target, so the licensed path is always listed verbatim. An
+    # alias-keyed subtraction would additionally drop alias-equivalent
+    # entries, which are separate files on Linux and case-sensitive APFS with
+    # no writer of their own.
+    active_edit_paths = {rule.file for rule in active_edits}
     rules = replace(
         parsed.rules,
         # An edit target must be reachable by the replace pass. It can only be
@@ -1100,9 +1145,7 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
         # paths is exactly that exception — the discarding platform, where no
         # edit is active, keeps them.
         exclude_files=frozenset(
-            path
-            for path in parsed.rules.exclude_files
-            if _control_alias_key(path) not in active_edit_keys
+            path for path in parsed.rules.exclude_files if path not in active_edit_paths
         ),
         regenerate=tuple(
             declaration.rule
