@@ -587,7 +587,8 @@ class TestFilesystemAliasIdentity:
     writer, or the excluded path, would simply be spelled differently.
     """
 
-    ALIAS = "META.TOML."  # `meta.toml` on every filesystem press supports
+    # Aliases `meta.toml` on case-insensitive filesystems and Windows.
+    ALIAS = "META.TOML."
 
     def test_duplicate_edit_aliases_refused(self, tmp_path: Path):
         target = _write_rules(

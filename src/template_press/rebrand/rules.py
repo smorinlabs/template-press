@@ -770,8 +770,9 @@ def _validate_exclude_membership(
 
     Every same-file test here is by filesystem-alias identity
     (_control_alias_key), not raw string — the union _reject_reserved
-    documents. A raw comparison fails OPEN: `BUN.lock.` is `bun.lock` on the
-    filesystems press supports, so the exclusion would simply be out-spelled.
+    documents. A raw comparison fails OPEN: `BUN.lock.` aliases `bun.lock` on
+    case-insensitive filesystems and Windows, so the exclusion could simply be
+    out-spelled.
     """
     paired = {
         _control_alias_key(declaration.rule.file) for declaration in regenerate
@@ -919,9 +920,10 @@ def _validate_writer_overlaps(
                     )
 
     # Keyed by filesystem-alias identity, not by declared string: `meta.toml`
-    # and `META.TOML.` are ONE file everywhere press runs (see
-    # _reject_reserved), so a raw-string ledger would let the second writer
-    # in under a different spelling. Diagnostics still quote what was written.
+    # and `META.TOML.` can be one file on case-insensitive macOS or Windows.
+    # Rules validate the conservative union documented by _reject_reserved, so
+    # a raw-string ledger would let the second writer in under another spelling.
+    # Diagnostics still quote what was written.
     seen_edit: dict[str, list[tuple[str, frozenset[str]]]] = {}
     for declaration in edit:
         file = declaration.rule.file
