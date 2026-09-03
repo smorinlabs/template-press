@@ -11,6 +11,7 @@ import fnmatch
 import re
 import sys
 import tomllib
+import unicodedata
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -445,7 +446,37 @@ def _declared_rel_path(context: str, value: object) -> str:
 
 def _control_alias_key(file: str) -> str:
     """Collapse a POSIX relative path to its filesystem-alias identity."""
-    return "/".join(part.rstrip(" .").casefold() for part in file.split("/"))
+    return "/".join(_alias_component(part) for part in file.split("/"))
+
+
+def _alias_component(part: str) -> str:
+    """Reduce one path component to the identity a filesystem may collapse.
+
+    Three real aliasing rules, applied in the order the filesystem does:
+
+    1. Windows drops trailing dots and spaces from every component, so
+       `meta.toml.` and `meta.toml ` open `meta.toml`.
+    2. Windows and default macOS are case-insensitive, so `META.TOML` is the
+       same entry as `meta.toml`.
+    3. APFS and HFS+ are normalization-insensitive, so the composed and
+       decomposed spellings of one grapheme — `cafe\u0301.toml` and its
+       precomposed NFC form — are also one entry.
+
+    The normalization is a canonical caseless match (Unicode 3.13, D145):
+    NFD, then casefold, then NFD again. The trailing NFD is what the plain
+    casefold misses, because casefold is not closed under canonical
+    equivalence — it can emit a base character where a combining mark stood
+    (U+0345 is the standard example), leaving two canonically equal inputs
+    with unequal folded forms. In a fail-closed refusal key an unequal form
+    is a missed alias, which fails OPEN, so the sandwich is used rather than
+    a single trailing normalize. The leading `rstrip` stays outermost:
+    canonical normalization never produces an ASCII dot or space, so it
+    cannot expose a component the strip would have taken.
+    """
+    stripped = part.rstrip(" .")
+    return unicodedata.normalize(
+        "NFD", unicodedata.normalize("NFD", stripped).casefold()
+    )
 
 
 def _reject_reserved(kind: str, file: str) -> None:
@@ -453,14 +484,17 @@ def _reject_reserved(kind: str, file: str) -> None:
     # neutral scope helpers, while this validator needs the control paths.
     from template_press.rebrand.pathing import ROOT_CONTROL
 
-    # Normalized exactly like the same-file test used elsewhere for filesystem
-    # path comparisons (safety.py's `_is_dotgit`): casefold, plus a per-
-    # component strip of trailing dots/spaces. Both are real filesystem
-    # aliases, not cosmetics — on a case-insensitive filesystem (Windows,
-    # default macOS) `PRESS/press-source.toml` is the SAME file as
-    # `press/press-source.toml`, and on Windows so are
-    # `press/press-source.toml.` and `press/press-source.toml ` (the
-    # filesystem drops trailing dots/spaces from every component). Rules are
+    # A SUPERSET of the same-file test used elsewhere for filesystem path
+    # comparisons (safety.py's `_is_dotgit`, which case-folds only — `.git`
+    # is ASCII, so the rest is moot there). _alias_component adds a
+    # per-component strip of trailing dots/spaces and a canonical caseless
+    # normalization. All three are real filesystem aliases, not cosmetics —
+    # on a case-insensitive filesystem (Windows, default macOS)
+    # `PRESS/press-source.toml` is the SAME file as `press/press-source.toml`;
+    # on Windows so are `press/press-source.toml.` and
+    # `press/press-source.toml ` (the filesystem drops trailing dots/spaces
+    # from every component); and on normalization-insensitive APFS/HFS+ so are
+    # the composed and decomposed spellings of one grapheme. Rules are
     # validated identically on every platform, so the check rejects the union
     # of aliases rather than the host's own set.
     if _control_alias_key(file) in {_control_alias_key(e) for e in ROOT_CONTROL}:
@@ -767,9 +801,11 @@ def _validate_exclude_membership(
     verbatim in exclude_files and the paired [[reset]]/[[regenerate]] must
     name that same verbatim path. Alias identity widens what counts as one
     file, which is the safe direction for a refusal and the unsafe direction
-    for a grant — `meta.toml` and `META.TOML.` really are two files on Linux
-    and case-sensitive APFS, so licensing on alias identity would let an edit
-    on one of them un-exclude the other, a path no declaration writes at all.
+    for a grant — `meta.toml` and `META.TOML.`, like a composed and a
+    decomposed spelling of one name, really are two files on Linux and on
+    case- and normalization-sensitive APFS, so licensing on alias identity
+    would let an edit on one of them un-exclude the other, a path no
+    declaration writes at all.
     Anything matching only by alias is refused here instead.
 
     That stand-down reaches TARGET-added exclusions only. A path in
@@ -831,8 +867,8 @@ def _validate_exclude_membership(
         alias_note = (
             ""
             if listed == file
-            else f" (listed as {listed!r} — one file on a case-insensitive or "
-            f"Windows filesystem)"
+            else f" (listed as {listed!r} — one file on a case-insensitive, "
+            f"normalization-insensitive, or Windows filesystem)"
         )
         if key in default_keys:
             raise ValidationError(
@@ -869,8 +905,9 @@ def _validate_exclude_membership(
                 f"edit target, the exclusion entry, and the discarding "
                 f"[[reset]]/[[regenerate]] target to be spelled identically, "
                 f"but {' and '.join(mismatches)}; those spellings name one "
-                f"file only where the filesystem is case-insensitive, so "
-                f"honoring the pairing would un-exclude a path nothing writes"
+                f"file only where the filesystem is case- or normalization-"
+                f"insensitive, so honoring the pairing would un-exclude a "
+                f"path nothing writes"
             )
 
 
@@ -962,7 +999,8 @@ def _validate_writer_overlaps(
                     )
 
     # Keyed by filesystem-alias identity, not by declared string: `meta.toml`
-    # and `META.TOML.` can be one file on case-insensitive macOS or Windows.
+    # and `META.TOML.` can be one file on case-insensitive macOS or Windows,
+    # as can two canonically equivalent spellings on APFS or HFS+.
     # Rules validate the conservative union documented by _reject_reserved, so
     # a raw-string ledger would let the second writer in under another spelling.
     # Diagnostics still quote what was written.
@@ -977,7 +1015,8 @@ def _validate_writer_overlaps(
                     ""
                     if earlier_file == file
                     else f"; {file!r} and {earlier_file!r} are one file on a "
-                    f"case-insensitive or Windows filesystem"
+                    f"case-insensitive, normalization-insensitive, or Windows "
+                    f"filesystem"
                 )
                 raise ValidationError(
                     f"{RULES_REL}: duplicate [[edit]] target {file!r} has "
@@ -1006,7 +1045,8 @@ def _validate_writer_overlaps(
                         ""
                         if other_file == file
                         else f" as {other_file!r} (the two spellings are one "
-                        f"file on a case-insensitive or Windows filesystem)"
+                        f"file on a case-insensitive, normalization-"
+                        f"insensitive, or Windows filesystem)"
                     )
                     raise ValidationError(
                         f"{RULES_REL}: [[edit]] target {file!r} may not also "

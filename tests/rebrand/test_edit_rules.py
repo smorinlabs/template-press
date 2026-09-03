@@ -14,6 +14,7 @@ and `scan` — because an edited file stays wholly inside the doctor's and
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -605,8 +606,9 @@ class TestFilesystemAliasIdentity:
 
     press validates every rule against the conservative union of the aliases
     any supported filesystem collapses — case-insensitivity (Windows, default
-    macOS) and Windows' per-component trailing dot/space strip — exactly as
-    _reject_reserved already documents for the control paths. An [[edit]]
+    macOS), Windows' per-component trailing dot/space strip, and canonical
+    Unicode equivalence (APFS, HFS+; see TestUnicodeAliasIdentity) — exactly
+    as _reject_reserved already documents for the control paths. An [[edit]]
     same-file check that compared raw strings would fail OPEN: the second
     writer, or the excluded path, would simply be spelled differently.
 
@@ -757,6 +759,150 @@ class TestFilesystemAliasIdentity:
         assert {"meta.toml", self.ALIAS} <= linux.exclude_files
 
         # Only the edit's own path leaves; every default exclusion stays.
+        assert DEFAULT_RULES.exclude_files <= darwin.exclude_files
+        assert DEFAULT_RULES.exclude_files <= linux.exclude_files
+
+
+# ---------------------------------------------------------------------------
+# Unicode canonical-equivalence aliases (the same union, one axis further)
+# ---------------------------------------------------------------------------
+# Only the decomposed spelling is written out, with an explicit escape: the
+# two forms render identically, so the source must not rely on which bytes a
+# reader's editor happens to store, and deriving one from the other states
+# the canonical equivalence instead of asking the reader to trust it.
+_NFD = "cafe\u0301.toml"  # "e" + combining U+0301
+_NFC = unicodedata.normalize("NFC", _NFD)  # one precomposed U+00E9
+assert _NFC != _NFD
+
+
+class TestUnicodeAliasIdentity:
+    """Composed and decomposed spellings are ONE file on macOS.
+
+    `_NFC` and `_NFD` above are different byte strings and different Python
+    strings — one precomposed U+00E9 versus `e` plus combining U+0301 — but
+    APFS and HFS+ are normalization-insensitive: both open the same entry.
+    The alias key therefore canonically normalizes each component
+    on top of its casefold and trailing dot/space strip, so a rule set cannot
+    out-spell a refusal by shifting normalization form.
+
+    The direction is the same as every other alias: refusals widen, grants do
+    not. The platform-disjoint licence and the selection-time subtraction
+    still demand byte-identical spellings, because on a normalization-
+    SENSITIVE filesystem the two really are two files and only one of them
+    has a declared writer.
+    """
+
+    NFC = _NFC
+    NFD = _NFD
+
+    def test_duplicate_edit_normalization_forms_refused(self, tmp_path: Path):
+        target = _write_rules(
+            tmp_path,
+            _edit_table(self.NFC, "a", '["darwin"]')
+            + _edit_table(self.NFD, "b", '["darwin"]'),
+        )
+        with pytest.raises(ValidationError, match="overlap"):
+            load_rules(target)
+
+    @pytest.mark.parametrize(
+        "table",
+        [
+            f'[[reset]]\nfile = "{_NFD}"\nstub = ""\n',
+            f'[[remove]]\nfile = "{_NFD}"\nreason = "template-only"\n',
+            f'[[regenerate]]\nfile = "{_NFD}"\ncommand = ["true"]\n',
+        ],
+        ids=["reset", "remove", "regenerate"],
+    )
+    def test_decomposed_spelling_of_another_writer_refused(
+        self, tmp_path: Path, table: str
+    ):
+        target = _write_rules(
+            tmp_path,
+            f'[[edit]]\nfile = "{self.NFC}"\ncommand = ["a"]\nexpect = "x"\n' + table,
+        )
+        with pytest.raises(ValidationError) as exc:
+            load_rules(target)
+        assert "may not also be a reset/remove/regenerate target" in str(exc.value)
+
+    def test_standalone_form_alias_of_a_target_added_exclusion_refused(
+        self, tmp_path: Path
+    ):
+        target = _write_rules(
+            tmp_path,
+            f'[rules]\nextra_exclude_files = ["{self.NFD}"]\n'
+            f'[[edit]]\nfile = "{self.NFC}"\ncommand = ["true"]\nexpect = "x"\n',
+        )
+        with pytest.raises(
+            ValidationError, match="must not be listed in exclude_files"
+        ):
+            load_rules(target)
+
+    @pytest.mark.parametrize("other", ["reset", "regenerate"])
+    def test_disjoint_form_alias_pair_refused(self, tmp_path: Path, other: str):
+        """The exclusion entry and the discarding writer both use NFD; the
+        edit uses NFC. macOS collapses them, Linux does not — so honoring the
+        pairing would un-exclude an NFC path that no declaration writes."""
+        table = _reset_table if other == "reset" else _regenerate_table
+        target = _write_rules(
+            tmp_path,
+            f'[rules]\nextra_exclude_files = ["{self.NFD}"]\n'
+            + _edit_table(self.NFC, "amend", '["darwin"]')
+            + table(self.NFD, '["linux"]'),
+        )
+        with pytest.raises(
+            ValidationError, match="must not be listed in exclude_files"
+        ) as exc:
+            load_rules(target)
+        assert "spelled identically" in str(exc.value)
+
+    @pytest.mark.parametrize("other", ["reset", "regenerate"])
+    def test_disjoint_pair_whose_writer_matches_only_by_form_refused(
+        self, tmp_path: Path, other: str
+    ):
+        """Both forms are excluded, so the edit's own path IS listed verbatim
+        and the discarding writer's exclusion contract is met. The licence
+        still fails: the reset writes the NFD spelling while the edit amends
+        the NFC one, which on Linux is a different file."""
+        table = _reset_table if other == "reset" else _regenerate_table
+        target = _write_rules(
+            tmp_path,
+            f'[rules]\nextra_exclude_files = ["{self.NFC}", "{self.NFD}"]\n'
+            + _edit_table(self.NFC, "amend", '["darwin"]')
+            + table(self.NFD, '["linux"]'),
+        )
+        with pytest.raises(
+            ValidationError, match="must not be listed in exclude_files"
+        ) as exc:
+            load_rules(target)
+        assert "spelled identically" in str(exc.value)
+
+    @pytest.mark.parametrize("other", ["reset", "regenerate"])
+    def test_exact_pair_leaves_the_other_normalization_form_excluded(
+        self, tmp_path: Path, other: str
+    ):
+        """Every side spells the target identically, so the licence holds —
+        and it un-excludes that ONE string. The other normalization form is a
+        separate, writerless path on Linux and keeps its exclusion."""
+        table = _reset_table if other == "reset" else _regenerate_table
+        target = _write_rules(
+            tmp_path,
+            f'[rules]\nextra_exclude_files = ["{self.NFC}", "{self.NFD}"]\n'
+            + _edit_table(self.NFC, "amend", '["darwin"]')
+            + table(self.NFC, '["linux"]'),
+        )
+
+        darwin = load_selected_rules(target, platform="darwin").rules
+        linux = load_selected_rules(target, platform="linux").rules
+
+        assert [rule.file for rule in darwin.edit] == [self.NFC]
+        assert self.NFC not in darwin.exclude_files
+        assert self.NFD in darwin.exclude_files
+
+        assert linux.edit == ()
+        selected = linux.reset if other == "reset" else linux.regenerate
+        assert [rule.file for rule in selected] == [self.NFC]
+        assert {self.NFC, self.NFD} <= linux.exclude_files
+
         assert DEFAULT_RULES.exclude_files <= darwin.exclude_files
         assert DEFAULT_RULES.exclude_files <= linux.exclude_files
 
