@@ -90,29 +90,53 @@ line to stdout, in the same place as the notices:
 warning: repo_name: source-config 'demo-widget', repository 'else', destination 'potato-launcher' — proceeding on --accept-origin-mismatch
 ```
 
-and the receipt records the accepted fields in their own sorted list under
-`[press]`, also written only when the flag actually accepted something:
+and the receipt records the accepted fields with the **exact `origin` value**
+accepted for each, as a key-sorted inline table under `[press]`, written only
+when the flag actually accepted something:
 
 ```toml
-origin_mismatch_accepted = ["owner", "repo_name"]
+origin_mismatch_accepted = { owner = "someone", repo_name = "else" }
 ```
 
-A field appears in at most one of the two lists: destination-equality is
+A field appears in at most one of the two records: destination-equality is
 tried first, so a field the origin already names the destination for is a
-notice under `origin_named_destination` even when the flag is passed.
+notice under the `origin_named_destination` list even when the flag is passed.
+That list carries no values because it needs none — its values are the
+destination's, which the press writes into `press-source.toml`.
 
-The receipt *records* the acceptance; it does not waive it. The press never
-touches git remotes, so after a flag-accepted press `press-source.toml` names
-the destination while `origin` still names the third repository. `press
-verify` compares the two with the same unrelaxed check and exits `2` with
-the same mismatch message until `origin` is repointed at the destination:
+The press never touches git remotes, so after a flag-accepted press
+`press-source.toml` names the destination while `origin` still names the third
+repository. **`press verify` honors the receipt**: it drops an `owner` or
+`repo_name` mismatch when — and only when — the value it discovers *now* is
+byte-for-byte the value the receipt recorded, and prints one line per waived
+field before its verdict:
 
-```bash
-git -C <target> remote set-url origin https://github.com/<owner>/<repo_name>.git
-press verify --target <target>
+```text
+note: owner: origin 'someone' accepted by the press receipt (--accept-origin-mismatch)
 ```
 
-A verify-side policy for flag-accepted targets is tracked as `P12-T-defer-6`.
+The waiver is by value, not by field name, so it cannot go stale into a free
+pass:
+
+- Repoint `origin` at *yet another* repository and verify exits `2` again,
+  naming the field — the receipt says nothing about that new value.
+- A receipt written by template-press **4.1 or earlier** records field names
+  only (`origin_mismatch_accepted = ["owner", "repo_name"]`) and so cannot say
+  which value was accepted. It is not honored: verify exits `2` exactly as it
+  did before. Re-press with `--force --accept-origin-mismatch` to write a
+  value-bearing receipt, or repoint `origin` at the destination:
+
+  ```bash
+  git -C <target> remote set-url origin https://github.com/<owner>/<repo_name>.git
+  press verify --target <target>
+  ```
+
+- Nothing else is waived. A `package_name`, `app_name`, `author`, or `email`
+  mismatch still exits `2`, and so does an origin mismatch on a target with no
+  receipt at all.
+
+The `note:` lines are prose-mode only; `press verify --json` keeps its contract
+that the JSON object is the whole of stdout, and its payload is unchanged.
 
 Notices and warnings appear only on a run that clears every plan-time gate —
 they are printed with the plan, not when the guard makes the decision. A run

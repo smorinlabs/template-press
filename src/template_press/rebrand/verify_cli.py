@@ -14,7 +14,10 @@ Flow (Decisions 2-6):
    ``mismatches(source, discover(target))`` plus a PRESENCE check — for every
    field discovery could not confirm, the declared value must occur at least
    once in the target's ``scan_paths`` corpus. A wholly-undiscoverable-and-absent
-   identity is ``unverifiable``. Any problem -> **2**.
+   identity is ``unverifiable``. An ``owner``/``repo_name`` mismatch whose
+   discovered value is the EXACT one a prior ``--accept-origin-mismatch`` press
+   recorded in the receipt is waived (a ``note:``); any other value still
+   refuses. Any remaining problem -> **2**.
 3. Load the ``[verify]`` config (shared file with ``[rules]``). Any two SOURCE
    fields equal -> WARN; with ``equal_fields == "error"`` the equality is
    remembered to force **1**.
@@ -59,6 +62,7 @@ from template_press.rebrand.inventory import (
 )
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.receipt import (
+    accepted_origin_from_receipt,
     read_receipt,
     removed_files_from_receipt,
 )
@@ -201,13 +205,44 @@ def _effective_scan_fields(
     return (*fields, *extra)
 
 
+def _honor_accepted_origin(
+    problems: list[str], found: Discovered, accepted: dict[str, str]
+) -> tuple[list[str], dict[str, str]]:
+    """Drop the `owner`/`repo_name` mismatches a prior press already accepted.
+
+    The press never touches git remotes, so a target pressed with
+    `--accept-origin-mismatch` keeps an `origin` naming a third repository
+    while its source-config names the destination — and the unrelaxed
+    `mismatches()` would refuse it forever. The receipt records the EXACT
+    value that was accepted, so a mismatch is dropped only when the value
+    discovered NOW equals the recorded one: repoint `origin` at yet another
+    repository and verify refuses again.
+
+    `mismatches()` itself is untouched — this filters its output by the same
+    `"{field}: "` prefix the press-side guard uses. Returns the surviving
+    problems and the fields actually honored (a field whose origin already
+    agrees raises no problem and so is never "honored").
+    """
+    honored: dict[str, str] = {}
+    for field_name in ("owner", "repo_name"):
+        recorded = accepted.get(field_name)
+        if recorded is None or getattr(found, field_name) != recorded:
+            continue
+        remaining = [p for p in problems if not p.startswith(f"{field_name}: ")]
+        if remaining != problems:
+            honored[field_name] = recorded
+            problems = remaining
+    return problems, honored
+
+
 def _preflight(
     target: Path,
     source: Identity,
     rules: Rules,
     scan_fields: Sequence[str],
     substring_fields: frozenset[str],
-) -> list[str]:
+    accepted_origin: dict[str, str],
+) -> tuple[list[str], dict[str, str]]:
     """Consistency + presence check against the REAL target; problems -> 2.
 
     Presence is required only for the fields ``verify`` will actually scan
@@ -224,9 +259,15 @@ def _preflight(
     (``[verify] substring_fields`` unioned with ``[rules]
     substring_rewrite_fields``), so presence is decided by each field's own
     matcher mode rather than a fixed boundary match — see ``_value_present``.
+
+    ``accepted_origin`` is the target's own receipt record of an
+    ``--accept-origin-mismatch`` press; the second return value names the
+    fields whose mismatch it waived (see ``_honor_accepted_origin``).
     """
     found = discover(target)
-    problems = list(mismatches(source, found))
+    problems, honored = _honor_accepted_origin(
+        list(mismatches(source, found)), found, accepted_origin
+    )
     discovered = _discovered_map(found)
     declared = source.as_dict()
     # Only scanned fields that discovery can confirm (skip derived forms like
@@ -243,7 +284,7 @@ def _preflight(
         source.display_name is not None and "display_name" in scan_fields
     )
     if not undiscoverable and not check_display_name:
-        return problems
+        return problems, honored
     corpus = _target_text_corpus(target, rules)
     if check_display_name and not _value_present(
         "display_name", source.display_name, corpus, substring_fields
@@ -253,7 +294,7 @@ def _preflight(
             "target — stale or mistyped?"
         )
     if not undiscoverable:
-        return problems
+        return problems, honored
     absent = [
         f
         for f in undiscoverable
@@ -270,7 +311,7 @@ def _preflight(
             f"anywhere in the target (undiscoverable and absent)"
             for f in absent
         )
-    return problems
+    return problems, honored
 
 
 def _equal_pair(source: Identity) -> tuple[str, str] | None:
@@ -436,13 +477,29 @@ def verify_command(argv: list[str] | None = None) -> int:
             scan_fields, rules.substring_rewrite_fields
         )
         scan_substring = cfg.substring_fields | rules.substring_rewrite_fields
-        problems = _preflight(target, source, rules, scan_fields, scan_substring)
+        # The target's OWN receipt (not the sandbox copy's): a prior
+        # `--accept-origin-mismatch` press records the exact origin values it
+        # accepted, and preflight waives precisely those.
+        accepted_origin = accepted_origin_from_receipt(read_receipt(target))
+        problems, honored_origin = _preflight(
+            target, source, rules, scan_fields, scan_substring, accepted_origin
+        )
     except _CONFIG_ERRORS as exc:
         return _fail(f"preflight failed: {exc}")
     if problems:
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)
         return 2
+    # Announced only once preflight has cleared, and never under --json (whose
+    # contract is that the JSON object is the whole of stdout): a "note:
+    # accepted" line printed alongside a refusal would read as a contradiction,
+    # exactly as on the press side.
+    if not args.as_json:
+        for field_name, value in honored_origin.items():
+            print(
+                f"note: {field_name}: origin {value!r} accepted by the press "
+                f"receipt (--accept-origin-mismatch)"
+            )
 
     equal_pair = _equal_pair(source)
     if equal_pair is not None:

@@ -7,7 +7,13 @@ import pytest
 
 from template_press.rebrand.engine import ApplyReport
 from template_press.rebrand.identity import ValidationError
-from template_press.rebrand.receipt import RECEIPT_REL, read_receipt, write_receipt
+from template_press.rebrand.receipt import (
+    RECEIPT_REL,
+    OriginDecision,
+    accepted_origin_from_receipt,
+    read_receipt,
+    write_receipt,
+)
 from template_press.rebrand.safety import ContainmentError
 
 from .conftest import DEST, SOURCE, requires_symlink
@@ -64,3 +70,75 @@ def test_write_and_read_receipt_escapes_special_chars(tmp_path: Path):
     data = tomllib.loads(raw)
     assert data["press"]["from"]["author"] == 'Demo "Quoted" Back\\slash'
     assert data["press"]["to"]["author"] == "Line1\nLine2"
+
+
+def test_origin_mismatch_accepted_is_a_sorted_inline_table(tmp_path: Path):
+    """The accepted origin VALUES (not merely the field names) are recorded,
+    keys sorted, so `press verify` can waive exactly those and nothing else."""
+    write_receipt(
+        tmp_path,
+        SOURCE,
+        DEST,
+        ApplyReport(),
+        origin=OriginDecision(
+            mismatch_accepted=(("repo_name", "else"), ("owner", "someone")),
+        ),
+    )
+    raw = read_receipt(tmp_path)
+    assert raw is not None
+    assert 'origin_mismatch_accepted = { owner = "someone", repo_name = "else" }' in raw
+    assert tomllib.loads(raw)["press"]["origin_mismatch_accepted"] == {
+        "owner": "someone",
+        "repo_name": "else",
+    }
+    assert accepted_origin_from_receipt(raw) == {
+        "owner": "someone",
+        "repo_name": "else",
+    }
+
+
+def test_origin_mismatch_accepted_round_trips_special_characters(tmp_path: Path):
+    """The value comes straight from `.git/config` and is never validated, so
+    the writer must escape it and the reader must return it verbatim."""
+    write_receipt(
+        tmp_path,
+        SOURCE,
+        DEST,
+        ApplyReport(),
+        origin=OriginDecision(mismatch_accepted=(("owner", 'some"one\x1b'),)),
+    )
+    raw = read_receipt(tmp_path)
+    assert raw is not None
+    assert accepted_origin_from_receipt(raw) == {"owner": 'some"one\x1b'}
+
+
+def test_accepted_origin_from_receipt_omits_the_key_when_nothing_was_accepted(
+    tmp_path: Path,
+):
+    write_receipt(tmp_path, SOURCE, DEST, ApplyReport())
+    raw = read_receipt(tmp_path)
+    assert raw is not None
+    assert "origin_mismatch_accepted" not in raw
+    assert accepted_origin_from_receipt(raw) == {}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        None,
+        "",
+        "[press\nnot toml",
+        "press = 1\n",
+        # The 4.1 list form: field names with no values — unusable, and
+        # trusting it would waive ANY future origin value for those fields.
+        '[press]\norigin_mismatch_accepted = ["owner", "repo_name"]\n',
+        "[press]\norigin_mismatch_accepted = 3\n",
+    ],
+)
+def test_accepted_origin_from_receipt_tolerates_garbage(text: str | None):
+    assert accepted_origin_from_receipt(text) == {}
+
+
+def test_accepted_origin_from_receipt_drops_non_string_values():
+    text = "[press]\norigin_mismatch_accepted = { owner = 3, repo_name = 'else' }\n"
+    assert accepted_origin_from_receipt(text) == {"repo_name": "else"}

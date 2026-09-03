@@ -29,14 +29,20 @@ class OriginDecision:
     discovered value disagreed with the source-config but matched the
     DESTINATION identity, so the guard accepted them instead of refusing.
     It is recorded in the receipt so the relaxation stays auditable after
-    the press. `mismatch_accepted` lists the fields whose discovered value
-    matched NEITHER identity and were accepted only because the operator
-    passed `--accept-origin-mismatch`. A field appears in at most one of
-    the two lists: destination-equality is tried first.
+    the press. `mismatch_accepted` pairs each field whose discovered value
+    matched NEITHER identity — accepted only because the operator passed
+    `--accept-origin-mismatch` — with that discovered value. A field appears
+    in at most one of the two: destination-equality is tried first.
+
+    `named_destination` needs no value (it equals the destination's, which
+    the press writes into the source-config, so `press verify` never sees it
+    as a mismatch). `mismatch_accepted` carries its value because that is
+    the only thing that lets `press verify` waive the acceptance safely: a
+    field-name-only record would waive whatever `origin` says NEXT.
     """
 
     named_destination: tuple[str, ...] = ()
-    mismatch_accepted: tuple[str, ...] = ()
+    mismatch_accepted: tuple[tuple[str, str], ...] = ()
 
 
 def read_receipt(target: Path) -> str | None:
@@ -94,14 +100,23 @@ def write_receipt(
     # non-GitHub one) — so every reader must tolerate their absence.
     named = origin.named_destination if origin is not None else ()
     accepted = origin.mismatch_accepted if origin is not None else ()
-    origin_lines = [
-        f"{key} = [" + ", ".join(toml_string(f) for f in sorted(fields)) + "]"
-        for key, fields in (
-            ("origin_named_destination", named),
-            ("origin_mismatch_accepted", accepted),
+    origin_lines = []
+    if named:
+        origin_lines.append(
+            "origin_named_destination = ["
+            + ", ".join(toml_string(f) for f in sorted(named))
+            + "]"
         )
-        if fields
-    ]
+    if accepted:
+        # An inline table of field -> the EXACT origin value accepted, keys
+        # sorted. `press verify` waives a mismatch only when the value it
+        # discovers equals the one recorded here; a name-only list (the 4.1
+        # shape) would waive any future value, so it is not honored.
+        origin_lines.append(
+            "origin_mismatch_accepted = { "
+            + ", ".join(f"{f} = {toml_string(v)}" for f, v in sorted(accepted))
+            + " }"
+        )
     lines = [
         "# press/press-receipt.toml — written by template-press AFTER the no-leak",
         "# verification pass. Presence means: this rebrand completed and was",
@@ -161,6 +176,37 @@ def write_receipt(
             f"reason = {toml_string(reason)}",
         ]
     return write_control(target, RECEIPT_REL, "\n".join(lines) + "\n")
+
+
+def accepted_origin_from_receipt(text: str | None) -> dict[str, str]:
+    """The exact `origin` values a prior `--accept-origin-mismatch` press
+    accepted, as ``{field: value}``.
+
+    The press never touches git remotes, so a flag-accepted target keeps an
+    ``origin`` naming a third repository while its source-config names the
+    destination. `press verify` honors that acceptance by dropping a
+    mismatch whose DISCOVERED value equals the one recorded here — never by
+    field name alone, which would waive whatever the remote says next.
+
+    Tolerant reader, like `removed_files_from_receipt`: no receipt,
+    unparsable TOML, an absent key, the 4.1 list-of-field-names shape, or a
+    non-string value all yield nothing for that entry. Failing closed here
+    means verify refuses exactly as it did before the receipt was honored —
+    it can never waive more than the receipt actually proves.
+    """
+    if not text:
+        return {}
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return {}
+    press_table = data.get("press", {})
+    if not isinstance(press_table, dict):
+        return {}
+    accepted = press_table.get("origin_mismatch_accepted", {})
+    if not isinstance(accepted, dict):
+        return {}
+    return {k: v for k, v in accepted.items() if isinstance(v, str)}
 
 
 def removed_files_from_receipt(text: str | None) -> dict[str, str]:

@@ -312,23 +312,14 @@ def test_accept_origin_mismatch_proceeds_with_warning_and_receipt(
         "warning: owner: source-config 'demolabs', repository 'someone', "
         "destination 'potatolabs' — proceeding on --accept-origin-mismatch"
     ) in out
-    assert 'origin_mismatch_accepted = ["owner", "repo_name"]' in (
+    assert 'origin_mismatch_accepted = { owner = "someone", repo_name = "else" }' in (
         src_target / RECEIPT_REL
     ).read_text(encoding="utf-8")
 
 
-def test_flag_accepted_press_leaves_verify_refusing_until_origin_repointed(
-    src_target, tmp_path, capsys
-):
-    """The receipt RECORDS the acceptance; it does not waive it for verify.
-
-    After the press, press-source.toml names the destination but ``origin``
-    still names the third repository, so ``press verify`` — which calls the
-    untouched ``mismatches()`` — refuses with the same message. Documented
-    limitation (cli.md); a verify-side policy is P12-T-defer-6.
-    """
-    from template_press.rebrand.verify_cli import verify_command
-
+def _flag_accepted_press(src_target: Path, tmp_path: Path) -> str:
+    """Press ``src_target`` with an ``origin`` naming a third repository,
+    accepted by the flag; returns the receipt text."""
     write_source_config(src_target)
     _set_origin(src_target, "https://github.com/someone/else.git")
     assert (
@@ -343,15 +334,93 @@ def test_flag_accepted_press_leaves_verify_refusing_until_origin_repointed(
         )
         == 0
     )
-    receipt = (src_target / RECEIPT_REL).read_text(encoding="utf-8")
-    assert 'origin_mismatch_accepted = ["owner", "repo_name"]' in receipt
+    return (src_target / RECEIPT_REL).read_text(encoding="utf-8")
+
+
+def test_flag_accepted_press_verify_honors_the_receipt(src_target, tmp_path, capsys):
+    """P12-T-defer-6: the receipt records the EXACT accepted origin values,
+    and ``press verify`` waives precisely those.
+
+    The press never touches git remotes, so after a flag-accepted press
+    ``press-source.toml`` names the destination while ``origin`` still names
+    the third repository. Because the receipt names that third repository's
+    exact `owner`/`repo_name`, verify drops those two mismatches and reaches
+    the same verdict it would on a target whose origin was repointed (0).
+    """
+    from template_press.rebrand.verify_cli import verify_command
+
+    receipt = _flag_accepted_press(src_target, tmp_path)
+    assert (
+        'origin_mismatch_accepted = { owner = "someone", repo_name = "else" }'
+        in receipt
+    )
+    capsys.readouterr()
+    assert verify_command(["--target", str(src_target)]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "note: owner: origin 'someone' accepted by the press receipt "
+        "(--accept-origin-mismatch)"
+    ) in out
+    assert (
+        "note: repo_name: origin 'else' accepted by the press receipt "
+        "(--accept-origin-mismatch)"
+    ) in out
+
+
+def test_flag_accepted_receipt_does_not_waive_a_different_origin(
+    src_target, tmp_path, capsys
+):
+    """The waiver is by VALUE, not by field name: repoint ``origin`` at yet
+    another third repository and verify refuses again, naming the field."""
+    from template_press.rebrand.verify_cli import verify_command
+
+    _flag_accepted_press(src_target, tmp_path)
+    _set_origin(src_target, "https://github.com/elsewhere/other.git")
+    capsys.readouterr()
+    assert verify_command(["--target", str(src_target)]) == 2
+    err = capsys.readouterr().err
+    assert "owner: source-config says 'potatolabs' but target shows 'elsewhere'" in err
+    assert (
+        "repo_name: source-config says 'potato-launcher' but target shows 'other'"
+        in err
+    )
+
+
+def test_legacy_list_form_receipt_is_not_honored_by_verify(
+    src_target, tmp_path, capsys
+):
+    """A 4.1-era receipt records field NAMES only, so it cannot say which
+    value was accepted. The tolerant reader returns nothing for it and verify
+    refuses exactly as it did before (fail closed)."""
+    from template_press.rebrand.verify_cli import verify_command
+
+    receipt = _flag_accepted_press(src_target, tmp_path)
+    legacy = receipt.replace(
+        'origin_mismatch_accepted = { owner = "someone", repo_name = "else" }',
+        'origin_mismatch_accepted = ["owner", "repo_name"]',
+    )
+    assert legacy != receipt
+    (src_target / RECEIPT_REL).write_text(legacy, encoding="utf-8")
     capsys.readouterr()
     assert verify_command(["--target", str(src_target)]) == 2
     err = capsys.readouterr().err
     assert "owner: source-config says 'potatolabs' but target shows 'someone'" in err
-    assert (
-        "repo_name: source-config says 'potato-launcher' but target shows 'else'" in err
-    )
+
+
+def test_verify_json_after_flag_accepted_press_is_one_json_object(
+    src_target, tmp_path, capsys
+):
+    """The honored-receipt notes are prose-mode only: ``--json`` keeps its
+    contract that the JSON object is the whole of stdout."""
+    from template_press.rebrand.verify_cli import verify_command
+
+    _flag_accepted_press(src_target, tmp_path)
+    capsys.readouterr()
+    assert verify_command(["--target", str(src_target), "--json"]) == 0
+    out = capsys.readouterr().out
+    assert json.loads(out)["verified"] is True
+    assert "note:" not in out
+    assert len(out.strip().splitlines()) == 1
 
 
 def test_flagless_receipt_carries_no_origin_mismatch_row(src_target, tmp_path, capsys):
@@ -491,7 +560,7 @@ def test_origin_relaxations_are_recorded_in_separate_receipt_lists(
     assert "warning: owner" not in out
     receipt = (src_target / RECEIPT_REL).read_text(encoding="utf-8")
     assert 'origin_named_destination = ["owner"]' in receipt
-    assert 'origin_mismatch_accepted = ["repo_name"]' in receipt
+    assert 'origin_mismatch_accepted = { repo_name = "else" }' in receipt
 
 
 def test_origin_warning_never_precedes_a_diagnostics_json_refusal(

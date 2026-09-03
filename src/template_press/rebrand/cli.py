@@ -270,7 +270,7 @@ def _relax_origin_guard(
         return problems, OriginDecision()
     declared = source.as_dict()
     relaxed: list[str] = []
-    accepted: list[str] = []
+    accepted: list[tuple[str, str]] = []
     for field_name in ("owner", "repo_name"):
         discovered_value = getattr(found, field_name)
         if discovered_value is None or discovered_value == declared[field_name]:
@@ -278,7 +278,10 @@ def _relax_origin_guard(
         if discovered_value == getattr(dest, field_name):
             relaxed.append(field_name)
         elif accept_origin_mismatch:
-            accepted.append(field_name)
+            # The EXACT value, not just the field name: it is what the
+            # receipt records and what lets `press verify` waive this one
+            # acceptance without waiving whatever `origin` says next.
+            accepted.append((field_name, discovered_value))
         else:
             continue
         problems = [p for p in problems if not p.startswith(f"{field_name}: ")]
@@ -321,7 +324,7 @@ def _render_origin_mismatch_warnings(
         f"{getattr(source, field_name)!r}, repository "
         f"{getattr(found, field_name)!r}, destination "
         f"{getattr(dest, field_name)!r} — proceeding on --accept-origin-mismatch"
-        for field_name in origin.mismatch_accepted
+        for field_name, _ in origin.mismatch_accepted
     ]
 
 
