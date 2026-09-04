@@ -3,12 +3,21 @@
 # (design 0006 §6): lockfiles regenerate under the pressed identity, and
 # the release history resets to a stub instead of leaking.
 
-# PROJECTS.md is reset below (not a default-excluded file like
-# CHANGELOG.md), so it must be declared excluded from the replace pass —
-# otherwise the reset target would also be rewritten, making the result
-# depend on pass order.
+# PROJECTS.md and the release-please manifest are reset below (neither is a
+# default-excluded file like CHANGELOG.md), so they must be excluded from the
+# replace pass. Otherwise those reset targets would also be rewritten, making
+# their results depend on pass order.
 [rules]
-extra_exclude_files = ["PROJECTS.md"]
+extra_exclude_files = [".release-please-manifest.json", "PROJECTS.md"]
+
+[[reset]]
+file = ".release-please-manifest.json"
+stub = "{\".\": \"0.1.0\"}\n"
+
+[[edit]]
+file = "pyproject.toml"
+command = ["uv", "version", "0.1.0", "--frozen"]
+expect = 'version = "0.1.0"'
 
 [[regenerate]]
 file = "uv.lock"
