@@ -29,7 +29,7 @@ from typing import Any
 import pytest
 
 from template_press.rebrand import verifier as verifier_mod
-from template_press.rebrand.cli import main
+from template_press.rebrand.cli import _partial_rewrite_restore_hint, main
 from template_press.rebrand.config import SOURCE_CONFIG_REL, render_source_config
 from template_press.rebrand.engine import ApplyReport
 from template_press.rebrand.pathing import exempt_regenerated_paths
@@ -312,9 +312,19 @@ def test_exceptional_later_launch_restores_control_files_and_planted_receipt(
         ),
     )
     late = src_target / "scripts" / "late.py"
+    # Reproduce Windows Git semantics on every platform: mode-only changes are
+    # not tracked when core.filemode is false, although the working-tree file
+    # can still be executable on POSIX.
+    _git(src_target, "config", "core.filemode", "false")
     late.chmod(0o755)
     _git(src_target, "add", "scripts/late.py")
-    _git(src_target, "commit", "-m", "test: make late command executable")
+    _git(
+        src_target,
+        "commit",
+        "--allow-empty",
+        "-m",
+        "test: make late command executable",
+    )
     rules_before = (src_target / RULES_REL).read_bytes()
 
     assert _press(src_target, tmp_path) == 1
@@ -374,12 +384,19 @@ def test_post_validation_output_error_preserves_successful_control_writes(
     assert 'package_name = "demo_widget"' not in source_config
 
 
-def test_keyboard_interrupt_restores_controls_then_propagates(
+@pytest.mark.parametrize(
+    "interruption",
+    [KeyboardInterrupt, SystemExit],
+    ids=["keyboard-interrupt", "system-exit"],
+)
+def test_interruption_restores_controls_prints_recovery_then_propagates(
     src_target: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    interruption: type[BaseException],
 ):
-    """Operator interruption is outside Exception but inside the armed phase."""
+    """BaseException interruptions restore controls and explain tree recovery."""
     import template_press.rebrand.cli as cli_mod
 
     _prepare(
@@ -395,11 +412,13 @@ def test_keyboard_interrupt_restores_controls_then_propagates(
     def interrupt_after_tampering(target: Path, *_args: Any, **_kwargs: Any) -> None:
         (target / RULES_REL).write_text("tampered\n", encoding="utf-8")
         (target / RECEIPT_REL).write_text("forged\n", encoding="utf-8")
-        raise KeyboardInterrupt
+        raise interruption()
 
     monkeypatch.setattr(cli_mod, "execute_edits", interrupt_after_tampering)
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(interruption):
         _press(src_target, tmp_path)
+    err = capsys.readouterr().err
+    assert _partial_rewrite_restore_hint(src_target) in err
     assert (src_target / RULES_REL).read_bytes() == rules_before
     assert not (src_target / RECEIPT_REL).exists()
 

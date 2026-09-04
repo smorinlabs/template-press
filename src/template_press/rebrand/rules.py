@@ -456,6 +456,16 @@ def _control_alias_key(file: str) -> str:
     return "/".join(_alias_component(part) for part in file.split("/"))
 
 
+def _filesystem_alias_note(file: str, other_file: str) -> str:
+    """Describe two distinct declared paths that may resolve to one file."""
+    if file == other_file:
+        return ""
+    return (
+        f"; declared paths {file!r} and {other_file!r} are one file on a "
+        "case-insensitive, normalization-insensitive, or Windows filesystem"
+    )
+
+
 def _alias_component(part: str) -> str:
     """Reduce one path component to the identity a filesystem may collapse.
 
@@ -927,60 +937,71 @@ def _validate_writer_overlaps(
 ) -> None:
     """Reject any same-file writer pair active on at least one platform."""
 
-    seen_regenerate: dict[str, list[frozenset[str]]] = {}
+    seen_regenerate: dict[str, list[tuple[str, frozenset[str]]]] = {}
     for declaration in regenerate:
         file = declaration.rule.file
-        for earlier in seen_regenerate.get(file, []):
+        key = _control_alias_key(file)
+        for earlier_file, earlier in seen_regenerate.get(key, []):
             overlap = earlier & declaration.platforms
             if overlap:
                 raise ValidationError(
                     f"{RULES_REL}: {file} declared by more than one "
                     f"[[regenerate]] table with platform overlap "
                     f"{sorted(overlap)!r} — each platform permits one writer"
+                    f"{_filesystem_alias_note(file, earlier_file)}"
                 )
-        seen_regenerate.setdefault(file, []).append(declaration.platforms)
+        seen_regenerate.setdefault(key, []).append((file, declaration.platforms))
 
-    seen_reset: dict[str, list[frozenset[str]]] = {}
+    seen_reset: dict[str, list[tuple[str, frozenset[str]]]] = {}
     for declaration in reset:
         file = declaration.rule.file
-        for earlier in seen_reset.get(file, []):
+        key = _control_alias_key(file)
+        for earlier_file, earlier in seen_reset.get(key, []):
             overlap = earlier & declaration.platforms
             if overlap:
                 raise ValidationError(
                     f"{RULES_REL}: duplicate [[reset]] target {file!r} has "
                     f"platform overlap {sorted(overlap)!r} — each platform "
-                    f"permits one writer"
+                    f"permits one writer{_filesystem_alias_note(file, earlier_file)}"
                 )
-        seen_reset.setdefault(file, []).append(declaration.platforms)
+        seen_reset.setdefault(key, []).append((file, declaration.platforms))
 
     for regenerate_declaration in regenerate:
         for reset_declaration in reset:
-            if regenerate_declaration.rule.file != reset_declaration.rule.file:
+            regenerate_file = regenerate_declaration.rule.file
+            reset_file = reset_declaration.rule.file
+            if _control_alias_key(regenerate_file) != _control_alias_key(reset_file):
                 continue
             overlap = regenerate_declaration.platforms & reset_declaration.platforms
             if overlap:
-                file = regenerate_declaration.rule.file
                 raise ValidationError(
-                    f"{RULES_REL}: {file!r} has [[regenerate]] and [[reset]] "
+                    f"{RULES_REL}: {regenerate_file!r} has [[regenerate]] and "
+                    f"[[reset]] "
                     f"writer overlap on {sorted(overlap)!r} — each platform "
                     f"permits exactly one mechanism per file"
+                    f"{_filesystem_alias_note(regenerate_file, reset_file)}"
                 )
 
-    seen_remove: dict[str, list[frozenset[str]]] = {}
+    seen_remove: dict[str, list[tuple[str, frozenset[str]]]] = {}
     for declaration in remove:
         file = declaration.rule.file
-        for earlier in seen_remove.get(file, []):
+        key = _control_alias_key(file)
+        for earlier_file, earlier in seen_remove.get(key, []):
             overlap = earlier & declaration.platforms
             if overlap:
                 raise ValidationError(
                     f"{RULES_REL}: duplicate [[remove]] target {file!r} has "
                     f"platform overlap {sorted(overlap)!r}"
+                    f"{_filesystem_alias_note(file, earlier_file)}"
                 )
-        seen_remove.setdefault(file, []).append(declaration.platforms)
+        seen_remove.setdefault(key, []).append((file, declaration.platforms))
     for remove_declaration in remove:
+        remove_file = remove_declaration.rule.file
         for reset_declaration in reset:
             stub_file = reset_declaration.rule.stub_file
-            if stub_file is None or stub_file != remove_declaration.rule.file:
+            if stub_file is None or _control_alias_key(stub_file) != _control_alias_key(
+                remove_file
+            ):
                 continue
             overlap = reset_declaration.platforms & remove_declaration.platforms
             if overlap:
@@ -988,22 +1009,23 @@ def _validate_writer_overlaps(
                     f"{RULES_REL}: {stub_file!r} is a [[reset]] stub_file and "
                     f"a [[remove]] target on {sorted(overlap)!r} — the "
                     f"removal would destroy the stub source; drop one "
-                    f"declaration"
+                    f"declaration{_filesystem_alias_note(stub_file, remove_file)}"
                 )
         for other_kind, others in (
             ("[[regenerate]]", regenerate),
             ("[[reset]]", reset),
         ):
             for other in others:
-                if other.rule.file != remove_declaration.rule.file:
+                other_file = other.rule.file
+                if _control_alias_key(other_file) != _control_alias_key(remove_file):
                     continue
                 overlap = other.platforms & remove_declaration.platforms
                 if overlap:
-                    file = remove_declaration.rule.file
                     raise ValidationError(
-                        f"{RULES_REL}: {file!r} has [[remove]] and "
+                        f"{RULES_REL}: {remove_file!r} has [[remove]] and "
                         f"{other_kind} overlap on {sorted(overlap)!r} — a "
                         f"removed file cannot also be rebuilt or reset"
+                        f"{_filesystem_alias_note(remove_file, other_file)}"
                     )
 
     # Keyed by filesystem-alias identity, not by declared string: `meta.toml`

@@ -34,6 +34,11 @@ def _reset(file: str, stub: str, platforms: str | None = None) -> str:
     return f'[[reset]]\nfile = "{file}"\nstub = "{stub}"\n{selector}'
 
 
+def _remove(file: str, platforms: str | None = None) -> str:
+    selector = "" if platforms is None else f"platforms = {platforms}\n"
+    return f'[[remove]]\nfile = "{file}"\nreason = "template-only"\n{selector}'
+
+
 def test_supported_platform_vocabulary_is_exact() -> None:
     assert rules_module.SUPPORTED_PLATFORMS == SUPPORTED
 
@@ -192,6 +197,65 @@ def test_overlapping_writers_are_rejected_globally(
 ) -> None:
     with pytest.raises(ValidationError, match="overlap"):
         _load_selected(_write_rules(tmp_path, first + second), "darwin")
+
+
+_ALIAS_EXCLUSIONS = (
+    '[rules]\nextra_exclude_files = ["artifact.lock", "ARTIFACT.LOCK.", '
+    '"artifact.out"]\n'
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _regenerate("artifact.lock", "first") + _regenerate("ARTIFACT.LOCK.", "second"),
+        _reset("artifact.lock", "first") + _reset("ARTIFACT.LOCK.", "second"),
+        _regenerate("artifact.lock", "first") + _reset("ARTIFACT.LOCK.", "second"),
+        _remove("artifact.lock") + _remove("ARTIFACT.LOCK."),
+        _remove("artifact.lock") + _regenerate("ARTIFACT.LOCK.", "second"),
+        _remove("artifact.lock") + _reset("ARTIFACT.LOCK.", "second"),
+        (
+            '[[reset]]\nfile = "artifact.out"\n'
+            'stub_file = "artifact.lock"\n' + _remove("ARTIFACT.LOCK.")
+        ),
+    ],
+    ids=[
+        "duplicate-regenerate",
+        "duplicate-reset",
+        "regenerate-reset",
+        "duplicate-remove",
+        "remove-regenerate",
+        "remove-reset",
+        "reset-stub-remove",
+    ],
+)
+def test_alias_equivalent_writer_conflicts_are_rejected(
+    tmp_path: Path, body: str
+) -> None:
+    """Writer safety uses filesystem identity, while diagnostics retain both
+    declaration spellings so the target author can correct the exact tables."""
+    with pytest.raises(ValidationError) as exc:
+        _load_selected(_write_rules(tmp_path, _ALIAS_EXCLUSIONS + body), "darwin")
+
+    message = str(exc.value)
+    assert "artifact.lock" in message
+    assert "ARTIFACT.LOCK." in message
+
+
+def test_alias_equivalent_writers_remain_allowed_on_disjoint_platforms(
+    tmp_path: Path,
+) -> None:
+    target = _write_rules(
+        tmp_path,
+        _ALIAS_EXCLUSIONS
+        + _regenerate("artifact.lock", "mac", '["darwin"]')
+        + _reset("ARTIFACT.LOCK.", "windows", '["win32"]'),
+    )
+
+    assert _load_selected(target, "darwin").rules.regenerate[0].file == (
+        "artifact.lock"
+    )
+    assert _load_selected(target, "win32").rules.reset[0].file == "ARTIFACT.LOCK."
 
 
 def test_active_declarations_preserve_source_order(tmp_path: Path) -> None:

@@ -1071,10 +1071,13 @@ def _press(
     except BaseException:
         # KeyboardInterrupt and SystemExit are deliberately re-raised, but an
         # interruption during the armed command phase must not leave a forged
-        # receipt or altered rules behind.
+        # receipt or altered rules behind, and the target's broader partial
+        # rewrite still needs the same operator recovery guidance as an
+        # ordinary exception.
         restore_problems = []
         if restore_controls_on_exception:
             restore_problems = restore_control_files(target, control_snapshot)
+            print(_partial_rewrite_restore_hint(target), file=sys.stderr)
         _report_control_restore_problems(restore_problems)
         raise
 
