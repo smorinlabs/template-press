@@ -323,8 +323,9 @@ def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
         nested = [v for v in value if "/" in v or "\\" in v]
         if nested:
             raise ValidationError(
-                f"{RULES_REL}: [rules] {key} entries are single directory "
-                f"NAMES matched at any depth, not paths — invalid: {nested}"
+                f"{RULES_REL}: [rules] {key} entries are single path-component "
+                "names matched at any depth, including basenames; "
+                f"multi-component paths are invalid: {nested}"
             )
     return value
 

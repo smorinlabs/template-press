@@ -400,9 +400,10 @@ def _run_declared(
             f"{kind} {rule.file} (command exited {result.returncode})"
         )
         return False
-    # Postconditions (D3): the exemption is earned by RESULT — the
-    # produced output must exist, still be a contained regular file,
-    # decode as UTF-8, and pass the paranoid changed-fields scan.
+    # Postconditions (D3): every declared command's result must exist, still be
+    # a contained regular file, decode as UTF-8, and pass the paranoid
+    # changed-fields scan. Regenerations use that evidence for a verifier
+    # exemption; edits never receive one.
     problems = _postcondition_problems(
         target,
         out_rel,
@@ -778,17 +779,17 @@ def scan_regenerated_output(
     table: SubstitutionTable | None = None,
     scan_mode: str = "strict",
 ) -> list[str]:
-    """Paranoid changed-fields scan of one produced output (D3).
+    """Paranoid changed-fields scan of one command-produced output (D3).
 
-    The exemption being earned is exemption from VERIFY, whose reason for
-    existing is a stricter matcher than the doctor's — so the evidence uses
-    ``matcher.find_occurrences`` (case/separator-glued forms included),
-    covers rendered ``[[replace]]`` FROM literals (scopes are in SOURCE
-    coordinates, so the file's destination path is reverse-mapped through
-    the renames before the glob check), and covers every component of the
-    TRANSLATED output path (an identity token that doubles as the
-    lockfile's own name survives in the filename precisely because the
-    output is excluded from the rename pass).
+    For ``[[regenerate]]``, successful evidence supports an exemption from
+    VERIFY, whose matcher is stricter than the doctor's. ``[[edit]]`` uses the
+    same scan but receives no exemption. The evidence uses
+    ``matcher.find_occurrences`` (case/separator-glued forms included), covers
+    rendered ``[[replace]]`` FROM literals (scopes are in SOURCE coordinates,
+    so the file's destination path is reverse-mapped through the renames before
+    the glob check), and covers every component of the TRANSLATED output path
+    (an identity token that doubles as the lockfile's own name survives in the
+    filename precisely because the output is excluded from the rename pass).
     """
     problems: list[str] = []
     source_scope = _reverse_output_path(translated_rel, renames, table)
