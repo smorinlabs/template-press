@@ -666,10 +666,11 @@ def preflight_edit_targets(target: Path, rules: Rules) -> list[str]:
 
     The ONE regeneration check deliberately absent is the UTF-8 pre-state
     gate: that one exists to stop a file the text scan cannot read from
-    buying the verify exemption, and an edit target never buys it — it stays
-    in the doctor's and ``press verify``'s surface either way. The edit
-    target is also NOT excluded from the rewrite pass, so unlike a
-    regeneration output it is rewritten first and edited second.
+    buying the command-based verify exemption, and an edit target never buys
+    it. A target's independent directory-name ``verify_ignore`` policy still
+    applies to later inventories. The edit target is also NOT excluded from
+    the rewrite pass, so unlike a regeneration output it is rewritten first
+    and edited second.
     """
     if not rules.edit:
         return []
@@ -964,8 +965,10 @@ def final_validation_pass(
 
     Edits are rechecked with their ``expect`` (E4): edits run before every
     regeneration, so a later regeneration undoing an earlier edit is exactly
-    the ordering this pass exists to catch. An edited file IS in the doctor's
-    surface, but the doctor knows nothing of ``expect``.
+    the ordering this pass exists to catch. An edit earns no command-based
+    doctor exemption, but the doctor knows nothing of ``expect`` and the
+    target's independent ``verify_ignore`` policy may still exclude the
+    edited file's directory later.
     """
     problems: list[str] = []
     for edit in edits:

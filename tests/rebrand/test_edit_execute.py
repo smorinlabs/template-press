@@ -2,12 +2,14 @@
 
 An edit AMENDS the file the replace pass has already rewritten, so it is the
 inverse of a regeneration in every direction that matters here: the target is
-never excluded from the rewrite, never exempt from ``press verify``, and the
-declared command must leave the declared ``expect`` substring behind. What it
-SHARES with a regeneration is the whole execution contract — cwd, no shell,
-deny-by-default env, pinned executable, the sink guards re-run before each
-launch, the post-command identity scan, control-file and Git-visibility
-snapshots, and the exit-1-no-receipt failure path.
+never excluded from the rewrite on an active edit platform, receives no
+command-based ``press verify`` exemption, and must contain the declared
+``expect`` substring afterward. The target's independent ``verify_ignore``
+policy remains available. What an edit SHARES with a regeneration is the whole
+execution contract — cwd, no shell, deny-by-default env, pinned executable,
+the sink guards re-run before each launch, the post-command identity scan,
+control-file and Git-visibility snapshots, and the exit-1-no-receipt failure
+path.
 
 E11 is the gate this file pins hardest: those snapshots used to be taken only
 when ``[[regenerate]]`` rules existed, so an edits-only target could change
@@ -639,9 +641,9 @@ def test_receipt_edit_argument_preserves_all_legacy_positional_slots(
 
 
 # ---------------------------------------------------------------------------
-# 8. Edits are never verification-exempt
+# 8. Edits never buy the regeneration exemption
 # ---------------------------------------------------------------------------
-def test_edit_paths_never_reach_the_verify_exemption(
+def test_edit_paths_never_reach_the_regeneration_exemption(
     src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """A regeneration exemption names a path no downstream inventory scans:
