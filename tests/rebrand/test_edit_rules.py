@@ -130,9 +130,9 @@ class TestExpectValidation:
     E4 binds the contract exactly: a NON-EMPTY PRINTABLE string. Only three
     shapes are refused — a non-string, the empty string, and a string
     carrying a control or otherwise non-printable character (which could not
-    be shown in the rendered plan or the receipt). A run of printable spaces
-    is a weak assertion but a legal one, and the parser is not the place to
-    second-guess the spec.
+    be written safely to the receipt or echoed in validation diagnostics). A
+    run of printable spaces is a weak assertion but a legal one, and the parser
+    is not the place to second-guess the spec.
     """
 
     @pytest.mark.parametrize(
@@ -316,6 +316,61 @@ class TestFileValidation:
         target = _write_rules(tmp_path, EDIT_PYPROJECT)
         (rule,) = load_rules(target).edit
         assert rule.file == "pyproject.toml"
+
+    @pytest.mark.parametrize(
+        "file",
+        [
+            "vendor/meta.toml",
+            "docs/vendor/meta.toml",
+            "docs/VENDOR. /meta.toml",
+            "build/meta.toml",
+            "docs/BUILD./meta.toml",
+            "docs/vendor",
+        ],
+    )
+    def test_excluded_component_rejected(self, tmp_path: Path, file: str):
+        target = _write_rules(
+            tmp_path,
+            '[rules]\nextra_exclude_dirs = ["vendor"]\n'
+            + EDIT_PYPROJECT.replace("pyproject.toml", file),
+        )
+        with pytest.raises(ValidationError, match="exclude_dirs"):
+            load_rules(target)
+
+    @pytest.mark.parametrize("other_kind", ["reset", "regenerate"])
+    def test_disjoint_writer_cannot_license_excluded_directory(
+        self, tmp_path: Path, other_kind: str
+    ):
+        other_args = 'stub = ""\n' if other_kind == "reset" else 'command = ["x"]\n'
+        target = _write_rules(
+            tmp_path,
+            '[rules]\nextra_exclude_dirs = ["vendor"]\n'
+            'extra_exclude_files = ["vendor/meta.toml"]\n'
+            + EDIT_PYPROJECT.replace("pyproject.toml", "vendor/meta.toml")
+            + 'platforms = ["darwin"]\n'
+            + f'[[{other_kind}]]\nfile = "vendor/meta.toml"\n'
+            + other_args
+            + 'platforms = ["win32"]\n',
+        )
+        with pytest.raises(ValidationError, match="exclude_dirs"):
+            load_selected_rules(target, platform="darwin")
+
+    @pytest.mark.parametrize(
+        "file", [".gitignore", "docs/.gitignore", "docs/.GITIGNORE. "]
+    )
+    def test_ignore_input_rejected(self, tmp_path: Path, file: str):
+        target = _write_rules(tmp_path, EDIT_PYPROJECT.replace("pyproject.toml", file))
+        with pytest.raises(ValidationError, match="Git visibility"):
+            load_rules(target)
+
+    @pytest.mark.parametrize("file", ["vendor-notes/meta.toml", ".gitignore.example"])
+    def test_similar_but_distinct_path_accepted(self, tmp_path: Path, file: str):
+        target = _write_rules(
+            tmp_path,
+            '[rules]\nextra_exclude_dirs = ["vendor"]\n'
+            + EDIT_PYPROJECT.replace("pyproject.toml", file),
+        )
+        assert load_rules(target).edit[0].file == file
 
 
 # ---------------------------------------------------------------------------

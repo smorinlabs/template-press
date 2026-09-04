@@ -592,7 +592,7 @@ def main(argv: list[str] | None = None) -> int:
         gate_problems += preflight_remove_targets(
             target, rules, previously_removed=frozenset(prior_removed)
         )
-        gate_problems += remove_command_conflicts(rules)
+        gate_problems += remove_command_conflicts(rules, plan.renames)
         if plan.table is not None:
             try:
                 validate_reset_visibility(
@@ -912,6 +912,7 @@ def _press(
                 for problem in post_problems:
                     print(f"  {problem}", file=sys.stderr)
                 _report_control_restore_problems(restore_problems)
+                print(_partial_rewrite_restore_hint(target), file=sys.stderr)
                 print(report.render(), file=sys.stderr)
                 return PressOutcome(
                     False,

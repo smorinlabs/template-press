@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import posixpath
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -126,22 +127,28 @@ def render_remove_plan(rules: Rules) -> str:
     return "\n".join(lines)
 
 
-def remove_command_conflicts(rules: Rules) -> list[str]:
-    """Refuse commands that name a path an active ``[[remove]]`` deletes.
+def remove_command_conflicts(rules: Rules, renamed: Mapping[str, str]) -> list[str]:
+    """Refuse standalone target-relative argv paths an active removal deletes.
 
     Removals run before edits and regenerations. Without this plan-time gate,
     dry-run succeeds but apply deletes the argv path before the command can
-    launch. Comparisons normalize path syntax and filesystem aliases, mirroring
-    the writer-overlap gate and ``stale_argv_elements``.
+    launch. Compare original and final paths, normalizing path syntax and
+    filesystem aliases. Like ``stale_argv_elements``, this is best-effort:
+    absolute paths, attached options, and command-language strings are not
+    interpreted as target-relative paths.
     """
 
-    removed = {_control_alias_key(r.file): r.file for r in rules.remove}
+    removed = {
+        _control_alias_key(path): r.file
+        for r in rules.remove
+        for path in (r.file, translate_path(r.file, renamed))
+    }
     if not removed:
         return []
     problems: list[str] = []
     for kind, declarations in (
-        ("regenerate", rules.regenerate),
         ("edit", rules.edit),
+        ("regenerate", rules.regenerate),
     ):
         for declaration in declarations:
             for element in declaration.command:
@@ -150,9 +157,11 @@ def remove_command_conflicts(rules: Rules) -> list[str]:
                 if removed_file is None:
                     continue
                 problems.append(
-                    f"remove target {removed_file}: also named in the [[{kind}]] "
-                    f"command for {declaration.file!r} — the removal would delete "
-                    f"it before the command runs; drop one declaration"
+                    f"remove target {removed_file!r}: argv element {element!r} "
+                    f"in the [[{kind}]] command for {declaration.file!r} names "
+                    f"its original or renamed location (including filesystem "
+                    f"aliases) — the removal would delete it before the command "
+                    f"runs; drop one declaration"
                 )
     return problems
 

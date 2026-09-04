@@ -229,6 +229,54 @@ def _receipt(target: Path) -> dict:
 # ---------------------------------------------------------------------------
 # 1. The success path
 # ---------------------------------------------------------------------------
+@pytest.mark.parametrize("flags", [("--dry-run",), ()], ids=["preview", "apply"])
+@pytest.mark.parametrize("excluded_dir", ["vendor", "build"])
+def test_excluded_edit_directory_refused_before_mutation(
+    src_target: Path, tmp_path: Path, capsys, excluded_dir, flags
+):
+    rel = f"{excluded_dir}/settings.toml"
+    _prepare(
+        src_target,
+        '[rules]\nextra_exclude_dirs = ["vendor"]\n'
+        + _edit_block(
+            rel,
+            command=_argv(PY, "scripts/subst.py", "0.1.0", "0.2.0", rel),
+            expect='version = "0.2.0"',
+        ),
+        extra={rel: 'name = "demo_widget"\nversion = "0.1.0"\n'},
+    )
+    before = (src_target / "pyproject.toml").read_bytes()
+    target_before = (src_target / rel).read_bytes()
+    assert _press(src_target, tmp_path, *flags) == 2
+    assert "exclude_dirs" in capsys.readouterr().err
+    assert (src_target / "pyproject.toml").read_bytes() == before
+    assert (src_target / rel).read_bytes() == target_before
+    assert not (src_target / RECEIPT_REL).exists()
+
+
+@pytest.mark.parametrize("flags", [("--dry-run",), ()], ids=["preview", "apply"])
+@pytest.mark.parametrize("rel", [".gitignore", "docs/.gitignore"])
+def test_declared_ignore_edit_refused_before_mutation(
+    src_target: Path, tmp_path: Path, capsys, rel, flags
+):
+    _prepare(
+        src_target,
+        _edit_block(
+            rel,
+            command=_argv(PY, "scripts/append.py", rel, "secrets/"),
+            expect="secrets/",
+        ),
+        extra={rel: "# ignore policy\n"},
+    )
+    before = (src_target / "pyproject.toml").read_bytes()
+    ignore_before = (src_target / rel).read_bytes()
+    assert _press(src_target, tmp_path, *flags) == 2
+    assert "Git visibility" in capsys.readouterr().err
+    assert (src_target / "pyproject.toml").read_bytes() == before
+    assert (src_target / rel).read_bytes() == ignore_before
+    assert not (src_target / RECEIPT_REL).exists()
+
+
 def test_successful_edit_amends_the_rewritten_file_and_is_receipted(
     src_target: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
@@ -619,9 +667,9 @@ def test_edit_target_under_a_renamed_prefix_translates_and_succeeds(
 # 6. E11 — the snapshots must not depend on [[regenerate]] existing
 # ---------------------------------------------------------------------------
 _E11_RULES = _edit_block(
-    ".gitignore",
+    "pyproject.toml",
     command=_argv(PY, "scripts/append.py", ".gitignore", "secrets/"),
-    expect="secrets/",
+    expect='version = "0.1.0"',
 )
 
 
@@ -629,7 +677,8 @@ def test_e11_edit_only_visibility_change_refuses_and_restores(
     src_target: Path, tmp_path: Path, capsys
 ):
     """An edits-only target changing Git's ignore policy mid-press must be
-    refused by the same revalidation that has always covered regenerations."""
+    refused by the same revalidation that has always covered regenerations.
+    The declared target is ordinary content; .gitignore is a side effect."""
     _prepare(src_target, _E11_RULES)
     rules_before = (src_target / RULES_REL).read_bytes()
     assert _press(src_target, tmp_path) == 1
@@ -744,6 +793,7 @@ def test_final_pass_refuses_a_regeneration_that_undoes_an_earlier_edit(
     err = capsys.readouterr().err
     assert "final pass: edit pyproject.toml" in err
     assert "does not contain the declared expect string" in err
+    assert _partial_rewrite_restore_hint(src_target) in err
     assert not (src_target / RECEIPT_REL).exists()
 
 

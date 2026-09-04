@@ -767,15 +767,22 @@ def _parse_edit(entry: object) -> _EditDeclaration:
         )
     file = _declared_rel_path("[[edit]] file", entry.get("file"))
     _reject_reserved("[[edit]]", file)
+    if _alias_component(file.rsplit("/", 1)[-1]) == ".gitignore":
+        raise ValidationError(
+            f"{RULES_REL}: [[edit]] target {file!r} controls Git visibility — "
+            f"declared commands must preserve ignore inputs; make intentional "
+            f"ignore-policy changes in a separate commit"
+        )
     command = _parse_command(entry, "[[edit]]", file)
     env = _parse_env(entry, "[[edit]]", file)
     expect = entry.get("expect")
     # E4 binds this exactly: a NON-EMPTY PRINTABLE string. Three shapes fail —
     # a non-string, the empty string, and anything carrying a character
-    # `str.isprintable` rejects (it could not be shown in the rendered plan or
-    # the receipt; that check also catches every whitespace character except
-    # the plain space, tabs included). A run of spaces is a weak post-condition
-    # but a legal one, and the parser does not get to tighten the spec.
+    # `str.isprintable` rejects (it could not be written safely to the receipt
+    # or echoed in validation diagnostics; that check also catches every
+    # whitespace character except the plain space, tabs included). A run of
+    # spaces is a weak post-condition but a legal one, and the parser does not
+    # get to tighten the spec.
     if not isinstance(expect, str) or not expect:
         raise ValidationError(
             f"{RULES_REL}: [[edit]] {file!r}: expect is required and must be a "
@@ -785,8 +792,8 @@ def _parse_edit(entry: object) -> _EditDeclaration:
     if any(not ch.isprintable() for ch in expect):
         raise ValidationError(
             f"{RULES_REL}: [[edit]] {file!r}: expect must not contain control "
-            f"or non-printable characters — it is interpolated into the "
-            f"rendered plan and the receipt"
+            f"or non-printable characters — it is written to the receipt and "
+            f"echoed in validation diagnostics"
         )
     return _EditDeclaration(
         rule=EditRule(file=file, command=command, expect=expect, env=env),
@@ -799,8 +806,9 @@ def _validate_exclude_membership(
     reset: tuple[_ResetDeclaration, ...],
     edit: tuple[_EditDeclaration, ...],
     exclude_files: frozenset[str],
+    exclude_dirs: frozenset[str],
 ) -> None:
-    """Each mechanism's exclude_files contract, checked AFTER writer overlaps.
+    """Each mechanism's exclusion contract, checked AFTER writer overlaps.
 
     The three contracts are not independent: a [[regenerate]] output and a
     [[reset]] target MUST be excluded, while an [[edit]] target must NOT be —
@@ -825,6 +833,10 @@ def _validate_exclude_membership(
     would let an edit on one of them un-exclude the other, a path no
     declaration writes at all.
     Anything matching only by alias is refused here instead.
+
+    Directory exclusions have no platform-disjoint exception: removing one
+    would expose other files that no edit declares. Check every path component,
+    matching the inventory's exclusion rule, with conservative alias identity.
 
     That stand-down reaches TARGET-added exclusions only. A path in
     DEFAULT_RULES.exclude_files is press's own answer, not the target's: a
@@ -857,6 +869,7 @@ def _validate_exclude_membership(
     excluded: dict[str, str] = {}
     for entry in sorted(exclude_files):
         excluded.setdefault(_control_alias_key(entry), entry)
+    excluded_dirs = {_alias_component(entry): entry for entry in sorted(exclude_dirs)}
     for regenerate_declaration in regenerate:
         file = regenerate_declaration.rule.file
         if file not in exclude_files:
@@ -877,6 +890,15 @@ def _validate_exclude_membership(
             )
     for edit_declaration in edit:
         file = edit_declaration.rule.file
+        for component in file.split("/"):
+            excluded_dir = excluded_dirs.get(_alias_component(component))
+            if excluded_dir is not None:
+                raise ValidationError(
+                    f"{RULES_REL}: [[edit]] target {file!r} matches exclude_dirs "
+                    f"entry {excluded_dir!r} — an edit target must receive the "
+                    f"replace pass before its command runs; directory exclusions "
+                    f"have no platform-disjoint writer exception"
+                )
         key = _control_alias_key(file)
         if key not in excluded:
             continue
@@ -1161,16 +1183,18 @@ def _parse_rules(target: Path) -> _ParsedRules:
     exclude_files = DEFAULT_RULES.exclude_files | frozenset(
         _str_list(table, "extra_exclude_files", [])
     )
+    exclude_dirs = DEFAULT_RULES.exclude_dirs | frozenset(
+        _str_list(table, "extra_exclude_dirs", [])
+    )
     regenerate = tuple(_parse_regenerate(e) for e in raw_regenerate)
     reset = tuple(_parse_reset(e) for e in raw_reset)
     remove = tuple(_parse_remove(e) for e in raw_remove)
     edit = tuple(_parse_edit(e) for e in raw_edit)
     _validate_writer_overlaps(regenerate, reset, remove, edit)
-    _validate_exclude_membership(regenerate, reset, edit, exclude_files)
+    _validate_exclude_membership(regenerate, reset, edit, exclude_files, exclude_dirs)
     return _ParsedRules(
         rules=Rules(
-            exclude_dirs=DEFAULT_RULES.exclude_dirs
-            | frozenset(_str_list(table, "extra_exclude_dirs", [])),
+            exclude_dirs=exclude_dirs,
             exclude_files=exclude_files,
             regenerate=(),
             reset=(),

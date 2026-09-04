@@ -371,6 +371,13 @@ relaxed `scan` mode. Later doctor and verify inventories still honor the
 general `verify_ignore` policy: if it matches any component of the edit
 target's path, they skip that entry.
 
+An edit target must not match `exclude_dirs`, including default exclusions or
+excluded components at any depth. Directory exclusions have no
+platform-disjoint exception. A root or nested `.gitignore` also cannot be an
+edit target: declared commands must preserve Git visibility inputs. Make
+intentional ignore-policy changes in a separate commit. Both refusals occur
+before any target mutation, including during dry-run.
+
 `expect` is a required, non-empty printable string. The edited UTF-8 file must
 contain it after the command and again after every declared command has run.
 It detects many successful no-op or later-undo cases, but it does not prove
