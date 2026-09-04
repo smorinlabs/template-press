@@ -644,9 +644,10 @@ def test_receipt_edit_argument_preserves_all_legacy_positional_slots(
 def test_edit_paths_never_reach_the_verify_exemption(
     src_target: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """An exempted path is one no downstream inventory scans: `press verify`
-    reports it as NOT verified. A regeneration buys that with its post-command
-    scan; an edit never does and must stay in verify's surface.
+    """A regeneration exemption names a path no downstream inventory scans:
+    `press verify` reports it as NOT verified. An edit never buys that command-
+    based exemption; the target's independent `verify_ignore` remains outside
+    this test.
 
     Proven where the exemption is actually consumed — the verifier — by
     recording every path the helper hands it across a real `press verify`.

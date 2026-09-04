@@ -144,11 +144,14 @@ class EditRule:
     The inverse of :class:`RegenerateRule` in both directions. Where a
     regeneration OVERWRITES a file the replace pass must therefore skip, an
     edit AMENDS the file the replace pass has already rewritten — so the
-    target must NOT be excluded, and the edited result stays wholly inside
-    the doctor's and ``press verify``'s scan (no ``verify_exempt``, no
-    ``scan`` downgrade to buy). ``expect`` is the post-condition: a literal
-    substring the edited file must contain once the command has run, so a
-    silently no-op command fails loudly instead of shipping.
+    target is not excluded on an active edit platform (the platform-disjoint
+    writer exception is resolved during selection), and the edit mechanism
+    grants no command-based doctor/``press verify`` exemption (no
+    ``verify_exempt``, no ``scan`` downgrade to buy). A target's independent
+    directory-name ``verify_ignore`` still applies. ``expect`` is the post-
+    condition: a literal substring the edited file must contain once the
+    command has run, so a silently no-op command fails loudly instead of
+    shipping.
     """
 
     file: str  # canonical POSIX rel path, SOURCE coordinates
@@ -306,8 +309,9 @@ _REGENERATE_KEYS = frozenset(
 )
 _REGENERATE_SCAN_VALUES = frozenset({"strict", "boundary"})
 _RESET_KEYS = frozenset({"file", "stub", "stub_file", "platforms"})
-# Deliberately WITHOUT `verify_exempt`/`scan`: an edited file is never exempt
-# from verification, so both keys are unknown here rather than merely ignored.
+# Deliberately WITHOUT `verify_exempt`/`scan`: an edit cannot buy a command-
+# based exemption, so both keys are unknown here rather than merely ignored.
+# The separate directory-name `verify_ignore` policy remains unchanged.
 _EDIT_KEYS = frozenset({"file", "command", "expect", "env", "platforms"})
 
 
@@ -729,9 +733,10 @@ def _parse_edit(entry: object) -> _EditDeclaration:
     """One [[edit]] table: mirrors [[regenerate]] with two inversions (E4).
 
     `verify_exempt`/`scan` are absent from _EDIT_KEYS on purpose, so both land
-    in the unknown-key refusal: an edited file is never exempt from the leak
-    scan, and there is no hash-dense-output escape hatch to grant. The
-    exclude_files contract is inverted too, and lives in
+    in the unknown-key refusal: an edit cannot buy a command-based leak-scan
+    exemption, and there is no hash-dense-output escape hatch to grant. The
+    target-wide ``verify_ignore`` policy is independent. The exclude_files
+    contract is inverted too, and lives in
     _validate_exclude_membership so the one-writer diagnostic wins first.
     """
     if not isinstance(entry, dict):
@@ -739,8 +744,8 @@ def _parse_edit(entry: object) -> _EditDeclaration:
     unknown = set(entry) - _EDIT_KEYS
     if unknown:
         hint = (
-            " (an edited file stays fully in verify's scan — there is no "
-            "exemption to declare)"
+            " (an edit earns no command-based verify exemption — use the "
+            "separate [rules] verify_ignore policy for deliberate ignores)"
             if unknown & {"verify_exempt", "scan"}
             else ""
         )

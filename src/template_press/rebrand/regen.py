@@ -496,8 +496,9 @@ def execute_edits(
     exits 0 and does nothing.
 
     Success is deliberately NOT recorded in ``report.regenerated``: that
-    list drives the receipt's ``[[press.exempt]]`` rows, and an edited file
-    stays wholly inside the doctor's and ``press verify``'s scan surface.
+    list drives the receipt's command-based ``[[press.exempt]]`` rows, and an
+    edit earns no such exemption. A target's independent directory-name
+    ``verify_ignore`` policy still applies to later doctor/verify inventories.
     """
     failed: list[str] = []
     renames = dict(renamed)

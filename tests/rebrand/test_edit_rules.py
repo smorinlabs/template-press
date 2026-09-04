@@ -4,12 +4,14 @@ E4: an in-place edit is fully target-declared — one [[edit]] table per edited
 file carrying `file`/`command`/`expect` (+ optional `env`/`platforms`),
 validated at config load.
 
-The exclusion contract is the INVERSE of [[regenerate]]'s: an edit target must
-NOT be listed in exclude_files, because the replace pass rewrites the file
-first and the declared command then edits that rewritten file in place. Two
-keys [[regenerate]] accepts are deliberately refused here — `verify_exempt`
-and `scan` — because an edited file stays wholly inside the doctor's and
-`press verify`'s scan; there is no exemption to buy.
+The exclusion contract is the INVERSE of [[regenerate]]'s: on an active edit
+platform, the selected rules must not exclude the target, because the replace
+pass rewrites the file first and the declared command then edits that rewritten
+file in place. A narrowly validated platform-disjoint writer pairing is the
+configuration-time exception. Two keys [[regenerate]] accepts are deliberately
+refused here — `verify_exempt` and `scan` — because an edit cannot buy a
+command-based verification exemption. The target-wide directory-name
+`verify_ignore` policy remains independent.
 """
 
 from __future__ import annotations

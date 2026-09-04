@@ -359,10 +359,17 @@ command = ["uv", "lock"]
 
 `file` uses source coordinates: if the rewrite renames one of its path
 components, press translates the path to its final location before launching
-the command. The target must not be listed in `exclude_files`; it is rewritten
-and remains inside both the final doctor scan and hermetic `press verify`.
-Consequently, `[[edit]]` accepts neither `verify_exempt` nor a relaxed `scan`
-mode.
+the command. Normally, the target must not be listed in `exclude_files`
+because it is rewritten before the edit. The only exception is an
+exact-spelling, target-added exclusion required by a platform-disjoint
+`[[reset]]` or `[[regenerate]]`; press removes that exclusion on platforms
+where the edit is active. Default exclusions and alias-only spellings cannot
+use this exception. The edit receives no command-based exemption from either
+the final doctor scan or hermetic `press verify`. Consequently, `[[edit]]`
+accepts neither `verify_exempt` nor a relaxed `scan` mode. The general
+directory-name `verify_ignore` policy remains independent: if it names an
+edit target's directory, later doctor and verify inventories still skip that
+directory.
 
 `expect` is a required, non-empty printable string. The edited UTF-8 file must
 contain it after the command and again after every declared command has run.
@@ -388,11 +395,14 @@ present.
 
 When any edit or regeneration is active, press snapshots its control files and
 Git visibility inputs before the first command and revalidates them after the
-last. A command that changes the rules, source configuration, receipt, ignore
-inputs, repository-local Git configuration, or index membership fails the
-press. A successful receipt records each edit in a `[[press.edit]]` table with
-its source-coordinate `file`, pinned `argv`, and `expect`. Edits are not listed
-as regenerated or exempt files.
+last. A command that changes the rules, source configuration, answers,
+receipt, ignore inputs, repository-local Git configuration, or index
+membership fails the press. These control files are
+`press/press-rules.toml`, `press/press-source.toml`,
+`press/press-answers.toml`, and `press/press-receipt.toml`. A successful
+receipt records each edit in a `[[press.edit]]` table with its
+source-coordinate `file`, pinned `argv`, and `expect`. Edits are not listed as
+regenerated or exempt files.
 
 ### Declared removal
 
@@ -555,8 +565,9 @@ The exit code signals the result:
   basename is on the tool's exemptible list (`uv.lock`, `bun.lock`) are
   NOT scanned (the hermetic sandbox never runs commands, so only the real
   press's post-command scan can certify them); they are listed as exempt
-  in the report and in the `exempt` field of `--json` output. Declared edit
-  targets receive no exemption and are scanned normally.
+  in the report and in the `exempt` field of `--json` output. A declared edit
+  receives no command-based exemption and is scanned normally unless its
+  directory is separately excluded by the general `verify_ignore` policy.
 - `1`: Verification failed — source identity found in the pressed copy.
 - `2`: Configuration, environment, or unverifiable identity error.
 

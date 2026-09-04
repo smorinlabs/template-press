@@ -65,11 +65,12 @@ project template and ships no application. First target:
    file after renames and removals but before every declared regeneration.
    Its required `expect` string and the strict identity scan must hold both
    immediately after the edit and after all commands finish. Edit targets stay
-   inside the doctor and hermetic-verify surface: they cannot use a
-   regeneration exemption or relaxed scan mode. Edits use the same pinned
-   executable, target-root working directory, no-shell, deny-by-default
-   environment, sink guards, and command-phase control/Git-visibility
-   snapshots as regenerations.
+   eligible for the doctor and hermetic-verify surface: the edit mechanism
+   cannot grant a regeneration exemption or relaxed scan mode. The target's
+   independent directory-name `verify_ignore` policy still applies. Edits use
+   the same pinned executable, target-root working directory, no-shell,
+   deny-by-default environment, sink guards, and command-phase control/Git-
+   visibility snapshots as regenerations.
 4. **The tool never ships into the target** — no marker in the tool's tree,
    no self-prune, no self-commit.
 

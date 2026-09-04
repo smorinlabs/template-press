@@ -33,9 +33,11 @@ deny-by-default environment, and command-phase snapshots as regeneration.
 
 The edited result must contain `expect` and pass the strict source-identity
 scan immediately after its command and after all declared commands finish.
-It remains inside the doctor and hermetic `press verify` inventories, cannot
-declare `verify_exempt` or `scan`, and receives its own `[[press.edit]]`
-receipt row.
+The edit mechanism grants no doctor or hermetic `press verify` exemption,
+cannot declare `verify_exempt` or `scan`, and receives its own
+`[[press.edit]]` receipt row. A target's independent directory-name
+`verify_ignore` policy remains unchanged and can still exclude the edited
+path's directory from later inventories.
 
 ## Consequences
 
