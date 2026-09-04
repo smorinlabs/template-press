@@ -28,6 +28,7 @@ from typing import Any
 
 import pytest
 
+from template_press.rebrand import regen as regen_mod
 from template_press.rebrand import verifier as verifier_mod
 from template_press.rebrand.cli import _partial_rewrite_restore_hint, main
 from template_press.rebrand.config import SOURCE_CONFIG_REL, render_source_config
@@ -101,7 +102,7 @@ import sys
 pathlib.Path(sys.argv[1]).write_bytes(b"\\xff")
 """
 
-TAMPER_CONTROL_AND_DELETE = """\
+TAMPER_CONTROL = """\
 import pathlib
 
 pyproject = pathlib.Path("pyproject.toml")
@@ -114,12 +115,10 @@ pyproject.write_text(
 receipt_path = rules_path.with_name(rules_path.name.replace("rules", "receipt"))
 rules_path.write_text("tampered\\n", encoding="utf-8")
 receipt_path.mkdir()
-pathlib.Path("scripts/late.py").unlink()
 """
 
-LATE_EXECUTABLE = """\
-#!/usr/bin/env python3
-raise SystemExit("this executable should have been deleted")
+LATE_SCRIPT = """\
+raise SystemExit("this script should not have launched")
 """
 
 # A stand-in for `uv lock`: derives the root package row from whatever
@@ -165,8 +164,8 @@ SCRIPTS = {
     "append.py": APPEND,
     "clobber_fail.py": CLOBBER_FAIL,
     "write_invalid_utf8.py": WRITE_INVALID_UTF8,
-    "tamper_control_and_delete.py": TAMPER_CONTROL_AND_DELETE,
-    "late.py": LATE_EXECUTABLE,
+    "tamper_control.py": TAMPER_CONTROL,
+    "late.py": LATE_SCRIPT,
     "fakelock.py": FAKELOCK,
     "fakelock_undo_edit.py": FAKELOCK_UNDO_EDIT,
 }
@@ -288,48 +287,50 @@ def test_command_exit_3_fails_the_press_with_no_receipt_and_restores_control(
 
 
 def test_exceptional_later_launch_restores_control_files_and_planted_receipt(
-    src_target: Path, tmp_path: Path, capsys
+    src_target: Path,
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    """A missing pinned executable is an exception, not a nonzero result.
+    """A subprocess launch exception restores earlier control-file damage.
 
     The earlier edit tampers with both an existing and an absent control file,
-    then deletes the later edit's target-relative executable. Recovery must
-    cover this exceptional launch path exactly as it covers a reported edit
+    then the later edit's launch raises rather than returning a result. Recovery
+    must cover this exceptional path exactly as it covers a reported edit
     failure.
     """
     _prepare(
         src_target,
         _edit_block(
             "pyproject.toml",
-            command=_argv(PY, "scripts/tamper_control_and_delete.py"),
+            command=_argv(PY, "scripts/tamper_control.py"),
             expect='version = "0.3.0"',
         )
         + "\n"
         + _edit_block(
             "README.md",
-            command=_argv("scripts/late.py"),
+            command=_argv(PY, "scripts/late.py"),
             expect="Potato Launcher",
         ),
     )
-    late = src_target / "scripts" / "late.py"
-    # Reproduce Windows Git semantics on every platform: mode-only changes are
-    # not tracked when core.filemode is false, although the working-tree file
-    # can still be executable on POSIX.
-    _git(src_target, "config", "core.filemode", "false")
-    late.chmod(0o755)
-    _git(src_target, "add", "scripts/late.py")
-    _git(
-        src_target,
-        "commit",
-        "--allow-empty",
-        "-m",
-        "test: make late command executable",
-    )
+
+    real_run = regen_mod.subprocess.run
+
+    def fail_late_launch(command: Any, *args: Any, **kwargs: Any):
+        if (
+            isinstance(command, (list, tuple))
+            and len(command) > 1
+            and command[1] == "scripts/late.py"
+        ):
+            raise FileNotFoundError("simulated late launch failure")
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(regen_mod.subprocess, "run", fail_late_launch)
     rules_before = (src_target / RULES_REL).read_bytes()
 
     assert _press(src_target, tmp_path) == 1
     err = capsys.readouterr().err
-    assert "No such file or directory" in err
+    assert "simulated late launch failure" in err
     assert "control-file restoration incomplete" in err
     assert "press/press-receipt.toml" in err
     assert "could not be restored" in err
