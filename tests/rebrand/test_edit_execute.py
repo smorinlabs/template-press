@@ -390,6 +390,58 @@ def test_post_validation_output_error_preserves_successful_control_writes(
     [KeyboardInterrupt, SystemExit],
     ids=["keyboard-interrupt", "system-exit"],
 )
+def test_post_receipt_interruption_does_not_offer_destructive_recovery(
+    src_target: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    interruption: type[BaseException],
+):
+    """A completed press keeps its receipt and needs no rollback guidance."""
+    import builtins
+
+    _prepare(
+        src_target,
+        _edit_block(
+            "pyproject.toml",
+            command=_argv(
+                PY, "scripts/subst.py", 'version = "0.1.0"', 'version = "0.2.0"'
+            ),
+            expect='version = "0.2.0"',
+        ),
+    )
+    real_print: Callable[..., Any] = builtins.print
+    raised = False
+
+    def interrupt_first_success_report(*args: Any, **kwargs: Any) -> None:
+        nonlocal raised
+        if (
+            not raised
+            and args
+            and isinstance(args[0], str)
+            and args[0].startswith("Applied:")
+        ):
+            raised = True
+            raise interruption()
+        real_print(*args, **kwargs)
+
+    monkeypatch.setattr(builtins, "print", interrupt_first_success_report)
+    with pytest.raises(interruption):
+        _press(src_target, tmp_path)
+    err = capsys.readouterr().err
+    assert raised
+    assert _partial_rewrite_restore_hint(src_target) not in err
+    assert _receipt(src_target)["press"]["verified"] is True
+    source_config = (src_target / SOURCE_CONFIG_REL).read_text(encoding="utf-8")
+    assert 'package_name = "potato_launcher"' in source_config
+    assert 'package_name = "demo_widget"' not in source_config
+
+
+@pytest.mark.parametrize(
+    "interruption",
+    [KeyboardInterrupt, SystemExit],
+    ids=["keyboard-interrupt", "system-exit"],
+)
 def test_interruption_restores_controls_prints_recovery_then_propagates(
     src_target: Path,
     tmp_path: Path,

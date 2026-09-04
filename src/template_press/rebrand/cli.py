@@ -745,6 +745,7 @@ def _press(
     report = None
     control_snapshot: dict[str, bytes | None] = {}
     restore_controls_on_exception = False
+    mutation_incomplete = False
     try:
         if table is None:
             raise SafetyError("substitution table is unavailable at mutation boundary")
@@ -757,6 +758,7 @@ def _press(
         # Reset takes position ZERO (P05 D5): declared paths are consumed in
         # SOURCE coordinates before the rename pass moves anything. A raise
         # here aborts the press (no receipt) — git is the undo button.
+        mutation_incomplete = True
         reset_done = apply_resets(target, resets)
         report = apply(
             target,
@@ -1026,6 +1028,10 @@ def _press(
                 ),
             ],
         )
+        # The receipt is the durable completion boundary. Interruptions during
+        # the success-reporting prints below must not advise rolling back a
+        # completed, verified press.
+        mutation_incomplete = False
         print(report.render())
         if report.skipped:
             print("skipped (review):")
@@ -1077,7 +1083,8 @@ def _press(
         restore_problems = []
         if restore_controls_on_exception:
             restore_problems = restore_control_files(target, control_snapshot)
-        print(_partial_rewrite_restore_hint(target), file=sys.stderr)
+        if mutation_incomplete:
+            print(_partial_rewrite_restore_hint(target), file=sys.stderr)
         _report_control_restore_problems(restore_problems)
         raise
 
