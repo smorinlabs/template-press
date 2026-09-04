@@ -731,6 +731,8 @@ def _press(
         print(f"error: {exc} — nothing applied", file=sys.stderr)
         return PressOutcome(False, [], [], env_error=str(exc))
     report = None
+    control_snapshot: dict[str, bytes | None] = {}
+    restore_controls_on_exception = False
     try:
         if table is None:
             raise SafetyError("substitution table is unavailable at mutation boundary")
@@ -777,6 +779,13 @@ def _press(
         any_command = bool(edit_plans) or bool(regen_plans)
         control_snapshot = snapshot_control_files(target) if any_command else {}
         visibility_snapshot = snapshot_visibility_state(target) if any_command else None
+        # A pinned executable can disappear between planning and launch (for
+        # example, an earlier declared command can delete a later
+        # target-relative executable). subprocess.run then raises instead of
+        # returning a nonzero status, so the explicit failed_edits/failed_locks
+        # branches below never run. From this point onward, every exceptional
+        # exit must restore the same control snapshot those branches restore.
+        restore_controls_on_exception = any_command
         # Phase order (E4): EVERY edit runs after the renames and before EVERY
         # regeneration, in declaration order — so a regeneration observes the
         # edited tree, which is the composition targets actually need
@@ -1011,6 +1020,8 @@ def _press(
         SafetyError,
         ValidationError,
     ) as exc:
+        if restore_controls_on_exception:
+            restore_control_files(target, control_snapshot)
         # Exit 2 (main's pre-_press gate) means "nothing applied"; a
         # mid-mutation failure here is not that — target may be PARTIALLY
         # rewritten.

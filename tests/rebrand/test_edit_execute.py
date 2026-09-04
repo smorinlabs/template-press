@@ -90,6 +90,27 @@ pathlib.Path(sys.argv[1]).write_text("# clobbered\\n", encoding="utf-8")
 sys.exit(3)
 """
 
+TAMPER_CONTROL_AND_DELETE = """\
+import pathlib
+
+pyproject = pathlib.Path("pyproject.toml")
+text = pyproject.read_text(encoding="utf-8")
+pyproject.write_text(
+    text.replace('version = "0.1.0"', 'version = "0.3.0"'),
+    encoding="utf-8",
+)
+(rules_path,) = pathlib.Path(".").glob("*/*-rules.toml")
+receipt_path = rules_path.with_name(rules_path.name.replace("rules", "receipt"))
+rules_path.write_text("tampered\\n", encoding="utf-8")
+receipt_path.write_text("forged\\n", encoding="utf-8")
+pathlib.Path("scripts/late.py").unlink()
+"""
+
+LATE_EXECUTABLE = """\
+#!/usr/bin/env python3
+raise SystemExit("this executable should have been deleted")
+"""
+
 # A stand-in for `uv lock`: derives the root package row from whatever
 # pyproject.toml says AT THE MOMENT IT RUNS, which is what makes the edit ->
 # regenerate phase order observable in the produced lockfile.
@@ -132,6 +153,8 @@ SCRIPTS = {
     "pkgver.py": PKGVER,
     "append.py": APPEND,
     "clobber_fail.py": CLOBBER_FAIL,
+    "tamper_control_and_delete.py": TAMPER_CONTROL_AND_DELETE,
+    "late.py": LATE_EXECUTABLE,
     "fakelock.py": FAKELOCK,
     "fakelock_undo_edit.py": FAKELOCK_UNDO_EDIT,
 }
@@ -250,6 +273,41 @@ def test_command_exit_3_fails_the_press_with_no_receipt_and_restores_control(
     assert "3" in err
     assert not (src_target / RECEIPT_REL).exists()
     assert (src_target / RULES_REL).read_bytes() == before
+
+
+def test_exceptional_later_launch_restores_control_files_and_planted_receipt(
+    src_target: Path, tmp_path: Path
+):
+    """A missing pinned executable is an exception, not a nonzero result.
+
+    The earlier edit tampers with both an existing and an absent control file,
+    then deletes the later edit's target-relative executable. Recovery must
+    cover this exceptional launch path exactly as it covers a reported edit
+    failure.
+    """
+    _prepare(
+        src_target,
+        _edit_block(
+            "pyproject.toml",
+            command=_argv(PY, "scripts/tamper_control_and_delete.py"),
+            expect='version = "0.3.0"',
+        )
+        + "\n"
+        + _edit_block(
+            "README.md",
+            command=_argv("scripts/late.py"),
+            expect="Potato Launcher",
+        ),
+    )
+    late = src_target / "scripts" / "late.py"
+    late.chmod(0o755)
+    _git(src_target, "add", "scripts/late.py")
+    _git(src_target, "commit", "-m", "test: make late command executable")
+    rules_before = (src_target / RULES_REL).read_bytes()
+
+    assert _press(src_target, tmp_path) == 1
+    assert (src_target / RULES_REL).read_bytes() == rules_before
+    assert not (src_target / RECEIPT_REL).exists()
 
 
 # ---------------------------------------------------------------------------
