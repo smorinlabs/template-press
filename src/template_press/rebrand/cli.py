@@ -49,9 +49,11 @@ from template_press.rebrand.regen import (
     RegenerationPlan,
     execute_regenerations,
     final_validation_pass,
+    plan_edits,
     plan_regenerate_commands,
     preflight_excluded_files,
     preflight_regenerate_outputs,
+    render_edit_plan,
     render_regenerate_plan,
     restore_control_files,
     snapshot_control_files,
@@ -550,6 +552,13 @@ def main(argv: list[str] | None = None) -> int:
             target, rules.regenerate, renamed=frozenset(plan.renames)
         )
         gate_problems += plan_problems
+        # Edits are planned with the SAME machinery and feed the SAME gate:
+        # a missing edit tool refuses at exit 2 with nothing written, before
+        # the rewrite pass the edit would have amended.
+        edit_plans, edit_problems = plan_edits(
+            target, rules.edit, renamed=frozenset(plan.renames)
+        )
+        gate_problems += edit_problems
         reset_previews, reset_problems = preflight_reset_targets(
             target,
             rules,
@@ -579,7 +588,8 @@ def main(argv: list[str] | None = None) -> int:
                 gate_problems.append(str(exc))
         if gate_problems:
             print(
-                "error: declared regeneration/reset/removal cannot run — nothing written:",
+                "error: declared edit/regeneration/reset/removal cannot run — "
+                "nothing written:",
                 file=sys.stderr,
             )
             for problem in gate_problems:
@@ -595,6 +605,10 @@ def main(argv: list[str] | None = None) -> int:
             print(warning)
         print(f"Platform: {selected.platform}")
         print(plan.render())
+        # Phase order (E4): every edit runs before every regeneration, so the
+        # plan the operator approves reads in the order execution will take.
+        if edit_plans:
+            print(render_edit_plan(edit_plans))
         if regen_plans:
             print(render_regenerate_plan(regen_plans))
         if reset_previews:

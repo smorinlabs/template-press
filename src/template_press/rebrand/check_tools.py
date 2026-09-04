@@ -1,10 +1,10 @@
 """press check-tools — declared-tool availability report (P04 D4).
 
-Resolves ``argv[0]`` of every declared ``[[regenerate]]`` command plus
-``git`` — the only tool press itself contributes after D1 — exactly as
-execution would (D2): path-qualified names against the TARGET root, bare
-names on the deny-by-default effective PATH. Reads config, writes
-nothing, executes nothing. Exit 0 all found, 1 any missing, 2
+Resolves ``argv[0]`` of every declared ``[[edit]]`` and ``[[regenerate]]``
+command plus ``git`` — the only tool press itself contributes after D1 —
+exactly as execution would (D2): path-qualified names against the TARGET
+root, bare names on the deny-by-default effective PATH. Reads config,
+writes nothing, executes nothing. Exit 0 all found, 1 any missing, 2
 config/usage error.
 """
 
@@ -50,6 +50,16 @@ def check_tools_command(argv: list[str] | None = None) -> int:
         reports.append("git — missing (press itself needs it)")
     else:
         reports.append(f"git — {git}")
+    # Edits first: they are the phase that runs first, and the report reads
+    # in the order a press would launch these tools.
+    for edit in rules.edit:
+        argv0 = edit.command[0]
+        found = resolve_executable(target, argv0, command_env(edit.env))
+        if found is None:
+            missing += 1
+            reports.append(f"{argv0} — missing (declared to edit {edit.file})")
+        else:
+            reports.append(f"{argv0} — {found} (edits {edit.file})")
     for rule in rules.regenerate:
         argv0 = rule.command[0]
         found = resolve_executable(target, argv0, command_env(rule.env))

@@ -41,6 +41,7 @@ from template_press.rebrand.inventory import (
 )
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.rules import (
+    EditRule,
     RegenerateRule,
     ReplaceRule,
     ResetRule,
@@ -193,6 +194,75 @@ class RegenerationPlan:
     env_absent: tuple[str, ...]  # declared names absent from the operator env
 
 
+@dataclass(frozen=True)
+class EditPlan:
+    """One declared in-place edit, resolved exactly as a regeneration is (E4).
+
+    Same three resolved facts, same guarantees: the pinned executable is what
+    will launch, and the declared env names are split by whether the
+    operator's environment actually carries them.
+    """
+
+    rule: EditRule
+    executable: str  # the pinned absolute path that will actually launch
+    env_present: tuple[str, ...]  # declared names that WILL apply
+    env_absent: tuple[str, ...]  # declared names absent from the operator env
+
+
+@dataclass(frozen=True)
+class _CommandResolution:
+    """The plan-time facts shared by every declared-command mechanism."""
+
+    executable: str
+    env_present: tuple[str, ...]
+    env_absent: tuple[str, ...]
+
+
+def _resolve_declared_command(
+    target: Path,
+    *,
+    kind: str,
+    file: str,
+    command: Sequence[str],
+    env: Sequence[str],
+    renamed: Collection[str],
+    ambient: Mapping[str, str],
+) -> _CommandResolution | str:
+    """Resolve one declaration, or return the problem text that refuses it.
+
+    Shared verbatim by [[regenerate]] and [[edit]] so the two mechanisms
+    cannot drift in what they pin, what they refuse, or how they say so;
+    ``kind`` is the only difference the operator sees.
+    """
+    stale = stale_argv_elements(command, renamed)
+    if stale:
+        return (
+            f"{kind} {file}: argv element(s) "
+            f"{', '.join(repr(s) for s in stale)} name path(s) this press "
+            f"renames — they would go stale mid-press; write the command "
+            f"rename-independent (it runs from the target root, so cwd "
+            f"carries the location)"
+        )
+    effective = command_env(env, base_env=ambient)
+    resolved = resolve_executable(target, command[0], effective)
+    if resolved is None:
+        where = (
+            "relative to the target root"
+            if "/" in command[0].replace("\\", "/")
+            else "on PATH under the deny-by-default environment"
+        )
+        return (
+            f"{kind} {file}: executable {command[0]!r} not "
+            f"found {where} — install it or fix the declaration "
+            f"(`press check-tools` reports every declared tool)"
+        )
+    return _CommandResolution(
+        executable=str(resolved),
+        env_present=tuple(n for n in env if n in ambient),
+        env_absent=tuple(n for n in env if n not in ambient),
+    )
+
+
 def plan_regenerate_commands(
     target: Path,
     regenerate: Sequence[RegenerateRule],
@@ -210,36 +280,64 @@ def plan_regenerate_commands(
     plans: list[RegenerationPlan] = []
     problems: list[str] = []
     for rule in regenerate:
-        stale = stale_argv_elements(rule.command, renamed)
-        if stale:
-            problems.append(
-                f"regenerate {rule.file}: argv element(s) "
-                f"{', '.join(repr(s) for s in stale)} name path(s) this press "
-                f"renames — they would go stale mid-press; write the command "
-                f"rename-independent (it runs from the target root, so cwd "
-                f"carries the location)"
-            )
-            continue
-        env = command_env(rule.env, base_env=ambient)
-        resolved = resolve_executable(target, rule.command[0], env)
-        if resolved is None:
-            where = (
-                "relative to the target root"
-                if "/" in rule.command[0].replace("\\", "/")
-                else "on PATH under the deny-by-default environment"
-            )
-            problems.append(
-                f"regenerate {rule.file}: executable {rule.command[0]!r} not "
-                f"found {where} — install it or fix the declaration "
-                f"(`press check-tools` reports every declared tool)"
-            )
+        resolution = _resolve_declared_command(
+            target,
+            kind="regenerate",
+            file=rule.file,
+            command=rule.command,
+            env=rule.env,
+            renamed=renamed,
+            ambient=ambient,
+        )
+        if isinstance(resolution, str):
+            problems.append(resolution)
             continue
         plans.append(
             RegenerationPlan(
                 rule=rule,
-                executable=str(resolved),
-                env_present=tuple(n for n in rule.env if n in ambient),
-                env_absent=tuple(n for n in rule.env if n not in ambient),
+                executable=resolution.executable,
+                env_present=resolution.env_present,
+                env_absent=resolution.env_absent,
+            )
+        )
+    return plans, problems
+
+
+def plan_edits(
+    target: Path,
+    edit: Sequence[EditRule],
+    *,
+    renamed: Collection[str],
+    base_env: Mapping[str, str] | None = None,
+) -> tuple[list[EditPlan], list[str]]:
+    """Resolve every declared in-place edit at plan time (E4); problems refuse.
+
+    The regeneration planner's contract, unchanged: a missing tool or a
+    stale path-bearing argv refuses with exit 2 and nothing written, before
+    the rewrite pass the edit would have amended.
+    """
+    ambient = os.environ if base_env is None else base_env
+    plans: list[EditPlan] = []
+    problems: list[str] = []
+    for rule in edit:
+        resolution = _resolve_declared_command(
+            target,
+            kind="edit",
+            file=rule.file,
+            command=rule.command,
+            env=rule.env,
+            renamed=renamed,
+            ambient=ambient,
+        )
+        if isinstance(resolution, str):
+            problems.append(resolution)
+            continue
+        plans.append(
+            EditPlan(
+                rule=rule,
+                executable=resolution.executable,
+                env_present=resolution.env_present,
+                env_absent=resolution.env_absent,
             )
         )
     return plans, problems
@@ -339,15 +437,21 @@ def execute_regenerations(
     return failed
 
 
-def render_regenerate_plan(plans: Sequence[RegenerationPlan]) -> str:
-    """The plan's regeneration section: verbatim argv, pinned executable,
-    and the declared env names (with which would actually apply) — plan
-    visibility is the approval guard, so this must show what will launch."""
-    lines = ["Regenerate (declared commands, run after apply):"]
+def _render_command_section(
+    heading: str,
+    tag: str,
+    plans: Sequence[RegenerationPlan | EditPlan],
+) -> str:
+    """One declared-command plan section: verbatim argv, pinned executable,
+    and the declared env names (marking which would actually apply) — plan
+    visibility is the approval guard, so this must show what will launch.
+
+    ``tag`` is the seven-character row label ("regen  " / "edit   ") that
+    keeps every row of every section aligned under one another.
+    """
+    lines = [heading]
     for plan in plans:
-        lines.append(
-            f"  [regen  ] {plan.rule.file}  —  {shlex.join(plan.rule.command)}"
-        )
+        lines.append(f"  [{tag}] {plan.rule.file}  —  {shlex.join(plan.rule.command)}")
         lines.append(f"            executable: {plan.executable}")
         if plan.rule.env:
             marks = [
@@ -356,6 +460,25 @@ def render_regenerate_plan(plans: Sequence[RegenerationPlan]) -> str:
             ]
             lines.append(f"            env: {', '.join(marks)}")
     return "\n".join(lines)
+
+
+def render_regenerate_plan(plans: Sequence[RegenerationPlan]) -> str:
+    """The plan's regeneration section (rendered AFTER the edit section, the
+    order the two phases actually run in)."""
+    return _render_command_section(
+        "Regenerate (declared commands, run after apply):", "regen  ", plans
+    )
+
+
+def render_edit_plan(plans: Sequence[EditPlan]) -> str:
+    """The plan's in-place-edit section (E4). The heading names the phase
+    slot explicitly: edits amend what apply() wrote, and every edit runs
+    before every regeneration."""
+    return _render_command_section(
+        "Edit (declared in-place edits, run after apply, before regenerations):",
+        "edit   ",
+        plans,
+    )
 
 
 def _git_stdout(target: Path, *args: str) -> str:
