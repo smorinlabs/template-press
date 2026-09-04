@@ -1128,12 +1128,21 @@ def snapshot_control_files(target: Path) -> dict[str, bytes | None]:
     return snapshot
 
 
-def restore_control_files(target: Path, snapshot: Mapping[str, bytes | None]) -> None:
+def restore_control_files(
+    target: Path, snapshot: Mapping[str, bytes | None]
+) -> list[str]:
     """Put every press-owned control file back to its pre-command state —
     including REMOVING one a failed command created: a planted
     press-receipt.toml surviving a failed press would advertise a verified
     target the press never certified.
+
+    Recovery is best-effort per entry and never raises: a hostile command can
+    replace one absent control path with a directory or otherwise make that
+    path unrestorable. That failure must not mask the command failure that
+    triggered recovery, and it must not prevent later entries from being
+    restored. Returned problems make every incomplete recovery explicit.
     """
+    problems: list[str] = []
     for rel, data in snapshot.items():
         path = target / rel
         try:
@@ -1142,12 +1151,13 @@ def restore_control_files(target: Path, snapshot: Mapping[str, bytes | None]) ->
             # symlink must not turn restoration into an outside deletion.
             assert_under_root(path, target)
             assert_ancestors_real(path, target)
-        except SafetyError:
-            continue  # best-effort recovery; validation already reported
-        if data is None:
-            path.unlink(missing_ok=True)
-        elif not is_regular_lstat(path) or path.read_bytes() != data:
-            safe_write(target, rel, data, refuse_hardlink=False)
+            if data is None:
+                path.unlink(missing_ok=True)
+            elif not is_regular_lstat(path) or path.read_bytes() != data:
+                safe_write(target, rel, data, refuse_hardlink=False)
+        except (OSError, SafetyError) as exc:
+            problems.append(f"control file {rel} could not be restored: {exc!r}")
+    return problems
 
 
 def validate_control_files(

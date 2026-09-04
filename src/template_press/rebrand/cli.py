@@ -121,6 +121,18 @@ def _partial_rewrite_restore_hint(target: Path) -> str:
     return f"target may be PARTIALLY rewritten; restore with `{checkout} && {clean}`"
 
 
+def _report_control_restore_problems(problems: list[str]) -> None:
+    """Report best-effort recovery failures without masking the root failure."""
+    if not problems:
+        return
+    print(
+        "error: press-owned control-file restoration incomplete:",
+        file=sys.stderr,
+    )
+    for problem in problems:
+        print(f"  {problem}", file=sys.stderr)
+
+
 def _empty_dir_paths(exc: RenameClosureUnauthorized) -> list[str]:
     """Sorted ``empty-dir`` finding paths from `exc` (E2).
 
@@ -807,7 +819,7 @@ def _press(
             # The wording differs because the consequence does: an edited file
             # is NOT exempt from the doctor, so the incompleteness is in the
             # edit's own post-condition, not in an unscanned file.
-            restore_control_files(target, control_snapshot)
+            restore_problems = restore_control_files(target, control_snapshot)
             print(
                 f"error: declared edit failed for {', '.join(failed_edits)} — the "
                 f"file did not reach the state its [[edit]] declaration promised, "
@@ -815,6 +827,7 @@ def _press(
                 f"command or the declaration, then re-run with --force.",
                 file=sys.stderr,
             )
+            _report_control_restore_problems(restore_problems)
             if report.skipped:
                 print("skipped (review):", file=sys.stderr)
                 for entry in report.skipped:
@@ -841,7 +854,7 @@ def _press(
             # A failed command must not leave a tampered/planted control
             # file behind (codex 3654736777) — restore the snapshot before
             # reporting; {} when no commands ran.
-            restore_control_files(target, control_snapshot)
+            restore_problems = restore_control_files(target, control_snapshot)
             print(
                 f"error: lockfile regeneration failed for "
                 f"{', '.join(failed_locks)} — the lockfile still carries the old "
@@ -850,6 +863,7 @@ def _press(
                 f"with --force.",
                 file=sys.stderr,
             )
+            _report_control_restore_problems(restore_problems)
             # The per-file reason lives in report.skipped; without it the
             # failure is undiagnosable from the output (dogfood run 4
             # PROBLEM-23 — the reason was only printed on the success path).
@@ -886,13 +900,14 @@ def _press(
             if visibility_snapshot is not None:
                 post_problems += validate_visibility_state(target, visibility_snapshot)
             if post_problems:
-                restore_control_files(target, control_snapshot)
+                restore_problems = restore_control_files(target, control_snapshot)
                 print(
                     "error: post-regeneration validation failed — no receipt written:",
                     file=sys.stderr,
                 )
                 for problem in post_problems:
                     print(f"  {problem}", file=sys.stderr)
+                _report_control_restore_problems(restore_problems)
                 print(report.render(), file=sys.stderr)
                 return PressOutcome(
                     False,
@@ -900,6 +915,11 @@ def _press(
                     report.regenerated,
                     env_error="post-regeneration validation failed",
                 )
+            # Every command-owned effect on ROOT_CONTROL has now been
+            # revalidated. Past this boundary, source-config and receipt
+            # writes are the press's own successful output; a later reporting
+            # error must not roll them back to the pre-command snapshot.
+            restore_controls_on_exception = False
         # Verification never honors target-side REWRITE exclusions (EMP-01):
         # neither extra_exclude_files nor extra_exclude_dirs can hide content
         # from the doctor. The only sanctioned exemption is the explicit,
@@ -1020,8 +1040,9 @@ def _press(
         SafetyError,
         ValidationError,
     ) as exc:
+        restore_problems: list[str] = []
         if restore_controls_on_exception:
-            restore_control_files(target, control_snapshot)
+            restore_problems = restore_control_files(target, control_snapshot)
         # Exit 2 (main's pre-_press gate) means "nothing applied"; a
         # mid-mutation failure here is not that — target may be PARTIALLY
         # rewritten.
@@ -1039,12 +1060,22 @@ def _press(
                 f"error: {exc} — {_partial_rewrite_restore_hint(target)}",
                 file=sys.stderr,
             )
+        _report_control_restore_problems(restore_problems)
         return PressOutcome(
             False,
             report.renamed if report else [],
             report.regenerated if report else [],
             env_error=str(exc),
         )
+    except BaseException:
+        # KeyboardInterrupt and SystemExit are deliberately re-raised, but an
+        # interruption during the armed command phase must not leave a forged
+        # receipt or altered rules behind.
+        restore_problems = []
+        if restore_controls_on_exception:
+            restore_problems = restore_control_files(target, control_snapshot)
+        _report_control_restore_problems(restore_problems)
+        raise
 
 
 if __name__ == "__main__":

@@ -20,7 +20,9 @@ import json
 import os
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -102,7 +104,7 @@ pyproject.write_text(
 (rules_path,) = pathlib.Path(".").glob("*/*-rules.toml")
 receipt_path = rules_path.with_name(rules_path.name.replace("rules", "receipt"))
 rules_path.write_text("tampered\\n", encoding="utf-8")
-receipt_path.write_text("forged\\n", encoding="utf-8")
+receipt_path.mkdir()
 pathlib.Path("scripts/late.py").unlink()
 """
 
@@ -276,7 +278,7 @@ def test_command_exit_3_fails_the_press_with_no_receipt_and_restores_control(
 
 
 def test_exceptional_later_launch_restores_control_files_and_planted_receipt(
-    src_target: Path, tmp_path: Path
+    src_target: Path, tmp_path: Path, capsys
 ):
     """A missing pinned executable is an exception, not a nonzero result.
 
@@ -306,6 +308,88 @@ def test_exceptional_later_launch_restores_control_files_and_planted_receipt(
     rules_before = (src_target / RULES_REL).read_bytes()
 
     assert _press(src_target, tmp_path) == 1
+    err = capsys.readouterr().err
+    assert "No such file or directory" in err
+    assert "control-file restoration incomplete" in err
+    assert "press/press-receipt.toml" in err
+    assert "could not be restored" in err
+    assert (src_target / RULES_REL).read_bytes() == rules_before
+    assert (src_target / RECEIPT_REL).is_dir()
+
+
+def test_post_validation_output_error_preserves_successful_control_writes(
+    src_target: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Once command tampering is ruled out, recovery must be disarmed.
+
+    A broken output pipe after the receipt write is an operational reporting
+    failure, not a reason to delete the valid receipt or restore the source
+    identity over the successful destination identity.
+    """
+    import builtins
+
+    _prepare(
+        src_target,
+        _edit_block(
+            "pyproject.toml",
+            command=_argv(
+                PY, "scripts/subst.py", 'version = "0.1.0"', 'version = "0.2.0"'
+            ),
+            expect='version = "0.2.0"',
+        ),
+    )
+    real_print: Callable[..., Any] = builtins.print
+    raised = False
+
+    def break_first_success_report(*args: Any, **kwargs: Any) -> None:
+        nonlocal raised
+        if (
+            not raised
+            and args
+            and isinstance(args[0], str)
+            and args[0].startswith("Applied:")
+        ):
+            raised = True
+            raise BrokenPipeError("test output pipe closed")
+        real_print(*args, **kwargs)
+
+    monkeypatch.setattr(builtins, "print", break_first_success_report)
+    assert _press(src_target, tmp_path) == 1
+    assert raised
+    assert _receipt(src_target)["press"]["verified"] is True
+    source_config = (src_target / SOURCE_CONFIG_REL).read_text(encoding="utf-8")
+    assert 'package_name = "potato_launcher"' in source_config
+    assert 'package_name = "demo_widget"' not in source_config
+
+
+def test_keyboard_interrupt_restores_controls_then_propagates(
+    src_target: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Operator interruption is outside Exception but inside the armed phase."""
+    import template_press.rebrand.cli as cli_mod
+
+    _prepare(
+        src_target,
+        _edit_block(
+            "pyproject.toml",
+            command=_argv(PY, "scripts/subst.py", "unused", "unused"),
+            expect='version = "0.1.0"',
+        ),
+    )
+    rules_before = (src_target / RULES_REL).read_bytes()
+
+    def interrupt_after_tampering(target: Path, *_args: Any, **_kwargs: Any) -> None:
+        (target / RULES_REL).write_text("tampered\n", encoding="utf-8")
+        (target / RECEIPT_REL).write_text("forged\n", encoding="utf-8")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_mod, "execute_edits", interrupt_after_tampering)
+    with pytest.raises(KeyboardInterrupt):
+        _press(src_target, tmp_path)
     assert (src_target / RULES_REL).read_bytes() == rules_before
     assert not (src_target / RECEIPT_REL).exists()
 
