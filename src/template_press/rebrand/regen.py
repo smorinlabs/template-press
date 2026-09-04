@@ -497,7 +497,7 @@ def execute_edits(
 
     Success is deliberately NOT recorded in ``report.regenerated``: that
     list drives the receipt's command-based ``[[press.exempt]]`` rows, and an
-    edit earns no such exemption. A target's independent directory-name
+    edit earns no such exemption. A target's independent path-component
     ``verify_ignore`` policy still applies to later doctor/verify inventories.
     """
     failed: list[str] = []
@@ -667,7 +667,7 @@ def preflight_edit_targets(target: Path, rules: Rules) -> list[str]:
     The ONE regeneration check deliberately absent is the UTF-8 pre-state
     gate: that one exists to stop a file the text scan cannot read from
     buying the command-based verify exemption, and an edit target never buys
-    it. A target's independent directory-name ``verify_ignore`` policy still
+    it. A target's independent path-component ``verify_ignore`` policy still
     applies to later inventories. The edit target is also NOT excluded from
     the rewrite pass, so unlike a regeneration output it is rewritten first
     and edited second.
@@ -896,7 +896,7 @@ def _postcondition_problems(
     expect: str | None = None,
 ) -> list[str]:
     """Existence, type, containment, UTF-8, and the paranoid scan — what a
-    command must leave behind to have regenerated anything at all (D3).
+    command must leave behind to have satisfied its declaration (D3).
 
     ``expect`` adds [[edit]]'s extra post-condition (E4): the declared literal
     substring must be present in the decoded text. It is collected ALONGSIDE
@@ -912,13 +912,19 @@ def _postcondition_problems(
     if not is_regular_lstat(path):
         return [
             f"{translated_rel} is not a regular file after the command "
-            f"(deleted, symlink, or special — a declared regeneration that "
-            f"does not leave its file behind is a failed regeneration)"
+            f"(deleted, symlink, or special — the command did not leave its "
+            f"declared file as a regular file)"
         ]
     data = path.read_bytes()
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
+        if expect is not None:
+            return [
+                f"{translated_rel} is not valid UTF-8 after the command — a "
+                f"declared edit must leave UTF-8 text for its expect and "
+                f"strict identity scans, fail closed"
+            ]
         return [
             f"{translated_rel} is not valid UTF-8 after the command — the "
             f"exemption is bought with the text scan, fail closed"
@@ -965,10 +971,9 @@ def final_validation_pass(
 
     Edits are rechecked with their ``expect`` (E4): edits run before every
     regeneration, so a later regeneration undoing an earlier edit is exactly
-    the ordering this pass exists to catch. An edit earns no command-based
-    doctor exemption, but the doctor knows nothing of ``expect`` and the
-    target's independent ``verify_ignore`` policy may still exclude the
-    edited file's directory later.
+    the ordering this pass exists to catch. The doctor knows nothing of
+    ``expect``, and the target's independent ``verify_ignore`` policy may
+    still exclude the edited path from later inventories.
     """
     problems: list[str] = []
     for edit in edits:

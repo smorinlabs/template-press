@@ -94,6 +94,13 @@ pathlib.Path(sys.argv[1]).write_text("# clobbered\\n", encoding="utf-8")
 sys.exit(3)
 """
 
+WRITE_INVALID_UTF8 = """\
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_bytes(b"\\xff")
+"""
+
 TAMPER_CONTROL_AND_DELETE = """\
 import pathlib
 
@@ -157,6 +164,7 @@ SCRIPTS = {
     "pkgver.py": PKGVER,
     "append.py": APPEND,
     "clobber_fail.py": CLOBBER_FAIL,
+    "write_invalid_utf8.py": WRITE_INVALID_UTF8,
     "tamper_control_and_delete.py": TAMPER_CONTROL_AND_DELETE,
     "late.py": LATE_EXECUTABLE,
     "fakelock.py": FAKELOCK,
@@ -417,6 +425,26 @@ def test_expect_missing_after_a_zero_exit_noop_fails_without_receipt(
     assert _press(src_target, tmp_path) == 1
     err = capsys.readouterr().err
     assert "expect" in err and 'version = "0.2.0"' in err
+    assert not (src_target / RECEIPT_REL).exists()
+
+
+def test_invalid_utf8_edit_reports_edit_contract_not_regeneration_exemption(
+    src_target: Path, tmp_path: Path, capsys
+):
+    """A shared postcondition must describe the active edit mechanism."""
+    _prepare(
+        src_target,
+        _edit_block(
+            "pyproject.toml",
+            command=_argv(PY, "scripts/write_invalid_utf8.py", "pyproject.toml"),
+            expect='version = "0.2.0"',
+        ),
+    )
+    assert _press(src_target, tmp_path) == 1
+    err = capsys.readouterr().err
+    assert "not valid UTF-8" in err
+    assert "declared edit must leave UTF-8 text" in err
+    assert "exemption is bought" not in err
     assert not (src_target / RECEIPT_REL).exists()
 
 

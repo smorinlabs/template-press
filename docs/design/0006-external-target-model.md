@@ -67,7 +67,7 @@ project template and ships no application. First target:
    immediately after the edit and after all commands finish. Edit targets stay
    eligible for the doctor and hermetic-verify surface: the edit mechanism
    cannot grant a regeneration exemption or relaxed scan mode. The target's
-   independent directory-name `verify_ignore` policy still applies. Edits use
+   independent path-component `verify_ignore` policy still applies. Edits use
    the same pinned executable, target-root working directory, no-shell,
    deny-by-default environment, sink guards, and command-phase control/Git-
    visibility snapshots as regenerations.

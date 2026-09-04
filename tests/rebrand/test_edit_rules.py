@@ -10,7 +10,7 @@ pass rewrites the file first and the declared command then edits that rewritten
 file in place. A narrowly validated platform-disjoint writer pairing is the
 configuration-time exception. Two keys [[regenerate]] accepts are deliberately
 refused here — `verify_exempt` and `scan` — because an edit cannot buy a
-command-based verification exemption. The target-wide directory-name
+command-based verification exemption. The target-wide path-component
 `verify_ignore` policy remains independent.
 """
 

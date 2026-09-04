@@ -146,12 +146,12 @@ class EditRule:
     edit AMENDS the file the replace pass has already rewritten — so the
     target is not excluded on an active edit platform (the platform-disjoint
     writer exception is resolved during selection), and the edit mechanism
-    grants no command-based doctor/``press verify`` exemption (no
-    ``verify_exempt``, no ``scan`` downgrade to buy). A target's independent
-    directory-name ``verify_ignore`` still applies. ``expect`` is the post-
-    condition: a literal substring the edited file must contain once the
-    command has run, so a silently no-op command fails loudly instead of
-    shipping.
+    grants no command-based ``press verify`` exemption (no ``verify_exempt``,
+    no ``scan`` downgrade to buy) and does not alter doctor inventory policy.
+    A target's independent path-component ``verify_ignore`` still applies.
+    ``expect`` is the post-condition: a literal substring the edited file must
+    contain once the command has run, so a silently no-op command fails loudly
+    instead of shipping.
     """
 
     file: str  # canonical POSIX rel path, SOURCE coordinates
@@ -311,7 +311,7 @@ _REGENERATE_SCAN_VALUES = frozenset({"strict", "boundary"})
 _RESET_KEYS = frozenset({"file", "stub", "stub_file", "platforms"})
 # Deliberately WITHOUT `verify_exempt`/`scan`: an edit cannot buy a command-
 # based exemption, so both keys are unknown here rather than merely ignored.
-# The separate directory-name `verify_ignore` policy remains unchanged.
+# The separate path-component `verify_ignore` policy remains unchanged.
 _EDIT_KEYS = frozenset({"file", "command", "expect", "env", "platforms"})
 
 

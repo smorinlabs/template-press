@@ -253,11 +253,11 @@ rewrite contract (target may be partially rewritten; restore with
 ### The ignore set
 
 If a target legitimately keeps some source-identity content (vendored code,
-historical docs), list those directory names under `verify_ignore` in
-`<target>/press/press-rules.toml` so the no-leak scan skips them. To also stop
-those directories from being rewritten, list the same names under
-`extra_exclude_dirs`. Both keys match a single directory *name* at any depth,
-not a path.
+historical docs), list a matching path-component name under `verify_ignore`
+in `<target>/press/press-rules.toml` so the no-leak scan skips those entries.
+To also stop them from being rewritten, list the same component names under
+`extra_exclude_dirs`. Both keys match one file-or-directory component at any
+depth, including an entry's basename; neither accepts a multi-component path.
 
 A `foo/` line in `.gitignore` (the trailing slash) matches DIRECTORIES only —
 it does not ignore a symlink or a regular file also named `foo`. `press
@@ -364,12 +364,12 @@ because it is rewritten before the edit. The only exception is an
 exact-spelling, target-added exclusion required by a platform-disjoint
 `[[reset]]` or `[[regenerate]]`; press removes that exclusion on platforms
 where the edit is active. Default exclusions and alias-only spellings cannot
-use this exception. The edit receives no command-based exemption from either
-the final doctor scan or hermetic `press verify`. Consequently, `[[edit]]`
-accepts neither `verify_exempt` nor a relaxed `scan` mode. The general
-directory-name `verify_ignore` policy remains independent: if it names an
-edit target's directory, later doctor and verify inventories still skip that
-directory.
+use this exception. Every edit target is scanned directly by its immediate and
+final command postconditions. The edit earns no command-based hermetic
+`press verify` exemption, so `[[edit]]` accepts neither `verify_exempt` nor a
+relaxed `scan` mode. Later doctor and verify inventories still honor the
+general `verify_ignore` policy: if it matches any component of the edit
+target's path, they skip that entry.
 
 `expect` is a required, non-empty printable string. The edited UTF-8 file must
 contain it after the command and again after every declared command has run.
@@ -566,8 +566,8 @@ The exit code signals the result:
   NOT scanned (the hermetic sandbox never runs commands, so only the real
   press's post-command scan can certify them); they are listed as exempt
   in the report and in the `exempt` field of `--json` output. A declared edit
-  receives no command-based exemption and is scanned normally unless its
-  directory is separately excluded by the general `verify_ignore` policy.
+  receives no command-based exemption and is scanned normally unless the
+  general `verify_ignore` policy matches a component of its path.
 - `1`: Verification failed — source identity found in the pressed copy.
 - `2`: Configuration, environment, or unverifiable identity error.
 

@@ -16,8 +16,9 @@ rebuilds `uv.lock`.
 
 `[[regenerate]]` cannot represent this operation. A regeneration output is
 excluded from the rewrite and may be exempt from hermetic verification, while
-`pyproject.toml` must be rewritten first and remain fully verified. An
-unbounded hook would hide the mutation's target and postcondition.
+`pyproject.toml` must be rewritten before the edit and cannot be treated as a
+regenerated output. An unbounded hook would hide the mutation's target and
+postcondition.
 
 ## Decision
 
@@ -33,11 +34,11 @@ deny-by-default environment, and command-phase snapshots as regeneration.
 
 The edited result must contain `expect` and pass the strict source-identity
 scan immediately after its command and after all declared commands finish.
-The edit mechanism grants no doctor or hermetic `press verify` exemption,
-cannot declare `verify_exempt` or `scan`, and receives its own
-`[[press.edit]]` receipt row. A target's independent directory-name
-`verify_ignore` policy remains unchanged and can still exclude the edited
-path's directory from later inventories.
+The edit mechanism grants no command-based hermetic `press verify` exemption,
+cannot declare `verify_exempt` or `scan`, and does not alter doctor inventory
+policy. It receives its own `[[press.edit]]` receipt row. A target's
+independent path-component `verify_ignore` policy remains unchanged and can
+still exclude the edited path from later inventories.
 
 ## Consequences
 
