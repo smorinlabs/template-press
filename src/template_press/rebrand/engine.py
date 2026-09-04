@@ -1211,6 +1211,8 @@ class ApplyReport:
     reset: list[str] = field(default_factory=list)  # declared stubs written
     removed: list[str] = field(default_factory=list)  # declared deletions
     executed_rename_step_ids: list[str] = field(default_factory=list)
+    # Appended to preserve the meaning of any positional construction.
+    edited: list[str] = field(default_factory=list)  # declared in-place edits
 
     def render(self) -> str:
         return (
@@ -1218,6 +1220,7 @@ class ApplyReport:
             f"{len(self.renamed)} renamed, "
             f"{len(self.reset)} reset, "
             f"{len(self.removed)} removed, "
+            f"{len(self.edited)} edited, "
             f"{len(self.regenerated)} regenerated, "
             f"{len(self.skipped)} skipped."
         )

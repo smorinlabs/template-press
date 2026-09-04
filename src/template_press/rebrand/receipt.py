@@ -137,6 +137,7 @@ def write_receipt(
         f"renamed = {len(report.renamed)}",
         f"reset = {len(report.reset)}",
         f"removed = {len(report.removed)}",
+        f"edited = {len(report.edited)}",
         f"regenerated = {len(report.regenerated)}",
         f"skipped = {len(report.skipped)}",
     ]

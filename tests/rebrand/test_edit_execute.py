@@ -230,7 +230,7 @@ def _receipt(target: Path) -> dict:
 # 1. The success path
 # ---------------------------------------------------------------------------
 def test_successful_edit_amends_the_rewritten_file_and_is_receipted(
-    src_target: Path, tmp_path: Path
+    src_target: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
     """The two passes compose: the replace pass renames the package, then the
     declared command bumps the version the replace pass left alone."""
@@ -245,10 +245,14 @@ def test_successful_edit_amends_the_rewritten_file_and_is_receipted(
         ),
     )
     assert _press(src_target, tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "1 edited" in out
     pyproject = (src_target / "pyproject.toml").read_text(encoding="utf-8")
     assert 'name = "potato_launcher"' in pyproject  # replace pass
     assert 'version = "0.2.0"' in pyproject  # declared edit
-    rows = _receipt(src_target)["press"]["edit"]
+    receipt = _receipt(src_target)
+    assert receipt["press"]["counts"]["edited"] == 1
+    rows = receipt["press"]["edit"]
     assert len(rows) == 1
     assert rows[0]["file"] == "pyproject.toml"
     assert rows[0]["expect"] == 'version = "0.2.0"'
@@ -282,6 +286,7 @@ def test_command_exit_3_fails_the_press_with_no_receipt_and_restores_control(
     err = capsys.readouterr().err
     assert "pyproject.toml" in err
     assert "3" in err
+    assert _partial_rewrite_restore_hint(src_target) in err
     assert not (src_target / RECEIPT_REL).exists()
     assert (src_target / RULES_REL).read_bytes() == before
 

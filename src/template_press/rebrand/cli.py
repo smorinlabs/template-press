@@ -67,7 +67,7 @@ from template_press.rebrand.regen import (
 from template_press.rebrand.remove import (
     apply_removals,
     preflight_remove_targets,
-    remove_regen_conflicts,
+    remove_command_conflicts,
     render_remove_plan,
 )
 from template_press.rebrand.reset import (
@@ -592,7 +592,7 @@ def main(argv: list[str] | None = None) -> int:
         gate_problems += preflight_remove_targets(
             target, rules, previously_removed=frozenset(prior_removed)
         )
-        gate_problems += remove_regen_conflicts(rules)
+        gate_problems += remove_command_conflicts(rules)
         if plan.table is not None:
             try:
                 validate_reset_visibility(
@@ -826,8 +826,9 @@ def _press(
             print(
                 f"error: declared edit failed for {', '.join(failed_edits)} — the "
                 f"file did not reach the state its [[edit]] declaration promised, "
-                f"so this rebrand is INCOMPLETE; no receipt written. Fix the "
-                f"command or the declaration, then re-run with --force.",
+                f"so this rebrand is INCOMPLETE; no receipt written. "
+                f"{_partial_rewrite_restore_hint(target)}. Fix the command or "
+                f"the declaration, then re-run with --force.",
                 file=sys.stderr,
             )
             _report_control_restore_problems(restore_problems)

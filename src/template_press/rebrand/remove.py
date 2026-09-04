@@ -30,7 +30,7 @@ from pathlib import Path
 
 from template_press.rebrand.pathing import translate_path
 from template_press.rebrand.regen import has_uncommitted_changes, tracked_paths
-from template_press.rebrand.rules import Rules
+from template_press.rebrand.rules import Rules, _control_alias_key
 from template_press.rebrand.safety import (
     SafetyError,
     assert_ancestors_real,
@@ -126,23 +126,32 @@ def render_remove_plan(rules: Rules) -> str:
     return "\n".join(lines)
 
 
-def remove_regen_conflicts(rules: Rules) -> list[str]:
-    """A ``[[remove]]`` target that an active ``[[regenerate]]`` command
-    names in its argv would be deleted before the command runs — planning
-    would succeed and the press would fail mid-mutation. Plan-time refusal
-    instead (normalized comparison, mirroring ``stale_argv_elements``)."""
+def remove_command_conflicts(rules: Rules) -> list[str]:
+    """Refuse commands that name a path an active ``[[remove]]`` deletes.
 
-    removed = {r.file for r in rules.remove}
+    Removals run before edits and regenerations. Without this plan-time gate,
+    dry-run succeeds but apply deletes the argv path before the command can
+    launch. Comparisons normalize path syntax and filesystem aliases, mirroring
+    the writer-overlap gate and ``stale_argv_elements``.
+    """
+
+    removed = {_control_alias_key(r.file): r.file for r in rules.remove}
     if not removed:
         return []
     problems: list[str] = []
-    for regen in rules.regenerate:
-        for element in regen.command:
-            norm = posixpath.normpath(element.replace("\\", "/"))
-            if norm in removed:
+    for kind, declarations in (
+        ("regenerate", rules.regenerate),
+        ("edit", rules.edit),
+    ):
+        for declaration in declarations:
+            for element in declaration.command:
+                norm = posixpath.normpath(element.replace("\\", "/"))
+                removed_file = removed.get(_control_alias_key(norm))
+                if removed_file is None:
+                    continue
                 problems.append(
-                    f"remove target {norm}: also named in the [[regenerate]] "
-                    f"command for {regen.file!r} — the removal would delete "
+                    f"remove target {removed_file}: also named in the [[{kind}]] "
+                    f"command for {declaration.file!r} — the removal would delete "
                     f"it before the command runs; drop one declaration"
                 )
     return problems

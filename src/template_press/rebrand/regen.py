@@ -496,15 +496,15 @@ def execute_edits(
     substring behind, which is the only thing that catches a command that
     exits 0 and does nothing.
 
-    Success is deliberately NOT recorded in ``report.regenerated``: that
-    list drives the receipt's command-based ``[[press.exempt]]`` rows, and an
-    edit earns no such exemption. A target's independent path-component
+    Success is recorded in ``report.edited``, never ``report.regenerated``:
+    the latter drives the receipt's command-based ``[[press.exempt]]`` rows,
+    and an edit earns no such exemption. A target's independent path-component
     ``verify_ignore`` policy still applies to later doctor/verify inventories.
     """
     failed: list[str] = []
     renames = dict(renamed)
     for plan in plans:
-        if not _run_declared(
+        if _run_declared(
             target,
             plan,
             kind="edit",
@@ -518,6 +518,8 @@ def execute_edits(
             scan_mode="strict",
             expect=plan.rule.expect,
         ):
+            report.edited.append(plan.rule.file)
+        else:
             failed.append(plan.rule.file)
     return failed
 

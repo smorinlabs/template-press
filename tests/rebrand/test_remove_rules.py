@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -325,6 +326,45 @@ class TestRemoveLifecycle:
         _commit(repo)
         answers = write_answers_file(tmp_path, DEST)
         assert main(["--target", str(repo), "--config", str(answers)]) == 2
+
+    def test_remove_edit_argv_conflict_refused_before_dry_run_plan(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        repo = make_pressable(tmp_path)
+        script = repo / "scripts" / "edit.py"
+        script.parent.mkdir(exist_ok=True)
+        script.write_text("raise SystemExit(0)\n", encoding="utf-8")
+        command = json.dumps([sys.executable, "scripts/edit.py"])
+        _write_rules(
+            repo,
+            "[[edit]]\n"
+            'file = "pyproject.toml"\n'
+            f"command = {command}\n"
+            "expect = 'version = \"0.1.0\"'\n"
+            "[[remove]]\n"
+            'file = "scripts/edit.py"\n'
+            'reason = "maintenance script"\n',
+        )
+        _commit(repo)
+        answers = write_answers_file(tmp_path, DEST)
+
+        assert (
+            main(
+                [
+                    "--target",
+                    str(repo),
+                    "--config",
+                    str(answers),
+                    "--dry-run",
+                ]
+            )
+            == 2
+        )
+        err = capsys.readouterr().err
+        assert "remove target scripts/edit.py" in err
+        assert "[[edit]] command" in err
+        assert script.is_file()
+        assert not (repo / RECEIPT_REL).exists()
 
     def test_control_characters_in_remove_reason_rejected(self, tmp_path: Path):
         target = _write_rules(
