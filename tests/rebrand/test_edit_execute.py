@@ -424,6 +424,40 @@ def test_interruption_restores_controls_prints_recovery_then_propagates(
     assert not (src_target / RECEIPT_REL).exists()
 
 
+@pytest.mark.parametrize(
+    "interruption",
+    [KeyboardInterrupt, SystemExit],
+    ids=["keyboard-interrupt", "system-exit"],
+)
+def test_interruption_before_command_recovery_prints_recovery_then_propagates(
+    src_target: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    interruption: type[BaseException],
+):
+    """An interrupted rewrite needs recovery guidance even without commands."""
+    import template_press.rebrand.cli as cli_mod
+
+    _prepare(src_target, "")
+
+    def interrupt_during_apply(
+        target: Path, *_args: Any, **_kwargs: Any
+    ) -> ApplyReport:
+        (target / "README.md").write_text("partially rewritten\n", encoding="utf-8")
+        raise interruption()
+
+    monkeypatch.setattr(cli_mod, "apply", interrupt_during_apply)
+    with pytest.raises(interruption):
+        _press(src_target, tmp_path)
+    err = capsys.readouterr().err
+    assert _partial_rewrite_restore_hint(src_target) in err
+    assert (src_target / "README.md").read_text(encoding="utf-8") == (
+        "partially rewritten\n"
+    )
+    assert not (src_target / RECEIPT_REL).exists()
+
+
 # ---------------------------------------------------------------------------
 # 3. A silent no-op
 # ---------------------------------------------------------------------------
