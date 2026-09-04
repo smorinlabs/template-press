@@ -215,7 +215,8 @@ class Rules:
     remove: tuple[RemoveRule, ...] = ()  # declared file removals (issue #80)
     # The deliberate, committed ignore set: path components whose surviving
     # source-identity content is VALID (vendored trees, historical docs, files).
-    # Exempts them from the doctor's leak scan only — never from rewriting.
+    # Exempts matching entries from later doctor and hermetic-verify inventories
+    # only — never from rewriting or direct command postconditions.
     # Matched like exclude_dirs: by single path COMPONENT at any depth
     # ("legacy" ignores every file or directory named legacy; "docs/old" never
     # matches).
