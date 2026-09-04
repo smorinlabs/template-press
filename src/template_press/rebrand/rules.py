@@ -213,11 +213,12 @@ class Rules:
     regenerate: tuple[RegenerateRule, ...]  # declared-command regenerations
     reset: tuple[ResetRule, ...] = ()  # declared file resets (blank to stub)
     remove: tuple[RemoveRule, ...] = ()  # declared file removals (issue #80)
-    # The deliberate, committed ignore set: directories whose surviving
-    # source-identity content is VALID (vendored trees, historical docs).
+    # The deliberate, committed ignore set: path components whose surviving
+    # source-identity content is VALID (vendored trees, historical docs, files).
     # Exempts them from the doctor's leak scan only — never from rewriting.
     # Matched like exclude_dirs: by single path COMPONENT at any depth
-    # ("legacy" ignores every dir named legacy; "docs/old" never matches).
+    # ("legacy" ignores every file or directory named legacy; "docs/old" never
+    # matches).
     verify_ignore: frozenset[str] = frozenset()
     replace: tuple[ReplaceRule, ...] = ()
     # Fields rewritten by plain substring replacement instead of the
