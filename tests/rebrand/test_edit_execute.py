@@ -331,6 +331,7 @@ def test_exceptional_later_launch_restores_control_files_and_planted_receipt(
     assert _press(src_target, tmp_path) == 1
     err = capsys.readouterr().err
     assert "simulated late launch failure" in err
+    assert _partial_rewrite_restore_hint(src_target) in err
     assert "control-file restoration incomplete" in err
     assert "press/press-receipt.toml" in err
     assert "could not be restored" in err
@@ -342,6 +343,7 @@ def test_post_validation_output_error_preserves_successful_control_writes(
     src_target: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys,
 ):
     """Once command tampering is ruled out, recovery must be disarmed.
 
@@ -378,7 +380,9 @@ def test_post_validation_output_error_preserves_successful_control_writes(
 
     monkeypatch.setattr(builtins, "print", break_first_success_report)
     assert _press(src_target, tmp_path) == 1
+    err = capsys.readouterr().err
     assert raised
+    assert _partial_rewrite_restore_hint(src_target) not in err
     assert _receipt(src_target)["press"]["verified"] is True
     source_config = (src_target / SOURCE_CONFIG_REL).read_text(encoding="utf-8")
     assert 'package_name = "potato_launcher"' in source_config

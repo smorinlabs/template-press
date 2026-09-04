@@ -1063,10 +1063,10 @@ def _press(
             _print_closure_refusal_prose(exc, target, rules)
             print(_partial_rewrite_restore_hint(target), file=sys.stderr)
         else:
-            print(
-                f"error: {exc} — {_partial_rewrite_restore_hint(target)}",
-                file=sys.stderr,
-            )
+            message = f"error: {exc}"
+            if mutation_incomplete:
+                message += f" — {_partial_rewrite_restore_hint(target)}"
+            print(message, file=sys.stderr)
         _report_control_restore_problems(restore_problems)
         return PressOutcome(
             False,
@@ -1079,7 +1079,7 @@ def _press(
         # interruption during the armed command phase must not leave a forged
         # receipt or altered rules behind. An interruption can also land while
         # apply() is mutating the tree before command recovery is armed, so the
-        # broader partial-rewrite guidance is unconditional.
+        # broader partial-rewrite guidance spans the incomplete-mutation window.
         restore_problems = []
         if restore_controls_on_exception:
             restore_problems = restore_control_files(target, control_snapshot)
