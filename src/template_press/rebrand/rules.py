@@ -833,12 +833,13 @@ def _validate_exclude_membership(
     [[reset]]/[[regenerate]] license it would turn a pairing the author
     controls into a lever that hands those files to the replace pass.
 
-    Every REFUSAL here tests by filesystem-alias identity
+    Every EDIT-side refusal here tests by filesystem-alias identity
     (_control_alias_key), not raw string — the union _reject_reserved
     documents. A raw comparison fails OPEN: `BUN.lock.` aliases `bun.lock` on
     case-insensitive filesystems and Windows, so the exclusion could simply be
-    out-spelled. Only the licence above reads exact strings, and only because
-    it grants rather than denies.
+    out-spelled. The regenerate/reset membership checks above also read exact
+    strings but fail closed on an alias-only listing; the licence above reads
+    exact strings because it grants rather than denies.
     """
     paired_files = [declaration.rule.file for declaration in regenerate] + [
         declaration.rule.file for declaration in reset
