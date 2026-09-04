@@ -816,9 +816,10 @@ def _press(
         if failed_edits:
             # Regeneration-equivalent failure handling: restore what a failed
             # command may have tampered with, withhold the receipt, exit 1.
-            # The wording differs because the consequence does: an edited file
-            # is NOT exempt from the doctor, so the incompleteness is in the
-            # edit's own post-condition, not in an unscanned file.
+            # The wording differs because an edit receives no command-based
+            # exemption: the incompleteness is in its own declared postcondition,
+            # regardless of whether target-wide verify_ignore later omits it from
+            # doctor and hermetic-verify inventories.
             restore_problems = restore_control_files(target, control_snapshot)
             print(
                 f"error: declared edit failed for {', '.join(failed_edits)} — the "

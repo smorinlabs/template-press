@@ -965,10 +965,10 @@ def final_validation_pass(
 ) -> list[str]:
     """After the LAST declared command: re-validate EVERY output, edit, and
     reset stub (D3). Per-command postconditions are not enough once a target
-    declares multiple commands — a later command can delete, replace,
-    or reintroduce source identity into an earlier output, or modify a
-    reset stub, after that output's own checks passed, and these files stay
-    excluded from the ordinary doctor and hermetic-verify inventories.
+    declares multiple commands — a later command can delete, replace, or
+    reintroduce source identity into an earlier output, or modify a reset stub
+    after that file's own checks passed. This pass re-establishes every
+    declaration-specific postcondition against the final filesystem state.
 
     Edits are rechecked with their ``expect`` (E4): edits run before every
     regeneration, so a later regeneration undoing an earlier edit is exactly
