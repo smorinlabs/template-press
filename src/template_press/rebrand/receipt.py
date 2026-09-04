@@ -89,6 +89,7 @@ def write_receipt(
     resets: Sequence[str] = (),
     removals: Sequence[tuple[str, str]] = (),
     exempt: Sequence[tuple[str, str]] = (),
+    edits: Sequence[tuple[str, Sequence[str], str]] = (),
     *,
     platform: str | None = None,
     origin: OriginDecision | None = None,
@@ -139,6 +140,18 @@ def write_receipt(
         f"regenerated = {len(report.regenerated)}",
         f"skipped = {len(report.skipped)}",
     ]
+    # Edits precede regenerations here for the same reason they precede them
+    # in the plan and in execution: the receipt reads in phase order (E4).
+    # `expect` travels with the argv because it is the post-condition that
+    # made this row a SUCCESS — the argv alone records only what launched.
+    for file, argv, expect in edits:
+        lines += [
+            "",
+            "[[press.edit]]",
+            f"file = {toml_string(file)}",
+            "argv = [" + ", ".join(toml_string(a) for a in argv) + "]",
+            f"expect = {toml_string(expect)}",
+        ]
     # Each regeneration's RESOLVED argv (P04 D5 revision): under plan→apply
     # nothing stops a config change between two runs, so the receipt is the
     # only artifact recording what actually ran.

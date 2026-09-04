@@ -46,11 +46,14 @@ from template_press.rebrand.receipt import (
     write_receipt,
 )
 from template_press.rebrand.regen import (
+    EditPlan,
     RegenerationPlan,
+    execute_edits,
     execute_regenerations,
     final_validation_pass,
     plan_edits,
     plan_regenerate_commands,
+    preflight_edit_targets,
     preflight_excluded_files,
     preflight_regenerate_outputs,
     render_edit_plan,
@@ -547,18 +550,22 @@ def main(argv: list[str] | None = None) -> int:
         # before any write, under the exit-2-nothing-written contract
         # (dry-run included).
         gate_problems = preflight_excluded_files(target, rules)
+        # Edit problems are collected BEFORE regeneration problems so a
+        # refusal listing both reads in the order the phases actually run
+        # (E4): every edit precedes every regeneration. Edits are planned
+        # with the SAME machinery and feed the SAME gate — a missing edit
+        # tool or an unpressable edit target refuses at exit 2 with nothing
+        # written, before the rewrite pass the edit would have amended.
+        gate_problems += preflight_edit_targets(target, rules)
+        edit_plans, edit_problems = plan_edits(
+            target, rules.edit, renamed=frozenset(plan.renames)
+        )
+        gate_problems += edit_problems
         gate_problems += preflight_regenerate_outputs(target, rules)
         regen_plans, plan_problems = plan_regenerate_commands(
             target, rules.regenerate, renamed=frozenset(plan.renames)
         )
         gate_problems += plan_problems
-        # Edits are planned with the SAME machinery and feed the SAME gate:
-        # a missing edit tool refuses at exit 2 with nothing written, before
-        # the rewrite pass the edit would have amended.
-        edit_plans, edit_problems = plan_edits(
-            target, rules.edit, renamed=frozenset(plan.renames)
-        )
-        gate_problems += edit_problems
         reset_previews, reset_problems = preflight_reset_targets(
             target,
             rules,
@@ -661,6 +668,7 @@ def main(argv: list[str] | None = None) -> int:
         rules,
         regen_plans,
         [(preview.rule, preview.stub_text) for preview in reset_previews],
+        edit_plans=edit_plans,
         previously_removed=prior_removed,
         platform=selected.platform,
         rename_preflight=rename_preflight,
@@ -694,6 +702,7 @@ def _press(
     regen_plans: list[RegenerationPlan],
     resets: list[tuple[ResetRule, str]],
     *,
+    edit_plans: list[EditPlan] | None = None,
     previously_removed: dict[str, str] | None = None,
     platform: str | None = None,
     rename_preflight: RenamePreflight | None = None,
@@ -704,6 +713,8 @@ def _press(
 ) -> PressOutcome:
     if previously_removed is None:
         previously_removed = {}
+    if edit_plans is None:
+        edit_plans = []
     try:
         if table is None:
             fallback_plan = build_plan(target, source, dest, rules)
@@ -758,8 +769,54 @@ def _press(
         # Press-owned control files and Git visibility inputs are snapshotted
         # before the first command and revalidated after the last. Reservation
         # alone is not protection because a command can mutate arbitrary files.
-        control_snapshot = snapshot_control_files(target) if regen_plans else {}
-        visibility_snapshot = snapshot_visibility_state(target) if regen_plans else None
+        # E11: gated on ANY declared command, not on regenerations alone. An
+        # edits-only target runs commands too, and a command is a command —
+        # one that rewrites press-rules.toml or changes Git's ignore policy
+        # mid-press is exactly as unsafe whether or not a [[regenerate]]
+        # happens to be declared beside it.
+        any_command = bool(edit_plans) or bool(regen_plans)
+        control_snapshot = snapshot_control_files(target) if any_command else {}
+        visibility_snapshot = snapshot_visibility_state(target) if any_command else None
+        # Phase order (E4): EVERY edit runs after the renames and before EVERY
+        # regeneration, in declaration order — so a regeneration observes the
+        # edited tree, which is the composition targets actually need
+        # (bump the version, then rebuild the lockfile from it).
+        failed_edits = execute_edits(
+            target,
+            edit_plans,
+            dict(report.renamed),
+            report,
+            source=source,
+            dest=dest,
+            rules=rules,
+            rendered_rules=rendered_rules,
+            table=table,
+        )
+        if failed_edits:
+            # Regeneration-equivalent failure handling: restore what a failed
+            # command may have tampered with, withhold the receipt, exit 1.
+            # The wording differs because the consequence does: an edited file
+            # is NOT exempt from the doctor, so the incompleteness is in the
+            # edit's own post-condition, not in an unscanned file.
+            restore_control_files(target, control_snapshot)
+            print(
+                f"error: declared edit failed for {', '.join(failed_edits)} — the "
+                f"file did not reach the state its [[edit]] declaration promised, "
+                f"so this rebrand is INCOMPLETE; no receipt written. Fix the "
+                f"command or the declaration, then re-run with --force.",
+                file=sys.stderr,
+            )
+            if report.skipped:
+                print("skipped (review):", file=sys.stderr)
+                for entry in report.skipped:
+                    print(f"  {entry}", file=sys.stderr)
+            print(report.render(), file=sys.stderr)
+            return PressOutcome(
+                False,
+                report.renamed,
+                report.regenerated,
+                env_error=f"declared edit failed for {', '.join(failed_edits)}",
+            )
         failed_locks = execute_regenerations(
             target,
             regen_plans,
@@ -798,10 +855,12 @@ def _press(
                 report.regenerated,
                 env_error=f"lockfile regeneration failed for {', '.join(failed_locks)}",
             )
-        if regen_plans:
-            # Final validation pass (D3): outputs, reset stubs, and the
+        if any_command:
+            # Final validation pass (D3): edits, outputs, reset stubs, and the
             # control-file snapshot — a later command corrupting an earlier
-            # result is invisible to every downstream inventory.
+            # result is invisible to every downstream inventory. Edits are
+            # rechecked here (expect included) because they run FIRST: a
+            # regeneration is the one thing positioned to undo one.
             post_problems = final_validation_pass(
                 target,
                 regen_plans,
@@ -812,6 +871,7 @@ def _press(
                 rules=rules,
                 rendered_rules=rendered_rules,
                 table=table,
+                edits=edit_plans,
             )
             post_problems += validate_control_files(target, control_snapshot)
             if visibility_snapshot is not None:
@@ -872,6 +932,17 @@ def _press(
             report,
             platform=platform,
             origin=origin,
+            edits=[
+                # Every PLANNED edit, unconditionally: a failed edit withholds
+                # the receipt entirely, so reaching this write means each one
+                # ran and held its post-condition.
+                (
+                    plan.rule.file,
+                    (plan.executable, *plan.rule.command[1:]),
+                    plan.rule.expect,
+                )
+                for plan in edit_plans
+            ],
             regenerations=[
                 (plan.rule.file, (plan.executable, *plan.rule.command[1:]))
                 for plan in regen_plans

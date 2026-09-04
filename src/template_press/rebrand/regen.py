@@ -343,6 +343,84 @@ def plan_edits(
     return plans, problems
 
 
+def _run_declared(
+    target: Path,
+    plan: RegenerationPlan | EditPlan,
+    *,
+    kind: str,
+    renames: Mapping[str, str],
+    report: ApplyReport,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None,
+    table: SubstitutionTable | None,
+    scan_mode: str,
+    expect: str | None,
+) -> bool:
+    """Run ONE declared command under the full contract; True when it held.
+
+    Shared verbatim by [[regenerate]] and [[edit]] — the execution contract is
+    the part neither mechanism may drift on. ``kind`` is the only difference
+    the operator sees in ``report.skipped``; ``scan_mode`` and ``expect`` are
+    the only behavioral knobs.
+    """
+    rule = plan.rule
+    out_rel = _translate_output_path(rule.file, renames, table)
+    out_path = target / out_rel
+    try:
+        assert_under_root(out_path, target)
+        assert_ancestors_real(out_path, target)
+    except SafetyError as exc:
+        report.skipped.append(f"{kind} {rule.file} (sink guard: {exc})")
+        return False
+    if not is_regular_lstat(out_path):
+        report.skipped.append(
+            f"{kind} {rule.file} (sink guard: {out_rel} is not a "
+            f"regular file — no-follow check)"
+        )
+        return False
+    if os.lstat(out_path).st_nlink > 1:
+        report.skipped.append(
+            f"{kind} {rule.file} (sink guard: {out_rel} is hardlinked)"
+        )
+        return False
+    # Bytes capture: only the exit code is consumed, and a declared
+    # command may legitimately emit non-UTF-8 — a strict text decode
+    # would crash mid-press with the target partially mutated.
+    result = subprocess.run(  # noqa: S603 # nosec B603
+        [plan.executable, *rule.command[1:]],
+        cwd=target,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        env=command_env(rule.env),
+    )
+    if result.returncode != 0:
+        report.skipped.append(
+            f"{kind} {rule.file} (command exited {result.returncode})"
+        )
+        return False
+    # Postconditions (D3): the exemption is earned by RESULT — the
+    # produced output must exist, still be a contained regular file,
+    # decode as UTF-8, and pass the paranoid changed-fields scan.
+    problems = _postcondition_problems(
+        target,
+        out_rel,
+        source=source,
+        dest=dest,
+        rules=rules,
+        renames=renames,
+        rendered_rules=rendered_rules,
+        table=table,
+        scan_mode=scan_mode,
+        expect=expect,
+    )
+    if problems:
+        report.skipped.extend(f"{kind} {rule.file} ({problem})" for problem in problems)
+        return False
+    return True
+
+
 def execute_regenerations(
     target: Path,
     plans: Sequence[RegenerationPlan],
@@ -374,66 +452,71 @@ def execute_regenerations(
     failed: list[str] = []
     renames = dict(renamed)
     for plan in plans:
-        rule = plan.rule
-        out_rel = _translate_output_path(rule.file, renames, table)
-        out_path = target / out_rel
-        try:
-            assert_under_root(out_path, target)
-            assert_ancestors_real(out_path, target)
-        except SafetyError as exc:
-            report.skipped.append(f"regenerate {rule.file} (sink guard: {exc})")
-            failed.append(rule.file)
-            continue
-        if not is_regular_lstat(out_path):
-            report.skipped.append(
-                f"regenerate {rule.file} (sink guard: {out_rel} is not a "
-                f"regular file — no-follow check)"
-            )
-            failed.append(rule.file)
-            continue
-        if os.lstat(out_path).st_nlink > 1:
-            report.skipped.append(
-                f"regenerate {rule.file} (sink guard: {out_rel} is hardlinked)"
-            )
-            failed.append(rule.file)
-            continue
-        # Bytes capture: only the exit code is consumed, and a declared
-        # command may legitimately emit non-UTF-8 — a strict text decode
-        # would crash mid-press with the target partially mutated.
-        result = subprocess.run(  # noqa: S603 # nosec B603
-            [plan.executable, *rule.command[1:]],
-            cwd=target,
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            env=command_env(rule.env),
-        )
-        if result.returncode != 0:
-            report.skipped.append(
-                f"regenerate {rule.file} (command exited {result.returncode})"
-            )
-            failed.append(rule.file)
-            continue
-        # Postconditions (D3): the exemption is earned by RESULT — the
-        # produced output must exist, still be a contained regular file,
-        # decode as UTF-8, and pass the paranoid changed-fields scan.
-        problems = _postcondition_problems(
+        if _run_declared(
             target,
-            out_rel,
+            plan,
+            kind="regenerate",
+            renames=renames,
+            report=report,
             source=source,
             dest=dest,
             rules=rules,
-            renames=renames,
             rendered_rules=rendered_rules,
             table=table,
-            scan_mode=rule.scan,
-        )
-        if problems:
-            report.skipped.extend(
-                f"regenerate {rule.file} ({problem})" for problem in problems
-            )
-            failed.append(rule.file)
+            scan_mode=plan.rule.scan,
+            expect=None,
+        ):
+            report.regenerated.append(plan.rule.file)
         else:
-            report.regenerated.append(rule.file)
+            failed.append(plan.rule.file)
+    return failed
+
+
+def execute_edits(
+    target: Path,
+    plans: Sequence[EditPlan],
+    renamed: Mapping[str, str],
+    report: ApplyReport,
+    *,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
+    table: SubstitutionTable | None = None,
+) -> list[str]:
+    """Run every declared in-place edit (E4); return the FAILED files.
+
+    The regeneration executor's contract in full — same cwd, same absent
+    shell, same deny-by-default env, same pinned executable, same sink
+    guards before each launch — with two differences that follow from what
+    an edit IS. It amends a file the replace pass has already rewritten, so
+    the scan is always ``strict`` (there is no ``scan`` key to relax it and
+    no exemption to buy); and it must leave the declaration's ``expect``
+    substring behind, which is the only thing that catches a command that
+    exits 0 and does nothing.
+
+    Success is deliberately NOT recorded in ``report.regenerated``: that
+    list drives the receipt's ``[[press.exempt]]`` rows, and an edited file
+    stays wholly inside the doctor's and ``press verify``'s scan surface.
+    """
+    failed: list[str] = []
+    renames = dict(renamed)
+    for plan in plans:
+        if not _run_declared(
+            target,
+            plan,
+            kind="edit",
+            renames=renames,
+            report=report,
+            source=source,
+            dest=dest,
+            rules=rules,
+            rendered_rules=rendered_rules,
+            table=table,
+            scan_mode="strict",
+            expect=plan.rule.expect,
+        ):
+            failed.append(plan.rule.file)
     return failed
 
 
@@ -564,6 +647,61 @@ def preflight_regenerate_outputs(target: Path, rules: Rules) -> list[str]:
                 prefix + "tracked pre-state is not valid UTF-8 — a file the "
                 "text scan cannot read cannot earn the exemption (fail "
                 "closed; use verify_ignore for deliberate binaries)"
+            )
+    return problems
+
+
+def preflight_edit_targets(target: Path, rules: Rules) -> list[str]:
+    """Problems that make a declared [[edit]] target unpressable (E4).
+
+    The regeneration preflight's state gate, applied to edit targets:
+    containment, git-tracked, clean, no-follow regular file, sole link.
+    Every one of those reasons holds identically here — the declared command
+    rewrites the file in place, and git restores only committed content, so
+    an untracked or dirty target has no recoverable copy, and an in-place
+    truncating editor on a hardlinked target would corrupt the external
+    inode. Refused even under ``--allow-dirty``; this function takes no such
+    flag at all, so the refusal is structural.
+
+    The ONE regeneration check deliberately absent is the UTF-8 pre-state
+    gate: that one exists to stop a file the text scan cannot read from
+    buying the verify exemption, and an edit target never buys it — it stays
+    in the doctor's and ``press verify``'s surface either way. The edit
+    target is also NOT excluded from the rewrite pass, so unlike a
+    regeneration output it is rewritten first and edited second.
+    """
+    if not rules.edit:
+        return []
+    problems: list[str] = []
+    tracked = tracked_paths(target)
+    for rule in rules.edit:
+        prefix = f"edit target {rule.file}: "
+        path = target / rule.file
+        try:
+            assert_under_root(path, target)
+        except SafetyError as exc:
+            problems.append(prefix + str(exc))
+            continue
+        if rule.file not in tracked:
+            problems.append(
+                prefix + "not git-tracked (edit targets must be committed so "
+                "git provides the undo path)"
+            )
+            continue
+        if not is_regular_lstat(path):
+            problems.append(prefix + "not a regular file (no-follow check)")
+            continue
+        st = os.lstat(path)
+        if st.st_nlink > 1:
+            problems.append(
+                prefix + f"hardlinked (st_nlink={st.st_nlink}) — an in-place "
+                f"editor would corrupt the external inode"
+            )
+            continue
+        if has_uncommitted_changes(target, rule.file):
+            problems.append(
+                prefix + "has uncommitted changes — refused even under "
+                "--allow-dirty (git restores only committed content)"
             )
     return problems
 
@@ -753,9 +891,16 @@ def _postcondition_problems(
     rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
     table: SubstitutionTable | None = None,
     scan_mode: str = "strict",
+    expect: str | None = None,
 ) -> list[str]:
     """Existence, type, containment, UTF-8, and the paranoid scan — what a
-    command must leave behind to have regenerated anything at all (D3)."""
+    command must leave behind to have regenerated anything at all (D3).
+
+    ``expect`` adds [[edit]]'s extra post-condition (E4): the declared literal
+    substring must be present in the decoded text. It is collected ALONGSIDE
+    the identity scan rather than short-circuiting it, so one failed edit
+    reports every reason it failed instead of only the first.
+    """
     path = target / translated_rel
     try:
         assert_under_root(path, target)
@@ -776,7 +921,14 @@ def _postcondition_problems(
             f"{translated_rel} is not valid UTF-8 after the command — the "
             f"exemption is bought with the text scan, fail closed"
         ]
-    return scan_regenerated_output(
+    problems: list[str] = []
+    if expect is not None and expect not in text:
+        problems.append(
+            f"{translated_rel} does not contain the declared expect string "
+            f"{expect!r} after the command — the command exited 0 but left "
+            f"the file unchanged in the way the declaration promised"
+        )
+    return problems + scan_regenerated_output(
         text,
         translated_rel,
         source=source,
@@ -800,15 +952,35 @@ def final_validation_pass(
     rules: Rules,
     rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
     table: SubstitutionTable | None = None,
+    edits: Sequence[EditPlan] = (),
 ) -> list[str]:
-    """After the LAST declared command: re-validate EVERY output and reset
-    stub (D3). Per-command postconditions are not enough once a target
-    declares multiple regenerations — a later command can delete, replace,
+    """After the LAST declared command: re-validate EVERY output, edit, and
+    reset stub (D3). Per-command postconditions are not enough once a target
+    declares multiple commands — a later command can delete, replace,
     or reintroduce source identity into an earlier output, or modify a
     reset stub, after that output's own checks passed, and these files stay
     excluded from the ordinary doctor and hermetic-verify inventories.
+
+    Edits are rechecked with their ``expect`` (E4): edits run before every
+    regeneration, so a later regeneration undoing an earlier edit is exactly
+    the ordering this pass exists to catch. An edited file IS in the doctor's
+    surface, but the doctor knows nothing of ``expect``.
     """
     problems: list[str] = []
+    for edit in edits:
+        translated = _translate_output_path(edit.rule.file, renames, table)
+        for problem in _postcondition_problems(
+            target,
+            translated,
+            source=source,
+            dest=dest,
+            rules=rules,
+            renames=renames,
+            rendered_rules=rendered_rules,
+            table=table,
+            expect=edit.rule.expect,
+        ):
+            problems.append(f"final pass: edit {edit.rule.file}: {problem}")
     for plan in plans:
         translated = _translate_output_path(plan.rule.file, renames, table)
         for problem in _postcondition_problems(
@@ -896,7 +1068,48 @@ def validate_visibility_state(target: Path, snapshot: GitVisibilityState) -> lis
         "effective Git visibility changed during declared commands — restore the "
         "target's ignore policy, repository config, and index before re-running. "
         "Make intentional Git visibility changes in a separate commit"
+        + _visibility_delta(target, snapshot, current)
     ]
+
+
+def _visibility_delta(
+    target: Path, before: GitVisibilityState, after: GitVisibilityState
+) -> str:
+    """The ``; changed: …`` clause naming what actually moved, or "".
+
+    Without it the refusal is undiagnosable: an operator told only that
+    "visibility changed" has to bisect the declared commands to learn which
+    of three surfaces (ignore policy, repository config, index) one of them
+    touched, and which file inside it.
+    """
+    changed: list[str] = []
+    ignore_before = {i.path: i for i in before.exclusion_inputs}
+    ignore_after = {i.path: i for i in after.exclusion_inputs}
+    changed += [
+        repr(_relative_to(target, path))
+        for path in sorted(set(ignore_before) | set(ignore_after))
+        if ignore_before.get(path) != ignore_after.get(path)
+    ]
+    config_before = {c.path: c for c in before.config_inputs}
+    config_after = {c.path: c for c in after.config_inputs}
+    changed += [
+        repr(_relative_to(target, path))
+        for path in sorted(set(config_before) | set(config_after))
+        if config_before.get(path) != config_after.get(path)
+    ]
+    if before.config_effective_sha256 != after.config_effective_sha256:
+        changed.append("effective git config")
+    if before.index_entries != after.index_entries:
+        changed.append("the git index")
+    return f"; changed: {', '.join(changed)}" if changed else ""
+
+
+def _relative_to(target: Path, path: Path) -> str:
+    """A target-relative POSIX spelling when the path is inside it."""
+    try:
+        return path.relative_to(target).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def snapshot_control_files(target: Path) -> dict[str, bytes | None]:
