@@ -499,13 +499,15 @@ def test_retry_after_a_receiptless_press_names_the_restore_path(
     def failing_write_receipt(*args, **kwargs):
         raise OSError(errno.EIO, "injected receipt write failure")
 
-    monkeypatch.setattr(cli_module, "write_receipt", failing_write_receipt)
     answers = write_answers(tmp_path)
-    assert main(["--target", str(src_target), "--config", str(answers)]) != 0
-    assert "injected receipt write failure" in capsys.readouterr().err
-    assert not (src_target / RECEIPT_REL).exists()
+    # Scope the injected receipt failure without undoing the autouse test
+    # fixture's hermetic Git environment and subprocess containment guard.
+    with monkeypatch.context() as receipt_patch:
+        receipt_patch.setattr(cli_module, "write_receipt", failing_write_receipt)
+        assert main(["--target", str(src_target), "--config", str(answers)]) != 0
+        assert "injected receipt write failure" in capsys.readouterr().err
+        assert not (src_target / RECEIPT_REL).exists()
 
-    monkeypatch.undo()
     # The press rewrote press-source.toml to the DESTINATION; point origin
     # there too, so the retry clears the origin guard and reaches the
     # identical-identity guard this test is about.
