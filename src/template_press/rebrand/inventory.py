@@ -490,13 +490,19 @@ def _absolute_git_path(target: Path, *args: str) -> Path:
     return path if path.is_absolute() else target / path
 
 
-def _absolute_git_paths(target: Path, *args: str, expected: int) -> tuple[Path, ...]:
-    result = _run_git(target, *args)
+def _absolute_git_paths(
+    target: Path, *prefix: str, queries: tuple[tuple[str, ...], ...]
+) -> tuple[Path, ...]:
+    result = _run_git(target, *prefix, *(flag for query in queries for flag in query))
     if not result.stdout.endswith(b"\n"):
         raise SafetyError("malformed newline-terminated Git path")
     lines = result.stdout[:-1].split(b"\n")
-    if len(lines) != expected:
-        raise SafetyError(f"expected {expected} Git paths, got {len(lines)}")
+    if len(lines) < len(queries):
+        raise SafetyError(f"expected {len(queries)} Git paths, got {len(lines)}")
+    if len(lines) > len(queries):
+        # A path with an embedded LF makes the line framing ambiguous: ask for
+        # each path on its own, which preserves the full path.
+        return tuple(_absolute_git_path(target, *prefix, *query) for query in queries)
     paths: list[Path] = []
     for line in lines:
         path = Path(line.decode("utf-8", "surrogateescape"))
@@ -717,13 +723,12 @@ def _config_source_state(target: Path) -> _ConfigSourceState:
         target,
         "rev-parse",
         "--path-format=absolute",
-        "--git-dir",
-        "--git-common-dir",
-        "--git-path",
-        "HEAD",
-        "--git-path",
-        "index",
-        expected=4,
+        queries=(
+            ("--git-dir",),
+            ("--git-common-dir",),
+            ("--git-path", "HEAD"),
+            ("--git-path", "index"),
+        ),
     )
     condition_paths = {
         target,

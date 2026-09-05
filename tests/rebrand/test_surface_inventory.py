@@ -29,7 +29,7 @@ from template_press.rebrand.inventory import (
 from template_press.rebrand.rules import DEFAULT_RULES
 from template_press.rebrand.safety import SafetyError
 
-from .conftest import _git, posix_only, requires_symlink
+from .conftest import _git, make_target, posix_only, requires_symlink
 
 
 def _entries(target: Path) -> dict[str, SurfaceEntry]:
@@ -1658,11 +1658,7 @@ def test_absolute_git_paths_returns_requested_paths_in_order(
     )
 
     batched = inventory._absolute_git_paths(
-        src_target,
-        "rev-parse",
-        "--path-format=absolute",
-        *(flag for request in requests for flag in request),
-        expected=len(requests),
+        src_target, "rev-parse", "--path-format=absolute", queries=requests
     )
 
     assert batched == expected
@@ -1678,22 +1674,50 @@ def test_absolute_git_paths_refuses_missing_trailing_newline(
 
     with pytest.raises(SafetyError, match="malformed newline-terminated Git path"):
         inventory._absolute_git_paths(
-            src_target, "rev-parse", "--git-dir", "--git-common-dir", expected=2
+            src_target, "rev-parse", queries=(("--git-dir",), ("--git-common-dir",))
         )
 
 
-@pytest.mark.parametrize("stdout", [b"/only\n", b"/one\n/two\n/three\n"])
-def test_absolute_git_paths_refuses_unexpected_line_count(
-    src_target: Path, monkeypatch: pytest.MonkeyPatch, stdout: bytes
+def test_absolute_git_paths_refuses_too_few_lines(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        inventory, "_run_git", lambda *_a, **_k: _fake_git_output(stdout)
+        inventory, "_run_git", lambda *_a, **_k: _fake_git_output(b"/only\n")
     )
 
     with pytest.raises(SafetyError, match="expected 2 Git paths"):
         inventory._absolute_git_paths(
-            src_target, "rev-parse", "--git-dir", "--git-common-dir", expected=2
+            src_target, "rev-parse", queries=(("--git-dir",), ("--git-common-dir",))
         )
+
+
+def test_absolute_git_paths_falls_back_per_query_when_a_path_embeds_newline(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git_dir = src_target / "with\nnewline" / ".git"
+    common = src_target / "common"
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run_git(_target: Path, *args: str, **_kwargs):
+        calls.append(args)
+        if "--git-dir" in args and "--git-common-dir" in args:
+            return _fake_git_output(f"{git_dir}\n{common}\n".encode())
+        if "--git-dir" in args:
+            return _fake_git_output(f"{git_dir}\n".encode())
+        return _fake_git_output(f"{common}\n".encode())
+
+    monkeypatch.setattr(inventory, "_run_git", fake_run_git)
+
+    paths = inventory._absolute_git_paths(
+        src_target, "rev-parse", queries=(("--git-dir",), ("--git-common-dir",))
+    )
+
+    assert paths == (git_dir, common)
+    assert calls == [
+        ("rev-parse", "--git-dir", "--git-common-dir"),
+        ("rev-parse", "--git-dir"),
+        ("rev-parse", "--git-common-dir"),
+    ]
 
 
 def test_absolute_git_paths_resolves_relative_output_against_target(
@@ -1704,7 +1728,7 @@ def test_absolute_git_paths_resolves_relative_output_against_target(
     )
 
     paths = inventory._absolute_git_paths(
-        src_target, "rev-parse", "--git-dir", "--git-common-dir", expected=2
+        src_target, "rev-parse", queries=(("--git-dir",), ("--git-common-dir",))
     )
 
     assert paths == (src_target / "rel" / "one", src_target / "rel" / "two")
@@ -1738,3 +1762,17 @@ def test_config_source_state_batches_rev_parse_queries(
     assert len(batched) == 4
     assert sum("--shared-index-path" in cmd for cmd in rev_parse) == 4
     assert len(rev_parse) == 12
+
+
+@posix_only
+def test_capture_preserves_newline_in_target_path(tmp_path: Path) -> None:
+    base = tmp_path / "with\nnewline"
+    base.mkdir()
+    target = make_target(base)
+
+    snapshot = capture_surface_snapshot(target)
+
+    assert {entry.rel.as_posix() for entry in snapshot.entries} >= {
+        "pyproject.toml",
+        "README.md",
+    }
