@@ -33,7 +33,7 @@ the disposition carried into the new plan (R-numbers match the plan's
 
 | # | Plan said | Found | Disposition |
 | --- | --- | --- | --- |
-| F1 | Task 17 step 3: "add the hint at the `cli.py` catch site from Task 2 when `rules.clean` is non-empty" | The hint already exists at `cli.py:185` inside `_print_closure_refusal_prose`, guarded by `getattr(rules, "clean", ())` because `Rules.clean` did not exist yet. Message text matches the plan's expected substring exactly. | R1: replace the `getattr` with `rules.clean`; test both directions (the CLEAN review asked for the negative case; the plan had only the positive one). |
+| F1 | Task 17 step 3: "add the hint at the `cli.py` catch site from Task 2 when `rules.clean` is non-empty" | The hint already exists at `cli.py:185-186` inside `_print_closure_refusal_prose`, guarded by `getattr(rules, "clean", ())` because `Rules.clean` did not exist yet. Message text matches the plan's expected substring exactly. | R1: replace the `getattr` with `rules.clean`; test both directions (the CLEAN review asked for the negative case; the plan had only the positive one). |
 | F2 | Task 17: exit 2 "when a path is outside the target" | `_declared_rel_path` (rules.py:432) refuses absolute paths, `..`, NUL and control characters at config load, so this is an exit-2 `ValidationError` before anything runs. The CLEAN review (D5 b) also asked that the rendered string be validated again. | Task 1 validates the declared pattern; Task 2 validates the rendered path (control characters, `SafeRelPath`). |
 | F3 | Task 16: "unknown placeholder `{nope}` → `ValidationError`" | Parse time has no identity to render against, but `ALLOWED_PLACEHOLDERS` (rules.py:36) and the `[[replace]]` brace-token scan (rules.py:355) give a parse-time vocabulary check with the same strictness (`{App_Name}` also refused). | Task 1 reuses that scan verbatim. |
 | F4 | Task 16: "platforms honored" | Platform selection lives in `_ParsedRules` + `_select_rules` (rules.py:1213), which the plan never named; every mechanism needs a declaration wrapper and a selection line. `Rules` is constructed positionally in places, so a new field must be appended after `edit`. | Task 1 names all of `_CleanDeclaration`, `_ParsedRules.clean`, `_select_rules`, and the append-after-`edit` rule. |
@@ -63,18 +63,11 @@ are untouched.
 
 ## 4. Owner decisions
 
-**D-A — git environment for `press clean` (recommendation: scrubbed).**
-Context: every on-target git call runs under `scrubbed_git_env()`, which
-points `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` at `/dev/null`. Evidence: a
-`core.excludesFile` in the operator's global config would otherwise widen
-what `git clean -X` removes, and the surface inventory that produced the E2
-refusal already pins `core.excludesFile` the same way (inventory.py:148). Options:
-(1) *scrubbed* — deterministic, matches the inventory's definition of
-"ignored", matches every other git call; an entry ignored only by the global
-excludes file is not removed. (2) *ambient* — matches the E2 remedy argv the
-operator would type by hand; nondeterministic across machines. Effect of
-the difference: only entries ignored solely by a global excludes file.
-Recommendation: (1). Response needed: "scrubbed" or "ambient".
+**D-A — git environment for `press clean`: scrubbed.** The resumed session
+accepted the recommendation to continue with the scrubbed environment on
+2026-09-05. Global and system Git configuration are disabled. Repository-local
+ignore settings remain active, matching the existing surface inventory.
+An entry ignored only by the operator's global excludes file is preserved.
 
 **D-B — Muse review effort.** Context: the handoff requires Muse at ultra and
 records that the `ultra_reasoning_effort` gate was closed on 2026-09-04 with
@@ -94,23 +87,21 @@ received, not as fixes chosen.
 | Muse, pass 1 (plan at `d1f457e`) | ultra / **xhigh** (gate `ultra_reasoning_effort` reported closed) | FIX, confidence 0.8 | 3 | all three applied; two of four optional suggestions adopted (§5.2) |
 | Muse, pass 2 (revised plan at `287e387`) | ultra / **xhigh** (gate still closed) | APPROVE, confidence 0.85 | 0 | no change; it verified each revision against `main` (`SafeRelPath` refuses `src/../escape` at `safety.py:215-216`; the gitfile failure test exits 128 deterministically and passes the test interceptor; the `.git` pre-check is the truthful exit 2 because `scrubbed_git_env` clears `GIT_DIR`) |
 | Claude Fable, re-review of the revised plan | n/a | APPROVE | — | the three fixes and two adoptions are the only deltas; spec coverage and type consistency re-checked |
+| Codex, resumed independent review | inherited session configuration; no Muse/Fable substitution | APPROVE on the plan hash below | 0 | extracted the exact gitfile helper and ran ten independent metadata cases; checked tuple shape, content preservation, task imports, and native commit ordering |
 
-### 5.3 Gate status
+### 5.1 Fable review of the reconciled plan
 
-The reconciled plan is approved by both reviewers. Two items stay open
-for Steve, neither of which changes the plan text:
+Checked against spec §E10 line by line and against the CLEAN review's
+"tests that must exist" list. Every spec bullet maps to a numbered task and
+a named test. Two residual risks are recorded rather than closed:
 
-- **D-A** — the recommended *scrubbed* environment is what the plan
-  encodes; choosing *ambient* would change `execute_clean` and one `cli.md`
-  sentence.
-- **D-B** — both Muse passes ran at xhigh, not the required ultra. The
-  gate is complete once Steve either grants an exception for these two
-  reviews (as on 2026-09-04) or a rerun at ultra is possible; the plan is
-  otherwise ready for implementation.
+- The git output strings `Would remove …` / `Removing …` are pinned from one
+  git version; Task 3 step 4 says what to do if a runner's git differs.
+- `SafeRelPath` must accept `{` and `}` in a declared pattern for Task 1's
+  raw-path validation to work as written; verified before this plan was
+  committed (see the note below the table in §6).
 
-Implementation starts from `docs/superpowers/plans/2026-09-05-p10-declared-pre-press-clean.md`
-in a fresh worktree off `origin/main`, with `tests/rebrand/test_clean_rules.py`
-Task 1 Step 1 as the first RED.
+Verdict: APPROVE for Muse review.
 
 ### 5.2 Muse pass 1 — findings and dispositions
 
@@ -137,7 +128,8 @@ now proves a refusal through a hostile stub instead of a benign pass; a
 skips them without `-ff`; the refusal persists and is self-correcting).
 
 Documentation corrections from the same pass: F1 and the plan cite
-`cli.py:185` (was 186); F6 cites `check_tools.py:47` (was 52).
+`cli.py:185-186`, the `getattr` guard and its `print` (was 186 alone); F6
+cites `check_tools.py:47` (was 52).
 
 Muse's safety analysis (§3 of its review) independently confirmed D-A:
 the inventory pins the target's own `core.excludesFile`
@@ -145,19 +137,51 @@ the inventory pins the target's own `core.excludesFile`
 identically, so the scrubbed choice loses only global-excludes-ignored
 entries and gains determinism.
 
-### 5.1 Fable review of the reconciled plan
+### 5.3 Gate status
 
-Checked against spec §E10 line by line and against the CLEAN review's
-"tests that must exist" list. Every spec bullet maps to a numbered task and
-a named test. Two residual risks are recorded rather than closed:
+The approvals above cover `287e387` and its earlier inputs. They do not
+approve the later bot-review fixes or the resumed revision. Implementation
+remains gated until the final revision is independently reviewed and D-B is
+settled. D-A uses the accepted scrubbed environment.
 
-- The git output strings `Would remove …` / `Removing …` are pinned from one
-  git version; Task 3 step 4 says what to do if a runner's git differs.
-- `SafeRelPath` must accept `{` and `}` in a declared pattern for Task 1's
-  raw-path validation to work as written; verified before this plan was
-  committed (see the note below the table in §6).
+### 5.4 Resumed review corrections
 
-Verdict: APPROVE for Muse review.
+- Correct `_select_rules` to pass a tuple of `CleanRule` objects, without
+  an extra enclosing tuple. The code fence now computes `active_clean`
+  separately so formatting it cannot change a keyword argument into a tuple.
+- Bind regular gitfiles to the selected linked-worktree metadata through
+  its regular `gitdir` backlink. A target redirected to a sibling worktree
+  otherwise uses that sibling's index and can delete a file tracked by the
+  requested target. Both preview and apply enforce the same precondition.
+- Declare the supported layouts explicitly: ordinary `.git` directories
+  and registered linked worktrees. Gitfiles without that backlink, including
+  submodule roots and standalone separate-Git-directory layouts, are refused.
+  No E10 requirement promises those layouts for this new verb.
+- Preserve path whitespace and relative backlinks. Read backlinks with
+  `read_regular_nofollow`; map its `SafetyError` to exit 2. A read-only Git
+  query may run before refusal, so exit 2 means no clean command ran.
+- Replace the dangling-gitfile exit-1 fixture with a corrupt index in an
+  otherwise valid ordinary repository. Invalid gitfiles now test exit 2.
+- Commit the native declaration before running the acceptance test that
+  clones `HEAD`. Keep the test sequence executable without an implicit step.
+- Keep the previous local fixes for malformed braces, symlinked control
+  directories and `.git`, platform-active runbook conditions, command-display
+  wording, documentation fences, checker configuration, and source citations.
+- Assert protected file bytes as well as snapshot equality. The inventory
+  alone does not prove that tracked and untracked file contents survived.
+- Rename the command-display test to remove its obsolete copyability claim;
+  use an executable placeholder for the pure argv-construction test.
+- Add test imports at the task that first uses them. Ruff auto-fixes unused
+  imports, so putting Task 3/4 dependencies into Task 2 would remove them
+  before later tests were appended. Each intermediate module is checked.
+
+The metadata correction was checked independently with ordinary, absolute
+and relative linked, foreign normal, foreign sibling, malformed, dangling,
+and symlink-backlink fixtures. The actual deletion control preserved a
+tracked file with correct metadata and deleted it with the sibling index.
+The new rule follows Git's documented
+[per-worktree backlink](https://git-scm.com/docs/gitrepository-layout) and
+[linked-worktree metadata](https://git-scm.com/docs/git-worktree).
 
 ## 6. Verification record
 
@@ -165,3 +189,33 @@ Verdict: APPROVE for Muse review.
   exit 0; nonexistent pathspec exit 0 with no output; untracked non-ignored
   file survives `-X`.
 - `SafeRelPath("src/{package_name}")`: accepted unchanged (`src/{package_name}`, `tests`, `build/{repo_name}` all round-trip through `SafeRelPath(...).as_posix()`), so the raw pattern can be validated before rendering.
+
+
+### Resumed executable-plan validation
+
+The plan SHA-256 reviewed by Codex and materialized for these checks is
+`0533044d2a09168073c8e525c31f78a218659ebfc6004e8dffec689300199250`.
+These checks validate proposed snippets in a disposable clone. They do not
+mean that P10 has been implemented in this branch or released.
+
+| Check | Result |
+| --- | --- |
+| Full repository `just check` on the documentation revision | Passed; 1412 tests passed, 2 skipped, 4 deselected |
+| Parser and complete clean CLI tests assembled from the plan | 55 passed |
+| Task 2 boundary: pure helper tests and no unused imports | 6 passed; Ruff F401 clean |
+| Task 3 boundary: CLI tests and no unused imports | 29 passed; Ruff F401 clean |
+| Task 4 boundary: integrations and no unused imports | 33 passed; Ruff F401 clean |
+| Inverse control: restore the extra tuple around active rules | Parser assertion failed as expected |
+| Inverse control: bypass the gitfile validation call | Three preservation/precondition cases failed as expected; the unguarded apply deleted protected fixture files |
+| Independent exact-helper check | Ten cases: absolute/relative/newline worktrees accepted; foreign/sibling/dangling/malformed/symlink-backlink/separate-directory/submodule cases refused |
+
+The full proposed test command was
+`pytest tests/rebrand/test_clean_rules.py tests/rebrand/test_clean_cli.py -q -o addopts=`
+inside the disposable clone with the plan snippets applied. The inverse
+controls failed assertions with exit 1, rather than failing setup or imports;
+the scratch source was restored after each control.
+
+Final Muse/Fable review of this revision remains pending. Their older
+approvals are historical. D-B still requires a completed ultra review or an
+explicit owner exception for the actual effort; an unavailable review is
+not an approval.

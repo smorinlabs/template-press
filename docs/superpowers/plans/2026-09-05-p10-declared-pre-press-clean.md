@@ -10,13 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-01-press-improvements-g2p-design.md` §E10 (binding decisions), `docs/superpowers/specs/reviews-2026-09-01/CLEAN-review.md` (the adversarial review that produced the restricted form), and `docs/superpowers/specs/reviews-2026-09-05/P10-planning-gate.md` (the reconciliation of this plan against merged `main` at `bddbae3`, with the decisions below and their rationale). This plan supersedes Tasks 16–18 of `docs/superpowers/plans/2026-09-01-press-improvements-g2p.md`.
 
+**Implementation gate:** This document remains a planning draft until the final revision has completed the reviews recorded in `P10-planning-gate.md`. The earlier approvals cover earlier snapshots. Do not start Task 1 while that record lists a pending review or an unresolved review-effort requirement.
+
 ## Global Constraints
 
 - Work in a worktree on a branch from `origin/main` via `git worktree add`; merge with a merge commit (`gh pr merge --merge`); never push to `main`.
 - After ANY change to `src/template_press/rebrand/`, run `just matrix` (R1/R2/R3 acceptance matrix) — AGENTS.md rule.
 - Gates before every commit: `just check` (ruff check/format, ty over `src/template_press/`, tests). Hooks: commit-msg commitlint (lowercase conventional subject), pre-commit gitleaks/codespell/ruff/editorconfig/yamllint, pre-push gitleaks + bandit.
 - Commit messages: Conventional Commits, lowercase subject; body ends with the session trailer the harness prescribes.
-- Exit-code contract: `2` = precondition/config refusal, nothing ran; `1` = a command ran and failed (for `press clean`: git exited non-zero, so the tree may have changed); `0` = success. No new exit codes.
+- Exit-code contract: `2` = precondition/config refusal, no clean command ran; `1` = a command ran and failed (for `press clean`: git exited non-zero, so the tree may have changed); `0` = success. No new exit codes.
 - Zero runtime dependencies: no third-party imports in `src/`.
 - "Dry-run refuses exactly what apply refuses" (`docs/source/reference/cli.md:40`) is inviolable: clean is never a phase of `press rebrand`.
 - New root table: add `"clean"` to `_ROOT_KEYS` (`rules.py:304`); unknown keys still fail loud.
@@ -28,15 +30,16 @@
 
 These are the points where the 2026-09-01 plan was silent or where merged code changed the ground. Rationale and evidence are in the gate record.
 
-- **R1 — the E2 hint already exists.** `cli.py:185` prints `declared clean rules exist — run: press clean --target {target}` behind `getattr(rules, "clean", ())`. Task 3 replaces the `getattr` with `rules.clean` and tests both directions; it adds no new message.
+- **R1 — the E2 hint already exists.** `cli.py:185-186` prints `declared clean rules exist — run: press clean --target {target}` behind `getattr(rules, "clean", ())`. Task 3 replaces the `getattr` with `rules.clean` and tests both directions; it adds no new message.
 - **R2 — an absent declared path is a silent no-op.** Verified on git 2.x: `git clean -ndX -- nonexistent` exits 0 and prints nothing. `press clean` therefore exits 0 and prints only the command line; nothing is special-cased.
-- **R3 — every git invocation is hardened and scrubbed.** `press clean` builds its argv with `git_hardening_args()` and runs under `scrubbed_git_env()`, exactly as every other on-target git call does (G5). Consequence: "ignored" means ignored by the target's own `.gitignore` files and `.git/info/exclude`, never by the operator's global excludes file. The echoed command is the exact argv that runs, hardening flags included.
+- **R3 — every git invocation is hardened and scrubbed.** `press clean` builds its argv with `git_hardening_args()` and runs under `scrubbed_git_env()`, exactly as every other on-target git call does (G5). Consequence: "ignored" means ignored by the target's own `.gitignore` files and `.git/info/exclude`, never by the operator's global excludes file. The echoed command is the exact argv that runs, hardening flags included; it is displayed for the record, not as an equivalent shell command, because the scrubbed environment is not part of the argv.
 - **R4 — `press clean` requires `press/press-source.toml`.** Paths render from the SOURCE identity loaded with `load_source_config(target, None)`; the E1 origin guard is not consulted, because clean writes no identity and only removes ignored entries under paths the target's own rules declare.
 - **R5 — the receipt records the declaration, unrendered.** `[[press.clean]] paths = [...]` carries the declared patterns as written; `press clean` itself never writes a receipt. No `ran` key: the table name plus docs state that it is a declaration.
 - **R6 — no writer-overlap check for clean paths.** `-X` removes only ignored entries, and every `[[edit]]`/`[[regenerate]]`/`[[reset]]`/`[[remove]]` target is inventoried, so the sets cannot intersect; `_validate_writer_overlaps` is unchanged.
 - **R7 — the snapshot-equality invariant is a test, not a runtime tripwire.** With the restricted form the invariant is git's own `-X` semantics; a runtime comparison would add an exit-1 path that cannot legitimately fire.
 - **R8 — this repository declares `[[clean]]` for itself.** The native R3 self-press then exercises parse → check-tools → receipt end to end, as it already does for `[[edit]]`.
 - **R9 — an ADR records the mechanism** (`docs/adr/0018-declared-pre-press-clean.md`), following ADR 0017 for `[[edit]]`.
+- **R10 — Git metadata must belong to the target.** Ordinary `.git` directories and registered linked-worktree gitfiles are supported. For a gitfile, a hardened, scrubbed read-only Git query locates the selected Git directory; its regular `gitdir` backlink must resolve to this target's `.git`. A foreign, dangling, or unbound gitfile is refused before cleaning. Standalone separate-Git-directory and submodule-root layouts without that backlink are outside this verb's v1 support; use an ordinary clone. Existing rebrand and verify behavior is unchanged.
 
 ## File Structure
 
@@ -46,7 +49,7 @@ These are the points where the 2026-09-01 plan was silent or where merged code c
 | `src/template_press/rebrand/clean.py` (create) | Pure logic: `render_clean_paths`, `clean_argv`, `shell_join`, `execute_clean`. No argparse, no exit codes. |
 | `src/template_press/rebrand/clean_cli.py` (create) | `clean_command(argv) -> int`: argument parsing, config loading, the 0/1/2 mapping, echo and output. |
 | `src/template_press/press_cli.py` (modify) | `clean` in `_USAGE` and the verb dispatch. |
-| `src/template_press/rebrand/cli.py` (modify) | Line 185: `rules.clean` instead of `getattr`; the `write_receipt` call passes `clean=`. |
+| `src/template_press/rebrand/cli.py` (modify) | Lines 185-186: `rules.clean` instead of `getattr`; the `write_receipt` call passes `clean=`. |
 | `src/template_press/rebrand/receipt.py` (modify) | `write_receipt(..., clean=...)` emits `[[press.clean]]` rows. |
 | `src/template_press/rebrand/check_tools.py` (modify) | One informational row per active clean rule. |
 | `press/press-rules.toml` (modify) | This repository's own `[[clean]]` declaration. |
@@ -142,6 +145,12 @@ def test_unknown_root_table_still_fails_loud(tmp_path: Path):
         ('[[clean]]\npaths = ["src\\u001b"]\n', "control characters"),
         ('[[clean]]\npaths = ["src/{nope}"]\n', "unknown placeholder"),
         ('[[clean]]\npaths = ["src/{App_Name}"]\n', "unknown placeholder"),
+        ('[[clean]]\npaths = ["src/{package_name"]\n', "unbalanced or nested brace"),
+        ('[[clean]]\npaths = ["src/package_name}"]\n', "unbalanced or nested brace"),
+        (
+            '[[clean]]\npaths = ["src/{a{package_name}}"]\n',
+            "unbalanced or nested brace",
+        ),
         ('[[clean]]\npaths = ["src", "src"]\n', "duplicate"),
         ('[[clean]]\npaths = ["src"]\nplatforms = []\n', "platforms must be"),
         ('[[clean]]\npaths = ["src"]\nplatforms = ["plan9"]\n', "platforms values"),
@@ -261,6 +270,14 @@ def _parse_clean(entry: object) -> _CleanDeclaration:
                     f"{RULES_REL}: [[clean]] path {path!r} references an invalid "
                     f"or unknown placeholder {token!r}"
                 )
+        # Any brace the scan did not consume is unbalanced or nested; it would
+        # render literally and make the path a silent no-op, so refuse it.
+        stripped = re.sub(r"\{[^{}]*\}", "", path)
+        if "{" in stripped or "}" in stripped:
+            raise ValidationError(
+                f"{RULES_REL}: [[clean]] path {path!r} has an unbalanced or "
+                f"nested brace"
+            )
         if path in paths:
             raise ValidationError(
                 f"{RULES_REL}: [[clean]] paths contains duplicate value {path!r}"
@@ -282,17 +299,17 @@ if not isinstance(raw_clean, list) or any(not isinstance(e, dict) for e in raw_c
 
 and after `edit = tuple(_parse_edit(e) for e in raw_edit)`: `clean = tuple(_parse_clean(e) for e in raw_clean)`, then pass `clean=clean` to the `_ParsedRules(...)` constructor.
 
-`_select_rules` — inside the `replace(parsed.rules, ...)` call, after `edit=active_edits,`:
+`_select_rules` — calculate the active rules before the `replace(parsed.rules, ...)` call:
 
 ```python
-clean = (
-    tuple(
-        declaration.rule
-        for declaration in parsed.clean
-        if platform in declaration.platforms
-    ),
+active_clean = tuple(
+    declaration.rule
+    for declaration in parsed.clean
+    if platform in declaration.platforms
 )
 ```
+
+Inside that existing `replace(...)` call, add the keyword argument `clean=active_clean,` after `edit=active_edits,`. The tuple contains `CleanRule` objects directly; no outer tuple wraps it.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -319,7 +336,7 @@ git commit -m "feat(rules): parse [[clean]] path declarations"
 - Produces:
   - `render_clean_paths(rules: tuple[CleanRule, ...], source: Identity) -> tuple[str, ...]` — every declared path rendered, re-validated, in declaration order; raises `ValidationError`.
   - `clean_argv(git: Path, target: Path, paths: tuple[str, ...], *, show: bool) -> list[str]` — the exact argv that runs.
-  - `shell_join(argv: list[str]) -> str` — copy-pasteable rendering.
+  - `shell_join(argv: list[str]) -> str` — display rendering of the argv for the record; not an equivalent ambient-shell command, because the scrubbed environment is not part of the argv (R3).
   - `execute_clean(argv: list[str], target: Path) -> subprocess.CompletedProcess[bytes]` — runs under the scrubbed git environment; never raises on a non-zero exit.
 
 - [ ] **Step 1: Write the failing tests**
@@ -331,41 +348,22 @@ standalone verb, and its integrations (E2 hint, check-tools, receipt, verify).
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
 
-from template_press import press_cli
 from template_press.rebrand.clean import (
     clean_argv,
     execute_clean,
     render_clean_paths,
     shell_join,
 )
-from template_press.rebrand.cli import main
 from template_press.rebrand.identity import ValidationError
-from template_press.rebrand.inventory import capture_surface_snapshot
-from template_press.rebrand.receipt import RECEIPT_REL
-from template_press.rebrand.rules import CleanRule, load_selected_rules
+from template_press.rebrand.rules import CleanRule
 from template_press.rebrand.safety import git_hardening_args
-from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import SOURCE, _git
-from .test_cli import write_answers, write_source_config
-
-CLEAN_SRC_TESTS = '[[clean]]\npaths = ["src/{package_name}", "tests"]\n'
-
-
-def _declare(target: Path, body: str) -> None:
-    """Write press/press-rules.toml and commit it (a press wants a clean tree)."""
-    (target / "press").mkdir(exist_ok=True)
-    (target / "press" / "press-rules.toml").write_text(body, encoding="utf-8")
-    _git(target, "add", "-A")
-    _git(target, "commit", "-q", "-m", "declare rules")
+from .conftest import SOURCE
 
 
 class TestRender:
@@ -399,7 +397,7 @@ class TestRender:
 
 class TestArgv:
     def test_preview_and_run_argv(self, tmp_path: Path):
-        git = Path("/usr/bin/git")
+        git = Path("git-placeholder")  # argv construction only; never executed
         paths = ("src/demo_widget", "tests")
         preview = clean_argv(git, tmp_path, paths, show=True)
         run = clean_argv(git, tmp_path, paths, show=False)
@@ -425,7 +423,7 @@ class TestArgv:
             "tests",
         ]
 
-    def test_shell_join_is_copy_pasteable(self):
+    def test_shell_join_displays_argv_with_spaces(self):
         joined = shell_join(["git", "clean", "-ndX", "--", "src/demo widget"])
         assert "src/demo widget" in joined or "'src/demo widget'" in joined
         assert joined.startswith("git clean -ndX --")
@@ -540,7 +538,11 @@ def clean_argv(
 
 
 def shell_join(argv: list[str]) -> str:
-    """Render `argv` as a copy-pasteable shell command for this platform."""
+    """Render `argv` for display on this platform.
+
+    This is the argv only: `press clean` runs it under `scrubbed_git_env`,
+    so pasting it into an ambient shell is not an equivalent command.
+    """
     if sys.platform == "win32":
         return subprocess.list2cmdline(argv)
     return shlex.join(argv)
@@ -578,17 +580,46 @@ git commit -m "feat(clean): render declared clean paths and build the git clean 
 **Files:**
 - Create: `src/template_press/rebrand/clean_cli.py`
 - Modify: `src/template_press/press_cli.py` (`_USAGE` and the verb dispatch, lines 18–46)
-- Modify: `src/template_press/rebrand/cli.py:185` (`getattr(rules, "clean", ())` → `rules.clean`)
+- Modify: `src/template_press/rebrand/cli.py:185-186` (`getattr(rules, "clean", ())` → `rules.clean`)
 - Test: `tests/rebrand/test_clean_cli.py` (append)
 
 **Interfaces:**
 - Consumes: Task 2's four functions; `load_selected_rules`, `RULES_REL` (rules.py); `load_source_config`, `SOURCE_CONFIG_REL` (config.py); `resolve_executable`, `command_env` (regen.py).
 - Produces: `clean_command(argv: list[str] | None = None) -> int` with `--target <dir>` (required) and `--show`.
-- Exit codes: `0` ran (or previewed) successfully; `2` target not a directory or not a git repository (no `.git` entry), rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing or malformed, a rendered path invalid, or `git` unresolvable — nothing ran; `1` git exited non-zero — the tree may have changed.
+- Exit codes: `0` ran (or previewed) successfully; `2` target not a directory, not a git repository (no `.git` entry), or `.git` is a symlink or an unbound gitfile; rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing or malformed, a rendered path invalid, or `git` unresolvable — no clean command ran; a read-only metadata query may have run. `1` git clean exited non-zero — the tree may have changed.
 
-- [ ] **Step 1: Write the failing tests** (append to `tests/rebrand/test_clean_cli.py`)
+- [ ] **Step 1: Write the failing tests** (extend `tests/rebrand/test_clean_cli.py`)
+
+Add these imports beside the module's existing imports. Task 2 intentionally
+imports only what its tests use: Ruff auto-fixes unused imports in this
+repository, so importing later tasks' dependencies early loses them.
 
 ```python
+import os
+import shutil
+
+from template_press import press_cli
+from template_press.rebrand.cli import main
+from template_press.rebrand.inventory import capture_surface_snapshot
+
+from .conftest import _git, posix_only, requires_symlink
+from .test_cli import write_answers, write_source_config
+```
+
+Append these fixtures and tests:
+
+```python
+CLEAN_SRC_TESTS = '[[clean]]\npaths = ["src/{package_name}", "tests"]\n'
+
+
+def _declare(target: Path, body: str) -> None:
+    """Write press/press-rules.toml and commit it (a press wants a clean tree)."""
+    (target / "press").mkdir(exist_ok=True)
+    (target / "press" / "press-rules.toml").write_text(body, encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "declare rules")
+
+
 class TestPressClean:
     def _target(self, src_target: Path, body: str = CLEAN_SRC_TESTS) -> Path:
         write_source_config(src_target)
@@ -621,6 +652,12 @@ class TestPressClean:
             "ignored, but outside the declared paths\n", encoding="utf-8"
         )
         before = capture_surface_snapshot(target)
+        protected_bytes = {
+            entry.rel: (target / entry.rel).read_bytes()
+            for entry in before.entries
+            if entry.worktree_kind == "file"
+        }
+        outside_bytes = outside.read_bytes()
         assert press_cli.main(["clean", "--target", str(target)]) == 0
         out = capsys.readouterr().out
         assert "clean -fdX -- src/demo_widget tests" in out
@@ -629,6 +666,10 @@ class TestPressClean:
         assert survivor.exists()
         assert outside.exists()
         assert capture_surface_snapshot(target) == before
+        assert {rel: (target / rel).read_bytes() for rel in protected_bytes} == (
+            protected_bytes
+        )
+        assert outside.read_bytes() == outside_bytes
 
     def test_absent_declared_path_is_a_silent_no_op(self, src_target: Path, capsys):
         target = self._target(src_target, '[[clean]]\npaths = ["missing"]\n')
@@ -666,15 +707,158 @@ class TestPressClean:
         assert "not a git repository" in capsys.readouterr().err
 
     def test_git_failure_exits_1(self, src_target: Path, capsys):
-        # A gitfile pointing nowhere passes the pre-check; git itself fails.
+        # Valid ordinary metadata reaches clean; a truncated index makes
+        # that command fail, independently of the gitfile precondition.
         target = self._target(src_target)
-        shutil.rmtree(target / ".git")
-        (target / ".git").write_text("gitdir: /nonexistent/gitdir\n", encoding="utf-8")
+        (target / ".git" / "index").write_bytes(b"corrupt")
         assert press_cli.main(["clean", "--target", str(target)]) == 1
         assert "git clean exited" in capsys.readouterr().err
 
+    @pytest.mark.parametrize("show", [False, True])
+    def test_foreign_gitfile_refuses_before_clean(
+        self, src_target: Path, tmp_path: Path, capsys, show: bool
+    ):
+        target = self._target(src_target)
+        foreign = tmp_path / "foreign"
+        foreign.mkdir()
+        _git(foreign, "init", "-q")
+        survivor = target / "src" / "demo_widget" / "protected.py"
+        survivor.write_bytes(b"keep me")
+        (foreign / ".git" / "info" / "exclude").write_text(
+            "protected.py\n", encoding="utf-8"
+        )
+        shutil.rmtree(target / ".git")
+        (target / ".git").write_text(f"gitdir: {foreign / '.git'}\n", encoding="utf-8")
+        args = ["clean", "--target", str(target)] + (["--show"] if show else [])
+        assert press_cli.main(args) == 2
+        captured = capsys.readouterr()
+        assert "error:" in captured.err
+        assert "run:" not in captured.out and "preview:" not in captured.out
+        assert survivor.read_bytes() == b"keep me"
+
+    @pytest.mark.parametrize(
+        ("name", "relative"),
+        [
+            ("linked worktree", False),
+            ("linked relative", True),
+            pytest.param("linked\nworktree", False, marks=posix_only),
+        ],
+    )
+    def test_linked_worktree_is_accepted(
+        self, src_target: Path, tmp_path: Path, name: str, relative: bool
+    ):
+        source = self._target(src_target)
+        target = tmp_path / name
+        _git(source, "worktree", "add", "--detach", str(target))
+        if relative:
+            git_dir = Path(
+                (target / ".git")
+                .read_text(encoding="utf-8")
+                .removeprefix("gitdir: ")
+                .removesuffix("\n")
+            )
+            (git_dir / "gitdir").write_text(
+                os.path.relpath(target / ".git", git_dir) + "\n", encoding="utf-8"
+            )
+        cache = target / "src" / "demo_widget" / "__pycache__" / "x.pyc"
+        cache.parent.mkdir()
+        cache.write_bytes(b"cache")
+        assert (target / ".git").is_file()
+        assert press_cli.main(["clean", "--target", str(target), "--show"]) == 0
+        assert cache.read_bytes() == b"cache"
+        assert press_cli.main(["clean", "--target", str(target)]) == 0
+        assert not cache.exists()
+
+    def test_sibling_worktree_gitfile_is_refused(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        source = self._target(src_target)
+        first, second = tmp_path / "first", tmp_path / "second"
+        _git(source, "worktree", "add", "--detach", str(first))
+        _git(source, "worktree", "add", "--detach", str(second))
+        protected = Path("src/demo_widget/__init__.py")
+        original = (first / protected).read_bytes()
+        _git(second, "rm", "--cached", "--", protected.as_posix())
+        (source / ".git" / "info" / "exclude").write_text(
+            protected.as_posix() + "\n", encoding="utf-8"
+        )
+        (first / ".git").write_bytes((second / ".git").read_bytes())
+        assert press_cli.main(["clean", "--target", str(first)]) == 2
+        captured = capsys.readouterr()
+        assert "does not belong" in captured.err
+        assert "run:" not in captured.out
+        assert (first / protected).read_bytes() == original
+
+    @pytest.mark.parametrize("malformed", [False, True])
+    def test_invalid_gitfile_is_a_precondition_refusal(
+        self, src_target: Path, tmp_path: Path, capsys, malformed: bool
+    ):
+        target = self._target(src_target)
+        shutil.rmtree(target / ".git")
+        (target / ".git").write_text(
+            "not a gitfile\n"
+            if malformed
+            else f"gitdir: {tmp_path / 'missing-gitdir'}\n",
+            encoding="utf-8",
+        )
+        assert press_cli.main(["clean", "--target", str(target)]) == 2
+        captured = capsys.readouterr()
+        assert "cannot resolve .git gitfile" in captured.err
+        assert "run:" not in captured.out
+
+    @requires_symlink
+    def test_symlinked_gitdir_backlink_is_refused(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        source = self._target(src_target)
+        target = tmp_path / "linked"
+        _git(source, "worktree", "add", "--detach", str(target))
+        git_dir = Path(
+            (target / ".git")
+            .read_text(encoding="utf-8")
+            .removeprefix("gitdir: ")
+            .removesuffix("\n")
+        )
+        backlink = git_dir / "gitdir"
+        saved = tmp_path / "saved-backlink"
+        backlink.rename(saved)
+        backlink.symlink_to(saved)
+        cache = target / "src" / "demo_widget" / "__pycache__" / "x.pyc"
+        cache.parent.mkdir()
+        cache.write_bytes(b"keep")
+        assert press_cli.main(["clean", "--target", str(target)]) == 2
+        captured = capsys.readouterr()
+        assert "error:" in captured.err and "run:" not in captured.out
+        assert cache.read_bytes() == b"keep"
+
     def test_missing_target_exits_2(self, tmp_path: Path):
         assert press_cli.main(["clean", "--target", str(tmp_path / "nope")]) == 2
+
+    @requires_symlink
+    def test_symlinked_git_entry_exits_2(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        target = self._target(src_target)
+        shutil.move(target / ".git", tmp_path / "moved-git")
+        (target / ".git").symlink_to(tmp_path / "moved-git", target_is_directory=True)
+        assert press_cli.main(["clean", "--target", str(target)]) == 2
+        captured = capsys.readouterr()
+        assert ".git is a symlink" in captured.err
+        assert "run:" not in captured.out
+
+    @requires_symlink
+    def test_symlinked_control_dir_exits_2(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        # load_source_config refuses a symlinked press/ with ContainmentError;
+        # the verb must map that to exit 2 before any git command runs.
+        target = self._target(src_target)
+        shutil.move(target / "press", tmp_path / "real-press")
+        (target / "press").symlink_to(tmp_path / "real-press", target_is_directory=True)
+        assert press_cli.main(["clean", "--target", str(target)]) == 2
+        captured = capsys.readouterr()
+        assert "symlink" in captured.err
+        assert "run:" not in captured.out
 
 
 class TestClosureRefusalHint:
@@ -723,7 +907,7 @@ def test_dispatcher_lists_and_routes_clean(tmp_path: Path, capsys):
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run --no-sync pytest tests/rebrand/test_clean_cli.py -q`
-Expected: every `TestPressClean` test and `test_dispatcher_lists_and_routes_clean` fail because the dispatcher answers `unknown command 'clean'` (exit 2 where 0 or 1 was expected, and `clean` absent from the usage text). Both `TestClosureRefusalHint` tests pass already: after Task 1 `Rules.clean` exists, so the `getattr`-guarded hint at `cli.py:185` fires. They stay in this task as the pins that Step 3's `getattr` removal must keep green.
+Expected: successful-clean and failed-clean cases fail because the dispatcher answers `unknown command 'clean'` with exit 2. Diagnostic assertions also fail where they expect a specific clean refusal. The exit-2-only missing-target test already passes and is not evidence that clean exists. The dispatcher test fails because `clean` is absent from usage. Both `TestClosureRefusalHint` tests pass already: after Task 1 `Rules.clean` exists, so the `getattr`-guarded hint at `cli.py:185-186` fires. They stay in this task as the pins that Step 3's `getattr` removal must keep green.
 
 - [ ] **Step 3: Write `clean_cli.py`, wire the dispatcher, drop the `getattr`**
 
@@ -739,6 +923,7 @@ echoes the exact git argv, runs ``git clean -fdX -- <paths>`` (``-ndX`` under
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tomllib
 from pathlib import Path
@@ -753,19 +938,55 @@ from template_press.rebrand.config import SOURCE_CONFIG_REL, load_source_config
 from template_press.rebrand.identity import ValidationError
 from template_press.rebrand.regen import command_env, resolve_executable
 from template_press.rebrand.rules import RULES_REL, load_selected_rules
-from template_press.rebrand.safety import ContainmentError
+from template_press.rebrand.safety import (
+    SafetyError,
+    git_hardening_args,
+    read_regular_nofollow,
+)
 
 # The configuration exception set every entry point normalizes to exit 2,
-# plus ContainmentError: load_source_config refuses a symlinked press/ dir
-# through assert_control_real, and that is a SafetyError, not a
-# ValidationError.
+# plus SafetyError: source-config containment and no-follow Git backlink
+# reads refuse unsafe filesystem objects before a clean command runs.
 _CONFIG_ERRORS = (
     ValidationError,
-    ContainmentError,
+    SafetyError,
     tomllib.TOMLDecodeError,
     UnicodeDecodeError,
     OSError,
 )
+
+
+def _validate_gitfile(git: Path, target: Path) -> None:
+    """Bind a regular gitfile to this linked worktree's selected index.
+
+    Do not pin --work-tree on this read-only query. Neither the reported
+    top-level directory nor membership in worktree list binds the selected
+    index: a target can point at another linked worktree in the same repo.
+    Git's per-worktree gitdir backlink must name this exact .git marker.
+    """
+    query = [
+        str(git),
+        "-C",
+        str(target),
+        *git_hardening_args(),
+        "rev-parse",
+        "--absolute-git-dir",
+    ]
+    result = execute_clean(query, target)
+    raw = result.stdout.removesuffix(b"\n")
+    if result.returncode != 0 or not raw or b"\x00" in raw:
+        raise ValidationError("cannot resolve .git gitfile")
+    git_dir = Path(os.fsdecode(raw))
+    if not git_dir.is_absolute():
+        raise ValidationError("Git returned a relative Git directory")
+    backlink_raw = read_regular_nofollow(git_dir / "gitdir").removesuffix(b"\n")
+    if not backlink_raw or b"\x00" in backlink_raw:
+        raise ValidationError("invalid linked-worktree gitdir backlink")
+    backlink = Path(os.fsdecode(backlink_raw))
+    if not backlink.is_absolute():
+        backlink = git_dir / backlink
+    if backlink.resolve() != target / ".git":
+        raise ValidationError(".git gitfile does not belong to this linked worktree")
 
 
 def clean_command(argv: list[str] | None = None) -> int:
@@ -782,8 +1003,16 @@ def clean_command(argv: list[str] | None = None) -> int:
     if not target.is_dir():
         print(f"error: target {target} is not a directory", file=sys.stderr)
         return 2
-    if not (target / ".git").exists():
-        # Nothing ran, so this is a 2, not the 1 git itself would produce.
+    marker = target / ".git"
+    if marker.is_symlink():
+        # A symlinked .git would make git classify "tracked" and "ignored"
+        # from a FOREIGN repository's index and excludes, so -X could delete
+        # a file this target tracks. Refuse before anything runs (the same
+        # no-follow rule the surface inventory applies to git markers).
+        print(f"error: target {target}: .git is a symlink", file=sys.stderr)
+        return 2
+    if not (marker.is_dir() or marker.is_file()):
+        # No clean command ran, so this is a precondition refusal.
         print(f"error: target {target} is not a git repository", file=sys.stderr)
         return 2
     try:
@@ -811,6 +1040,13 @@ def clean_command(argv: list[str] | None = None) -> int:
         print("error: git — missing (press clean needs it)", file=sys.stderr)
         return 2
 
+    try:
+        if marker.is_file():
+            _validate_gitfile(git, target)
+    except _CONFIG_ERRORS as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
     command = clean_argv(git, target, paths, show=args.show)
     print(f"{'preview' if args.show else 'run'}: {shell_join(command)}")
     result = execute_clean(command, target)
@@ -824,7 +1060,7 @@ def clean_command(argv: list[str] | None = None) -> int:
 
 `press_cli.py` — import `clean_cli` alongside `check_tools`, add the usage line between `verify` and `check-tools`:
 
-```
+```text
   clean        remove ignored entries under declared [[clean]] paths (press clean --help)
 ```
 
@@ -835,7 +1071,7 @@ and the dispatch before `check-tools`:
         return clean_cli.clean_command(rest)
 ```
 
-`cli.py:185` — replace `if getattr(rules, "clean", ()):` with `if rules.clean:`.
+`cli.py:185-186` — replace `if getattr(rules, "clean", ()):` with `if rules.clean:`.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -863,7 +1099,16 @@ git commit -m "feat(cli): press clean — declared, git clean -X based pre-press
 - Produces: `write_receipt(..., clean: Sequence[Sequence[str]] = ())` (keyword-only, after `origin`) emitting one `[[press.clean]]` table with `paths = [...]` per rule, the declared patterns unrendered.
 - `press check-tools` prints one informational row per active clean rule: `git — <path> (cleans src/{package_name}, tests)`. A missing git is already counted by the existing first row, so no new missing path is added.
 
-- [ ] **Step 1: Write the failing tests** (append)
+- [ ] **Step 1: Write the failing tests** (extend the same test module)
+
+Add these imports beside the existing imports, then append the test class.
+
+```python
+import tomllib
+
+from template_press.rebrand.receipt import RECEIPT_REL
+from template_press.rebrand.verify_cli import verify_command
+```
 
 ```python
 class TestIntegrations:
@@ -1050,7 +1295,7 @@ receipt. `press check-tools` lists one informational row per rule.
 
 `docs/source/reference/cli.md`, after the `## press check-tools` section:
 
-```markdown
+````markdown
 ## `press clean`
 
 Removes ignored entries under the paths a target declares in
@@ -1078,7 +1323,11 @@ run: git -C /abs/my-repo --work-tree=/abs/my-repo -c core.fsmonitor= … --liter
 Removing src/my_pkg/__pycache__/
 ```
 
-The echoed line is the exact command that runs, hardening flags included.
+The echoed line is the exact argv that runs, hardening flags included, but
+`press clean` runs it under a scrubbed git environment (global and system
+config neutralized). Pasting it into your own shell would also honor your
+global excludes file, so treat the line as a record of what ran, not as an
+equivalent command.
 `-X` removes ignored entries only (never `-x`), `--literal-pathspecs` makes
 each declared path a path rather than a glob, and the scrubbed git
 environment means "ignored" is decided by the target's own ignore files, not
@@ -1091,7 +1340,14 @@ no-op.
 |------|---------|
 | `0` | The preview or the clean ran and git exited 0. |
 | `1` | git ran and exited non-zero — the tree may have changed; read git's message. |
-| `2` | Nothing ran: target missing or not a git repository, rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing, a path unrenderable, or `git` unresolvable. |
+| `2` | No clean command ran: target missing, not a git repository, or its `.git` a symlink or an unbound gitfile; rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing, a path unrenderable, or `git` unresolvable. |
+
+Supported targets have an ordinary `.git` directory or a linked-worktree
+gitfile whose selected Git directory has a regular `gitdir` backlink to this
+target. Gitfiles pointing at foreign metadata, submodule roots, and standalone
+separate-Git-directory layouts without that backlink are refused with exit 2;
+use an ordinary clone for those layouts. Read-only metadata queries may run
+before this refusal, but no clean command runs.
 
 A successful `press rebrand` records the declaration in the receipt as
 `[[press.clean]] paths = [...]` (as declared, unrendered) so a later operator
@@ -1099,29 +1355,34 @@ knows to run `press clean` before re-pressing; the row never means that a
 clean ran. `press check-tools` lists one `git — … (cleans …)` row per active
 rule. `press verify` ignores the declaration by construction: its sandbox
 receives inventoried entries only.
-```
+````
 
 `.claude/skills/press-target/SKILL.md` — insert after step 1:
 
 ```markdown
-1b. If `<TARGET>/press/press-rules.toml` declares `[[clean]]`, preview and
-    then run it before the dry run: `press clean --target <TARGET> --show`,
-    confirm the listing holds nothing to keep, then
-    `press clean --target <TARGET>`. Skip this when no rules are declared;
-    the dry run's closure refusal names `press clean` if it is needed.
+1b. If `press check-tools --target <TARGET>` printed a `git — … (cleans …)`
+    row, a `[[clean]]` rule is active on this platform: preview it before
+    the dry run with `press clean --target <TARGET> --show`, confirm the
+    listing holds nothing to keep, then run `press clean --target <TARGET>`.
+    Skip this when no such row appears (no rule, or a rule scoped to another
+    platform; `press clean` would exit 2 with `no [[clean]] rules declared`).
+    The dry run's closure refusal names `press clean` if it is needed.
 ```
 
-- [ ] **Step 4: Run the native R3 and the docs gates**
+- [ ] **Step 4: Run the docs gates and commit the declaration**
 
-Run: `uv run --no-sync pytest tests/rebrand/test_matrix.py::test_r3_self_press_native -m live -q && uv run --no-sync codespell docs/adr/0018-declared-pre-press-clean.md docs/source/reference/cli.md .claude/skills/press-target/SKILL.md press/press-rules.toml && uv run --no-sync ec docs/adr/0018-declared-pre-press-clean.md docs/source/reference/cli.md .claude/skills/press-target/SKILL.md press/press-rules.toml && taplo check press/press-rules.toml --config .taplo.toml`
-Expected: R3 passes (the native press clones committed content, so commit `press/press-rules.toml` first if the test reads the committed tree — it does); spelling, editorconfig, and TOML checks clean.
-
-- [ ] **Step 5: Commit**
+Run: `uv run --no-sync codespell docs/adr/0018-declared-pre-press-clean.md docs/source/reference/cli.md .claude/skills/press-target/SKILL.md press/press-rules.toml && uv run --no-sync ec -config .editorconfig-checker.json docs/adr/0018-declared-pre-press-clean.md docs/source/reference/cli.md .claude/skills/press-target/SKILL.md press/press-rules.toml && taplo check press/press-rules.toml --config .taplo.toml`
+Expected: spelling, editorconfig, and TOML checks pass. Run `just check` before the commit below. The native R3 test clones committed `HEAD`, so its new declaration must be committed before the acceptance run. Do not treat a pre-commit missing receipt key as an implementation failure.
 
 ```bash
 git add press/press-rules.toml tests/rebrand/test_matrix.py docs/adr/0018-declared-pre-press-clean.md docs/source/reference/cli.md .claude/skills/press-target/SKILL.md
 git commit -m "docs(clean): adr 0018, press clean reference, runbook step, and this repo's own [[clean]] declaration"
 ```
+
+- [ ] **Step 5: Run the native R3 against the committed declaration**
+
+Run: `uv run --no-sync pytest tests/rebrand/test_matrix.py::test_r3_self_press_native -m live -q`
+Expected: the cloned target includes the committed `[[clean]]` declaration; the receipt assertion and `--show` preview pass. Run the mandatory `just matrix` after this acceptance check; fix and re-verify any failure before pushing.
 
 ---
 
