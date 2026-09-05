@@ -92,8 +92,25 @@ received, not as fixes chosen.
 | --- | --- | --- | --- | --- |
 | Claude Fable (in-session, this document and the plan) | n/a | see §5.1 | — | — |
 | Muse, pass 1 (plan at `d1f457e`) | ultra / **xhigh** (gate `ultra_reasoning_effort` reported closed) | FIX, confidence 0.8 | 3 | all three applied; two of four optional suggestions adopted (§5.2) |
-| Muse, pass 2 (revised plan) | ultra / _pending_ | _pending_ | _pending_ | _pending_ |
-| Claude Fable, re-review of the revised plan | n/a | _pending_ | — | — |
+| Muse, pass 2 (revised plan at `287e387`) | ultra / **xhigh** (gate still closed) | APPROVE, confidence 0.85 | 0 | no change; it verified each revision against `main` (`SafeRelPath` refuses `src/../escape` at `safety.py:215-216`; the gitfile failure test exits 128 deterministically and passes the test interceptor; the `.git` pre-check is the truthful exit 2 because `scrubbed_git_env` clears `GIT_DIR`) |
+| Claude Fable, re-review of the revised plan | n/a | APPROVE | — | the three fixes and two adoptions are the only deltas; spec coverage and type consistency re-checked |
+
+### 5.3 Gate status
+
+The reconciled plan is approved by both reviewers. Two items stay open
+for Steve, neither of which changes the plan text:
+
+- **D-A** — the recommended *scrubbed* environment is what the plan
+  encodes; choosing *ambient* would change `execute_clean` and one `cli.md`
+  sentence.
+- **D-B** — both Muse passes ran at xhigh, not the required ultra. The
+  gate is complete once Steve either grants an exception for these two
+  reviews (as on 2026-09-04) or a rerun at ultra is possible; the plan is
+  otherwise ready for implementation.
+
+Implementation starts from `docs/superpowers/plans/2026-09-05-p10-declared-pre-press-clean.md`
+in a fresh worktree off `origin/main`, with `tests/rebrand/test_clean_rules.py`
+Task 1 Step 1 as the first RED.
 
 ### 5.2 Muse pass 1 — findings and dispositions
 
