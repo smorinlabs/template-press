@@ -88,7 +88,12 @@ from pathlib import Path
 import pytest
 
 from template_press.rebrand.identity import ValidationError
-from template_press.rebrand.rules import DEFAULT_RULES, CleanRule, load_rules, load_selected_rules
+from template_press.rebrand.rules import (
+    DEFAULT_RULES,
+    CleanRule,
+    load_rules,
+    load_selected_rules,
+)
 
 
 def _write_rules(target: Path, body: str) -> Path:
@@ -127,7 +132,10 @@ def test_unknown_root_table_still_fails_loud(tmp_path: Path):
         ("[[clean]]\n", "paths must be a non-empty list of strings"),
         ("[[clean]]\npaths = []\n", "paths must be a non-empty list of strings"),
         ('[[clean]]\npaths = "src"\n', "paths must be a non-empty list of strings"),
-        ('[[clean]]\npaths = ["src", 3]\n', "paths must be a non-empty list of strings"),
+        (
+            '[[clean]]\npaths = ["src", 3]\n',
+            "paths must be a non-empty list of strings",
+        ),
         ('[[clean]]\npaths = ["src"]\nreason = "x"\n', "unknown key"),
         ('[[clean]]\npaths = ["/abs"]\n', "paths"),
         ('[[clean]]\npaths = ["../up"]\n', "paths"),
@@ -267,11 +275,9 @@ def _parse_clean(entry: object) -> _CleanDeclaration:
 `_parse_rules` — after the `raw_edit` block:
 
 ```python
-    raw_clean = data.get("clean", [])
-    if not isinstance(raw_clean, list) or any(
-        not isinstance(e, dict) for e in raw_clean
-    ):
-        raise ValidationError(f"{RULES_REL}: [[clean]] must be an array of tables")
+raw_clean = data.get("clean", [])
+if not isinstance(raw_clean, list) or any(not isinstance(e, dict) for e in raw_clean):
+    raise ValidationError(f"{RULES_REL}: [[clean]] must be an array of tables")
 ```
 
 and after `edit = tuple(_parse_edit(e) for e in raw_edit)`: `clean = tuple(_parse_clean(e) for e in raw_clean)`, then pass `clean=clean` to the `_ParsedRules(...)` constructor.
@@ -279,11 +285,13 @@ and after `edit = tuple(_parse_edit(e) for e in raw_edit)`: `clean = tuple(_pars
 `_select_rules` — inside the `replace(parsed.rules, ...)` call, after `edit=active_edits,`:
 
 ```python
-        clean=tuple(
-            declaration.rule
-            for declaration in parsed.clean
-            if platform in declaration.platforms
-        ),
+clean = (
+    tuple(
+        declaration.rule
+        for declaration in parsed.clean
+        if platform in declaration.platforms
+    ),
+)
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -362,7 +370,10 @@ def _declare(target: Path, body: str) -> None:
 
 class TestRender:
     def test_renders_from_source_in_declaration_order(self):
-        rules = (CleanRule(paths=("src/{package_name}", "tests")), CleanRule(paths=("build/{repo_name}",)))
+        rules = (
+            CleanRule(paths=("src/{package_name}", "tests")),
+            CleanRule(paths=("build/{repo_name}",)),
+        )
         assert render_clean_paths(rules, SOURCE) == (
             "src/demo_widget",
             "tests",
@@ -397,8 +408,22 @@ class TestArgv:
         assert f"--work-tree={tmp_path.absolute()}" in preview
         for flag in git_hardening_args():
             assert flag in preview
-        assert preview[-6:] == ["--literal-pathspecs", "clean", "-ndX", "--", "src/demo_widget", "tests"]
-        assert run[-6:] == ["--literal-pathspecs", "clean", "-fdX", "--", "src/demo_widget", "tests"]
+        assert preview[-6:] == [
+            "--literal-pathspecs",
+            "clean",
+            "-ndX",
+            "--",
+            "src/demo_widget",
+            "tests",
+        ]
+        assert run[-6:] == [
+            "--literal-pathspecs",
+            "clean",
+            "-fdX",
+            "--",
+            "src/demo_widget",
+            "tests",
+        ]
 
     def test_shell_join_is_copy_pasteable(self):
         joined = shell_join(["git", "clean", "-ndX", "--", "src/demo widget"])
@@ -484,7 +509,9 @@ def render_clean_paths(
             try:
                 rendered.append(SafeRelPath(path).as_posix())
             except UnsafePathError as exc:
-                raise ValidationError(f"[[clean]] rendered path {path!r}: {exc}") from exc
+                raise ValidationError(
+                    f"[[clean]] rendered path {path!r}: {exc}"
+                ) from exc
     return tuple(rendered)
 
 
@@ -579,7 +606,9 @@ class TestPressClean:
         assert "Would remove src/demo_widget/__pycache__/" in out
         assert cache.exists()
 
-    def test_run_removes_only_ignored_entries_under_declared_paths(self, src_target: Path, capsys):
+    def test_run_removes_only_ignored_entries_under_declared_paths(
+        self, src_target: Path, capsys
+    ):
         target = self._target(src_target)
         cache = target / "src" / "demo_widget" / "__pycache__" / "x.pyc"
         cache.parent.mkdir()
@@ -588,7 +617,9 @@ class TestPressClean:
         survivor.write_text("# untracked, not ignored\n", encoding="utf-8")
         outside = target / ".venv" / "lib"
         outside.parent.mkdir()
-        outside.write_text("ignored, but outside the declared paths\n", encoding="utf-8")
+        outside.write_text(
+            "ignored, but outside the declared paths\n", encoding="utf-8"
+        )
         before = capture_surface_snapshot(target)
         assert press_cli.main(["clean", "--target", str(target)]) == 0
         out = capsys.readouterr().out
@@ -607,9 +638,14 @@ class TestPressClean:
 
     def test_no_active_rule_exits_2(self, src_target: Path, capsys):
         foreign = "linux" if sys.platform == "win32" else "win32"
-        target = self._target(src_target, f'[[clean]]\npaths = ["src"]\nplatforms = ["{foreign}"]\n')
+        target = self._target(
+            src_target, f'[[clean]]\npaths = ["src"]\nplatforms = ["{foreign}"]\n'
+        )
         assert press_cli.main(["clean", "--target", str(target)]) == 2
-        assert "no [[clean]] rules declared in press/press-rules.toml" in capsys.readouterr().err
+        assert (
+            "no [[clean]] rules declared in press/press-rules.toml"
+            in capsys.readouterr().err
+        )
 
     def test_missing_source_config_exits_2(self, src_target: Path, capsys):
         _declare(src_target, CLEAN_SRC_TESTS)  # rules, but no press-source.toml
@@ -617,7 +653,9 @@ class TestPressClean:
         assert "press-source.toml" in capsys.readouterr().err
 
     def test_unrenderable_placeholder_exits_2(self, src_target: Path, capsys):
-        target = self._target(src_target, '[[clean]]\npaths = ["docs/{display_name}"]\n')
+        target = self._target(
+            src_target, '[[clean]]\npaths = ["docs/{display_name}"]\n'
+        )
         assert press_cli.main(["clean", "--target", str(target)]) == 2
         assert "does not declare it" in capsys.readouterr().err
 
@@ -645,21 +683,32 @@ class TestClosureRefusalHint:
         cache.parent.mkdir()
         cache.write_bytes(b"\x00")
 
-    def test_names_press_clean_when_declared(self, src_target: Path, tmp_path: Path, capsys):
+    def test_names_press_clean_when_declared(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
         write_source_config(src_target)
         _declare(src_target, CLEAN_SRC_TESTS)
         self._stale_cache(src_target)
         answers = write_answers(tmp_path)
-        assert main(["--target", str(src_target), "--config", str(answers), "--dry-run"]) == 2
+        assert (
+            main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+            == 2
+        )
         out = capsys.readouterr().out
         assert "absent from the authorized surface" in out
-        assert f"declared clean rules exist — run: press clean --target {src_target}" in out
+        assert (
+            f"declared clean rules exist — run: press clean --target {src_target}"
+            in out
+        )
 
     def test_silent_when_not_declared(self, src_target: Path, tmp_path: Path, capsys):
         write_source_config(src_target)
         self._stale_cache(src_target)
         answers = write_answers(tmp_path)
-        assert main(["--target", str(src_target), "--config", str(answers), "--dry-run"]) == 2
+        assert (
+            main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
+            == 2
+        )
         out = capsys.readouterr().out
         assert "absent from the authorized surface" in out
         assert "press clean" not in out
@@ -826,7 +875,9 @@ class TestIntegrations:
         assert "(cleans src/{package_name}, tests)" in out
         assert "(cleans build)" in out
 
-    def test_receipt_records_the_declaration_unrendered(self, src_target: Path, tmp_path: Path):
+    def test_receipt_records_the_declaration_unrendered(
+        self, src_target: Path, tmp_path: Path
+    ):
         write_source_config(src_target)
         _declare(src_target, CLEAN_SRC_TESTS)
         answers = write_answers(tmp_path)
@@ -838,13 +889,19 @@ class TestIntegrations:
         assert receipt["press"]["clean"] == [{"paths": ["src/{package_name}", "tests"]}]
         assert "ran" not in receipt["press"]["clean"][0]
 
-    def test_receipt_has_no_clean_table_without_rules(self, src_target: Path, tmp_path: Path):
+    def test_receipt_has_no_clean_table_without_rules(
+        self, src_target: Path, tmp_path: Path
+    ):
         write_source_config(src_target)
         answers = write_answers(tmp_path)
         assert main(["--target", str(src_target), "--config", str(answers)]) == 0
-        assert "[[press.clean]]" not in (src_target / RECEIPT_REL).read_text(encoding="utf-8")
+        assert "[[press.clean]]" not in (src_target / RECEIPT_REL).read_text(
+            encoding="utf-8"
+        )
 
-    def test_verify_is_unaffected_by_a_clean_declaration(self, src_target: Path, capsys):
+    def test_verify_is_unaffected_by_a_clean_declaration(
+        self, src_target: Path, capsys
+    ):
         write_source_config(src_target)
         _declare(src_target, CLEAN_SRC_TESTS)
         code = verify_command(["--target", str(src_target)])
