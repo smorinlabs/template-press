@@ -154,7 +154,9 @@ jobs:
         run: uv sync --locked --group dev
       - name: Run tests with coverage
         # Default skips slow/live markers (ITM-046 addopts); CI runs everything.
-        run: uv run --no-sync pytest -m "" --cov=template_press --cov-report=xml
+        # -n auto: pytest-xdist workers, CI only (local runs stay serial, and
+        # syrupy `--snapshot-update` must run WITHOUT -n).
+        run: uv run --no-sync pytest -m "" -n auto --cov=template_press --cov-report=xml
       - name: Upload coverage to Codecov
         # Single matrix combo uploads (avoids 4x duplicate reports).
         # use_oidc: tokenless upload (public repo). Requires `id-token: write`.
