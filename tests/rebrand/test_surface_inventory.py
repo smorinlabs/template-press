@@ -1633,3 +1633,108 @@ def test_consumer_selectors_keep_their_distinct_contracts(
     )
     assert gitlink_path_strings(snapshot) == frozenset({"sub"})
     assert listed_paths(snapshot) == tuple(item.rel for item in snapshot.entries)
+
+
+def _fake_git_output(stdout: bytes) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.CompletedProcess(
+        args=["git"], returncode=0, stdout=stdout, stderr=b""
+    )
+
+
+def test_absolute_git_paths_returns_requested_paths_in_order(
+    src_target: Path,
+) -> None:
+    requests = (
+        ("--git-dir",),
+        ("--git-common-dir",),
+        ("--git-path", "HEAD"),
+        ("--git-path", "index"),
+    )
+    expected = tuple(
+        inventory._absolute_git_path(
+            src_target, "rev-parse", "--path-format=absolute", *request
+        )
+        for request in requests
+    )
+
+    batched = inventory._absolute_git_paths(
+        src_target,
+        "rev-parse",
+        "--path-format=absolute",
+        *(flag for request in requests for flag in request),
+        expected=len(requests),
+    )
+
+    assert batched == expected
+    assert all(path.is_absolute() for path in batched)
+
+
+def test_absolute_git_paths_refuses_missing_trailing_newline(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        inventory, "_run_git", lambda *_a, **_k: _fake_git_output(b"/one\n/two")
+    )
+
+    with pytest.raises(SafetyError, match="malformed newline-terminated Git path"):
+        inventory._absolute_git_paths(
+            src_target, "rev-parse", "--git-dir", "--git-common-dir", expected=2
+        )
+
+
+@pytest.mark.parametrize("stdout", [b"/only\n", b"/one\n/two\n/three\n"])
+def test_absolute_git_paths_refuses_unexpected_line_count(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch, stdout: bytes
+) -> None:
+    monkeypatch.setattr(
+        inventory, "_run_git", lambda *_a, **_k: _fake_git_output(stdout)
+    )
+
+    with pytest.raises(SafetyError, match="expected 2 Git paths"):
+        inventory._absolute_git_paths(
+            src_target, "rev-parse", "--git-dir", "--git-common-dir", expected=2
+        )
+
+
+def test_absolute_git_paths_resolves_relative_output_against_target(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        inventory, "_run_git", lambda *_a, **_k: _fake_git_output(b"rel/one\nrel/two\n")
+    )
+
+    paths = inventory._absolute_git_paths(
+        src_target, "rev-parse", "--git-dir", "--git-common-dir", expected=2
+    )
+
+    assert paths == (src_target / "rel" / "one", src_target / "rel" / "two")
+
+
+def test_config_source_state_batches_rev_parse_queries(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def spy(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(inventory.subprocess, "run", spy)
+
+    capture_surface_snapshot(src_target)
+
+    rev_parse = [cmd for cmd in calls if "rev-parse" in cmd]
+    # Two bracketed candidates, each stamping the config sources before and
+    # after its listing: four _config_source_state calls. The before/after
+    # comparison is the mutation guard and keeps running twice per candidate;
+    # only the transport collapses, so each call fetches its four repository
+    # paths in ONE spawn. The shared-index path may legitimately be empty and
+    # stays a separate spawn. _visibility_inputs adds one info/exclude lookup
+    # per call (four per snapshot).
+    batched = [
+        cmd for cmd in rev_parse if "--git-dir" in cmd and "--git-common-dir" in cmd
+    ]
+    assert len(batched) == 4
+    assert sum("--shared-index-path" in cmd for cmd in rev_parse) == 4
+    assert len(rev_parse) == 12

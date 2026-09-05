@@ -490,6 +490,20 @@ def _absolute_git_path(target: Path, *args: str) -> Path:
     return path if path.is_absolute() else target / path
 
 
+def _absolute_git_paths(target: Path, *args: str, expected: int) -> tuple[Path, ...]:
+    result = _run_git(target, *args)
+    if not result.stdout.endswith(b"\n"):
+        raise SafetyError("malformed newline-terminated Git path")
+    lines = result.stdout[:-1].split(b"\n")
+    if len(lines) != expected:
+        raise SafetyError(f"expected {expected} Git paths, got {len(lines)}")
+    paths: list[Path] = []
+    for line in lines:
+        path = Path(line.decode("utf-8", "surrogateescape"))
+        paths.append(path if path.is_absolute() else target / path)
+    return tuple(paths)
+
+
 def _core_excludes_path(target: Path) -> Path | None:
     result = _run_git(
         target,
@@ -699,14 +713,17 @@ def _nearest_real_parent(path: Path) -> Path:
 def _config_source_state(target: Path) -> _ConfigSourceState:
     sources, includes, effective_sha256 = _config_source_paths(target)
     parents = {_nearest_real_parent(path) for path in includes}
-    git_dir = _absolute_git_path(
-        target, "rev-parse", "--path-format=absolute", "--git-dir"
-    )
-    common_dir = _absolute_git_path(
-        target, "rev-parse", "--path-format=absolute", "--git-common-dir"
-    )
-    head = _absolute_git_path(
-        target, "rev-parse", "--path-format=absolute", "--git-path", "HEAD"
+    git_dir, common_dir, head, index = _absolute_git_paths(
+        target,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-dir",
+        "--git-common-dir",
+        "--git-path",
+        "HEAD",
+        "--git-path",
+        "index",
+        expected=4,
     )
     condition_paths = {
         target,
@@ -718,9 +735,6 @@ def _config_source_state(target: Path) -> _ConfigSourceState:
         head,
         head.parent,
     }
-    index = _absolute_git_path(
-        target, "rev-parse", "--path-format=absolute", "--git-path", "index"
-    )
     shared_result = _run_git(target, "rev-parse", "--shared-index-path")
     if shared_result.stdout and not shared_result.stdout.endswith(b"\n"):
         raise SafetyError("malformed newline-terminated shared-index path")
