@@ -34,6 +34,11 @@ def _reset(file: str, stub: str, platforms: str | None = None) -> str:
     return f'[[reset]]\nfile = "{file}"\nstub = "{stub}"\n{selector}'
 
 
+def _remove(file: str, platforms: str | None = None) -> str:
+    selector = "" if platforms is None else f"platforms = {platforms}\n"
+    return f'[[remove]]\nfile = "{file}"\nreason = "template-only"\n{selector}'
+
+
 def test_supported_platform_vocabulary_is_exact() -> None:
     assert rules_module.SUPPORTED_PLATFORMS == SUPPORTED
 
@@ -194,6 +199,65 @@ def test_overlapping_writers_are_rejected_globally(
         _load_selected(_write_rules(tmp_path, first + second), "darwin")
 
 
+_ALIAS_EXCLUSIONS = (
+    '[rules]\nextra_exclude_files = ["artifact.lock", "ARTIFACT.LOCK.", '
+    '"artifact.out"]\n'
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _regenerate("artifact.lock", "first") + _regenerate("ARTIFACT.LOCK.", "second"),
+        _reset("artifact.lock", "first") + _reset("ARTIFACT.LOCK.", "second"),
+        _regenerate("artifact.lock", "first") + _reset("ARTIFACT.LOCK.", "second"),
+        _remove("artifact.lock") + _remove("ARTIFACT.LOCK."),
+        _remove("artifact.lock") + _regenerate("ARTIFACT.LOCK.", "second"),
+        _remove("artifact.lock") + _reset("ARTIFACT.LOCK.", "second"),
+        (
+            '[[reset]]\nfile = "artifact.out"\n'
+            'stub_file = "artifact.lock"\n' + _remove("ARTIFACT.LOCK.")
+        ),
+    ],
+    ids=[
+        "duplicate-regenerate",
+        "duplicate-reset",
+        "regenerate-reset",
+        "duplicate-remove",
+        "remove-regenerate",
+        "remove-reset",
+        "reset-stub-remove",
+    ],
+)
+def test_alias_equivalent_writer_conflicts_are_rejected(
+    tmp_path: Path, body: str
+) -> None:
+    """Writer safety uses filesystem identity, while diagnostics retain both
+    declaration spellings so the target author can correct the exact tables."""
+    with pytest.raises(ValidationError) as exc:
+        _load_selected(_write_rules(tmp_path, _ALIAS_EXCLUSIONS + body), "darwin")
+
+    message = str(exc.value)
+    assert "artifact.lock" in message
+    assert "ARTIFACT.LOCK." in message
+
+
+def test_alias_equivalent_writers_remain_allowed_on_disjoint_platforms(
+    tmp_path: Path,
+) -> None:
+    target = _write_rules(
+        tmp_path,
+        _ALIAS_EXCLUSIONS
+        + _regenerate("artifact.lock", "mac", '["darwin"]')
+        + _reset("ARTIFACT.LOCK.", "windows", '["win32"]'),
+    )
+
+    assert _load_selected(target, "darwin").rules.regenerate[0].file == (
+        "artifact.lock"
+    )
+    assert _load_selected(target, "win32").rules.reset[0].file == "ARTIFACT.LOCK."
+
+
 def test_active_declarations_preserve_source_order(tmp_path: Path) -> None:
     target = _write_rules(
         tmp_path,
@@ -243,3 +307,51 @@ def test_schema_error_precedes_unsupported_runtime_error(tmp_path: Path) -> None
 
     with pytest.raises(ValidationError, match="platforms"):
         _load_selected(target, "freebsd14")
+
+
+def _edit(file: str, command: str, platforms: str | None = None) -> str:
+    selector = "" if platforms is None else f"platforms = {platforms}\n"
+    return (
+        f'[[edit]]\nfile = "{file}"\ncommand = ["{command}"]\nexpect = "x"\n{selector}'
+    )
+
+
+def test_exclude_files_follows_the_selected_platforms_writer(tmp_path: Path) -> None:
+    """An [[edit]] target must be reachable by the replace pass; a [[reset]]
+    target must not be. A file declared both ways on disjoint platforms
+    therefore carries a per-platform exclusion, not one global answer.
+
+    The path is TARGET-added (`[rules] extra_exclude_files`) on purpose: only
+    the target's own exclusions bend this way."""
+    target = _write_rules(
+        tmp_path,
+        '[rules]\nextra_exclude_files = ["docs/api.md"]\n'
+        + _edit("docs/api.md", "amend", '["darwin"]')
+        + _reset("docs/api.md", "windows", '["win32"]'),
+    )
+
+    darwin = _load_selected(target, "darwin").rules
+    win32 = _load_selected(target, "win32").rules
+
+    assert [rule.file for rule in darwin.edit] == ["docs/api.md"]
+    assert "docs/api.md" not in darwin.exclude_files
+    assert [rule.file for rule in win32.reset] == ["docs/api.md"]
+    assert "docs/api.md" in win32.exclude_files
+    # press's own default exclusions are never the thing that bends.
+    assert rules_module.DEFAULT_RULES.exclude_files <= darwin.exclude_files
+    assert rules_module.DEFAULT_RULES.exclude_files <= win32.exclude_files
+
+
+def test_default_exclusion_is_never_handed_to_the_replace_pass(
+    tmp_path: Path,
+) -> None:
+    """`bun.lock` is press's own exclusion, so a disjoint [[reset]] cannot
+    make it an editable path — the refusal stands at config load."""
+    target = _write_rules(
+        tmp_path,
+        _edit("bun.lock", "amend", '["darwin"]')
+        + _reset("bun.lock", "windows", '["win32"]'),
+    )
+
+    with pytest.raises(ValidationError, match="must not be listed in exclude_files"):
+        _load_selected(target, "darwin")

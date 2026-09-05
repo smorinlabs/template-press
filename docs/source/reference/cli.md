@@ -253,11 +253,11 @@ rewrite contract (target may be partially rewritten; restore with
 ### The ignore set
 
 If a target legitimately keeps some source-identity content (vendored code,
-historical docs), list those directory names under `verify_ignore` in
-`<target>/press/press-rules.toml` so the no-leak scan skips them. To also stop
-those directories from being rewritten, list the same names under
-`extra_exclude_dirs`. Both keys match a single directory *name* at any depth,
-not a path.
+historical docs), list a matching path-component name under `verify_ignore`
+in `<target>/press/press-rules.toml` so the no-leak scan skips those entries.
+To also stop them from being rewritten, list the same component names under
+`extra_exclude_dirs`. Both keys match one file-or-directory component at any
+depth, including an entry's basename; neither accepts a multi-component path.
 
 A `foo/` line in `.gitignore` (the trailing slash) matches DIRECTORIES only —
 it does not ignore a symlink or a regular file also named `foo`. `press
@@ -272,11 +272,11 @@ entry, the report attaches a note identifying the exact `.gitignore` line and
 naming the fix: drop the trailing slash, remove the entry, or list its name
 under `verify_ignore`.
 
-### Platform-conditional reset and regeneration
+### Platform-conditional declared mutations
 
-`[[regenerate]]` and `[[reset]]` declarations may include an optional
-`platforms` selector. The selector is a non-empty list containing one or more
-of these exact Python runtime platform values:
+`[[edit]]`, `[[regenerate]]`, `[[remove]]`, and `[[reset]]` declarations may
+include an optional `platforms` selector. The selector is a non-empty list
+containing one or more of these exact Python runtime platform values:
 
 | Value | Supported host |
 |-------|----------------|
@@ -303,10 +303,11 @@ command = ["powershell", "-NoProfile", "-File", "scripts/regen-bun-lock.ps1"]
 platforms = ["win32"]
 ```
 
-The same file may appear in multiple `[[regenerate]]` declarations, multiple
-`[[reset]]` declarations, or one declaration of each kind only when their
-platform sets are disjoint. If two declarations can write the same file on
-the same platform, configuration loading fails with exit code `2`.
+The same file may appear in multiple declarations only when their platform
+sets are disjoint. An active `[[edit]]` may not share its target with an active
+`[[regenerate]]`, `[[remove]]`, or `[[reset]]`. If two declarations can write
+the same file on the same platform, configuration loading fails with exit code
+`2`.
 
 A `[[regenerate]]` declaration names one output: the declared `file`, which
 must already be excluded from the identity rewrite. The engine enforces that
@@ -337,6 +338,81 @@ file = "bun.lock"
 command = ["scripts/regen-bun-lock.sh"]
 scan = "boundary"
 ```
+
+### Declared in-place edits
+
+An `[[edit]]` declaration amends an ordinary, git-tracked text file after the
+identity rewrite, renames, and removals, but before any `[[regenerate]]`
+command. This example changes the project version before rebuilding
+`uv.lock`:
+
+```toml
+[[edit]]
+file = "pyproject.toml"
+command = ["uv", "version", "0.1.0", "--frozen"]
+expect = 'version = "0.1.0"'
+
+[[regenerate]]
+file = "uv.lock"
+command = ["uv", "lock"]
+```
+
+`file` uses source coordinates: if the rewrite renames one of its path
+components, press translates the path to its final location before launching
+the command. Normally, the target must not be listed in `exclude_files`
+because it is rewritten before the edit. The only exception is an
+exact-spelling, target-added exclusion required by a platform-disjoint
+`[[reset]]` or `[[regenerate]]`; press removes that exclusion on platforms
+where the edit is active. Default exclusions and alias-only spellings cannot
+use this exception. Every edit target is scanned directly by its immediate and
+final command postconditions. The edit earns no command-based hermetic
+`press verify` exemption, so `[[edit]]` accepts neither `verify_exempt` nor a
+relaxed `scan` mode. Later doctor and verify inventories still honor the
+general `verify_ignore` policy: if it matches any component of the edit
+target's path, they skip that entry.
+
+An edit target must not match `exclude_dirs`, including default exclusions or
+excluded components at any depth. Directory exclusions have no
+platform-disjoint exception. A root or nested `.gitignore` also cannot be an
+edit target: declared commands must preserve Git visibility inputs. Make
+intentional ignore-policy changes in a separate commit. Both refusals occur
+before any target mutation, including during dry-run.
+Preflight also checks the active Git visibility inputs themselves, so a tracked
+file configured through `core.excludesFile` is refused regardless of its name
+or the path spelling used to configure it.
+
+`expect` is a required, non-empty printable string. The edited UTF-8 file must
+contain it after the command and again after every declared command has run.
+It detects many successful no-op or later-undo cases, but it does not prove
+that this command introduced the string: choose a value that describes the
+required final state.
+
+Before writing anything, press requires every edit target to be contained by
+the repository, git-tracked, clean, a regular file reached without following a
+symbolic link, and backed by exactly one hard link. These checks still apply
+with `--allow-dirty`. Immediately before each launch, press repeats the
+containment, no-follow, regular-file, and single-link checks. After the command
+exits `0`, the file must still exist as contained regular UTF-8 text, contain
+`expect`, and pass the strict source-identity scan. A final pass repeats the
+content checks after all edits and regenerations.
+
+Edits share the declared-command contract with regenerations: an argv array,
+no shell, the target repository as the working directory, a plan-time pinned
+executable, and a deny-by-default environment. Optional `env` names explicitly
+copy selected variables from the operator's environment. The plan shows the
+argv, pinned executable, and whether each declared environment variable is
+present.
+
+When any edit or regeneration is active, press snapshots its control files and
+Git visibility inputs before the first command and revalidates them after the
+last. A command that changes the rules, source configuration, answers,
+receipt, ignore inputs, repository-local Git configuration, or index
+membership fails the press. These control files are
+`press/press-rules.toml`, `press/press-source.toml`,
+`press/press-answers.toml`, and `press/press-receipt.toml`. A successful
+receipt records each edit in a `[[press.edit]]` table with its
+source-coordinate `file`, pinned `argv`, and `expect`. Edits are not listed as
+regenerated or exempt files.
 
 ### Declared removal
 
@@ -457,14 +533,14 @@ Configuration loading has two phases:
    reading, run only for that selected set.
 
 The selected platform is printed once before rebrand plans and
-`press check-tools` reports. Plans, tool checks, resets, regenerations, and
-receipts contain active declarations only. A successful receipt records the
-captured value as `press.platform`, successful regeneration actions as
-`[[press.regenerate]]`, and applied reset actions as `[[press.reset]]`.
+`press check-tools` reports. Plans and tool checks show active declarations
+only. A successful receipt records the captured value as `press.platform`,
+successful edit actions as `[[press.edit]]`, successful regeneration actions
+as `[[press.regenerate]]`, and applied reset actions as `[[press.reset]]`.
 
-Git is not a declared regeneration tool. Press and `press check-tools` require
-and check Git on every supported platform, including when no reset or
-regeneration declaration is active.
+Git is not a declared command. Press and `press check-tools` require and check
+Git on every supported platform, including when no declared mutation is
+active.
 
 ### After a successful press
 
@@ -499,7 +575,9 @@ The exit code signals the result:
   basename is on the tool's exemptible list (`uv.lock`, `bun.lock`) are
   NOT scanned (the hermetic sandbox never runs commands, so only the real
   press's post-command scan can certify them); they are listed as exempt
-  in the report and in the `exempt` field of `--json` output.
+  in the report and in the `exempt` field of `--json` output. A declared edit
+  receives no command-based exemption and is scanned normally unless the
+  general `verify_ignore` policy matches a component of its path.
 - `1`: Verification failed — source identity found in the pressed copy.
 - `2`: Configuration, environment, or unverifiable identity error.
 
@@ -566,17 +644,19 @@ reason = "Historical reference in changelog"
 
 ## `press check-tools`
 
-Reports whether every active `[[regenerate]]` command's `argv[0]` — plus
-`git`, the one tool press itself needs — resolves on the captured platform,
-using exactly the resolution the press will use (path-qualified names against
-the target root, bare names on the deny-by-default effective `PATH`). It
-validates all declarations before platform selection, writes nothing, and
-executes nothing.
+Reports whether every active `[[edit]]` and `[[regenerate]]` command's
+`argv[0]` — plus `git`, the one tool press itself needs — resolves on the
+captured platform, using exactly the resolution the press will use
+(path-qualified names against the target root, bare names on the
+deny-by-default effective `PATH`). It validates all declarations before
+platform selection, writes nothing, and executes nothing. Edit tools appear
+before regeneration tools, matching execution order.
 
 ```console
 $ press check-tools --target ../my-repo
 Platform: darwin
 git — /usr/bin/git
+uv — /opt/homebrew/bin/uv (edits pyproject.toml)
 uv — /opt/homebrew/bin/uv (regenerates uv.lock)
 bun — missing (declared to regenerate bun.lock)
 ```

@@ -25,12 +25,13 @@ from __future__ import annotations
 
 import os
 import posixpath
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from template_press.rebrand.pathing import translate_path
 from template_press.rebrand.regen import has_uncommitted_changes, tracked_paths
-from template_press.rebrand.rules import Rules
+from template_press.rebrand.rules import Rules, _control_alias_key
 from template_press.rebrand.safety import (
     SafetyError,
     assert_ancestors_real,
@@ -126,24 +127,41 @@ def render_remove_plan(rules: Rules) -> str:
     return "\n".join(lines)
 
 
-def remove_regen_conflicts(rules: Rules) -> list[str]:
-    """A ``[[remove]]`` target that an active ``[[regenerate]]`` command
-    names in its argv would be deleted before the command runs — planning
-    would succeed and the press would fail mid-mutation. Plan-time refusal
-    instead (normalized comparison, mirroring ``stale_argv_elements``)."""
+def remove_command_conflicts(rules: Rules, renamed: Mapping[str, str]) -> list[str]:
+    """Refuse standalone target-relative argv paths an active removal deletes.
 
-    removed = {r.file for r in rules.remove}
+    Removals run before edits and regenerations. Without this plan-time gate,
+    dry-run succeeds but apply deletes the argv path before the command can
+    launch. Compare original and final paths, normalizing path syntax and
+    filesystem aliases. Like ``stale_argv_elements``, this is best-effort:
+    absolute paths, attached options, and command-language strings are not
+    interpreted as target-relative paths.
+    """
+
+    removed = {
+        _control_alias_key(path): r.file
+        for r in rules.remove
+        for path in (r.file, translate_path(r.file, renamed))
+    }
     if not removed:
         return []
     problems: list[str] = []
-    for regen in rules.regenerate:
-        for element in regen.command:
-            norm = posixpath.normpath(element.replace("\\", "/"))
-            if norm in removed:
+    for kind, declarations in (
+        ("edit", rules.edit),
+        ("regenerate", rules.regenerate),
+    ):
+        for declaration in declarations:
+            for element in declaration.command:
+                norm = posixpath.normpath(element.replace("\\", "/"))
+                removed_file = removed.get(_control_alias_key(norm))
+                if removed_file is None:
+                    continue
                 problems.append(
-                    f"remove target {norm}: also named in the [[regenerate]] "
-                    f"command for {regen.file!r} — the removal would delete "
-                    f"it before the command runs; drop one declaration"
+                    f"remove target {removed_file!r}: argv element {element!r} "
+                    f"in the [[{kind}]] command for {declaration.file!r} names "
+                    f"its original or renamed location (including filesystem "
+                    f"aliases) — the removal would delete it before the command "
+                    f"runs; drop one declaration"
                 )
     return problems
 

@@ -8,6 +8,7 @@ reset and G2's bun.lock regeneration proven against the real repo (R1b).
 """
 
 import dataclasses
+import json
 import shutil
 import subprocess
 import sys
@@ -112,6 +113,19 @@ def test_r3_self_press_native(tmp_path: Path) -> None:
     )
 
     assert code == 0
+    manifest = json.loads(
+        (target / ".release-please-manifest.json").read_text(encoding="utf-8")
+    )
+    pyproject = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))
+    uv_lock = tomllib.loads((target / "uv.lock").read_text(encoding="utf-8"))
+    root_package = next(
+        package
+        for package in uv_lock["package"]
+        if package["name"] == "potato-launcher"
+    )
+    assert manifest["."] == "0.1.0"
+    assert pyproject["project"]["version"] == "0.1.0"
+    assert root_package["version"] == "0.1.0"
     raw_receipt = (target / RECEIPT_REL).read_text(encoding="utf-8")
     receipt = tomllib.loads(raw_receipt)
     assert receipt["press"]["platform"] == sys.platform

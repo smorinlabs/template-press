@@ -152,6 +152,10 @@ jobs:
           bun-version: '1.3.14'
       - name: Sync dev env
         run: uv sync --locked --group dev
+      - name: Run edit visibility regressions first
+        run: >-
+          uv run --no-sync pytest -q tests/rebrand/test_edit_execute.py
+          -k "configured_ignore_edit or external_ignore_input or zero_inodes"
       - name: Run tests with coverage
         # Default skips slow/live markers (ITM-046 addopts); CI runs everything.
         # -n auto: pytest-xdist workers, CI only (local runs stay serial, and

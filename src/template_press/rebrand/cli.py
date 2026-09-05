@@ -46,12 +46,17 @@ from template_press.rebrand.receipt import (
     write_receipt,
 )
 from template_press.rebrand.regen import (
+    EditPlan,
     RegenerationPlan,
+    execute_edits,
     execute_regenerations,
     final_validation_pass,
+    plan_edits,
     plan_regenerate_commands,
+    preflight_edit_targets,
     preflight_excluded_files,
     preflight_regenerate_outputs,
+    render_edit_plan,
     render_regenerate_plan,
     restore_control_files,
     snapshot_control_files,
@@ -62,7 +67,7 @@ from template_press.rebrand.regen import (
 from template_press.rebrand.remove import (
     apply_removals,
     preflight_remove_targets,
-    remove_regen_conflicts,
+    remove_command_conflicts,
     render_remove_plan,
 )
 from template_press.rebrand.reset import (
@@ -114,6 +119,18 @@ def _partial_rewrite_restore_hint(target: Path) -> str:
     checkout = _shell_join(["git", "-C", str(target), "checkout", "--", "."])
     clean = _shell_join(["git", "-C", str(target), "clean", "-fd"])
     return f"target may be PARTIALLY rewritten; restore with `{checkout} && {clean}`"
+
+
+def _report_control_restore_problems(problems: list[str]) -> None:
+    """Report best-effort recovery failures without masking the root failure."""
+    if not problems:
+        return
+    print(
+        "error: press-owned control-file restoration incomplete:",
+        file=sys.stderr,
+    )
+    for problem in problems:
+        print(f"  {problem}", file=sys.stderr)
 
 
 def _empty_dir_paths(exc: RenameClosureUnauthorized) -> list[str]:
@@ -545,6 +562,17 @@ def main(argv: list[str] | None = None) -> int:
         # before any write, under the exit-2-nothing-written contract
         # (dry-run included).
         gate_problems = preflight_excluded_files(target, rules)
+        # Edit problems are collected BEFORE regeneration problems so a
+        # refusal listing both reads in the order the phases actually run
+        # (E4): every edit precedes every regeneration. Edits are planned
+        # with the SAME machinery and feed the SAME gate — a missing edit
+        # tool or an unpressable edit target refuses at exit 2 with nothing
+        # written, before the rewrite pass the edit would have amended.
+        gate_problems += preflight_edit_targets(target, rules)
+        edit_plans, edit_problems = plan_edits(
+            target, rules.edit, renamed=frozenset(plan.renames)
+        )
+        gate_problems += edit_problems
         gate_problems += preflight_regenerate_outputs(target, rules)
         regen_plans, plan_problems = plan_regenerate_commands(
             target, rules.regenerate, renamed=frozenset(plan.renames)
@@ -564,7 +592,7 @@ def main(argv: list[str] | None = None) -> int:
         gate_problems += preflight_remove_targets(
             target, rules, previously_removed=frozenset(prior_removed)
         )
-        gate_problems += remove_regen_conflicts(rules)
+        gate_problems += remove_command_conflicts(rules, plan.renames)
         if plan.table is not None:
             try:
                 validate_reset_visibility(
@@ -579,7 +607,8 @@ def main(argv: list[str] | None = None) -> int:
                 gate_problems.append(str(exc))
         if gate_problems:
             print(
-                "error: declared regeneration/reset/removal cannot run — nothing written:",
+                "error: declared edit/regeneration/reset/removal cannot run — "
+                "nothing written:",
                 file=sys.stderr,
             )
             for problem in gate_problems:
@@ -595,6 +624,10 @@ def main(argv: list[str] | None = None) -> int:
             print(warning)
         print(f"Platform: {selected.platform}")
         print(plan.render())
+        # Phase order (E4): every edit runs before every regeneration, so the
+        # plan the operator approves reads in the order execution will take.
+        if edit_plans:
+            print(render_edit_plan(edit_plans))
         if regen_plans:
             print(render_regenerate_plan(regen_plans))
         if reset_previews:
@@ -647,6 +680,7 @@ def main(argv: list[str] | None = None) -> int:
         rules,
         regen_plans,
         [(preview.rule, preview.stub_text) for preview in reset_previews],
+        edit_plans=edit_plans,
         previously_removed=prior_removed,
         platform=selected.platform,
         rename_preflight=rename_preflight,
@@ -680,6 +714,7 @@ def _press(
     regen_plans: list[RegenerationPlan],
     resets: list[tuple[ResetRule, str]],
     *,
+    edit_plans: list[EditPlan] | None = None,
     previously_removed: dict[str, str] | None = None,
     platform: str | None = None,
     rename_preflight: RenamePreflight | None = None,
@@ -690,6 +725,8 @@ def _press(
 ) -> PressOutcome:
     if previously_removed is None:
         previously_removed = {}
+    if edit_plans is None:
+        edit_plans = []
     try:
         if table is None:
             fallback_plan = build_plan(target, source, dest, rules)
@@ -706,6 +743,9 @@ def _press(
         print(f"error: {exc} — nothing applied", file=sys.stderr)
         return PressOutcome(False, [], [], env_error=str(exc))
     report = None
+    control_snapshot: dict[str, bytes | None] = {}
+    restore_controls_on_exception = False
+    mutation_incomplete = False
     try:
         if table is None:
             raise SafetyError("substitution table is unavailable at mutation boundary")
@@ -718,6 +758,7 @@ def _press(
         # Reset takes position ZERO (P05 D5): declared paths are consumed in
         # SOURCE coordinates before the rename pass moves anything. A raise
         # here aborts the press (no receipt) — git is the undo button.
+        mutation_incomplete = True
         reset_done = apply_resets(target, resets)
         report = apply(
             target,
@@ -744,8 +785,64 @@ def _press(
         # Press-owned control files and Git visibility inputs are snapshotted
         # before the first command and revalidated after the last. Reservation
         # alone is not protection because a command can mutate arbitrary files.
-        control_snapshot = snapshot_control_files(target) if regen_plans else {}
-        visibility_snapshot = snapshot_visibility_state(target) if regen_plans else None
+        # E11: gated on ANY declared command, not on regenerations alone. An
+        # edits-only target runs commands too, and a command is a command —
+        # one that rewrites press-rules.toml or changes Git's ignore policy
+        # mid-press is exactly as unsafe whether or not a [[regenerate]]
+        # happens to be declared beside it.
+        any_command = bool(edit_plans) or bool(regen_plans)
+        control_snapshot = snapshot_control_files(target) if any_command else {}
+        visibility_snapshot = snapshot_visibility_state(target) if any_command else None
+        # A pinned executable can disappear between planning and launch (for
+        # example, an earlier declared command can delete a later
+        # target-relative executable). subprocess.run then raises instead of
+        # returning a nonzero status, so the explicit failed_edits/failed_locks
+        # branches below never run. From this point onward, every exceptional
+        # exit must restore the same control snapshot those branches restore.
+        restore_controls_on_exception = any_command
+        # Phase order (E4): EVERY edit runs after the renames and before EVERY
+        # regeneration, in declaration order — so a regeneration observes the
+        # edited tree, which is the composition targets actually need
+        # (bump the version, then rebuild the lockfile from it).
+        failed_edits = execute_edits(
+            target,
+            edit_plans,
+            dict(report.renamed),
+            report,
+            source=source,
+            dest=dest,
+            rules=rules,
+            rendered_rules=rendered_rules,
+            table=table,
+        )
+        if failed_edits:
+            # Regeneration-equivalent failure handling: restore what a failed
+            # command may have tampered with, withhold the receipt, exit 1.
+            # The wording differs because an edit receives no command-based
+            # exemption: the incompleteness is in its own declared postcondition,
+            # regardless of whether target-wide verify_ignore later omits it from
+            # doctor and hermetic-verify inventories.
+            restore_problems = restore_control_files(target, control_snapshot)
+            print(
+                f"error: declared edit failed for {', '.join(failed_edits)} — the "
+                f"file did not reach the state its [[edit]] declaration promised, "
+                f"so this rebrand is INCOMPLETE; no receipt written. "
+                f"{_partial_rewrite_restore_hint(target)}. Fix the command or "
+                f"the declaration, then re-run with --force.",
+                file=sys.stderr,
+            )
+            _report_control_restore_problems(restore_problems)
+            if report.skipped:
+                print("skipped (review):", file=sys.stderr)
+                for entry in report.skipped:
+                    print(f"  {entry}", file=sys.stderr)
+            print(report.render(), file=sys.stderr)
+            return PressOutcome(
+                False,
+                report.renamed,
+                report.regenerated,
+                env_error=f"declared edit failed for {', '.join(failed_edits)}",
+            )
         failed_locks = execute_regenerations(
             target,
             regen_plans,
@@ -761,7 +858,7 @@ def _press(
             # A failed command must not leave a tampered/planted control
             # file behind (codex 3654736777) — restore the snapshot before
             # reporting; {} when no commands ran.
-            restore_control_files(target, control_snapshot)
+            restore_problems = restore_control_files(target, control_snapshot)
             print(
                 f"error: lockfile regeneration failed for "
                 f"{', '.join(failed_locks)} — the lockfile still carries the old "
@@ -770,6 +867,7 @@ def _press(
                 f"with --force.",
                 file=sys.stderr,
             )
+            _report_control_restore_problems(restore_problems)
             # The per-file reason lives in report.skipped; without it the
             # failure is undiagnosable from the output (dogfood run 4
             # PROBLEM-23 — the reason was only printed on the success path).
@@ -784,10 +882,12 @@ def _press(
                 report.regenerated,
                 env_error=f"lockfile regeneration failed for {', '.join(failed_locks)}",
             )
-        if regen_plans:
-            # Final validation pass (D3): outputs, reset stubs, and the
+        if any_command:
+            # Final validation pass (D3): edits, outputs, reset stubs, and the
             # control-file snapshot — a later command corrupting an earlier
-            # result is invisible to every downstream inventory.
+            # result is invisible to every downstream inventory. Edits are
+            # rechecked here (expect included) because they run FIRST: a
+            # regeneration is the one thing positioned to undo one.
             post_problems = final_validation_pass(
                 target,
                 regen_plans,
@@ -798,18 +898,21 @@ def _press(
                 rules=rules,
                 rendered_rules=rendered_rules,
                 table=table,
+                edits=edit_plans,
             )
             post_problems += validate_control_files(target, control_snapshot)
             if visibility_snapshot is not None:
                 post_problems += validate_visibility_state(target, visibility_snapshot)
             if post_problems:
-                restore_control_files(target, control_snapshot)
+                restore_problems = restore_control_files(target, control_snapshot)
                 print(
                     "error: post-regeneration validation failed — no receipt written:",
                     file=sys.stderr,
                 )
                 for problem in post_problems:
                     print(f"  {problem}", file=sys.stderr)
+                _report_control_restore_problems(restore_problems)
+                print(_partial_rewrite_restore_hint(target), file=sys.stderr)
                 print(report.render(), file=sys.stderr)
                 return PressOutcome(
                     False,
@@ -817,6 +920,11 @@ def _press(
                     report.regenerated,
                     env_error="post-regeneration validation failed",
                 )
+            # Every command-owned effect on ROOT_CONTROL has now been
+            # revalidated. Past this boundary, source-config and receipt
+            # writes are the press's own successful output; a later reporting
+            # error must not roll them back to the pre-command snapshot.
+            restore_controls_on_exception = False
         # Verification never honors target-side REWRITE exclusions (EMP-01):
         # neither extra_exclude_files nor extra_exclude_dirs can hide content
         # from the doctor. The only sanctioned exemption is the explicit,
@@ -858,6 +966,17 @@ def _press(
             report,
             platform=platform,
             origin=origin,
+            edits=[
+                # Every PLANNED edit, unconditionally: a failed edit withholds
+                # the receipt entirely, so reaching this write means each one
+                # ran and held its post-condition.
+                (
+                    plan.rule.file,
+                    (plan.executable, *plan.rule.command[1:]),
+                    plan.rule.expect,
+                )
+                for plan in edit_plans
+            ],
             regenerations=[
                 (plan.rule.file, (plan.executable, *plan.rule.command[1:]))
                 for plan in regen_plans
@@ -911,6 +1030,10 @@ def _press(
                 ),
             ],
         )
+        # The receipt is the durable completion boundary. Interruptions during
+        # the success-reporting prints below must not advise rolling back a
+        # completed, verified press.
+        mutation_incomplete = False
         print(report.render())
         if report.skipped:
             print("skipped (review):")
@@ -926,6 +1049,9 @@ def _press(
         SafetyError,
         ValidationError,
     ) as exc:
+        restore_problems: list[str] = []
+        if restore_controls_on_exception:
+            restore_problems = restore_control_files(target, control_snapshot)
         # Exit 2 (main's pre-_press gate) means "nothing applied"; a
         # mid-mutation failure here is not that — target may be PARTIALLY
         # rewritten.
@@ -939,16 +1065,30 @@ def _press(
             _print_closure_refusal_prose(exc, target, rules)
             print(_partial_rewrite_restore_hint(target), file=sys.stderr)
         else:
-            print(
-                f"error: {exc} — {_partial_rewrite_restore_hint(target)}",
-                file=sys.stderr,
-            )
+            message = f"error: {exc}"
+            if mutation_incomplete:
+                message += f" — {_partial_rewrite_restore_hint(target)}"
+            print(message, file=sys.stderr)
+        _report_control_restore_problems(restore_problems)
         return PressOutcome(
             False,
             report.renamed if report else [],
             report.regenerated if report else [],
             env_error=str(exc),
         )
+    except BaseException:
+        # KeyboardInterrupt and SystemExit are deliberately re-raised, but an
+        # interruption during the armed command phase must not leave a forged
+        # receipt or altered rules behind. An interruption can also land while
+        # apply() is mutating the tree before command recovery is armed, so the
+        # broader partial-rewrite guidance spans the incomplete-mutation window.
+        restore_problems = []
+        if restore_controls_on_exception:
+            restore_problems = restore_control_files(target, control_snapshot)
+        if mutation_incomplete:
+            print(_partial_rewrite_restore_hint(target), file=sys.stderr)
+        _report_control_restore_problems(restore_problems)
+        raise
 
 
 if __name__ == "__main__":

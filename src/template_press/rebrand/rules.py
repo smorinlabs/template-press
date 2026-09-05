@@ -11,6 +11,7 @@ import fnmatch
 import re
 import sys
 import tomllib
+import unicodedata
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -136,10 +137,42 @@ class RemoveRule:
 
 
 @dataclass(frozen=True)
+class EditRule:
+    """One declared in-place edit: run ``command`` against ``file`` AFTER the
+    replace pass has rewritten it (E4).
+
+    The inverse of :class:`RegenerateRule` in both directions. Where a
+    regeneration OVERWRITES a file the replace pass must therefore skip, an
+    edit AMENDS the file the replace pass has already rewritten — so the
+    target is not excluded on an active edit platform (the platform-disjoint
+    writer exception is resolved during selection), and the edit mechanism
+    grants no command-based ``press verify`` exemption (no ``verify_exempt``,
+    no ``scan`` downgrade to buy) and does not alter doctor inventory policy.
+    A target's independent path-component ``verify_ignore`` still applies.
+    ``expect`` is the post-condition: a literal substring the edited file must
+    contain once the command has run, so a silently no-op command fails loudly
+    instead of shipping.
+    """
+
+    file: str  # canonical POSIX rel path, SOURCE coordinates
+    command: tuple[str, ...]
+    expect: str
+    env: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class _RemoveDeclaration:
     """One parsed removal plus its environment-independent selector."""
 
     rule: RemoveRule
+    platforms: frozenset[str]
+
+
+@dataclass(frozen=True)
+class _EditDeclaration:
+    """One parsed edit plus its environment-independent selector."""
+
+    rule: EditRule
     platforms: frozenset[str]
 
 
@@ -180,11 +213,13 @@ class Rules:
     regenerate: tuple[RegenerateRule, ...]  # declared-command regenerations
     reset: tuple[ResetRule, ...] = ()  # declared file resets (blank to stub)
     remove: tuple[RemoveRule, ...] = ()  # declared file removals (issue #80)
-    # The deliberate, committed ignore set: directories whose surviving
-    # source-identity content is VALID (vendored trees, historical docs).
-    # Exempts them from the doctor's leak scan only — never from rewriting.
+    # The deliberate, committed ignore set: path components whose surviving
+    # source-identity content is VALID (vendored trees, historical docs, files).
+    # Exempts matching entries from later doctor and hermetic-verify inventories
+    # only — never from rewriting or direct command postconditions.
     # Matched like exclude_dirs: by single path COMPONENT at any depth
-    # ("legacy" ignores every dir named legacy; "docs/old" never matches).
+    # ("legacy" ignores every file or directory named legacy; "docs/old" never
+    # matches).
     verify_ignore: frozenset[str] = frozenset()
     replace: tuple[ReplaceRule, ...] = ()
     # Fields rewritten by plain substring replacement instead of the
@@ -193,6 +228,10 @@ class Rules:
     # value here WILL corrupt prose; that risk is the author's to accept.
     substring_rewrite_fields: frozenset[str] = frozenset()
     display_forms: tuple[str, ...] = DISPLAY_FORM_NAMES
+    # Declared in-place edits (E4). Appended AFTER every pre-existing field
+    # on purpose: Rules is constructed positionally in places, and an
+    # insertion higher up rebinds every later argument silently.
+    edit: tuple[EditRule, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -211,6 +250,7 @@ class _ParsedRules:
     regenerate: tuple[_RegenerateDeclaration, ...] = ()
     reset: tuple[_ResetDeclaration, ...] = ()
     remove: tuple[_RemoveDeclaration, ...] = ()
+    edit: tuple[_EditDeclaration, ...] = ()
 
 
 DEFAULT_RULES = Rules(
@@ -257,11 +297,13 @@ _RULES_KEYS = frozenset(
 
 # The exact set of ROOT-level tables press-rules.toml legitimately carries —
 # every table some loader in this codebase actually reads from the file:
-# [rules], [[replace]], [[regenerate]], and [[reset]] here, [verify] in
-# verify_cli.py's _load_verify_config (same file). An unknown root key (e.g.
-# a `[[replace]]` typo like `[[replcae]]`) must fail loud instead of silently
-# loading as zero rules.
-_ROOT_KEYS = frozenset({"rules", "replace", "verify", "regenerate", "reset", "remove"})
+# [rules], [[replace]], [[regenerate]], [[reset]], [[remove]], and [[edit]]
+# here, [verify] in verify_cli.py's _load_verify_config (same file). An
+# unknown root key (e.g. a `[[replace]]` typo like `[[replcae]]`) must fail
+# loud instead of silently loading as zero rules.
+_ROOT_KEYS = frozenset(
+    {"rules", "replace", "verify", "regenerate", "reset", "remove", "edit"}
+)
 _REMOVE_KEYS = frozenset({"file", "reason", "platforms"})
 
 _REGENERATE_KEYS = frozenset(
@@ -269,6 +311,10 @@ _REGENERATE_KEYS = frozenset(
 )
 _REGENERATE_SCAN_VALUES = frozenset({"strict", "boundary"})
 _RESET_KEYS = frozenset({"file", "stub", "stub_file", "platforms"})
+# Deliberately WITHOUT `verify_exempt`/`scan`: an edit cannot buy a command-
+# based exemption, so both keys are unknown here rather than merely ignored.
+# The separate path-component `verify_ignore` policy remains unchanged.
+_EDIT_KEYS = frozenset({"file", "command", "expect", "env", "platforms"})
 
 
 def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
@@ -279,8 +325,9 @@ def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
         nested = [v for v in value if "/" in v or "\\" in v]
         if nested:
             raise ValidationError(
-                f"{RULES_REL}: [rules] {key} entries are single directory "
-                f"NAMES matched at any depth, not paths — invalid: {nested}"
+                f"{RULES_REL}: [rules] {key} entries are single path-component "
+                "names matched at any depth, including basenames; "
+                f"multi-component paths are invalid: {nested}"
             )
     return value
 
@@ -406,7 +453,47 @@ def _declared_rel_path(context: str, value: object) -> str:
 
 def _control_alias_key(file: str) -> str:
     """Collapse a POSIX relative path to its filesystem-alias identity."""
-    return "/".join(part.rstrip(" .").casefold() for part in file.split("/"))
+    return "/".join(_alias_component(part) for part in file.split("/"))
+
+
+def _filesystem_alias_note(file: str, other_file: str) -> str:
+    """Describe two distinct declared paths that may resolve to one file."""
+    if file == other_file:
+        return ""
+    return (
+        f"; declared paths {file!r} and {other_file!r} are one file on a "
+        "case-insensitive, normalization-insensitive, or Windows filesystem"
+    )
+
+
+def _alias_component(part: str) -> str:
+    """Reduce one path component to the identity a filesystem may collapse.
+
+    Three real aliasing rules, applied in the order the filesystem does:
+
+    1. Windows drops trailing dots and spaces from every component, so
+       `meta.toml.` and `meta.toml ` open `meta.toml`.
+    2. Windows and default macOS are case-insensitive, so `META.TOML` is the
+       same entry as `meta.toml`.
+    3. APFS and HFS+ are normalization-insensitive, so the composed and
+       decomposed spellings of one grapheme — `cafe\u0301.toml` and its
+       precomposed NFC form — are also one entry.
+
+    The normalization is a canonical caseless match (Unicode 3.13, D145):
+    NFD, then casefold, then NFD again. The trailing NFD is what the plain
+    casefold misses, because casefold is not closed under canonical
+    equivalence — it can emit a base character where a combining mark stood
+    (U+0345 is the standard example), leaving two canonically equal inputs
+    with unequal folded forms. In a fail-closed refusal key an unequal form
+    is a missed alias, which fails OPEN, so the sandwich is used rather than
+    a single trailing normalize. The leading `rstrip` stays outermost:
+    canonical normalization never produces an ASCII dot or space, so it
+    cannot expose a component the strip would have taken.
+    """
+    stripped = part.rstrip(" .")
+    return unicodedata.normalize(
+        "NFD", unicodedata.normalize("NFD", stripped).casefold()
+    )
 
 
 def _reject_reserved(kind: str, file: str) -> None:
@@ -414,14 +501,17 @@ def _reject_reserved(kind: str, file: str) -> None:
     # neutral scope helpers, while this validator needs the control paths.
     from template_press.rebrand.pathing import ROOT_CONTROL
 
-    # Normalized exactly like the same-file test used elsewhere for filesystem
-    # path comparisons (safety.py's `_is_dotgit`): casefold, plus a per-
-    # component strip of trailing dots/spaces. Both are real filesystem
-    # aliases, not cosmetics — on a case-insensitive filesystem (Windows,
-    # default macOS) `PRESS/press-source.toml` is the SAME file as
-    # `press/press-source.toml`, and on Windows so are
-    # `press/press-source.toml.` and `press/press-source.toml ` (the
-    # filesystem drops trailing dots/spaces from every component). Rules are
+    # A SUPERSET of the same-file test used elsewhere for filesystem path
+    # comparisons (safety.py's `_is_dotgit`, which case-folds only — `.git`
+    # is ASCII, so the rest is moot there). _alias_component adds a
+    # per-component strip of trailing dots/spaces and a canonical caseless
+    # normalization. All three are real filesystem aliases, not cosmetics —
+    # on a case-insensitive filesystem (Windows, default macOS)
+    # `PRESS/press-source.toml` is the SAME file as `press/press-source.toml`;
+    # on Windows so are `press/press-source.toml.` and
+    # `press/press-source.toml ` (the filesystem drops trailing dots/spaces
+    # from every component); and on normalization-insensitive APFS/HFS+ so are
+    # the composed and decomposed spellings of one grapheme. Rules are
     # validated identically on every platform, so the check rejects the union
     # of aliases rather than the host's own set.
     if _control_alias_key(file) in {_control_alias_key(e) for e in ROOT_CONTROL}:
@@ -458,29 +548,16 @@ def _parse_platforms(entry: dict, kind: str, file: str) -> frozenset[str]:
     return frozenset(platforms)
 
 
-def _parse_regenerate(
-    entry: object, exclude_files: frozenset[str]
-) -> _RegenerateDeclaration:
-    if not isinstance(entry, dict):
-        raise ValidationError(f"{RULES_REL}: [[regenerate]] entry must be a table")
-    unknown = set(entry) - _REGENERATE_KEYS
-    if unknown:
-        raise ValidationError(
-            f"{RULES_REL}: [[regenerate]] unknown key(s): {', '.join(sorted(unknown))}"
-        )
-    file = _declared_rel_path("[[regenerate]] file", entry.get("file"))
-    _reject_reserved("[[regenerate]]", file)
-    if file not in exclude_files:
-        raise ValidationError(
-            f"{RULES_REL}: [[regenerate]] output {file!r} must be listed in "
-            f"exclude_files (add it to [rules] extra_exclude_files) — a "
-            f"non-excluded output is rewritten by the replace pass and then "
-            f"immediately overwritten by the declared command"
-        )
+def _parse_command(entry: dict, kind: str, file: str) -> tuple[str, ...]:
+    """The declared argv: a non-empty list of non-empty, control-free strings.
+
+    Shared by [[regenerate]] and [[edit]] so the two mechanisms cannot drift
+    apart — both hand the same argv shape to the same runner.
+    """
     raw_command = entry.get("command")
     if not isinstance(raw_command, list) or not raw_command:
         raise ValidationError(
-            f"{RULES_REL}: [[regenerate]] {file!r}: command must be a "
+            f"{RULES_REL}: {kind} {file!r}: command must be a "
             f"non-empty list of strings (the exact argv — no shell)"
         )
     command: list[str] = []
@@ -495,15 +572,19 @@ def _parse_regenerate(
             or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in element)
         ):
             raise ValidationError(
-                f"{RULES_REL}: [[regenerate]] {file!r}: command elements must "
+                f"{RULES_REL}: {kind} {file!r}: command elements must "
                 f"be non-empty strings without control characters: {element!r}"
             )
         command.append(element)
+    return tuple(command)
+
+
+def _parse_env(entry: dict, kind: str, file: str) -> tuple[str, ...]:
+    """Variable NAMES (never values) copied into the deny-by-default child env."""
     raw_env = entry.get("env", [])
     if not isinstance(raw_env, list):
         raise ValidationError(
-            f"{RULES_REL}: [[regenerate]] {file!r}: env must be a list of "
-            f"variable names"
+            f"{RULES_REL}: {kind} {file!r}: env must be a list of variable names"
         )
     env: list[str] = []
     for name in raw_env:
@@ -514,11 +595,26 @@ def _parse_regenerate(
             or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in name)
         ):
             raise ValidationError(
-                f"{RULES_REL}: [[regenerate]] {file!r}: env entries are "
+                f"{RULES_REL}: {kind} {file!r}: env entries are "
                 f"variable NAMES (non-empty, no '=', no control characters): "
                 f"{name!r}"
             )
         env.append(name)
+    return tuple(env)
+
+
+def _parse_regenerate(entry: object) -> _RegenerateDeclaration:
+    if not isinstance(entry, dict):
+        raise ValidationError(f"{RULES_REL}: [[regenerate]] entry must be a table")
+    unknown = set(entry) - _REGENERATE_KEYS
+    if unknown:
+        raise ValidationError(
+            f"{RULES_REL}: [[regenerate]] unknown key(s): {', '.join(sorted(unknown))}"
+        )
+    file = _declared_rel_path("[[regenerate]] file", entry.get("file"))
+    _reject_reserved("[[regenerate]]", file)
+    command = _parse_command(entry, "[[regenerate]]", file)
+    env = _parse_env(entry, "[[regenerate]]", file)
     scan = entry.get("scan", "strict")
     if not isinstance(scan, str) or scan not in _REGENERATE_SCAN_VALUES:
         raise ValidationError(
@@ -561,8 +657,8 @@ def _parse_regenerate(
     return _RegenerateDeclaration(
         rule=RegenerateRule(
             file=file,
-            command=tuple(command),
-            env=tuple(env),
+            command=command,
+            env=env,
             scan=scan,
             verify_exempt=verify_exempt,
             reason=reason,
@@ -571,7 +667,7 @@ def _parse_regenerate(
     )
 
 
-def _parse_reset(entry: object, exclude_files: frozenset[str]) -> _ResetDeclaration:
+def _parse_reset(entry: object) -> _ResetDeclaration:
     if not isinstance(entry, dict):
         raise ValidationError(f"{RULES_REL}: [[reset]] entry must be a table")
     unknown = set(entry) - _RESET_KEYS
@@ -586,13 +682,6 @@ def _parse_reset(entry: object, exclude_files: frozenset[str]) -> _ResetDeclarat
         )
     file = _declared_rel_path("[[reset]] file", entry.get("file"))
     _reject_reserved("[[reset]]", file)
-    if file not in exclude_files:
-        raise ValidationError(
-            f"{RULES_REL}: [[reset]] target {file!r} must be listed in "
-            f"exclude_files (add it to [rules] extra_exclude_files) — a "
-            f"non-excluded target is also rewritten by the replace pass, so "
-            f"the result would depend on pass order"
-        )
     has_stub = "stub" in entry
     has_stub_file = "stub_file" in entry
     if has_stub == has_stub_file:
@@ -653,67 +742,289 @@ def _parse_remove(entry: object) -> _RemoveDeclaration:
     )
 
 
+def _parse_edit(entry: object) -> _EditDeclaration:
+    """One [[edit]] table: mirrors [[regenerate]] with two inversions (E4).
+
+    `verify_exempt`/`scan` are absent from _EDIT_KEYS on purpose, so both land
+    in the unknown-key refusal: an edit cannot buy a command-based leak-scan
+    exemption, and there is no hash-dense-output escape hatch to grant. The
+    target-wide ``verify_ignore`` policy is independent. The exclude_files
+    contract is inverted too, and lives in
+    _validate_exclude_membership so the one-writer diagnostic wins first.
+    """
+    if not isinstance(entry, dict):
+        raise ValidationError(f"{RULES_REL}: [[edit]] entry must be a table")
+    unknown = set(entry) - _EDIT_KEYS
+    if unknown:
+        hint = (
+            " (an edit earns no command-based verify exemption — use the "
+            "separate [rules] verify_ignore policy for deliberate ignores)"
+            if unknown & {"verify_exempt", "scan"}
+            else ""
+        )
+        raise ValidationError(
+            f"{RULES_REL}: [[edit]] unknown key(s): {', '.join(sorted(unknown))}{hint}"
+        )
+    file = _declared_rel_path("[[edit]] file", entry.get("file"))
+    _reject_reserved("[[edit]]", file)
+    if _alias_component(file.rsplit("/", 1)[-1]) == ".gitignore":
+        raise ValidationError(
+            f"{RULES_REL}: [[edit]] target {file!r} controls Git visibility — "
+            f"declared commands must preserve ignore inputs; make intentional "
+            f"ignore-policy changes in a separate commit"
+        )
+    command = _parse_command(entry, "[[edit]]", file)
+    env = _parse_env(entry, "[[edit]]", file)
+    expect = entry.get("expect")
+    # E4 binds this exactly: a NON-EMPTY PRINTABLE string. Three shapes fail —
+    # a non-string, the empty string, and anything carrying a character
+    # `str.isprintable` rejects (it could not be written safely to the receipt
+    # or echoed in validation diagnostics; that check also catches every
+    # whitespace character except the plain space, tabs included). A run of
+    # spaces is a weak post-condition but a legal one, and the parser does not
+    # get to tighten the spec.
+    if not isinstance(expect, str) or not expect:
+        raise ValidationError(
+            f"{RULES_REL}: [[edit]] {file!r}: expect is required and must be a "
+            f"non-empty string — it is the post-condition substring the edited "
+            f"file must contain once the command has run: {expect!r}"
+        )
+    if any(not ch.isprintable() for ch in expect):
+        raise ValidationError(
+            f"{RULES_REL}: [[edit]] {file!r}: expect must not contain control "
+            f"or non-printable characters — it is written to the receipt and "
+            f"echoed in validation diagnostics"
+        )
+    return _EditDeclaration(
+        rule=EditRule(file=file, command=command, expect=expect, env=env),
+        platforms=_parse_platforms(entry, "[[edit]]", file),
+    )
+
+
+def _validate_exclude_membership(
+    regenerate: tuple[_RegenerateDeclaration, ...],
+    reset: tuple[_ResetDeclaration, ...],
+    edit: tuple[_EditDeclaration, ...],
+    exclude_files: frozenset[str],
+    exclude_dirs: frozenset[str],
+) -> None:
+    """Each mechanism's exclusion contract, checked AFTER writer overlaps.
+
+    The three contracts are not independent: a [[regenerate]] output and a
+    [[reset]] target MUST be excluded, while an [[edit]] target must NOT be —
+    so a file declared as both can satisfy neither, and running these checks
+    inside the per-entry parsers made the real fault (two writers for one
+    file) unreachable behind an exclusion message its author could not act
+    on. Overlaps are settled first; only then does membership speak.
+
+    That inversion also means one platform-neutral exclude_files cannot
+    answer for a file whose writers are platform-disjoint (an [[edit]] on
+    darwin, a [[reset]] on win32) — so the edit refusal stands down for
+    exactly that pairing, and _select_rules drops the path from the
+    exclusions of the platforms where the edit is the active writer.
+
+    That stand-down is EXACT-SPELLING only: the edit target must appear
+    verbatim in exclude_files and the paired [[reset]]/[[regenerate]] must
+    name that same verbatim path. Alias identity widens what counts as one
+    file, which is the safe direction for a refusal and the unsafe direction
+    for a grant — `meta.toml` and `META.TOML.`, like a composed and a
+    decomposed spelling of one name, really are two files on Linux and on
+    case- and normalization-sensitive APFS, so licensing on alias identity
+    would let an edit on one of them un-exclude the other, a path no
+    declaration writes at all.
+    Anything matching only by alias is refused here instead.
+
+    Directory exclusions have no platform-disjoint exception: removing one
+    would expose other files that no edit declares. Check every path component,
+    matching the inventory's exclusion rule, with conservative alias identity.
+
+    That stand-down reaches TARGET-added exclusions only. A path in
+    DEFAULT_RULES.exclude_files is press's own answer, not the target's: a
+    lockfile or a changelog is excluded because the replace pass must never
+    rewrite it, whatever else the file is declared as. Letting a disjoint
+    [[reset]]/[[regenerate]] license it would turn a pairing the author
+    controls into a lever that hands those files to the replace pass.
+
+    Every EDIT-side refusal here tests by filesystem-alias identity
+    (_control_alias_key), not raw string — the union _reject_reserved
+    documents. A raw comparison fails OPEN: `BUN.lock.` aliases `bun.lock` on
+    case-insensitive filesystems and Windows, so the exclusion could simply be
+    out-spelled. The regenerate/reset membership checks above also read exact
+    strings but fail closed on an alias-only listing; the licence above reads
+    exact strings because it grants rather than denies.
+    """
+    paired_files = [declaration.rule.file for declaration in regenerate] + [
+        declaration.rule.file for declaration in reset
+    ]
+    paired = {_control_alias_key(file) for file in paired_files}
+    paired_exact = set(paired_files)
+    # Alias key -> one declared writer spelling, so the licence diagnostic can
+    # quote the path the discarding writer actually names.
+    paired_spelling: dict[str, str] = {}
+    for file in sorted(paired_files):
+        paired_spelling.setdefault(_control_alias_key(file), file)
+    default_keys = {_control_alias_key(file) for file in DEFAULT_RULES.exclude_files}
+    # Alias key -> one declared spelling, so a diagnostic can name the entry
+    # the author actually wrote rather than the normalized key.
+    excluded: dict[str, str] = {}
+    for entry in sorted(exclude_files):
+        excluded.setdefault(_control_alias_key(entry), entry)
+    excluded_dirs = {_alias_component(entry): entry for entry in sorted(exclude_dirs)}
+    for regenerate_declaration in regenerate:
+        file = regenerate_declaration.rule.file
+        if file not in exclude_files:
+            raise ValidationError(
+                f"{RULES_REL}: [[regenerate]] output {file!r} must be listed in "
+                f"exclude_files (add it to [rules] extra_exclude_files) — a "
+                f"non-excluded output is rewritten by the replace pass and then "
+                f"immediately overwritten by the declared command"
+            )
+    for reset_declaration in reset:
+        file = reset_declaration.rule.file
+        if file not in exclude_files:
+            raise ValidationError(
+                f"{RULES_REL}: [[reset]] target {file!r} must be listed in "
+                f"exclude_files (add it to [rules] extra_exclude_files) — a "
+                f"non-excluded target is also rewritten by the replace pass, so "
+                f"the result would depend on pass order"
+            )
+    for edit_declaration in edit:
+        file = edit_declaration.rule.file
+        for component in file.split("/"):
+            excluded_dir = excluded_dirs.get(_alias_component(component))
+            if excluded_dir is not None:
+                raise ValidationError(
+                    f"{RULES_REL}: [[edit]] target {file!r} matches exclude_dirs "
+                    f"entry {excluded_dir!r} — an edit target must receive the "
+                    f"replace pass before its command runs; directory exclusions "
+                    f"have no platform-disjoint writer exception"
+                )
+        key = _control_alias_key(file)
+        if key not in excluded:
+            continue
+        # Name the exact entry when there is one; the alias note fires only
+        # when the exclusion really is spelled differently from the edit.
+        listed = file if file in exclude_files else excluded[key]
+        alias_note = (
+            ""
+            if listed == file
+            else f" (listed as {listed!r} — one file on a case-insensitive, "
+            f"normalization-insensitive, or Windows filesystem)"
+        )
+        if key in default_keys:
+            raise ValidationError(
+                f"{RULES_REL}: [[edit]] target {file!r} must not be listed in "
+                f"exclude_files{alias_note} — an edit target is rewritten by "
+                f"the replace pass first, then edited in place; press excludes "
+                f"this path by default, so no target declaration makes it "
+                f"editable (a platform-disjoint [[reset]]/[[regenerate]] "
+                f"included)"
+            )
+        # `paired` is only reachable across disjoint platforms — a shared one
+        # was already refused as two writers by _validate_writer_overlaps.
+        if key not in paired:
+            raise ValidationError(
+                f"{RULES_REL}: [[edit]] target {file!r} must not be listed in "
+                f"exclude_files{alias_note} — an edit target is rewritten by "
+                f"the replace pass first, then edited in place"
+            )
+        # The licence GRANTS, so it may not widen: alias-equal spellings are
+        # distinct files wherever the filesystem is case-sensitive, and
+        # un-excluding by alias would expose one that has no writer.
+        if file not in exclude_files or file not in paired_exact:
+            mismatches: list[str] = []
+            if file not in exclude_files:
+                mismatches.append(f"the exclude_files entry reads {listed!r}")
+            if file not in paired_exact:
+                mismatches.append(
+                    f"the paired [[reset]]/[[regenerate]] target reads "
+                    f"{paired_spelling[key]!r}"
+                )
+            raise ValidationError(
+                f"{RULES_REL}: [[edit]] target {file!r} must not be listed in "
+                f"exclude_files — the platform-disjoint exception requires the "
+                f"edit target, the exclusion entry, and the discarding "
+                f"[[reset]]/[[regenerate]] target to be spelled identically, "
+                f"but {' and '.join(mismatches)}; those spellings name one "
+                f"file only where the filesystem is case- or normalization-"
+                f"insensitive, so honoring the pairing would un-exclude a "
+                f"path nothing writes"
+            )
+
+
 def _validate_writer_overlaps(
     regenerate: tuple[_RegenerateDeclaration, ...],
     reset: tuple[_ResetDeclaration, ...],
     remove: tuple[_RemoveDeclaration, ...] = (),
+    edit: tuple[_EditDeclaration, ...] = (),
 ) -> None:
     """Reject any same-file writer pair active on at least one platform."""
 
-    seen_regenerate: dict[str, list[frozenset[str]]] = {}
+    seen_regenerate: dict[str, list[tuple[str, frozenset[str]]]] = {}
     for declaration in regenerate:
         file = declaration.rule.file
-        for earlier in seen_regenerate.get(file, []):
+        key = _control_alias_key(file)
+        for earlier_file, earlier in seen_regenerate.get(key, []):
             overlap = earlier & declaration.platforms
             if overlap:
                 raise ValidationError(
                     f"{RULES_REL}: {file} declared by more than one "
                     f"[[regenerate]] table with platform overlap "
                     f"{sorted(overlap)!r} — each platform permits one writer"
+                    f"{_filesystem_alias_note(file, earlier_file)}"
                 )
-        seen_regenerate.setdefault(file, []).append(declaration.platforms)
+        seen_regenerate.setdefault(key, []).append((file, declaration.platforms))
 
-    seen_reset: dict[str, list[frozenset[str]]] = {}
+    seen_reset: dict[str, list[tuple[str, frozenset[str]]]] = {}
     for declaration in reset:
         file = declaration.rule.file
-        for earlier in seen_reset.get(file, []):
+        key = _control_alias_key(file)
+        for earlier_file, earlier in seen_reset.get(key, []):
             overlap = earlier & declaration.platforms
             if overlap:
                 raise ValidationError(
                     f"{RULES_REL}: duplicate [[reset]] target {file!r} has "
                     f"platform overlap {sorted(overlap)!r} — each platform "
-                    f"permits one writer"
+                    f"permits one writer{_filesystem_alias_note(file, earlier_file)}"
                 )
-        seen_reset.setdefault(file, []).append(declaration.platforms)
+        seen_reset.setdefault(key, []).append((file, declaration.platforms))
 
     for regenerate_declaration in regenerate:
         for reset_declaration in reset:
-            if regenerate_declaration.rule.file != reset_declaration.rule.file:
+            regenerate_file = regenerate_declaration.rule.file
+            reset_file = reset_declaration.rule.file
+            if _control_alias_key(regenerate_file) != _control_alias_key(reset_file):
                 continue
             overlap = regenerate_declaration.platforms & reset_declaration.platforms
             if overlap:
-                file = regenerate_declaration.rule.file
                 raise ValidationError(
-                    f"{RULES_REL}: {file!r} has [[regenerate]] and [[reset]] "
+                    f"{RULES_REL}: {regenerate_file!r} has [[regenerate]] and "
+                    f"[[reset]] "
                     f"writer overlap on {sorted(overlap)!r} — each platform "
                     f"permits exactly one mechanism per file"
+                    f"{_filesystem_alias_note(regenerate_file, reset_file)}"
                 )
 
-    seen_remove: dict[str, list[frozenset[str]]] = {}
+    seen_remove: dict[str, list[tuple[str, frozenset[str]]]] = {}
     for declaration in remove:
         file = declaration.rule.file
-        for earlier in seen_remove.get(file, []):
+        key = _control_alias_key(file)
+        for earlier_file, earlier in seen_remove.get(key, []):
             overlap = earlier & declaration.platforms
             if overlap:
                 raise ValidationError(
                     f"{RULES_REL}: duplicate [[remove]] target {file!r} has "
                     f"platform overlap {sorted(overlap)!r}"
+                    f"{_filesystem_alias_note(file, earlier_file)}"
                 )
-        seen_remove.setdefault(file, []).append(declaration.platforms)
+        seen_remove.setdefault(key, []).append((file, declaration.platforms))
     for remove_declaration in remove:
+        remove_file = remove_declaration.rule.file
         for reset_declaration in reset:
             stub_file = reset_declaration.rule.stub_file
-            if stub_file is None or stub_file != remove_declaration.rule.file:
+            if stub_file is None or _control_alias_key(stub_file) != _control_alias_key(
+                remove_file
+            ):
                 continue
             overlap = reset_declaration.platforms & remove_declaration.platforms
             if overlap:
@@ -721,22 +1032,79 @@ def _validate_writer_overlaps(
                     f"{RULES_REL}: {stub_file!r} is a [[reset]] stub_file and "
                     f"a [[remove]] target on {sorted(overlap)!r} — the "
                     f"removal would destroy the stub source; drop one "
-                    f"declaration"
+                    f"declaration{_filesystem_alias_note(stub_file, remove_file)}"
                 )
         for other_kind, others in (
             ("[[regenerate]]", regenerate),
             ("[[reset]]", reset),
         ):
             for other in others:
-                if other.rule.file != remove_declaration.rule.file:
+                other_file = other.rule.file
+                if _control_alias_key(other_file) != _control_alias_key(remove_file):
                     continue
                 overlap = other.platforms & remove_declaration.platforms
                 if overlap:
-                    file = remove_declaration.rule.file
                     raise ValidationError(
-                        f"{RULES_REL}: {file!r} has [[remove]] and "
+                        f"{RULES_REL}: {remove_file!r} has [[remove]] and "
                         f"{other_kind} overlap on {sorted(overlap)!r} — a "
                         f"removed file cannot also be rebuilt or reset"
+                        f"{_filesystem_alias_note(remove_file, other_file)}"
+                    )
+
+    # Keyed by filesystem-alias identity, not by declared string: `meta.toml`
+    # and `META.TOML.` can be one file on case-insensitive macOS or Windows,
+    # as can two canonically equivalent spellings on APFS or HFS+.
+    # Rules validate the conservative union documented by _reject_reserved, so
+    # a raw-string ledger would let the second writer in under another spelling.
+    # Diagnostics still quote what was written.
+    seen_edit: dict[str, list[tuple[str, frozenset[str]]]] = {}
+    for declaration in edit:
+        file = declaration.rule.file
+        key = _control_alias_key(file)
+        for earlier_file, earlier in seen_edit.get(key, []):
+            overlap = earlier & declaration.platforms
+            if overlap:
+                alias_note = (
+                    ""
+                    if earlier_file == file
+                    else f"; {file!r} and {earlier_file!r} are one file on a "
+                    f"case-insensitive, normalization-insensitive, or Windows "
+                    f"filesystem"
+                )
+                raise ValidationError(
+                    f"{RULES_REL}: duplicate [[edit]] target {file!r} has "
+                    f"platform overlap {sorted(overlap)!r} — each platform "
+                    f"permits one writer{alias_note}"
+                )
+        seen_edit.setdefault(key, []).append((file, declaration.platforms))
+    # An edit AMENDS what the replace pass wrote; a reset, removal, or
+    # regeneration DISCARDS it. Both on one file is not an ordering question
+    # with a right answer — it is two writers, so it is refused.
+    for edit_declaration in edit:
+        file = edit_declaration.rule.file
+        key = _control_alias_key(file)
+        for other_kind, others in (
+            ("[[regenerate]]", regenerate),
+            ("[[reset]]", reset),
+            ("[[remove]]", remove),
+        ):
+            for other in others:
+                other_file = other.rule.file
+                if _control_alias_key(other_file) != key:
+                    continue
+                overlap = other.platforms & edit_declaration.platforms
+                if overlap:
+                    alias_note = (
+                        ""
+                        if other_file == file
+                        else f" as {other_file!r} (the two spellings are one "
+                        f"file on a case-insensitive, normalization-"
+                        f"insensitive, or Windows filesystem)"
+                    )
+                    raise ValidationError(
+                        f"{RULES_REL}: [[edit]] target {file!r} may not also "
+                        f"be a reset/remove/regenerate target — {other_kind} "
+                        f"declares it on {sorted(overlap)!r}{alias_note}"
                     )
 
 
@@ -781,6 +1149,9 @@ def _parse_rules(target: Path) -> _ParsedRules:
         not isinstance(e, dict) for e in raw_remove
     ):
         raise ValidationError(f"{RULES_REL}: [[remove]] must be an array of tables")
+    raw_edit = data.get("edit", [])
+    if not isinstance(raw_edit, list) or any(not isinstance(e, dict) for e in raw_edit):
+        raise ValidationError(f"{RULES_REL}: [[edit]] must be an array of tables")
     substring_fields = frozenset(_str_list(table, "substring_rewrite_fields", []))
     bad_substring = substring_fields - ALLOWED_PLACEHOLDERS
     if bad_substring:
@@ -812,14 +1183,18 @@ def _parse_rules(target: Path) -> _ParsedRules:
     exclude_files = DEFAULT_RULES.exclude_files | frozenset(
         _str_list(table, "extra_exclude_files", [])
     )
-    regenerate = tuple(_parse_regenerate(e, exclude_files) for e in raw_regenerate)
-    reset = tuple(_parse_reset(e, exclude_files) for e in raw_reset)
+    exclude_dirs = DEFAULT_RULES.exclude_dirs | frozenset(
+        _str_list(table, "extra_exclude_dirs", [])
+    )
+    regenerate = tuple(_parse_regenerate(e) for e in raw_regenerate)
+    reset = tuple(_parse_reset(e) for e in raw_reset)
     remove = tuple(_parse_remove(e) for e in raw_remove)
-    _validate_writer_overlaps(regenerate, reset, remove)
+    edit = tuple(_parse_edit(e) for e in raw_edit)
+    _validate_writer_overlaps(regenerate, reset, remove, edit)
+    _validate_exclude_membership(regenerate, reset, edit, exclude_files, exclude_dirs)
     return _ParsedRules(
         rules=Rules(
-            exclude_dirs=DEFAULT_RULES.exclude_dirs
-            | frozenset(_str_list(table, "extra_exclude_dirs", [])),
+            exclude_dirs=exclude_dirs,
             exclude_files=exclude_files,
             regenerate=(),
             reset=(),
@@ -831,6 +1206,7 @@ def _parse_rules(target: Path) -> _ParsedRules:
         regenerate=regenerate,
         reset=reset,
         remove=remove,
+        edit=edit,
     )
 
 
@@ -842,8 +1218,30 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
             f"unsupported runtime platform {platform!r}; expected one of "
             f"{sorted(SUPPORTED_PLATFORMS)!r}"
         )
+    active_edits = tuple(
+        declaration.rule
+        for declaration in parsed.edit
+        if platform in declaration.platforms
+    )
+    # Exact strings, deliberately: config load already refused every pairing
+    # whose exclusion entry or discarding writer was spelled differently from
+    # the edit target, so the licensed path is always listed verbatim. An
+    # alias-keyed subtraction would additionally drop alias-equivalent
+    # entries, which are separate files on Linux and case-sensitive APFS with
+    # no writer of their own.
+    active_edit_paths = {rule.file for rule in active_edits}
     rules = replace(
         parsed.rules,
+        # An edit target must be reachable by the replace pass. It can only be
+        # in exclude_files at all when the TARGET added it (via [rules]
+        # extra_exclude_files) and a [[reset]]/[[regenerate]] on a DISJOINT
+        # platform needs it there; config load refuses every other case,
+        # DEFAULT_RULES.exclude_files paths included. Dropping the active edit
+        # paths is exactly that exception — the discarding platform, where no
+        # edit is active, keeps them.
+        exclude_files=frozenset(
+            path for path in parsed.rules.exclude_files if path not in active_edit_paths
+        ),
         regenerate=tuple(
             declaration.rule
             for declaration in parsed.regenerate
@@ -859,6 +1257,7 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
             for declaration in parsed.remove
             if platform in declaration.platforms
         ),
+        edit=active_edits,
     )
     return SelectedRules(platform=platform, rules=rules)
 

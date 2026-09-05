@@ -14,12 +14,14 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from template_press import press_cli
 from template_press.rebrand.check_tools import check_tools_command
+from template_press.rebrand.rules import SUPPORTED_PLATFORMS
 
 from .conftest import posix_only
 
@@ -225,3 +227,94 @@ class TestConfigErrorNormalization:
         rc = check_tools_command(["--target", str(src_target)])
         assert rc == 2
         assert "error" in capsys.readouterr().err
+
+
+class TestEditCommands:
+    """E4 / Task 13: an [[edit]] command is a declared tool too — the report
+    must resolve it with D2's semantics and name the file it edits, so a
+    missing edit tool is discoverable before the press refuses."""
+
+    @posix_only
+    def test_edit_tool_found_names_the_edited_file(
+        self,
+        src_target: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ):
+        bindir = tmp_path / "bin"
+        fake = _make_exe(bindir / "uv")
+        real_git = shutil.which("git")
+        assert real_git is not None
+        os.symlink(real_git, bindir / "git")
+        monkeypatch.setenv("PATH", str(bindir))
+        _write_rules(
+            src_target,
+            '[[edit]]\nfile = "pyproject.toml"\n'
+            'command = ["uv", "version", "0.1.0", "--frozen"]\n'
+            "expect = 'version = \"0.1.0\"'\n",
+        )
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "declare edit")
+
+        rc = check_tools_command(["--target", str(src_target)])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert f"uv — {fake} (edits pyproject.toml)" in out
+
+    def test_missing_edit_tool_exit_1_names_the_edited_file(
+        self, src_target: Path, capsys: pytest.CaptureFixture
+    ):
+        _write_rules(
+            src_target,
+            '[[edit]]\nfile = "pyproject.toml"\n'
+            'command = ["press-test-absent-tool-8f3a", "version"]\n'
+            "expect = 'version = \"0.1.0\"'\n",
+        )
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "declare edit")
+
+        rc = check_tools_command(["--target", str(src_target)])
+        line = _line_for(capsys.readouterr().out, "press-test-absent-tool-8f3a")
+        assert rc == 1
+        assert "missing" in line
+        assert "pyproject.toml" in line  # the declaration it would break
+
+    @posix_only
+    def test_only_the_active_platforms_edit_is_reported(
+        self,
+        src_target: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ):
+        """check-tools reads the platform-SELECTED rules: the active edit gets
+        its row, and an edit declared for another platform contributes none —
+        so its absent tool cannot fail a report it will never run in."""
+        bindir = tmp_path / "bin"
+        fake = _make_exe(bindir / "uv")
+        real_git = shutil.which("git")
+        assert real_git is not None
+        os.symlink(real_git, bindir / "git")
+        monkeypatch.setenv("PATH", str(bindir))
+        inactive = next(p for p in sorted(SUPPORTED_PLATFORMS) if p != sys.platform)
+        _write_rules(
+            src_target,
+            '[[edit]]\nfile = "pyproject.toml"\n'
+            'command = ["uv", "version", "0.1.0", "--frozen"]\n'
+            "expect = 'version = \"0.1.0\"'\n"
+            f'platforms = ["{sys.platform}"]\n'
+            '\n[[edit]]\nfile = "README.md"\n'
+            'command = ["press-test-inactive-tool-f82d"]\n'
+            'expect = "x"\n'
+            f'platforms = ["{inactive}"]\n',
+        )
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "declare edits per platform")
+
+        rc = check_tools_command(["--target", str(src_target)])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert f"uv — {fake} (edits pyproject.toml)" in out
+        assert "press-test-inactive-tool-f82d" not in out
+        assert "README.md" not in out

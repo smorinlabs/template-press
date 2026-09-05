@@ -41,6 +41,7 @@ from template_press.rebrand.inventory import (
 )
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.rules import (
+    EditRule,
     RegenerateRule,
     ReplaceRule,
     ResetRule,
@@ -193,6 +194,75 @@ class RegenerationPlan:
     env_absent: tuple[str, ...]  # declared names absent from the operator env
 
 
+@dataclass(frozen=True)
+class EditPlan:
+    """One declared in-place edit, resolved exactly as a regeneration is (E4).
+
+    Same three resolved facts, same guarantees: the pinned executable is what
+    will launch, and the declared env names are split by whether the
+    operator's environment actually carries them.
+    """
+
+    rule: EditRule
+    executable: str  # the pinned absolute path that will actually launch
+    env_present: tuple[str, ...]  # declared names that WILL apply
+    env_absent: tuple[str, ...]  # declared names absent from the operator env
+
+
+@dataclass(frozen=True)
+class _CommandResolution:
+    """The plan-time facts shared by every declared-command mechanism."""
+
+    executable: str
+    env_present: tuple[str, ...]
+    env_absent: tuple[str, ...]
+
+
+def _resolve_declared_command(
+    target: Path,
+    *,
+    kind: str,
+    file: str,
+    command: Sequence[str],
+    env: Sequence[str],
+    renamed: Collection[str],
+    ambient: Mapping[str, str],
+) -> _CommandResolution | str:
+    """Resolve one declaration, or return the problem text that refuses it.
+
+    Shared verbatim by [[regenerate]] and [[edit]] so the two mechanisms
+    cannot drift in what they pin, what they refuse, or how they say so;
+    ``kind`` is the only difference the operator sees.
+    """
+    stale = stale_argv_elements(command, renamed)
+    if stale:
+        return (
+            f"{kind} {file}: argv element(s) "
+            f"{', '.join(repr(s) for s in stale)} name path(s) this press "
+            f"renames — they would go stale mid-press; write the command "
+            f"rename-independent (it runs from the target root, so cwd "
+            f"carries the location)"
+        )
+    effective = command_env(env, base_env=ambient)
+    resolved = resolve_executable(target, command[0], effective)
+    if resolved is None:
+        where = (
+            "relative to the target root"
+            if "/" in command[0].replace("\\", "/")
+            else "on PATH under the deny-by-default environment"
+        )
+        return (
+            f"{kind} {file}: executable {command[0]!r} not "
+            f"found {where} — install it or fix the declaration "
+            f"(`press check-tools` reports every declared tool)"
+        )
+    return _CommandResolution(
+        executable=str(resolved),
+        env_present=tuple(n for n in env if n in ambient),
+        env_absent=tuple(n for n in env if n not in ambient),
+    )
+
+
 def plan_regenerate_commands(
     target: Path,
     regenerate: Sequence[RegenerateRule],
@@ -210,39 +280,146 @@ def plan_regenerate_commands(
     plans: list[RegenerationPlan] = []
     problems: list[str] = []
     for rule in regenerate:
-        stale = stale_argv_elements(rule.command, renamed)
-        if stale:
-            problems.append(
-                f"regenerate {rule.file}: argv element(s) "
-                f"{', '.join(repr(s) for s in stale)} name path(s) this press "
-                f"renames — they would go stale mid-press; write the command "
-                f"rename-independent (it runs from the target root, so cwd "
-                f"carries the location)"
-            )
-            continue
-        env = command_env(rule.env, base_env=ambient)
-        resolved = resolve_executable(target, rule.command[0], env)
-        if resolved is None:
-            where = (
-                "relative to the target root"
-                if "/" in rule.command[0].replace("\\", "/")
-                else "on PATH under the deny-by-default environment"
-            )
-            problems.append(
-                f"regenerate {rule.file}: executable {rule.command[0]!r} not "
-                f"found {where} — install it or fix the declaration "
-                f"(`press check-tools` reports every declared tool)"
-            )
+        resolution = _resolve_declared_command(
+            target,
+            kind="regenerate",
+            file=rule.file,
+            command=rule.command,
+            env=rule.env,
+            renamed=renamed,
+            ambient=ambient,
+        )
+        if isinstance(resolution, str):
+            problems.append(resolution)
             continue
         plans.append(
             RegenerationPlan(
                 rule=rule,
-                executable=str(resolved),
-                env_present=tuple(n for n in rule.env if n in ambient),
-                env_absent=tuple(n for n in rule.env if n not in ambient),
+                executable=resolution.executable,
+                env_present=resolution.env_present,
+                env_absent=resolution.env_absent,
             )
         )
     return plans, problems
+
+
+def plan_edits(
+    target: Path,
+    edit: Sequence[EditRule],
+    *,
+    renamed: Collection[str],
+    base_env: Mapping[str, str] | None = None,
+) -> tuple[list[EditPlan], list[str]]:
+    """Resolve every declared in-place edit at plan time (E4); problems refuse.
+
+    The regeneration planner's contract, unchanged: a missing tool or a
+    stale path-bearing argv refuses with exit 2 and nothing written, before
+    the rewrite pass the edit would have amended.
+    """
+    ambient = os.environ if base_env is None else base_env
+    plans: list[EditPlan] = []
+    problems: list[str] = []
+    for rule in edit:
+        resolution = _resolve_declared_command(
+            target,
+            kind="edit",
+            file=rule.file,
+            command=rule.command,
+            env=rule.env,
+            renamed=renamed,
+            ambient=ambient,
+        )
+        if isinstance(resolution, str):
+            problems.append(resolution)
+            continue
+        plans.append(
+            EditPlan(
+                rule=rule,
+                executable=resolution.executable,
+                env_present=resolution.env_present,
+                env_absent=resolution.env_absent,
+            )
+        )
+    return plans, problems
+
+
+def _run_declared(
+    target: Path,
+    plan: RegenerationPlan | EditPlan,
+    *,
+    kind: str,
+    renames: Mapping[str, str],
+    report: ApplyReport,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None,
+    table: SubstitutionTable | None,
+    scan_mode: str,
+    expect: str | None,
+) -> bool:
+    """Run ONE declared command under the full contract; True when it held.
+
+    Shared verbatim by [[regenerate]] and [[edit]] — the execution contract is
+    the part neither mechanism may drift on. ``kind`` is the only difference
+    the operator sees in ``report.skipped``; ``scan_mode`` and ``expect`` are
+    the only behavioral knobs.
+    """
+    rule = plan.rule
+    out_rel = _translate_output_path(rule.file, renames, table)
+    out_path = target / out_rel
+    try:
+        assert_under_root(out_path, target)
+        assert_ancestors_real(out_path, target)
+    except SafetyError as exc:
+        report.skipped.append(f"{kind} {rule.file} (sink guard: {exc})")
+        return False
+    if not is_regular_lstat(out_path):
+        report.skipped.append(
+            f"{kind} {rule.file} (sink guard: {out_rel} is not a "
+            f"regular file — no-follow check)"
+        )
+        return False
+    if os.lstat(out_path).st_nlink > 1:
+        report.skipped.append(
+            f"{kind} {rule.file} (sink guard: {out_rel} is hardlinked)"
+        )
+        return False
+    # Bytes capture: only the exit code is consumed, and a declared
+    # command may legitimately emit non-UTF-8 — a strict text decode
+    # would crash mid-press with the target partially mutated.
+    result = subprocess.run(  # noqa: S603 # nosec B603
+        [plan.executable, *rule.command[1:]],
+        cwd=target,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        env=command_env(rule.env),
+    )
+    if result.returncode != 0:
+        report.skipped.append(
+            f"{kind} {rule.file} (command exited {result.returncode})"
+        )
+        return False
+    # Postconditions (D3): every declared command's result must exist, still be
+    # a contained regular file, decode as UTF-8, and pass the paranoid
+    # changed-fields scan. Regenerations use that evidence for a verifier
+    # exemption; edits never receive one.
+    problems = _postcondition_problems(
+        target,
+        out_rel,
+        source=source,
+        dest=dest,
+        rules=rules,
+        renames=renames,
+        rendered_rules=rendered_rules,
+        table=table,
+        scan_mode=scan_mode,
+        expect=expect,
+    )
+    if problems:
+        report.skipped.extend(f"{kind} {rule.file} ({problem})" for problem in problems)
+        return False
+    return True
 
 
 def execute_regenerations(
@@ -276,78 +453,92 @@ def execute_regenerations(
     failed: list[str] = []
     renames = dict(renamed)
     for plan in plans:
-        rule = plan.rule
-        out_rel = _translate_output_path(rule.file, renames, table)
-        out_path = target / out_rel
-        try:
-            assert_under_root(out_path, target)
-            assert_ancestors_real(out_path, target)
-        except SafetyError as exc:
-            report.skipped.append(f"regenerate {rule.file} (sink guard: {exc})")
-            failed.append(rule.file)
-            continue
-        if not is_regular_lstat(out_path):
-            report.skipped.append(
-                f"regenerate {rule.file} (sink guard: {out_rel} is not a "
-                f"regular file — no-follow check)"
-            )
-            failed.append(rule.file)
-            continue
-        if os.lstat(out_path).st_nlink > 1:
-            report.skipped.append(
-                f"regenerate {rule.file} (sink guard: {out_rel} is hardlinked)"
-            )
-            failed.append(rule.file)
-            continue
-        # Bytes capture: only the exit code is consumed, and a declared
-        # command may legitimately emit non-UTF-8 — a strict text decode
-        # would crash mid-press with the target partially mutated.
-        result = subprocess.run(  # noqa: S603 # nosec B603
-            [plan.executable, *rule.command[1:]],
-            cwd=target,
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            env=command_env(rule.env),
-        )
-        if result.returncode != 0:
-            report.skipped.append(
-                f"regenerate {rule.file} (command exited {result.returncode})"
-            )
-            failed.append(rule.file)
-            continue
-        # Postconditions (D3): the exemption is earned by RESULT — the
-        # produced output must exist, still be a contained regular file,
-        # decode as UTF-8, and pass the paranoid changed-fields scan.
-        problems = _postcondition_problems(
+        if _run_declared(
             target,
-            out_rel,
+            plan,
+            kind="regenerate",
+            renames=renames,
+            report=report,
             source=source,
             dest=dest,
             rules=rules,
-            renames=renames,
             rendered_rules=rendered_rules,
             table=table,
-            scan_mode=rule.scan,
-        )
-        if problems:
-            report.skipped.extend(
-                f"regenerate {rule.file} ({problem})" for problem in problems
-            )
-            failed.append(rule.file)
+            scan_mode=plan.rule.scan,
+            expect=None,
+        ):
+            report.regenerated.append(plan.rule.file)
         else:
-            report.regenerated.append(rule.file)
+            failed.append(plan.rule.file)
     return failed
 
 
-def render_regenerate_plan(plans: Sequence[RegenerationPlan]) -> str:
-    """The plan's regeneration section: verbatim argv, pinned executable,
-    and the declared env names (with which would actually apply) — plan
-    visibility is the approval guard, so this must show what will launch."""
-    lines = ["Regenerate (declared commands, run after apply):"]
+def execute_edits(
+    target: Path,
+    plans: Sequence[EditPlan],
+    renamed: Mapping[str, str],
+    report: ApplyReport,
+    *,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
+    table: SubstitutionTable | None = None,
+) -> list[str]:
+    """Run every declared in-place edit (E4); return the FAILED files.
+
+    The regeneration executor's contract in full — same cwd, same absent
+    shell, same deny-by-default env, same pinned executable, same sink
+    guards before each launch — with two differences that follow from what
+    an edit IS. It amends a file the replace pass has already rewritten, so
+    the scan is always ``strict`` (there is no ``scan`` key to relax it and
+    no exemption to buy); and it must leave the declaration's ``expect``
+    substring behind, which is the only thing that catches a command that
+    exits 0 and does nothing.
+
+    Success is recorded in ``report.edited``, never ``report.regenerated``:
+    the latter drives the receipt's command-based ``[[press.exempt]]`` rows,
+    and an edit earns no such exemption. A target's independent path-component
+    ``verify_ignore`` policy still applies to later doctor/verify inventories.
+    """
+    failed: list[str] = []
+    renames = dict(renamed)
     for plan in plans:
-        lines.append(
-            f"  [regen  ] {plan.rule.file}  —  {shlex.join(plan.rule.command)}"
-        )
+        if _run_declared(
+            target,
+            plan,
+            kind="edit",
+            renames=renames,
+            report=report,
+            source=source,
+            dest=dest,
+            rules=rules,
+            rendered_rules=rendered_rules,
+            table=table,
+            scan_mode="strict",
+            expect=plan.rule.expect,
+        ):
+            report.edited.append(plan.rule.file)
+        else:
+            failed.append(plan.rule.file)
+    return failed
+
+
+def _render_command_section(
+    heading: str,
+    tag: str,
+    plans: Sequence[RegenerationPlan | EditPlan],
+) -> str:
+    """One declared-command plan section: verbatim argv, pinned executable,
+    and the declared env names (marking which would actually apply) — plan
+    visibility is the approval guard, so this must show what will launch.
+
+    ``tag`` is the seven-character row label ("regen  " / "edit   ") that
+    keeps every row of every section aligned under one another.
+    """
+    lines = [heading]
+    for plan in plans:
+        lines.append(f"  [{tag}] {plan.rule.file}  —  {shlex.join(plan.rule.command)}")
         lines.append(f"            executable: {plan.executable}")
         if plan.rule.env:
             marks = [
@@ -356,6 +547,25 @@ def render_regenerate_plan(plans: Sequence[RegenerationPlan]) -> str:
             ]
             lines.append(f"            env: {', '.join(marks)}")
     return "\n".join(lines)
+
+
+def render_regenerate_plan(plans: Sequence[RegenerationPlan]) -> str:
+    """The plan's regeneration section (rendered AFTER the edit section, the
+    order the two phases actually run in)."""
+    return _render_command_section(
+        "Regenerate (declared commands, run after apply):", "regen  ", plans
+    )
+
+
+def render_edit_plan(plans: Sequence[EditPlan]) -> str:
+    """The plan's in-place-edit section (E4). The heading names the phase
+    slot explicitly: edits amend what apply() wrote, and every edit runs
+    before every regeneration."""
+    return _render_command_section(
+        "Edit (declared in-place edits, run after apply, before regenerations):",
+        "edit   ",
+        plans,
+    )
 
 
 def _git_stdout(target: Path, *args: str) -> str:
@@ -445,6 +655,91 @@ def preflight_regenerate_outputs(target: Path, rules: Rules) -> list[str]:
     return problems
 
 
+def preflight_edit_targets(target: Path, rules: Rules) -> list[str]:
+    """Problems that make a declared [[edit]] target unpressable (E4).
+
+    The regeneration preflight's state gate, applied to edit targets:
+    containment, git-tracked, clean, no-follow regular file, sole link.
+    Every one of those reasons holds identically here — the declared command
+    rewrites the file in place, and git restores only committed content, so
+    an untracked or dirty target has no recoverable copy, and an in-place
+    truncating editor on a hardlinked target would corrupt the external
+    inode. Refused even under ``--allow-dirty``; this function takes no such
+    flag at all, so the refusal is structural.
+
+    The ONE regeneration check deliberately absent is the UTF-8 pre-state
+    gate: that one exists to stop a file the text scan cannot read from
+    buying the command-based verify exemption, and an edit target never buys
+    it. A target's independent path-component ``verify_ignore`` policy still
+    applies to later inventories. The edit target is also NOT excluded from
+    the rewrite pass, so unlike a regeneration output it is rewritten first
+    and edited second.
+
+    Active Git visibility inputs cannot be edited. Compare normalized paths
+    and filesystem nodes, not basenames: core.excludesFile may name any tracked
+    file using relative, absolute, or alternate filesystem spellings.
+    """
+    if not rules.edit:
+        return []
+    problems: list[str] = []
+    snapshot = capture_surface_snapshot(target)
+    tracked = tracked_path_strings(snapshot)
+    visibility_nodes: dict[tuple[int, int], VisibilityInput] = {}
+    visibility_paths: dict[str, VisibilityInput] = {}
+    for item in snapshot.visibility_inputs:
+        if item.kind != "file":
+            continue
+        try:
+            info = os.lstat(item.path)
+        except OSError as exc:
+            return [f"cannot inspect Git visibility input {item.path!r}: {exc!r}"]
+        visibility_paths[os.path.normcase(os.path.abspath(item.path))] = item
+        # A zero inode is unavailable identity, not one shared by all files.
+        # Keep node matching for case-insensitive POSIX filesystem aliases.
+        if info.st_ino:
+            visibility_nodes[(info.st_dev, info.st_ino)] = item
+    for rule in rules.edit:
+        prefix = f"edit target {rule.file}: "
+        path = target / rule.file
+        try:
+            assert_under_root(path, target)
+        except SafetyError as exc:
+            problems.append(prefix + str(exc))
+            continue
+        if rule.file not in tracked:
+            problems.append(
+                prefix + "not git-tracked (edit targets must be committed so "
+                "git provides the undo path)"
+            )
+            continue
+        if not is_regular_lstat(path):
+            problems.append(prefix + "not a regular file (no-follow check)")
+            continue
+        st = os.lstat(path)
+        if st.st_nlink > 1:
+            problems.append(
+                prefix + f"hardlinked (st_nlink={st.st_nlink}) — an in-place "
+                f"editor would corrupt the external inode"
+            )
+            continue
+        visibility = visibility_paths.get(os.path.normcase(os.path.abspath(path)))
+        if visibility is None and st.st_ino:
+            visibility = visibility_nodes.get((st.st_dev, st.st_ino))
+        if visibility is not None:
+            problems.append(
+                prefix + f"active Git visibility input ({visibility.origin}) — "
+                "declared commands must preserve ignore inputs; make intentional "
+                "ignore-policy changes in a separate commit"
+            )
+            continue
+        if has_uncommitted_changes(target, rule.file):
+            problems.append(
+                prefix + "has uncommitted changes — refused even under "
+                "--allow-dirty (git restores only committed content)"
+            )
+    return problems
+
+
 def preflight_excluded_files(target: Path, rules: Rules) -> list[str]:
     """The §6 excluded-file contract preflight (P04 D5, shared with P05).
 
@@ -515,17 +810,17 @@ def scan_regenerated_output(
     table: SubstitutionTable | None = None,
     scan_mode: str = "strict",
 ) -> list[str]:
-    """Paranoid changed-fields scan of one produced output (D3).
+    """Paranoid changed-fields scan of one command-produced output (D3).
 
-    The exemption being earned is exemption from VERIFY, whose reason for
-    existing is a stricter matcher than the doctor's — so the evidence uses
-    ``matcher.find_occurrences`` (case/separator-glued forms included),
-    covers rendered ``[[replace]]`` FROM literals (scopes are in SOURCE
-    coordinates, so the file's destination path is reverse-mapped through
-    the renames before the glob check), and covers every component of the
-    TRANSLATED output path (an identity token that doubles as the
-    lockfile's own name survives in the filename precisely because the
-    output is excluded from the rename pass).
+    For ``[[regenerate]]``, successful evidence supports an exemption from
+    VERIFY, whose matcher is stricter than the doctor's. ``[[edit]]`` uses the
+    same scan but receives no exemption. The evidence uses
+    ``matcher.find_occurrences`` (case/separator-glued forms included), covers
+    rendered ``[[replace]]`` FROM literals (scopes are in SOURCE coordinates,
+    so the file's destination path is reverse-mapped through the renames before
+    the glob check), and covers every component of the TRANSLATED output path
+    (an identity token that doubles as the lockfile's own name survives in the
+    filename precisely because the output is excluded from the rename pass).
     """
     problems: list[str] = []
     source_scope = _reverse_output_path(translated_rel, renames, table)
@@ -630,9 +925,16 @@ def _postcondition_problems(
     rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
     table: SubstitutionTable | None = None,
     scan_mode: str = "strict",
+    expect: str | None = None,
 ) -> list[str]:
     """Existence, type, containment, UTF-8, and the paranoid scan — what a
-    command must leave behind to have regenerated anything at all (D3)."""
+    command must leave behind to have satisfied its declaration (D3).
+
+    ``expect`` adds [[edit]]'s extra post-condition (E4): the declared literal
+    substring must be present in the decoded text. It is collected ALONGSIDE
+    the identity scan rather than short-circuiting it, so one failed edit
+    reports every reason it failed instead of only the first.
+    """
     path = target / translated_rel
     try:
         assert_under_root(path, target)
@@ -642,18 +944,31 @@ def _postcondition_problems(
     if not is_regular_lstat(path):
         return [
             f"{translated_rel} is not a regular file after the command "
-            f"(deleted, symlink, or special — a declared regeneration that "
-            f"does not leave its file behind is a failed regeneration)"
+            f"(deleted, symlink, or special — the command did not leave its "
+            f"declared file as a regular file)"
         ]
     data = path.read_bytes()
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
+        if expect is not None:
+            return [
+                f"{translated_rel} is not valid UTF-8 after the command — a "
+                f"declared edit must leave UTF-8 text for its expect and "
+                f"strict identity scans, fail closed"
+            ]
         return [
             f"{translated_rel} is not valid UTF-8 after the command — the "
             f"exemption is bought with the text scan, fail closed"
         ]
-    return scan_regenerated_output(
+    problems: list[str] = []
+    if expect is not None and expect not in text:
+        problems.append(
+            f"{translated_rel} does not contain the declared expect string "
+            f"{expect!r} after the command — the command exited 0 but left "
+            f"the file unchanged in the way the declaration promised"
+        )
+    return problems + scan_regenerated_output(
         text,
         translated_rel,
         source=source,
@@ -677,15 +992,36 @@ def final_validation_pass(
     rules: Rules,
     rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
     table: SubstitutionTable | None = None,
+    edits: Sequence[EditPlan] = (),
 ) -> list[str]:
-    """After the LAST declared command: re-validate EVERY output and reset
-    stub (D3). Per-command postconditions are not enough once a target
-    declares multiple regenerations — a later command can delete, replace,
-    or reintroduce source identity into an earlier output, or modify a
-    reset stub, after that output's own checks passed, and these files stay
-    excluded from the ordinary doctor and hermetic-verify inventories.
+    """After the LAST declared command: re-validate EVERY output, edit, and
+    reset stub (D3). Per-command postconditions are not enough once a target
+    declares multiple commands — a later command can delete, replace, or
+    reintroduce source identity into an earlier output, or modify a reset stub
+    after that file's own checks passed. This pass re-establishes every
+    declaration-specific postcondition against the final filesystem state.
+
+    Edits are rechecked with their ``expect`` (E4): edits run before every
+    regeneration, so a later regeneration undoing an earlier edit is exactly
+    the ordering this pass exists to catch. The doctor knows nothing of
+    ``expect``, and the target's independent ``verify_ignore`` policy may
+    still exclude the edited path from later inventories.
     """
     problems: list[str] = []
+    for edit in edits:
+        translated = _translate_output_path(edit.rule.file, renames, table)
+        for problem in _postcondition_problems(
+            target,
+            translated,
+            source=source,
+            dest=dest,
+            rules=rules,
+            renames=renames,
+            rendered_rules=rendered_rules,
+            table=table,
+            expect=edit.rule.expect,
+        ):
+            problems.append(f"final pass: edit {edit.rule.file}: {problem}")
     for plan in plans:
         translated = _translate_output_path(plan.rule.file, renames, table)
         for problem in _postcondition_problems(
@@ -773,7 +1109,48 @@ def validate_visibility_state(target: Path, snapshot: GitVisibilityState) -> lis
         "effective Git visibility changed during declared commands — restore the "
         "target's ignore policy, repository config, and index before re-running. "
         "Make intentional Git visibility changes in a separate commit"
+        + _visibility_delta(target, snapshot, current)
     ]
+
+
+def _visibility_delta(
+    target: Path, before: GitVisibilityState, after: GitVisibilityState
+) -> str:
+    """The ``; changed: …`` clause naming what actually moved, or "".
+
+    Without it the refusal is undiagnosable: an operator told only that
+    "visibility changed" has to bisect the declared commands to learn which
+    of three surfaces (ignore policy, repository config, index) one of them
+    touched, and which file inside it.
+    """
+    changed: list[str] = []
+    ignore_before = {i.path: i for i in before.exclusion_inputs}
+    ignore_after = {i.path: i for i in after.exclusion_inputs}
+    changed += [
+        repr(_relative_to(target, path))
+        for path in sorted(set(ignore_before) | set(ignore_after))
+        if ignore_before.get(path) != ignore_after.get(path)
+    ]
+    config_before = {c.path: c for c in before.config_inputs}
+    config_after = {c.path: c for c in after.config_inputs}
+    changed += [
+        repr(_relative_to(target, path))
+        for path in sorted(set(config_before) | set(config_after))
+        if config_before.get(path) != config_after.get(path)
+    ]
+    if before.config_effective_sha256 != after.config_effective_sha256:
+        changed.append("effective git config")
+    if before.index_entries != after.index_entries:
+        changed.append("the git index")
+    return f"; changed: {', '.join(changed)}" if changed else ""
+
+
+def _relative_to(target: Path, path: Path) -> str:
+    """A target-relative POSIX spelling when the path is inside it."""
+    try:
+        return path.relative_to(target).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def snapshot_control_files(target: Path) -> dict[str, bytes | None]:
@@ -792,12 +1169,21 @@ def snapshot_control_files(target: Path) -> dict[str, bytes | None]:
     return snapshot
 
 
-def restore_control_files(target: Path, snapshot: Mapping[str, bytes | None]) -> None:
+def restore_control_files(
+    target: Path, snapshot: Mapping[str, bytes | None]
+) -> list[str]:
     """Put every press-owned control file back to its pre-command state —
     including REMOVING one a failed command created: a planted
     press-receipt.toml surviving a failed press would advertise a verified
     target the press never certified.
+
+    Recovery is best-effort per entry and never raises: a hostile command can
+    replace one absent control path with a directory or otherwise make that
+    path unrestorable. That failure must not mask the command failure that
+    triggered recovery, and it must not prevent later entries from being
+    restored. Returned problems make every incomplete recovery explicit.
     """
+    problems: list[str] = []
     for rel, data in snapshot.items():
         path = target / rel
         try:
@@ -806,12 +1192,13 @@ def restore_control_files(target: Path, snapshot: Mapping[str, bytes | None]) ->
             # symlink must not turn restoration into an outside deletion.
             assert_under_root(path, target)
             assert_ancestors_real(path, target)
-        except SafetyError:
-            continue  # best-effort recovery; validation already reported
-        if data is None:
-            path.unlink(missing_ok=True)
-        elif not is_regular_lstat(path) or path.read_bytes() != data:
-            safe_write(target, rel, data, refuse_hardlink=False)
+            if data is None:
+                path.unlink(missing_ok=True)
+            elif not is_regular_lstat(path) or path.read_bytes() != data:
+                safe_write(target, rel, data, refuse_hardlink=False)
+        except (OSError, SafetyError) as exc:
+            problems.append(f"control file {rel} could not be restored: {exc!r}")
+    return problems
 
 
 def validate_control_files(

@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,9 +27,17 @@ from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.regen import preflight_excluded_files
 from template_press.rebrand.remove import (
     preflight_remove_targets,
+    remove_command_conflicts,
     render_remove_plan,
 )
-from template_press.rebrand.rules import RemoveRule, load_rules, load_selected_rules
+from template_press.rebrand.rules import (
+    DEFAULT_RULES,
+    EditRule,
+    RegenerateRule,
+    RemoveRule,
+    load_rules,
+    load_selected_rules,
+)
 from template_press.rebrand.verify_cli import verify_command
 
 from .conftest import DEST, SOURCE, _git, write_answers_file
@@ -250,6 +259,56 @@ class TestRemoveVerify:
 # ---------------------------------------------------------------------------
 # Re-press, stale-verify, regen conflict, reason hygiene (PR #85 review)
 # ---------------------------------------------------------------------------
+@pytest.mark.parametrize("kind", ["edit", "regenerate"])
+@pytest.mark.parametrize(
+    "element",
+    [
+        "src/old/café.py",
+        "src/final/café.py",
+        "./src/final/café.py",
+        "src\\final\\café.py",
+        "src/final/unused/../café.py",
+        "SRC/FINAL./CAFÉ.PY ",
+    ],
+)
+def test_remove_argv_conflict_uses_both_path_coordinates_and_aliases(kind, element):
+    command = ("python", element)
+    rules = dataclasses.replace(
+        DEFAULT_RULES,
+        remove=(RemoveRule(file="src/old/café.py", reason="maintenance"),),
+        edit=(EditRule(file="meta.toml", command=command, expect="x", env=()),)
+        if kind == "edit"
+        else (),
+        regenerate=(RegenerateRule(file="uv.lock", command=command),)
+        if kind == "regenerate"
+        else (),
+    )
+    problems = remove_command_conflicts(
+        rules, {"src/old": "src/intermediate", "src/intermediate": "src/final"}
+    )
+    assert len(problems) == 1
+    assert f"[[{kind}]] command" in problems[0]
+    assert repr(element) in problems[0]
+    assert repr("src/old/café.py") in problems[0]
+
+
+def test_remove_argv_conflict_does_not_match_path_substrings():
+    rules = dataclasses.replace(
+        DEFAULT_RULES,
+        remove=(RemoveRule(file="scripts/edit.py", reason="maintenance"),),
+        edit=(
+            EditRule(
+                file="meta.toml",
+                command=("python", "scripts/edit.py.bak"),
+                expect="x",
+                env=(),
+            ),
+        ),
+    )
+    assert remove_command_conflicts(rules, {}) == []
+    assert remove_command_conflicts(dataclasses.replace(rules, remove=()), {}) == []
+
+
 class TestRemoveLifecycle:
     def test_forced_re_press_after_removal_succeeds(self, tmp_path: Path):
         """A removal deletes its own precondition; the prior receipt's
@@ -325,6 +384,80 @@ class TestRemoveLifecycle:
         _commit(repo)
         answers = write_answers_file(tmp_path, DEST)
         assert main(["--target", str(repo), "--config", str(answers)]) == 2
+
+    def test_remove_edit_argv_conflict_refused_before_dry_run_plan(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        repo = make_pressable(tmp_path)
+        script = repo / "scripts" / "edit.py"
+        script.parent.mkdir(exist_ok=True)
+        script.write_text("raise SystemExit(0)\n", encoding="utf-8")
+        command = json.dumps([sys.executable, "scripts/edit.py"])
+        _write_rules(
+            repo,
+            "[[edit]]\n"
+            'file = "pyproject.toml"\n'
+            f"command = {command}\n"
+            "expect = 'version = \"0.1.0\"'\n"
+            "[[remove]]\n"
+            'file = "scripts/edit.py"\n'
+            'reason = "maintenance script"\n',
+        )
+        _commit(repo)
+        answers = write_answers_file(tmp_path, DEST)
+
+        assert (
+            main(
+                [
+                    "--target",
+                    str(repo),
+                    "--config",
+                    str(answers),
+                    "--dry-run",
+                ]
+            )
+            == 2
+        )
+        err = capsys.readouterr().err
+        assert "remove target 'scripts/edit.py'" in err
+        assert "[[edit]] command" in err
+        assert script.is_file()
+        assert not (repo / RECEIPT_REL).exists()
+
+    @pytest.mark.parametrize("kind", ["edit", "regenerate"])
+    @pytest.mark.parametrize("flags", [("--dry-run",), ()], ids=["preview", "apply"])
+    def test_remove_command_at_renamed_path_refused_before_mutation(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], kind, flags
+    ):
+        repo = make_pressable(tmp_path)
+        script = repo / "src/demo_widget/maintenance.py"
+        script.write_text("raise SystemExit(0)\n", encoding="utf-8")
+        command_path = "src/potato_launcher/maintenance.py"
+        command = json.dumps([sys.executable, command_path])
+        declaration = (
+            f'[[edit]]\nfile = "pyproject.toml"\ncommand = {command}\n'
+            "expect = 'version = \"0.1.0\"'\n"
+            if kind == "edit"
+            else f'[[regenerate]]\nfile = "uv.lock"\ncommand = {command}\n'
+        )
+        if kind == "regenerate":
+            (repo / "uv.lock").write_text("lock\n", encoding="utf-8")
+        _write_rules(
+            repo,
+            declaration
+            + '[[remove]]\nfile = "src/demo_widget/maintenance.py"\n'
+            + 'reason = "maintenance script"\n',
+        )
+        _commit(repo)
+        before = (repo / "pyproject.toml").read_bytes()
+        answers = write_answers_file(tmp_path, DEST)
+        assert main(["--target", str(repo), "--config", str(answers), *flags]) == 2
+        err = capsys.readouterr().err
+        assert f"[[{kind}]] command" in err
+        assert command_path in err
+        assert script.is_file()
+        assert (repo / "pyproject.toml").read_bytes() == before
+        assert not (repo / RECEIPT_REL).exists()
 
     def test_control_characters_in_remove_reason_rejected(self, tmp_path: Path):
         target = _write_rules(

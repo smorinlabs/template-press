@@ -61,6 +61,16 @@ project template and ships no application. First target:
    snapshot. Intentional ignore-policy, repository-config, and index changes
    are unsupported during a press. Make and commit them separately before
    re-running the press.
+   A declared `[[edit]]` command amends an ordinary rewritten, git-tracked
+   file after renames and removals but before every declared regeneration.
+   Its required `expect` string and the strict identity scan must hold both
+   immediately after the edit and after all commands finish. Edit targets stay
+   eligible for the doctor and hermetic-verify surface: the edit mechanism
+   cannot grant a regeneration exemption or relaxed scan mode. The target's
+   independent path-component `verify_ignore` policy still applies. Edits use
+   the same pinned executable, target-root working directory, no-shell,
+   deny-by-default environment, sink guards, and command-phase control/Git-
+   visibility snapshots as regenerations.
 4. **The tool never ships into the target** — no marker in the tool's tree,
    no self-prune, no self-commit.
 

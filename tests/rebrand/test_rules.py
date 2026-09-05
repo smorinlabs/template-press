@@ -66,7 +66,7 @@ def test_unknown_rules_key_rejected(tmp_path: Path):
         load_rules(tmp_path)
 
 
-def test_nested_dir_entries_are_rejected_loudly(tmp_path: Path):
+def test_nested_component_entries_are_rejected_loudly(tmp_path: Path):
     import pytest
 
     from template_press.rebrand.identity import ValidationError
@@ -76,7 +76,10 @@ def test_nested_dir_entries_are_rejected_loudly(tmp_path: Path):
     (press / "press-rules.toml").write_text(
         '[rules]\nverify_ignore = ["docs/history"]\n', encoding="utf-8"
     )
-    with pytest.raises(ValidationError, match="single directory"):
+    with pytest.raises(
+        ValidationError,
+        match="single path-component names matched at any depth, including basenames",
+    ):
         load_rules(tmp_path)
 
 
