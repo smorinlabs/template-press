@@ -28,7 +28,7 @@
 
 These are the points where the 2026-09-01 plan was silent or where merged code changed the ground. Rationale and evidence are in the gate record.
 
-- **R1 — the E2 hint already exists.** `cli.py:186` prints `declared clean rules exist — run: press clean --target {target}` behind `getattr(rules, "clean", ())`. Task 3 replaces the `getattr` with `rules.clean` and tests both directions; it adds no new message.
+- **R1 — the E2 hint already exists.** `cli.py:185` prints `declared clean rules exist — run: press clean --target {target}` behind `getattr(rules, "clean", ())`. Task 3 replaces the `getattr` with `rules.clean` and tests both directions; it adds no new message.
 - **R2 — an absent declared path is a silent no-op.** Verified on git 2.x: `git clean -ndX -- nonexistent` exits 0 and prints nothing. `press clean` therefore exits 0 and prints only the command line; nothing is special-cased.
 - **R3 — every git invocation is hardened and scrubbed.** `press clean` builds its argv with `git_hardening_args()` and runs under `scrubbed_git_env()`, exactly as every other on-target git call does (G5). Consequence: "ignored" means ignored by the target's own `.gitignore` files and `.git/info/exclude`, never by the operator's global excludes file. The echoed command is the exact argv that runs, hardening flags included.
 - **R4 — `press clean` requires `press/press-source.toml`.** Paths render from the SOURCE identity loaded with `load_source_config(target, None)`; the E1 origin guard is not consulted, because clean writes no identity and only removes ignored entries under paths the target's own rules declare.
@@ -46,7 +46,7 @@ These are the points where the 2026-09-01 plan was silent or where merged code c
 | `src/template_press/rebrand/clean.py` (create) | Pure logic: `render_clean_paths`, `clean_argv`, `shell_join`, `execute_clean`. No argparse, no exit codes. |
 | `src/template_press/rebrand/clean_cli.py` (create) | `clean_command(argv) -> int`: argument parsing, config loading, the 0/1/2 mapping, echo and output. |
 | `src/template_press/press_cli.py` (modify) | `clean` in `_USAGE` and the verb dispatch. |
-| `src/template_press/rebrand/cli.py` (modify) | Line 186: `rules.clean` instead of `getattr`; the `write_receipt` call passes `clean=`. |
+| `src/template_press/rebrand/cli.py` (modify) | Line 185: `rules.clean` instead of `getattr`; the `write_receipt` call passes `clean=`. |
 | `src/template_press/rebrand/receipt.py` (modify) | `write_receipt(..., clean=...)` emits `[[press.clean]]` rows. |
 | `src/template_press/rebrand/check_tools.py` (modify) | One informational row per active clean rule. |
 | `press/press-rules.toml` (modify) | This repository's own `[[clean]]` declaration. |
@@ -323,6 +323,7 @@ standalone verb, and its integrations (E2 hint, check-tools, receipt, verify).
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -338,7 +339,7 @@ from template_press.rebrand.clean import (
     shell_join,
 )
 from template_press.rebrand.cli import main
-from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.identity import ValidationError
 from template_press.rebrand.inventory import capture_surface_snapshot
 from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.rules import CleanRule, load_selected_rules
@@ -373,10 +374,16 @@ class TestRender:
         with pytest.raises(ValidationError, match="does not declare it"):
             render_clean_paths(rules, SOURCE)  # SOURCE has no display_name
 
-    def test_rendered_path_is_revalidated(self):
-        hostile = Identity(**{**SOURCE.as_dict_prompted(), "package_name": "x"})
+    def test_rendered_path_that_escapes_is_refused(self):
+        # Identity validators make this unreachable through a real Identity;
+        # the stub proves the rendered form is validated on its own.
+        class _Hostile:
+            def as_dict(self) -> dict[str, str]:
+                return {**SOURCE.as_dict(), "package_name": "../escape"}
+
         rules = (CleanRule(paths=("src/{package_name}",)),)
-        assert render_clean_paths(rules, hostile) == ("src/x",)
+        with pytest.raises(ValidationError, match="rendered path"):
+            render_clean_paths(rules, _Hostile())  # type: ignore[arg-type]
 
 
 class TestArgv:
@@ -544,13 +551,13 @@ git commit -m "feat(clean): render declared clean paths and build the git clean 
 **Files:**
 - Create: `src/template_press/rebrand/clean_cli.py`
 - Modify: `src/template_press/press_cli.py` (`_USAGE` and the verb dispatch, lines 18–46)
-- Modify: `src/template_press/rebrand/cli.py:186` (`getattr(rules, "clean", ())` → `rules.clean`)
+- Modify: `src/template_press/rebrand/cli.py:185` (`getattr(rules, "clean", ())` → `rules.clean`)
 - Test: `tests/rebrand/test_clean_cli.py` (append)
 
 **Interfaces:**
 - Consumes: Task 2's four functions; `load_selected_rules`, `RULES_REL` (rules.py); `load_source_config`, `SOURCE_CONFIG_REL` (config.py); `resolve_executable`, `command_env` (regen.py).
 - Produces: `clean_command(argv: list[str] | None = None) -> int` with `--target <dir>` (required) and `--show`.
-- Exit codes: `0` ran (or previewed) successfully; `2` target not a directory, rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing or malformed, a rendered path invalid, or `git` unresolvable — nothing ran; `1` git exited non-zero — the tree may have changed.
+- Exit codes: `0` ran (or previewed) successfully; `2` target not a directory or not a git repository (no `.git` entry), rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing or malformed, a rendered path invalid, or `git` unresolvable — nothing ran; `1` git exited non-zero — the tree may have changed.
 
 - [ ] **Step 1: Write the failing tests** (append to `tests/rebrand/test_clean_cli.py`)
 
@@ -614,15 +621,18 @@ class TestPressClean:
         assert press_cli.main(["clean", "--target", str(target)]) == 2
         assert "does not declare it" in capsys.readouterr().err
 
-    def test_git_failure_exits_1(self, tmp_path: Path, capsys):
-        # Rules and source config but no repository: git clean exits 128.
-        not_a_repo = tmp_path / "plain"
-        (not_a_repo / "press").mkdir(parents=True)
-        (not_a_repo / "press" / "press-rules.toml").write_text(CLEAN_SRC_TESTS, encoding="utf-8")
-        from template_press.rebrand.config import SOURCE_CONFIG_REL, render_source_config
+    def test_not_a_repository_exits_2(self, tmp_path: Path, capsys):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        assert press_cli.main(["clean", "--target", str(plain)]) == 2
+        assert "not a git repository" in capsys.readouterr().err
 
-        (not_a_repo / SOURCE_CONFIG_REL).write_text(render_source_config(SOURCE), encoding="utf-8")
-        assert press_cli.main(["clean", "--target", str(not_a_repo)]) == 1
+    def test_git_failure_exits_1(self, src_target: Path, capsys):
+        # A gitfile pointing nowhere passes the pre-check; git itself fails.
+        target = self._target(src_target)
+        shutil.rmtree(target / ".git")
+        (target / ".git").write_text("gitdir: /nonexistent/gitdir\n", encoding="utf-8")
+        assert press_cli.main(["clean", "--target", str(target)]) == 1
         assert "git clean exited" in capsys.readouterr().err
 
     def test_missing_target_exits_2(self, tmp_path: Path):
@@ -664,7 +674,7 @@ def test_dispatcher_lists_and_routes_clean(tmp_path: Path, capsys):
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run --no-sync pytest tests/rebrand/test_clean_cli.py -q`
-Expected: the new tests fail with `unknown command 'clean'` (exit 2 where 0 was expected) and, for the hint test, the E2 hint absent because `Rules.clean` was empty before Task 1; the negative-direction test passes already.
+Expected: every `TestPressClean` test and `test_dispatcher_lists_and_routes_clean` fail because the dispatcher answers `unknown command 'clean'` (exit 2 where 0 or 1 was expected, and `clean` absent from the usage text). Both `TestClosureRefusalHint` tests pass already: after Task 1 `Rules.clean` exists, so the `getattr`-guarded hint at `cli.py:185` fires. They stay in this task as the pins that Step 3's `getattr` removal must keep green.
 
 - [ ] **Step 3: Write `clean_cli.py`, wire the dispatcher, drop the `getattr`**
 
@@ -694,9 +704,19 @@ from template_press.rebrand.config import SOURCE_CONFIG_REL, load_source_config
 from template_press.rebrand.identity import ValidationError
 from template_press.rebrand.regen import command_env, resolve_executable
 from template_press.rebrand.rules import RULES_REL, load_selected_rules
+from template_press.rebrand.safety import ContainmentError
 
-# The configuration exception set every entry point normalizes to exit 2.
-_CONFIG_ERRORS = (ValidationError, tomllib.TOMLDecodeError, UnicodeDecodeError, OSError)
+# The configuration exception set every entry point normalizes to exit 2,
+# plus ContainmentError: load_source_config refuses a symlinked press/ dir
+# through assert_control_real, and that is a SafetyError, not a
+# ValidationError.
+_CONFIG_ERRORS = (
+    ValidationError,
+    ContainmentError,
+    tomllib.TOMLDecodeError,
+    UnicodeDecodeError,
+    OSError,
+)
 
 
 def clean_command(argv: list[str] | None = None) -> int:
@@ -712,6 +732,10 @@ def clean_command(argv: list[str] | None = None) -> int:
     target = args.target.resolve()
     if not target.is_dir():
         print(f"error: target {target} is not a directory", file=sys.stderr)
+        return 2
+    if not (target / ".git").exists():
+        # Nothing ran, so this is a 2, not the 1 git itself would produce.
+        print(f"error: target {target} is not a git repository", file=sys.stderr)
         return 2
     try:
         rules = load_selected_rules(target).rules
@@ -762,7 +786,7 @@ and the dispatch before `check-tools`:
         return clean_cli.clean_command(rest)
 ```
 
-`cli.py:186` — replace `if getattr(rules, "clean", ()):` with `if rules.clean:`.
+`cli.py:185` — replace `if getattr(rules, "clean", ()):` with `if rules.clean:`.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -812,7 +836,7 @@ class TestIntegrations:
         assert 'paths = ["src/{package_name}", "tests"]' in raw
         receipt = tomllib.loads(raw)
         assert receipt["press"]["clean"] == [{"paths": ["src/{package_name}", "tests"]}]
-        assert "ran" not in raw.split("[[press.clean]]", 1)[1]
+        assert "ran" not in receipt["press"]["clean"][0]
 
     def test_receipt_has_no_clean_table_without_rules(self, src_target: Path, tmp_path: Path):
         write_source_config(src_target)
@@ -1001,14 +1025,16 @@ The echoed line is the exact command that runs, hardening flags included.
 `-X` removes ignored entries only (never `-x`), `--literal-pathspecs` makes
 each declared path a path rather than a glob, and the scrubbed git
 environment means "ignored" is decided by the target's own ignore files, not
-by your global excludes file. A declared path that matches nothing is a
-silent no-op.
+by your global excludes file (the hand-typed remedy the closure refusal
+prints runs in your ambient environment, so it can remove more than
+`press clean` would). A declared path that matches nothing is a silent
+no-op.
 
 | Code | Meaning |
 |------|---------|
 | `0` | The preview or the clean ran and git exited 0. |
 | `1` | git ran and exited non-zero — the tree may have changed; read git's message. |
-| `2` | Nothing ran: target missing, rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing, a path unrenderable, or `git` unresolvable. |
+| `2` | Nothing ran: target missing or not a git repository, rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing, a path unrenderable, or `git` unresolvable. |
 
 A successful `press rebrand` records the declaration in the receipt as
 `[[press.clean]] paths = [...]` (as declared, unrendered) so a later operator

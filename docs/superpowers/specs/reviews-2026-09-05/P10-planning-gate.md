@@ -33,12 +33,12 @@ the disposition carried into the new plan (R-numbers match the plan's
 
 | # | Plan said | Found | Disposition |
 | --- | --- | --- | --- |
-| F1 | Task 17 step 3: "add the hint at the `cli.py` catch site from Task 2 when `rules.clean` is non-empty" | The hint already exists at `cli.py:186` inside `_print_closure_refusal_prose`, guarded by `getattr(rules, "clean", ())` because `Rules.clean` did not exist yet. Message text matches the plan's expected substring exactly. | R1: replace the `getattr` with `rules.clean`; test both directions (the CLEAN review asked for the negative case; the plan had only the positive one). |
+| F1 | Task 17 step 3: "add the hint at the `cli.py` catch site from Task 2 when `rules.clean` is non-empty" | The hint already exists at `cli.py:185` inside `_print_closure_refusal_prose`, guarded by `getattr(rules, "clean", ())` because `Rules.clean` did not exist yet. Message text matches the plan's expected substring exactly. | R1: replace the `getattr` with `rules.clean`; test both directions (the CLEAN review asked for the negative case; the plan had only the positive one). |
 | F2 | Task 17: exit 2 "when a path is outside the target" | `_declared_rel_path` (rules.py:432) refuses absolute paths, `..`, NUL and control characters at config load, so this is an exit-2 `ValidationError` before anything runs. The CLEAN review (D5 b) also asked that the rendered string be validated again. | Task 1 validates the declared pattern; Task 2 validates the rendered path (control characters, `SafeRelPath`). |
 | F3 | Task 16: "unknown placeholder `{nope}` → `ValidationError`" | Parse time has no identity to render against, but `ALLOWED_PLACEHOLDERS` (rules.py:36) and the `[[replace]]` brace-token scan (rules.py:355) give a parse-time vocabulary check with the same strictness (`{App_Name}` also refused). | Task 1 reuses that scan verbatim. |
 | F4 | Task 16: "platforms honored" | Platform selection lives in `_ParsedRules` + `_select_rules` (rules.py:1213), which the plan never named; every mechanism needs a declaration wrapper and a selection line. `Rules` is constructed positionally in places, so a new field must be appended after `edit`. | Task 1 names all of `_CleanDeclaration`, `_ParsedRules.clean`, `_select_rules`, and the append-after-`edit` rule. |
 | F5 | Task 17: `git --literal-pathspecs -C <target> clean -fdX -- <paths>` "echoing the exact argv first" | Every on-target git call in the codebase runs with `git_hardening_args()` (`-c core.fsmonitor=` …, safety.py:826) and `scrubbed_git_env()` (global/system config neutralized, safety.py:803), per G5. `git clean` reads the work tree, so a committed `core.fsmonitor` hook could execute without the flags. | R3: the argv carries the same prefix as `inventory._run_git` plus `--literal-pathspecs`, and the echoed line is that exact argv. Consequence recorded: the operator's global excludes file is not consulted. **Owner decision D-A below.** |
-| F6 | Task 17: exit codes 0 / 2 / 1 | The plan omitted `git` unresolvable and `press/press-source.toml` missing. `check_tools.py:52` resolves git with `resolve_executable(target, "git", command_env(()))`; `load_source_config(target, None)` (config.py:95) returns `None` when absent. | Task 3 lists every exit-2 condition; `1` is reserved for "git ran and failed". R4 records that the E1 origin guard is not consulted. |
+| F6 | Task 17: exit codes 0 / 2 / 1 | The plan omitted `git` unresolvable and `press/press-source.toml` missing. `check_tools.py:47` resolves git with `resolve_executable(target, "git", command_env(()))`; `load_source_config(target, None)` (config.py:95) returns `None` when absent. | Task 3 lists every exit-2 condition; `1` is reserved for "git ran and failed". R4 records that the E1 origin guard is not consulted. |
 | F7 | Task 17 test: "no rules declared → exit 2" | With platform selection, the precise condition is "no ACTIVE rule on this platform" (a `win32`-only rule on darwin). | Task 3's test declares a foreign-platform rule and expects the plan's message verbatim. |
 | F8 | Task 17: E2 tie-in expects `press rebrand --dry-run` to refuse | Verified on `main`: the refusal fires when the source package directory holds an ignored file; `make_target` ignores `__pycache__/`, so `src/demo_widget/__pycache__/x.pyc` reproduces it without extra fixtures. | Task 3's hint tests use exactly that. |
 | F9 | Task 17 test: `capture_surface_snapshot` before == after | With the restricted form the invariant is git's own `-X` semantics; the CLEAN review's runtime comparator (D3) was written for the arbitrary-argv variant the spec rejected. | R7: keep the equality as a test assertion, add no runtime exit-1 tripwire. |
@@ -91,7 +91,42 @@ received, not as fixes chosen.
 | Reviewer | Effort requested / actual | Verdict | Required findings | Disposition |
 | --- | --- | --- | --- | --- |
 | Claude Fable (in-session, this document and the plan) | n/a | see §5.1 | — | — |
-| Muse | ultra / _pending_ | _pending_ | _pending_ | _pending_ |
+| Muse, pass 1 (plan at `d1f457e`) | ultra / **xhigh** (gate `ultra_reasoning_effort` reported closed) | FIX, confidence 0.8 | 3 | all three applied; two of four optional suggestions adopted (§5.2) |
+| Muse, pass 2 (revised plan) | ultra / _pending_ | _pending_ | _pending_ | _pending_ |
+| Claude Fable, re-review of the revised plan | n/a | _pending_ | — | — |
+
+### 5.2 Muse pass 1 — findings and dispositions
+
+Required (all applied in the plan):
+
+1. `clean_cli.py`'s exit-2 exception set missed `ContainmentError`, which
+   `load_source_config` raises through `assert_control_real` for a symlinked
+   `press/` directory and which is a `SafetyError`, not a `ValidationError`
+   (`safety.py:94`, `config.py:26-47`). Fixed: added to `_CONFIG_ERRORS`.
+2. The receipt test asserted `"ran" not in` a substring of the raw receipt,
+   which also matches `reason` and `brand` in later tables. Fixed: the
+   assertion now checks the parsed `[[press.clean]]` table's keys.
+3. Task 3's RED description claimed the positive E2-hint test would fail
+   before Step 3; after Task 1 the `getattr`-guarded hint already fires, so
+   only the dispatcher tests fail. Fixed: the description now says which
+   tests fail and why the hint tests are kept as pins.
+
+Optional, adopted: a `.git` pre-check in `clean_cli.py` so a wrong directory
+exits 2 ("nothing ran") instead of the 1 git would produce, with the exit-1
+test rewritten around a gitfile that points nowhere; the revalidation test
+now proves a refusal through a hostile stub instead of a benign pass; a
+`cli.md` sentence contrasts the ambient hand-typed remedy with the scrubbed
+`press clean`. Optional, declined: no action on nested repositories (git
+skips them without `-ff`; the refusal persists and is self-correcting).
+
+Documentation corrections from the same pass: F1 and the plan cite
+`cli.py:185` (was 186); F6 cites `check_tools.py:47` (was 52).
+
+Muse's safety analysis (§3 of its review) independently confirmed D-A:
+the inventory pins the target's own `core.excludesFile`
+(`inventory.py:938-948`), which the scrubbed-environment clean reads
+identically, so the scrubbed choice loses only global-excludes-ignored
+entries and gains determinism.
 
 ### 5.1 Fable review of the reconciled plan
 
