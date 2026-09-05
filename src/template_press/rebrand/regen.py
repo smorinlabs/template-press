@@ -674,11 +674,30 @@ def preflight_edit_targets(target: Path, rules: Rules) -> list[str]:
     applies to later inventories. The edit target is also NOT excluded from
     the rewrite pass, so unlike a regeneration output it is rewritten first
     and edited second.
+
+    Active Git visibility inputs cannot be edited. Compare normalized paths
+    and filesystem nodes, not basenames: core.excludesFile may name any tracked
+    file using relative, absolute, or alternate filesystem spellings.
     """
     if not rules.edit:
         return []
     problems: list[str] = []
-    tracked = tracked_paths(target)
+    snapshot = capture_surface_snapshot(target)
+    tracked = tracked_path_strings(snapshot)
+    visibility_nodes: dict[tuple[int, int], VisibilityInput] = {}
+    visibility_paths: dict[str, VisibilityInput] = {}
+    for item in snapshot.visibility_inputs:
+        if item.kind != "file":
+            continue
+        try:
+            info = os.lstat(item.path)
+        except OSError as exc:
+            return [f"cannot inspect Git visibility input {item.path!r}: {exc!r}"]
+        visibility_paths[os.path.normcase(os.path.abspath(item.path))] = item
+        # A zero inode is unavailable identity, not one shared by all files.
+        # Keep node matching for case-insensitive POSIX filesystem aliases.
+        if info.st_ino:
+            visibility_nodes[(info.st_dev, info.st_ino)] = item
     for rule in rules.edit:
         prefix = f"edit target {rule.file}: "
         path = target / rule.file
@@ -701,6 +720,16 @@ def preflight_edit_targets(target: Path, rules: Rules) -> list[str]:
             problems.append(
                 prefix + f"hardlinked (st_nlink={st.st_nlink}) — an in-place "
                 f"editor would corrupt the external inode"
+            )
+            continue
+        visibility = visibility_paths.get(os.path.normcase(os.path.abspath(path)))
+        if visibility is None and st.st_ino:
+            visibility = visibility_nodes.get((st.st_dev, st.st_ino))
+        if visibility is not None:
+            problems.append(
+                prefix + f"active Git visibility input ({visibility.origin}) — "
+                "declared commands must preserve ignore inputs; make intentional "
+                "ignore-policy changes in a separate commit"
             )
             continue
         if has_uncommitted_changes(target, rule.file):

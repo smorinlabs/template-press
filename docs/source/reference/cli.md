@@ -377,6 +377,9 @@ platform-disjoint exception. A root or nested `.gitignore` also cannot be an
 edit target: declared commands must preserve Git visibility inputs. Make
 intentional ignore-policy changes in a separate commit. Both refusals occur
 before any target mutation, including during dry-run.
+Preflight also checks the active Git visibility inputs themselves, so a tracked
+file configured through `core.excludesFile` is refused regardless of its name
+or the path spelling used to configure it.
 
 `expect` is a required, non-empty printable string. The edited UTF-8 file must
 contain it after the command and again after every declared command has run.

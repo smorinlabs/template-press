@@ -277,6 +277,65 @@ def test_declared_ignore_edit_refused_before_mutation(
     assert not (src_target / RECEIPT_REL).exists()
 
 
+@pytest.mark.parametrize("flags", [("--dry-run",), ()], ids=["preview", "apply"])
+@pytest.mark.parametrize("spelling", ["relative", "absolute", "dotdot", "case"])
+def test_configured_ignore_edit_refused_before_mutation(
+    src_target: Path, tmp_path: Path, capsys, spelling, flags
+):
+    rel = "team-ignore"
+    _prepare(
+        src_target,
+        _edit_block(
+            rel,
+            command=_argv(PY, "scripts/append.py", rel, "secrets/"),
+            expect="secrets/",
+        ),
+        extra={rel: "# ignore policy\n"},
+    )
+    configured = {
+        "relative": rel,
+        "absolute": (src_target / rel).as_posix(),
+        "dotdot": "scripts/../team-ignore",
+        "case": "TEAM-IGNORE",
+    }[spelling]
+    if spelling == "case" and not (src_target / configured).exists():
+        pytest.skip("requires a case-insensitive filesystem")
+    _git(src_target, "config", "core.excludesFile", configured)
+    before = (src_target / "pyproject.toml").read_bytes()
+    ignore_before = (src_target / rel).read_bytes()
+    assert _press(src_target, tmp_path, *flags) == 2
+    err = capsys.readouterr().err
+    assert "Git visibility" in err
+    assert "core_excludes_file" in err
+    assert rel in err
+    assert (src_target / "pyproject.toml").read_bytes() == before
+    assert (src_target / rel).read_bytes() == ignore_before
+    assert not (src_target / RECEIPT_REL).exists()
+
+
+def test_external_ignore_input_does_not_block_distinct_edit_target(
+    src_target: Path, tmp_path: Path
+):
+    rel = "team-ignore"
+    initial = "# ignore policy\n"
+    _prepare(
+        src_target,
+        _edit_block(
+            rel,
+            command=_argv(PY, "scripts/append.py", rel, "secrets/"),
+            expect="secrets/",
+        ),
+        extra={rel: initial},
+    )
+    outside = tmp_path / rel
+    outside.write_text(initial, encoding="utf-8")
+    _git(src_target, "config", "core.excludesFile", outside.as_posix())
+    assert _press(src_target, tmp_path) == 0
+    assert "secrets/" in (src_target / rel).read_text(encoding="utf-8")
+    assert outside.read_text(encoding="utf-8") == initial
+    assert (src_target / RECEIPT_REL).exists()
+
+
 def test_successful_edit_amends_the_rewritten_file_and_is_receipted(
     src_target: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
@@ -923,6 +982,71 @@ class TestEditTargetPreflight:
 
         _declare_edit_only(src_target, "pyproject.toml")
         assert preflight_edit_targets(src_target, load_rules(src_target)) == []
+
+    def test_visibility_input_stat_failure_refuses(
+        self, src_target: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import template_press.rebrand.regen as regen_mod
+
+        _declare_edit_only(src_target, "pyproject.toml")
+        rules = load_rules(src_target)
+        surface = regen_mod.capture_surface_snapshot(src_target)
+        protected = next(v.path for v in surface.visibility_inputs if v.kind == "file")
+        real_lstat = os.lstat
+        reached = []
+
+        def failing_lstat(path, *args, **kwargs):
+            if Path(path) == protected:
+                reached.append(path)
+                raise OSError("visibility probe failure")
+            return real_lstat(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(regen_mod, "capture_surface_snapshot", lambda _: surface)
+            patch.setattr(regen_mod.os, "lstat", failing_lstat)
+            problems = regen_mod.preflight_edit_targets(src_target, rules)
+        assert reached
+        assert any("cannot inspect Git visibility input" in p for p in problems)
+        assert any("visibility probe failure" in p for p in problems)
+
+    @pytest.mark.parametrize("configured", ["unrelated", "same", "dotdot"])
+    def test_zero_inodes_do_not_conflate_visibility_paths(
+        self, src_target: Path, monkeypatch: pytest.MonkeyPatch, configured
+    ):
+        """An unavailable file ID cannot identify every file on the volume."""
+        _declare_edit_only(src_target, "pyproject.toml")
+        if configured != "unrelated":
+            ignore_path = (
+                "press/../pyproject.toml"
+                if configured == "dotdot"
+                else "pyproject.toml"
+            )
+            _git(src_target, "config", "core.excludesFile", ignore_path)
+        rules = load_rules(src_target)
+        surface = regen_mod.capture_surface_snapshot(src_target)
+        real_lstat = os.lstat
+        reached = []
+
+        def zero_inode_lstat(path, *args, **kwargs):
+            info = real_lstat(path, *args, **kwargs)
+            reached.append(Path(path))
+            return os.stat_result((info.st_mode, 0, *info[2:]))
+
+        with monkeypatch.context() as patch:
+            patch.setattr(regen_mod, "capture_surface_snapshot", lambda _: surface)
+            patch.setattr(regen_mod.os, "lstat", zero_inode_lstat)
+            problems = regen_mod.preflight_edit_targets(src_target, rules)
+        assert src_target / "pyproject.toml" in reached
+        assert all(
+            v.path in reached for v in surface.visibility_inputs if v.kind == "file"
+        )
+        if configured == "unrelated":
+            assert problems == []
+        else:
+            assert any(
+                "active Git visibility input (core_excludes_file)" in p
+                for p in problems
+            )
 
     def test_untracked_target_refused(self, src_target: Path):
         from template_press.rebrand.regen import preflight_edit_targets
