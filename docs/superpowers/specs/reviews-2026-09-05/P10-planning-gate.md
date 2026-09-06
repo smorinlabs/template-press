@@ -66,15 +66,16 @@ are untouched.
 **D-A — git environment for `press clean`: scrubbed.** The resumed session
 accepted the recommendation to continue with the scrubbed environment on
 2026-09-05. Global and system Git configuration are disabled. Repository-local
-ignore settings remain active, matching the existing surface inventory.
+ignore settings remain active. The explicit excludes-file pin in §5.5 also
+disables Git's default user ignore fallback, matching the surface inventory.
 An entry ignored only by the operator's global excludes file is preserved.
 
-**D-B — Muse review effort.** Context: the handoff requires Muse at ultra and
-records that the `ultra_reasoning_effort` gate was closed on 2026-09-04 with
-a one-time xhigh exception. This gate requests ultra; if the tool again
-reports the downgrade, the review below records the actual effort and the
-gate is not complete until Steve either grants an exception for this review
-or ultra becomes available. Response needed only if the downgrade recurs.
+**D-B — Muse review effort: owner exception pending.** The handoff requires
+ultra or a specific exception. Muse passes 3 and 4 requested ultra; both CLI
+startup diagnostics reported the closed `ultra_reasoning_effort` gate and
+actual xhigh. Pass 4 approved the final correction. Steve's universal
+authorization covers sending review material; the actual-effort exception
+for this planning gate remains a separate recorded decision.
 
 ## 5. Review log
 
@@ -87,7 +88,11 @@ received, not as fixes chosen.
 | Muse, pass 1 (plan at `d1f457e`) | ultra / **xhigh** (gate `ultra_reasoning_effort` reported closed) | FIX, confidence 0.8 | 3 | all three applied; two of four optional suggestions adopted (§5.2) |
 | Muse, pass 2 (revised plan at `287e387`) | ultra / **xhigh** (gate still closed) | APPROVE, confidence 0.85 | 0 | no change; it verified each revision against `main` (`SafeRelPath` refuses `src/../escape` at `safety.py:215-216`; the gitfile failure test exits 128 deterministically and passes the test interceptor; the `.git` pre-check is the truthful exit 2 because `scrubbed_git_env` clears `GIT_DIR`) |
 | Claude Fable, re-review of the revised plan | n/a | APPROVE | — | the three fixes and two adoptions are the only deltas; spec coverage and type consistency re-checked |
-| Codex, resumed independent review | inherited session configuration; no Muse/Fable substitution | APPROVE on the plan hash below | 0 | extracted the exact gitfile helper and ran ten independent metadata cases; checked tuple shape, content preservation, task imports, and native commit ordering |
+| Codex, resumed independent review | inherited session configuration; no Muse/Fable substitution | APPROVE on the original resumed plan hash below | 0 | extracted the exact gitfile helper and ran ten independent metadata cases; checked tuple shape, content preservation, task imports, and native commit ordering |
+| Muse, resumed pass 3 at `4588d5e` | ultra / **xhigh** (provider gate closed) | FIX | 1 | default user excludes can delete an inventoried file; reproduced and corrected below |
+| Claude Fable 5.1, resumed pass 3 at `4588d5e` | max / **max**, no fallback | FIX | 1 | invalid ordinary `.git` permits ancestor discovery; reproduced and corrected below |
+| Muse, final delta re-review | ultra / **xhigh** (provider gate closed) | APPROVE | 0 | final plan hash in §6; all five corrections checked against source |
+| Claude Fable 5.1, final delta re-review | max / **max**, no fallback | APPROVE | 0 | final plan hash in §6; prior unchanged sections retain their earlier review coverage |
 
 ### 5.1 Fable review of the reconciled plan
 
@@ -131,18 +136,17 @@ Documentation corrections from the same pass: F1 and the plan cite
 `cli.py:185-186`, the `getattr` guard and its `print` (was 186 alone); F6
 cites `check_tools.py:47` (was 52).
 
-Muse's safety analysis (§3 of its review) independently confirmed D-A:
-the inventory pins the target's own `core.excludesFile`
-(`inventory.py:938-948`), which the scrubbed-environment clean reads
-identically, so the scrubbed choice loses only global-excludes-ignored
-entries and gains determinism.
+Muse's original safety analysis supported D-A but missed Git's built-in
+default user ignore fallback. The resumed pass reproduced that deletion path;
+§5.5 records the explicit excludes-file pin needed to make D-A true.
 
 ### 5.3 Gate status
 
-The approvals above cover `287e387` and its earlier inputs. They do not
-approve the later bot-review fixes or the resumed revision. Implementation
-remains gated until the final revision is independently reviewed and D-B is
-settled. D-A uses the accepted scrubbed environment.
+The final plan revision identified in §6 has completed the named reviews.
+Muse and Claude Fable both approve with no required findings remaining.
+Earlier approvals remain tied to their original snapshots. Implementation
+remains gated only on D-B, the explicit exception for Muse's actual xhigh
+effort. D-A uses the accepted scrubbed environment plus the excludes pin.
 
 ### 5.4 Resumed review corrections
 
@@ -183,6 +187,50 @@ The new rule follows Git's documented
 [per-worktree backlink](https://git-scm.com/docs/gitrepository-layout) and
 [linked-worktree metadata](https://git-scm.com/docs/git-worktree).
 
+### 5.5 Further review and verified corrections
+
+Steve explicitly authorized sending review material to Muse, Fable, and
+Claude on 2026-09-05. Provider authorization is settled. D-B remains the
+separate requirement to record and accept the actual review effort.
+
+The next GitHub wave contained four findings: three from Codex and one
+duplicate forged-backlink finding from CodeRabbit. The changes stay within
+the planned clean verb and its supported-layout checks.
+
+- **Forged backlink:** a foreign ordinary Git directory with a fabricated
+  regular `gitdir` file passed the old guard and deleted tracked fixture
+  bytes. Require a regular `commondir` file and a selected directory directly
+  under its resolved common repository's `worktrees/` registry as well as
+  the target backlink. Tests include a forged `commondir` and valid absolute
+  and relative common-directory paths.
+- **Successful-command warnings:** a real unreadable-directory probe made
+  preview and apply exit 0 with a permission warning only on stderr. Forward
+  stderr regardless of return code. Controlled CLI tests preserve that
+  warning and the existing 0/1/2 mapping.
+- **Windows junction:** the original directory check accepted a marker
+  reported as a junction. Use `Path.is_junction()` before directory acceptance.
+  The portable regression simulates that filesystem classification, matching
+  existing inventory-test conventions; native Windows execution is pending
+  implementation CI.
+- **Muse default-excludes finding:** a temporary XDG default Git ignore file
+  made the old command delete an inventoried `debug.log`. Mirror inventory's
+  NUL-delimited configured-excludes lookup and pin that path or the null
+  device. Tests cover absent, empty, relative, and absolute configured values
+  in both preview and apply, including protected bytes and snapshot equality.
+- **Fable ancestor-discovery finding:** an invalid ordinary `.git` directory
+  inside a parent repository let Git select the parent's index and excludes,
+  deleting the target's `src/` directory. Query both marker kinds and require
+  an ordinary marker's discovered Git directory to be the target's own `.git`.
+  Both preview and apply now refuse that fixture and preserve its bytes.
+
+The Git layout and default ignore behavior match the primary documentation:
+[repository layout](https://git-scm.com/docs/gitrepository-layout),
+[ignore sources](https://git-scm.com/docs/gitignore). Relative gitfile paths
+in the test fixtures now resolve against their target before metadata edits.
+
+Final re-review approved these corrections with no required findings. The
+earlier review verdicts remain tied to their original snapshots.
+
 ## 6. Verification record
 
 - Empirical probe (git clean semantics): `Would remove src/pkg/__pycache__/`,
@@ -191,7 +239,7 @@ The new rule follows Git's documented
 - `SafeRelPath("src/{package_name}")`: accepted unchanged (`src/{package_name}`, `tests`, `build/{repo_name}` all round-trip through `SafeRelPath(...).as_posix()`), so the raw pattern can be validated before rendering.
 
 
-### Resumed executable-plan validation
+### Resumed executable-plan validation at `4588d5e`
 
 The plan SHA-256 reviewed by Codex and materialized for these checks is
 `0533044d2a09168073c8e525c31f78a218659ebfc6004e8dffec689300199250`.
@@ -215,7 +263,27 @@ inside the disposable clone with the plan snippets applied. The inverse
 controls failed assertions with exit 1, rather than failing setup or imports;
 the scratch source was restored after each control.
 
-Final Muse/Fable review of this revision remains pending. Their older
-approvals are historical. D-B still requires a completed ultra review or an
-explicit owner exception for the actual effort; an unavailable review is
-not an approval.
+This original resumed revision was superseded by the further corrections
+below. Its results remain historical evidence, not the final safety verdict.
+
+### Further executable-plan validation
+
+Final plan SHA-256: `2306e9175189804d631a1c51779143f61c8df86738ffb3714dd36b2d79aa58db`.
+Muse and Fable reviewed this exact plan. Later changes to this record only
+record the returned verdicts and validation results.
+
+| Check | Result |
+| --- | --- |
+| Full repository `just check` after the corrections | Passed; 1412 tests passed, 2 skipped, 4 deselected |
+| Exact revised plan materialized in a disposable clone | 73 passed |
+| Task 2 / 3 / 4 boundaries | 6 / 47 / 51 passed; no unused imports at each boundary |
+| Proposed source and tests | Ruff check/format and source type checking passed |
+| Inverse: remove linked metadata registration check | Four forged-backlink assertions fail |
+| Inverse: allow ordinary-directory discovery to select an ancestor | Two precondition/preservation assertions fail |
+| Inverse: remove the excludes-file argv pin | Two default-ignore preservation/preview assertions fail; six configured-value controls pass |
+| Relative-worktree fixture configuration | Six selected cases pass with `worktree.useRelativePaths=true` |
+| Real Git permission-warning probe | Preview and apply both exit 0 with a warning on stderr |
+
+These are executable-plan checks, not shipped P10 implementation or a native
+Windows result. The simulated junction regression remains an explicit limit.
+All scratch source was restored after the inverse controls.

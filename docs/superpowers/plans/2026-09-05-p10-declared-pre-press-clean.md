@@ -32,14 +32,14 @@ These are the points where the 2026-09-01 plan was silent or where merged code c
 
 - **R1 — the E2 hint already exists.** `cli.py:185-186` prints `declared clean rules exist — run: press clean --target {target}` behind `getattr(rules, "clean", ())`. Task 3 replaces the `getattr` with `rules.clean` and tests both directions; it adds no new message.
 - **R2 — an absent declared path is a silent no-op.** Verified on git 2.x: `git clean -ndX -- nonexistent` exits 0 and prints nothing. `press clean` therefore exits 0 and prints only the command line; nothing is special-cased.
-- **R3 — every git invocation is hardened and scrubbed.** `press clean` builds its argv with `git_hardening_args()` and runs under `scrubbed_git_env()`, exactly as every other on-target git call does (G5). Consequence: "ignored" means ignored by the target's own `.gitignore` files and `.git/info/exclude`, never by the operator's global excludes file. The echoed command is the exact argv that runs, hardening flags included; it is displayed for the record, not as an equivalent shell command, because the scrubbed environment is not part of the argv.
+- **R3 — every git invocation is hardened and scrubbed.** `press clean` uses `git_hardening_args()` and `scrubbed_git_env()`. It also resolves the repository-configured `core.excludesFile` with the same NUL-delimited Git config query as inventory, then pins that path or the null device in the clean argv. Thus `.gitignore`, `.git/info/exclude`, and repository-configured excludes apply; the operator's default user ignore file and global/system configuration do not. The echoed argv records the invocation, but its scrubbed environment is separate.
 - **R4 — `press clean` requires `press/press-source.toml`.** Paths render from the SOURCE identity loaded with `load_source_config(target, None)`; the E1 origin guard is not consulted, because clean writes no identity and only removes ignored entries under paths the target's own rules declare.
 - **R5 — the receipt records the declaration, unrendered.** `[[press.clean]] paths = [...]` carries the declared patterns as written; `press clean` itself never writes a receipt. No `ran` key: the table name plus docs state that it is a declaration.
 - **R6 — no writer-overlap check for clean paths.** `-X` removes only ignored entries, and every `[[edit]]`/`[[regenerate]]`/`[[reset]]`/`[[remove]]` target is inventoried, so the sets cannot intersect; `_validate_writer_overlaps` is unchanged.
 - **R7 — the snapshot-equality invariant is a test, not a runtime tripwire.** With the restricted form the invariant is git's own `-X` semantics; a runtime comparison would add an exit-1 path that cannot legitimately fire.
 - **R8 — this repository declares `[[clean]]` for itself.** The native R3 self-press then exercises parse → check-tools → receipt end to end, as it already does for `[[edit]]`.
 - **R9 — an ADR records the mechanism** (`docs/adr/0018-declared-pre-press-clean.md`), following ADR 0017 for `[[edit]]`.
-- **R10 — Git metadata must belong to the target.** Ordinary `.git` directories and registered linked-worktree gitfiles are supported. For a gitfile, a hardened, scrubbed read-only Git query locates the selected Git directory; its regular `gitdir` backlink must resolve to this target's `.git`. A foreign, dangling, or unbound gitfile is refused before cleaning. Standalone separate-Git-directory and submodule-root layouts without that backlink are outside this verb's v1 support; use an ordinary clone. Existing rebrand and verify behavior is unchanged.
+- **R10 — Git metadata must belong to the target.** Ordinary `.git` directories and registered linked-worktree gitfiles are supported. A hardened, scrubbed read-only Git query locates the selected Git directory for both marker kinds. An ordinary marker must resolve to this target's own `.git`, preventing ancestor discovery. For a gitfile, its regular `gitdir` backlink must resolve to this target's `.git`, and its regular `commondir` file must place the selected directory directly in the common repository's `worktrees/` registry. Symlinked or junctioned `.git` entries are refused. A foreign, dangling, or unbound gitfile is refused before cleaning. Standalone separate-Git-directory and submodule-root layouts without that backlink are outside this verb's v1 support; use an ordinary clone. Existing rebrand and verify behavior is unchanged.
 
 ## File Structure
 
@@ -335,7 +335,7 @@ git commit -m "feat(rules): parse [[clean]] path declarations"
 - Consumes: `CleanRule` (Task 1); `Identity.as_dict()`; `SafeRelPath`, `UnsafePathError`, `scrubbed_git_env`, `git_hardening_args` from `safety.py`.
 - Produces:
   - `render_clean_paths(rules: tuple[CleanRule, ...], source: Identity) -> tuple[str, ...]` — every declared path rendered, re-validated, in declaration order; raises `ValidationError`.
-  - `clean_argv(git: Path, target: Path, paths: tuple[str, ...], *, show: bool) -> list[str]` — the exact argv that runs.
+  - `clean_argv(git: Path, target: Path, paths: tuple[str, ...], *, show: bool, core_excludes: Path | None = None) -> list[str]` — the exact argv that runs.
   - `shell_join(argv: list[str]) -> str` — display rendering of the argv for the record; not an equivalent ambient-shell command, because the scrubbed environment is not part of the argv (R3).
   - `execute_clean(argv: list[str], target: Path) -> subprocess.CompletedProcess[bytes]` — runs under the scrubbed git environment; never raises on a non-zero exit.
 
@@ -452,6 +452,7 @@ SOURCE identity, build the exact hardened git argv, run it.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
@@ -514,13 +515,20 @@ def render_clean_paths(
 
 
 def clean_argv(
-    git: Path, target: Path, paths: tuple[str, ...], *, show: bool
+    git: Path,
+    target: Path,
+    paths: tuple[str, ...],
+    *,
+    show: bool,
+    core_excludes: Path | None = None,
 ) -> list[str]:
     """The exact git invocation `press clean` runs (``--show`` previews).
 
     Same prefix as every other on-target git call (G5: pinned work tree,
     hardening flags) plus ``--literal-pathspecs`` so a declared path is a
-    path, never a glob. ``-X`` removes ignored entries only — never ``-x``.
+    path, never a glob. Pin the configured excludes file (or the null device)
+    to match inventory and disable Git's default user ignore file.
+    ``-X`` removes ignored entries only — never ``-x``.
     """
     mode = "-ndX" if show else "-fdX"
     return [
@@ -529,6 +537,8 @@ def clean_argv(
         str(target),
         f"--work-tree={target.absolute()}",
         *git_hardening_args(),
+        "-c",
+        f"core.excludesFile={core_excludes or Path(os.devnull)}",
         "--literal-pathspecs",
         "clean",
         mode,
@@ -551,9 +561,9 @@ def shell_join(argv: list[str]) -> str:
 def execute_clean(argv: list[str], target: Path) -> subprocess.CompletedProcess[bytes]:
     """Run `argv` in `target` under the scrubbed git environment.
 
-    Global and system git config are neutralized (``scrubbed_git_env``), so
-    "ignored" means ignored by the target's own ignore files, never by the
-    operator's global excludes file. A non-zero exit is returned, not raised:
+    Global and system git config are neutralized (``scrubbed_git_env``).
+    ``clean_argv`` separately pins the repository-configured excludes file
+    or the null device, so Git's default user ignore file is not inherited. A non-zero exit is returned, not raised:
     the caller maps it to exit 1.
     """
     return subprocess.run(  # noqa: S603 # nosec B603
@@ -586,7 +596,7 @@ git commit -m "feat(clean): render declared clean paths and build the git clean 
 **Interfaces:**
 - Consumes: Task 2's four functions; `load_selected_rules`, `RULES_REL` (rules.py); `load_source_config`, `SOURCE_CONFIG_REL` (config.py); `resolve_executable`, `command_env` (regen.py).
 - Produces: `clean_command(argv: list[str] | None = None) -> int` with `--target <dir>` (required) and `--show`.
-- Exit codes: `0` ran (or previewed) successfully; `2` target not a directory, not a git repository (no `.git` entry), or `.git` is a symlink or an unbound gitfile; rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing or malformed, a rendered path invalid, or `git` unresolvable — no clean command ran; a read-only metadata query may have run. `1` git clean exited non-zero — the tree may have changed.
+- Exit codes: `0` ran (or previewed) successfully; `2` target not a directory, not a git repository (no `.git` entry), or `.git` is a symlink, junction, or an unbound gitfile; rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing or malformed, a rendered path invalid, or `git` unresolvable — no clean command ran; a read-only metadata query may have run. `1` git clean exited non-zero — the tree may have changed.
 
 - [ ] **Step 1: Write the failing tests** (extend `tests/rebrand/test_clean_cli.py`)
 
@@ -597,8 +607,10 @@ repository, so importing later tasks' dependencies early loses them.
 ```python
 import os
 import shutil
+import subprocess
 
 from template_press import press_cli
+from template_press.rebrand import clean_cli
 from template_press.rebrand.cli import main
 from template_press.rebrand.inventory import capture_surface_snapshot
 
@@ -757,6 +769,8 @@ class TestPressClean:
                 .removeprefix("gitdir: ")
                 .removesuffix("\n")
             )
+            if not git_dir.is_absolute():
+                git_dir = (target / git_dir).resolve()
             (git_dir / "gitdir").write_text(
                 os.path.relpath(target / ".git", git_dir) + "\n", encoding="utf-8"
             )
@@ -819,6 +833,8 @@ class TestPressClean:
             .removeprefix("gitdir: ")
             .removesuffix("\n")
         )
+        if not git_dir.is_absolute():
+            git_dir = (target / git_dir).resolve()
         backlink = git_dir / "gitdir"
         saved = tmp_path / "saved-backlink"
         backlink.rename(saved)
@@ -859,6 +875,139 @@ class TestPressClean:
         captured = capsys.readouterr()
         assert "symlink" in captured.err
         assert "run:" not in captured.out
+
+
+@pytest.mark.parametrize("show", [False, True])
+@pytest.mark.parametrize("forged_common", [False, True])
+def test_forged_foreign_backlink_is_refused(
+    src_target, tmp_path, capsys, show, forged_common
+):
+    target = src_target
+    write_source_config(target)
+    _declare(target, CLEAN_SRC_TESTS)
+    survivor = target / "src/demo_widget/__init__.py"
+    before = survivor.read_bytes()
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    _git(foreign, "init", "-q")
+    (foreign / ".git/info/exclude").write_text("src/demo_widget/__init__.py\n")
+    (foreign / ".git/gitdir").write_text(str(target / ".git") + "\n")
+    if forged_common:
+        (foreign / ".git/commondir").write_text(".\n")
+    (target / ".git").rename(tmp_path / "original-git")
+    (target / ".git").write_text(f"gitdir: {foreign / '.git'}\n")
+    args = ["clean", "--target", str(target)] + (["--show"] if show else [])
+    result = press_cli.main(args)
+    captured = capsys.readouterr()
+    assert result == 2, (result, captured, survivor.exists())
+    assert "run:" not in captured.out and "preview:" not in captured.out
+    assert survivor.read_bytes() == before
+
+
+@pytest.mark.parametrize("show", [False, True])
+def test_success_stderr_is_forwarded(src_target, capsys, monkeypatch, show):
+    target = src_target
+    write_source_config(target)
+    _declare(target, CLEAN_SRC_TESTS)
+    warning = b"warning: could not open directory: Permission denied\n"
+    real_execute = clean_cli.execute_clean
+
+    def warn_on_clean(argv, target):
+        if "clean" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=warning)
+        return real_execute(argv, target)
+
+    monkeypatch.setattr(clean_cli, "execute_clean", warn_on_clean)
+    args = ["clean", "--target", str(target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == 0
+    assert capsys.readouterr().err == warning.decode()
+
+
+def test_junction_marker_is_refused(src_target, capsys, monkeypatch):
+    target = src_target
+    write_source_config(target)
+    _declare(target, CLEAN_SRC_TESTS)
+    marker = target / ".git"
+    monkeypatch.setattr(Path, "is_junction", lambda self: self == marker)
+    result = press_cli.main(["clean", "--target", str(target)])
+    captured = capsys.readouterr()
+    assert result == 2, (result, captured)
+    assert "junction" in captured.err
+    assert "run:" not in captured.out
+
+
+@pytest.mark.parametrize("show", [False, True])
+@pytest.mark.parametrize("configured", ["absent", "empty", "relative", "absolute"])
+def test_clean_excludes_match_inventory(
+    src_target, tmp_path, monkeypatch, capsys, show, configured
+):
+    target = src_target
+    write_source_config(target)
+    _declare(target, CLEAN_SRC_TESTS)
+    xdg = tmp_path / "xdg"
+    (xdg / "git").mkdir(parents=True)
+    (xdg / "git/ignore").write_text("*.log\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    local = target / "clean-excludes"
+    local.write_text("local.tmp\n")
+    if configured != "absent":
+        value = {"empty": "", "relative": local.name, "absolute": str(local)}[
+            configured
+        ]
+        _git(target, "config", "core.excludesFile", value)
+    decoy = target / "src/demo_widget/debug.log"
+    decoy.write_bytes(b"keep default-excludes decoy")
+    candidate = target / "src/demo_widget/local.tmp"
+    candidate.write_bytes(b"local candidate")
+    cache = target / "src/demo_widget/__pycache__/x.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"cache")
+    before = capture_surface_snapshot(target)
+    assert decoy.relative_to(target) in {e.rel for e in before.entries}
+    args = ["clean", "--target", str(target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == 0
+    assert "debug.log" not in capsys.readouterr().out
+    assert decoy.read_bytes() == b"keep default-excludes decoy"
+    assert cache.exists() == show
+    assert candidate.exists() == (show or configured in ("absent", "empty"))
+    assert capture_surface_snapshot(target) == before
+
+
+def test_linked_worktree_with_absolute_common_dir_is_accepted(src_target, tmp_path):
+    write_source_config(src_target)
+    _declare(src_target, CLEAN_SRC_TESTS)
+    target = tmp_path / "absolute-common"
+    _git(src_target, "worktree", "add", "--detach", str(target))
+    git_dir = Path(
+        (target / ".git").read_text().removeprefix("gitdir: ").removesuffix("\n")
+    )
+    if not git_dir.is_absolute():
+        git_dir = (target / git_dir).resolve()
+    (git_dir / "commondir").write_text(str(src_target / ".git") + "\n")
+    cache = target / "src/demo_widget/__pycache__/x.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"cache")
+    assert press_cli.main(["clean", "--target", str(target)]) == 0
+    assert not cache.exists()
+
+
+@pytest.mark.parametrize("show", [False, True])
+def test_invalid_git_directory_cannot_discover_parent(
+    src_target, tmp_path, capsys, show
+):
+    _git(tmp_path, "init", "-q")
+    (tmp_path / ".git/info/exclude").write_text("*\n")
+    write_source_config(src_target)
+    _declare(src_target, CLEAN_SRC_TESTS)
+    survivor = src_target / "src/demo_widget/__init__.py"
+    before = survivor.read_bytes()
+    (src_target / ".git/HEAD").unlink()
+    args = ["clean", "--target", str(src_target)] + (["--show"] if show else [])
+    result = press_cli.main(args)
+    captured = capsys.readouterr()
+    assert result == 2, (captured, survivor.exists())
+    assert "run:" not in captured.out and "preview:" not in captured.out
+    assert survivor.read_bytes() == before
 
 
 class TestClosureRefusalHint:
@@ -956,8 +1105,39 @@ _CONFIG_ERRORS = (
 )
 
 
-def _validate_gitfile(git: Path, target: Path) -> None:
-    """Bind a regular gitfile to this linked worktree's selected index.
+def _clean_excludes_path(git: Path, target: Path) -> Path | None:
+    """Match inventory's configured excludes; never inherit Git's default file."""
+    query = [
+        str(git),
+        "-C",
+        str(target),
+        f"--work-tree={target}",
+        *git_hardening_args(),
+        "config",
+        "--includes",
+        "--path",
+        "--null",
+        "--get",
+        "core.excludesFile",
+    ]
+    result = execute_clean(query, target)
+    if result.returncode == 1:
+        return None
+    if result.returncode != 0:
+        raise ValidationError("cannot resolve configured core.excludesFile")
+    if not result.stdout.endswith(b"\0") or result.stdout.count(b"\0") != 1:
+        raise ValidationError("malformed NUL-delimited core.excludesFile value")
+    raw = result.stdout[:-1]
+    if not raw:
+        return None
+    path = Path(os.fsdecode(raw))
+    return path if path.is_absolute() else target / path
+
+
+def _validate_git_metadata(git: Path, target: Path) -> None:
+    """Bind Git discovery to this ordinary directory or linked worktree.
+
+    Invalid ordinary markers must not let Git discover an ancestor repo.
 
     Do not pin --work-tree on this read-only query. Neither the reported
     top-level directory nor membership in worktree list binds the selected
@@ -979,6 +1159,10 @@ def _validate_gitfile(git: Path, target: Path) -> None:
     git_dir = Path(os.fsdecode(raw))
     if not git_dir.is_absolute():
         raise ValidationError("Git returned a relative Git directory")
+    if (target / ".git").is_dir():
+        if git_dir.resolve() != target / ".git":
+            raise ValidationError(".git directory discovery escaped the target")
+        return
     backlink_raw = read_regular_nofollow(git_dir / "gitdir").removesuffix(b"\n")
     if not backlink_raw or b"\x00" in backlink_raw:
         raise ValidationError("invalid linked-worktree gitdir backlink")
@@ -987,6 +1171,17 @@ def _validate_gitfile(git: Path, target: Path) -> None:
         backlink = git_dir / backlink
     if backlink.resolve() != target / ".git":
         raise ValidationError(".git gitfile does not belong to this linked worktree")
+
+    # A normal foreign Git directory can forge the backlink above. A linked
+    # worktree must also occupy a registered slot in its common repository.
+    common_raw = read_regular_nofollow(git_dir / "commondir").removesuffix(b"\n")
+    if not common_raw or b"\x00" in common_raw:
+        raise ValidationError("invalid linked-worktree commondir")
+    common_dir = Path(os.fsdecode(common_raw))
+    if not common_dir.is_absolute():
+        common_dir = git_dir / common_dir
+    if git_dir.resolve().parent != common_dir.resolve() / "worktrees":
+        raise ValidationError(".git gitfile is not registered linked-worktree metadata")
 
 
 def clean_command(argv: list[str] | None = None) -> int:
@@ -1010,6 +1205,9 @@ def clean_command(argv: list[str] | None = None) -> int:
         # a file this target tracks. Refuse before anything runs (the same
         # no-follow rule the surface inventory applies to git markers).
         print(f"error: target {target}: .git is a symlink", file=sys.stderr)
+        return 2
+    if marker.is_junction():
+        print(f"error: target {target}: .git is a junction", file=sys.stderr)
         return 2
     if not (marker.is_dir() or marker.is_file()):
         # No clean command ran, so this is a precondition refusal.
@@ -1041,18 +1239,20 @@ def clean_command(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        if marker.is_file():
-            _validate_gitfile(git, target)
+        _validate_git_metadata(git, target)
+        core_excludes = _clean_excludes_path(git, target)
     except _CONFIG_ERRORS as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    command = clean_argv(git, target, paths, show=args.show)
+    command = clean_argv(
+        git, target, paths, show=args.show, core_excludes=core_excludes
+    )
     print(f"{'preview' if args.show else 'run'}: {shell_join(command)}")
     result = execute_clean(command, target)
     sys.stdout.write(result.stdout.decode("utf-8", "replace"))
+    sys.stderr.write(result.stderr.decode("utf-8", "replace"))
     if result.returncode != 0:
-        sys.stderr.write(result.stderr.decode("utf-8", "replace"))
         print(f"error: git clean exited {result.returncode}", file=sys.stderr)
         return 1
     return 0
@@ -1274,8 +1474,9 @@ Add `[[clean]] paths = [...]` (optional `platforms`) and a standalone
 the SOURCE identity (the rules file is never rewritten), echoes the exact
 hardened argv, and runs `git --literal-pathspecs clean -fdX -- <paths>`
 (`-ndX` under `--show`). Only ignored entries under the declared paths can be
-removed; the operator's global excludes file is not consulted because every
-on-target git call runs under the scrubbed environment.
+removed. Global/system Git configuration is scrubbed, and the clean argv
+pins the repository-configured excludes file or the null device. This
+separate pin prevents Git from loading its default user ignore file.
 
 Clean is never a phase of `press rebrand`: dry-run and apply must observe the
 same tree. Ordering is structural — the closure refusal names `press clean`
@@ -1325,27 +1526,29 @@ Removing src/my_pkg/__pycache__/
 
 The echoed line is the exact argv that runs, hardening flags included, but
 `press clean` runs it under a scrubbed git environment (global and system
-config neutralized). Pasting it into your own shell would also honor your
-global excludes file, so treat the line as a record of what ran, not as an
-equivalent command.
+config neutralized). The argv also pins the excludes file; pasting it into
+an ambient shell could still honor other Git configuration or environment
+overrides. Treat the line as a record of what ran, not an equivalent command.
 `-X` removes ignored entries only (never `-x`), `--literal-pathspecs` makes
-each declared path a path rather than a glob, and the scrubbed git
-environment means "ignored" is decided by the target's own ignore files, not
-by your global excludes file (the hand-typed remedy the closure refusal
+each declared path a path rather than a glob, and the explicit
+`core.excludesFile` pin matches inventory: the repository-configured path
+or the null device, never Git's implicit default user ignore file (the hand-typed remedy the closure refusal
 prints runs in your ambient environment, so it can remove more than
 `press clean` would). A declared path that matches nothing is a silent
-no-op.
+no-op. Git warnings are forwarded to stderr even when Git exits 0.
 
 | Code | Meaning |
 |------|---------|
 | `0` | The preview or the clean ran and git exited 0. |
 | `1` | git ran and exited non-zero — the tree may have changed; read git's message. |
-| `2` | No clean command ran: target missing, not a git repository, or its `.git` a symlink or an unbound gitfile; rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing, a path unrenderable, or `git` unresolvable. |
+| `2` | No clean command ran: target missing, not a git repository, or its `.git` a symlink, junction, or an unbound gitfile; rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing, a path unrenderable, or `git` unresolvable. |
 
 Supported targets have an ordinary `.git` directory or a linked-worktree
 gitfile whose selected Git directory has a regular `gitdir` backlink to this
-target. Gitfiles pointing at foreign metadata, submodule roots, and standalone
-separate-Git-directory layouts without that backlink are refused with exit 2;
+target and a regular `commondir` file placing that directory directly under
+the common repository's `worktrees/` registry. Gitfiles pointing at foreign
+metadata, submodule roots, and standalone separate-Git-directory layouts
+without that registration are refused with exit 2;
 use an ordinary clone for those layouts. Read-only metadata queries may run
 before this refusal, but no clean command runs.
 
@@ -1397,4 +1600,4 @@ Expected: the cloned target includes the committed `[[clean]]` declaration; the 
 
 - **Spec coverage (§E10):** declaration shape and placeholder rules → Task 1; engine runs `git clean -fdX` with no arbitrary argv → Task 2; standalone verb with `--show` and the echoed command → Task 3; structural ordering via the E2 hint → Task 3; verify unaffected, check-tools row, receipt row → Task 4; `_ROOT_KEYS` → Task 1; every spec test bullet has a named test in Tasks 1–4; native coverage → Task 5.
 - **Placeholder scan:** none; every step carries its code or exact text.
-- **Type consistency:** `CleanRule.paths: tuple[str, ...]` (Task 1) is what `render_clean_paths(rules: tuple[CleanRule, ...], source: Identity)` consumes (Task 2); `clean_argv(git: Path, target: Path, paths: tuple[str, ...], *, show: bool) -> list[str]` and `execute_clean(argv: list[str], target: Path)` are the names Task 3 imports; `write_receipt(..., clean: Sequence[Sequence[str]])` receives `[rule.paths for rule in rules.clean]` (Task 4).
+- **Type consistency:** `CleanRule.paths: tuple[str, ...]` (Task 1) is what `render_clean_paths(rules: tuple[CleanRule, ...], source: Identity)` consumes (Task 2); `clean_argv(git: Path, target: Path, paths: tuple[str, ...], *, show: bool, core_excludes: Path | None = None) -> list[str]` and `execute_clean(argv: list[str], target: Path)` are the names Task 3 imports; `write_receipt(..., clean: Sequence[Sequence[str]])` receives `[rule.paths for rule in rules.clean]` (Task 4).
