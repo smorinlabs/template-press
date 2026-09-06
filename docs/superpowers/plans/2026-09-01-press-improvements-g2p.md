@@ -575,6 +575,12 @@ def test_edit_rule_refusals(src_target, body, needle):
 
 ## PR group 3b — `[[clean]]` (P10)
 
+> **Superseded (2026-09-05 planning gate).** Tasks 16–18 below are kept for
+> history. The implementation-ready plan, reconciled against merged `main`
+> at `bddbae3`, is `docs/superpowers/plans/2026-09-05-p10-declared-pre-press-clean.md`;
+> the reconciliation and review record is
+> `docs/superpowers/specs/reviews-2026-09-05/P10-planning-gate.md`.
+
 ### Task 16: `[[clean]]` rules parsing
 
 **Files:** `rules.py` (`CleanRule(paths: tuple[str, ...])`, `_parse_clean`, `_ROOT_KEYS`), `tests/rebrand/test_clean_rules.py`
