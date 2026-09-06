@@ -150,8 +150,13 @@ default user ignore fallback. The resumed pass reproduced that deletion path;
 
 ### 5.3 Gate status
 
-The exact `b10ca82f…` correction has completed its available reviews and
-executable checks. Muse approved at actual xhigh after ultra was requested,
+The reviewed `b10ca82f…` correction has completed its available reviews and
+executable checks. The current `95c16db4…` plan differs only by the
+Ruff-required reflow of one condition in its fifth Python fence. All 17 Python
+fences retain the same code: the changed fifth fence has an equivalent abstract
+syntax tree, and the other 16 fences are byte-identical to commit `216061b…`.
+No behavioral or provider approval is attributed to the new hash. Muse
+approved at actual xhigh after ultra was requested,
 with 100 max model steps configured. The internal `gpt-6-astra` scoped final
 review approved both spec compliance and task quality and marked prior R1
 resolved. Claude Fable's bounded retry failed before review because usage
@@ -341,11 +346,19 @@ normalizes the literal platform null device to the inventory's existing absent
 representation; it contributes no policy bytes, and `clean_argv` remains
 pinned to the null device.
 
-The frozen combined plan SHA-256 is
+The reviewed behavior plan SHA-256 is
 `b10ca82f9323aafcf2823562e9aa5bc45bf5870725a7851e9c8d3329210ebb85`.
-Muse approved this exact correction at requested ultra / actual xhigh with 100
-max model steps configured. The internal `gpt-6-astra` final rereview approved
-spec compliance and task quality, with prior R1 resolved. Claude Fable's
+The current Ruff-formatted plan SHA-256 is
+`95c16db4ae1ac43899e50f1ceec31c22285c16bfd65e0f46be3bc26bd8e4fcbd`.
+The hashes differ only because Ruff joined one condition in the fifth Python
+fence. An AST comparison against commit
+`216061b8610b36998a548f46dcaf17996c932145` found the changed fence equivalent;
+the other 16 Python fences are byte-identical. This formatting-only result adds
+no behavioral or provider approval for the current hash.
+Muse approved the reviewed `b10ca82f…` behavior plan at requested ultra /
+actual xhigh with 100 max model steps configured. The internal `gpt-6-astra`
+final rereview approved that same `b10ca82f…` snapshot for spec compliance and
+task quality, with prior R1 resolved. Claude Fable's
 bounded retry failed before review because usage credits were exhausted and is
 recorded as NOT REVIEWED. D-B and the Fable-substitution decision remain
 unresolved owner gates; neither is waived or inferred.
@@ -461,8 +474,10 @@ The round-one lint correction writes its materialization to
 
 Previous plan SHA-256:
 `56549d64795b1676851e665bacde6599f3f60ed98d24450953809d31b6e6ede9`.
-Frozen corrected plan SHA-256:
+Reviewed behavior plan SHA-256:
 `b10ca82f9323aafcf2823562e9aa5bc45bf5870725a7851e9c8d3329210ebb85`.
+Current Ruff-formatted plan SHA-256:
+`95c16db4ae1ac43899e50f1ceec31c22285c16bfd65e0f46be3bc26bd8e4fcbd`.
 
 | Check | Result |
 | --- | --- |
@@ -478,6 +493,7 @@ Frozen corrected plan SHA-256:
 | Proposed source and test lint | Ruff check passed |
 | Proposed source and test format | Ruff reported 84 files already formatted |
 | Proposed source type check | `All checks passed!` |
+| CI Markdown-fence formatting correction | The locked repository-wide Ruff check rejected the three-line condition at plan line 299. Ruff's required one-line reflow is the only plan-text change from commit `216061b…`; fence 5 is AST-equivalent and the other 16 Python fences are byte-identical. Post-change root checks passed: `ruff check .` reported `All checks passed!`, and `ruff format --check .` reported 172 files already formatted. |
 | Materialized shared-inventory suite | `tests/rebrand/test_surface_inventory.py`: 75 passed in 86.81s; receipt `p10-materialized-inventory-tests.log` |
 | Exact null-device interaction validation | The internal rereview verified that the final materialized `inventory.py` differs from the current source only by the two-line `os.devnull` normalization in `_core_excludes_path`; the downstream `None` path still pins `/dev/null`, and the 75-test shared-inventory suite passed; receipts `p10-internal-major-rereview.md` and `p10-materialized-inventory-tests.log` |
 | Final docs-worktree `just check` | 1412 passed, 2 skipped in 247.86s; Ruff, `ty`, spelling, and EditorConfig passed; existing YAML warnings remained; receipt `pr120-final-just-check.log` |

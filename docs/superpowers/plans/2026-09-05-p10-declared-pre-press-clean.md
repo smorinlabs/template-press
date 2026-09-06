@@ -296,9 +296,7 @@ def _parse_clean(entry: object) -> _CleanDeclaration:
 
 ```python
 raw_clean = data.get("clean", [])
-if not isinstance(raw_clean, list) or any(
-    not isinstance(e, dict) for e in raw_clean
-):
+if not isinstance(raw_clean, list) or any(not isinstance(e, dict) for e in raw_clean):
     raise ValidationError(f"{RULES_REL}: [[clean]] must be an array of tables")
 ```
 
