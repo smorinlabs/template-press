@@ -91,8 +91,8 @@ received, not as fixes chosen.
 | Codex, resumed independent review | inherited session configuration; no Muse/Fable substitution | APPROVE on the original resumed plan hash below | 0 | extracted the exact gitfile helper and ran ten independent metadata cases; checked tuple shape, content preservation, task imports, and native commit ordering |
 | Muse, resumed pass 3 at `4588d5e` | ultra / **xhigh** (provider gate closed) | FIX | 1 | default user excludes can delete an inventoried file; reproduced and corrected below |
 | Claude Fable 5.1, resumed pass 3 at `4588d5e` | max / **max**, no fallback | FIX | 1 | invalid ordinary `.git` permits ancestor discovery; reproduced and corrected below |
-| Muse, final delta re-review | ultra / **xhigh** (provider gate closed) | APPROVE | 0 | final plan hash in §6; all five corrections checked against source |
-| Claude Fable 5.1, final delta re-review | max / **max**, no fallback | APPROVE | 0 | final plan hash in §6; prior unchanged sections retain their earlier review coverage |
+| Muse, final delta re-review | ultra / **xhigh** (provider gate closed) | APPROVE | 0 | plan hash `2306e917…` in §6; all five corrections checked against source |
+| Claude Fable 5.1, final delta re-review | max / **max**, no fallback | APPROVE | 0 | plan hash `2306e917…` in §6; prior unchanged sections retain their earlier review coverage |
 
 ### 5.1 Fable review of the reconciled plan
 
@@ -142,11 +142,12 @@ default user ignore fallback. The resumed pass reproduced that deletion path;
 
 ### 5.3 Gate status
 
-The final plan revision identified in §6 has completed the named reviews.
-Muse and Claude Fable both approve with no required findings remaining.
+The final plan revision identified in §6 has completed both named reviews.
+Muse and Claude Fable approve the configured-excludes delta with no required
+findings remaining. All GitHub findings have a verified disposition.
 Earlier approvals remain tied to their original snapshots. Implementation
-remains gated only on D-B, the explicit exception for Muse's actual xhigh
-effort. D-A uses the accepted scrubbed environment plus the excludes pin.
+remains gated on D-B, the explicit exception for Muse's actual xhigh effort.
+D-A uses the accepted scrubbed environment plus the excludes pin.
 
 ### 5.4 Resumed review corrections
 
@@ -231,6 +232,32 @@ in the test fixtures now resolve against their target before metadata edits.
 Final re-review approved these corrections with no required findings. The
 earlier review verdicts remain tied to their original snapshots.
 
+### 5.6 Final bounded review wave
+
+Steve authorized continued review and merging this planning PR when ready.
+The stricter review bar applies: only demonstrated defects in the proposed
+behavior receive changes. The latest GitHub wave had three findings:
+
+- **Configured excludes can block Git:** CodeRabbit identified a named pipe
+  used as `core.excludesFile`. A real Git invocation timed out after two
+  seconds; a regular-file control completed successfully. Named pipes are
+  unsupported inputs, not a feature requirement. Reuse
+  `read_regular_nofollow` before calling clean. Its nonblocking regular-file
+  check rejects pipes, directories, and symlinks. An absent configured file
+  remains valid, and the explicit null-device setting maps to the existing
+  null-device pin. Six refusal cases fail promptly on the previous helper;
+  four missing/null-file controls pass. All ten pass with the guard.
+- **Complete replacement of linked registration:** Greptile's fixture can
+  delete a file tracked only by displaced original metadata. Both fabricated
+  registration and a genuine `git worktree add --detach --no-checkout` control
+  exclude that file from the current inventory before cleaning. Both preserve
+  the exact current surface snapshot. E10 protects that current inventory;
+  it does not authenticate a previous repository after its metadata was
+  replaced. The finding was refuted with these two independent controls.
+- **Review-provider authorization wording:** the live PR body already records
+  Steve's universal sending authorization and separates it from D-B. The
+  stale conditional wording request was refuted and resolved.
+
 ## 6. Verification record
 
 - Empirical probe (git clean semantics): `Would remove src/pkg/__pycache__/`,
@@ -268,7 +295,7 @@ below. Its results remain historical evidence, not the final safety verdict.
 
 ### Further executable-plan validation
 
-Final plan SHA-256: `2306e9175189804d631a1c51779143f61c8df86738ffb3714dd36b2d79aa58db`.
+Previously approved plan SHA-256: `2306e9175189804d631a1c51779143f61c8df86738ffb3714dd36b2d79aa58db`.
 Muse and Fable reviewed this exact plan. Later changes to this record only
 record the returned verdicts and validation results.
 
@@ -287,3 +314,24 @@ record the returned verdicts and validation results.
 These are executable-plan checks, not shipped P10 implementation or a native
 Windows result. The simulated junction regression remains an explicit limit.
 All scratch source was restored after the inverse controls.
+
+### Final configured-excludes correction
+
+Plan SHA-256: `65bb256e7b567215c60d10823ad960175e9287d34f18ca9be7df4ddeb8f56a48`.
+Both named providers reviewed this exact delta: Muse APPROVE at actual
+xhigh (ultra requested, provider gate closed), and Claude Fable 5.1 APPROVE
+at max with no fallback. No required findings remain. Earlier full reviews
+continue to cover unchanged plan sections.
+
+| Check | Result |
+| --- | --- |
+| Full repository `PYTEST_ADDOPTS="-n 8" just check` | Passed; 1412 tests passed, 2 skipped; same default marker selection, eight workers |
+| Exact plan materialized in a disposable clone | 83 passed |
+| Task 2 / 3 / 4 boundaries | 6 / 57 / 61 passed; no unused imports at each boundary |
+| Proposed source and tests | Ruff check/format and source type checking passed |
+| New configured-excludes tests on the previous helper | Six refusal cases fail promptly; four missing/null controls pass |
+| New configured-excludes tests with the guard | All ten pass |
+
+This PR remains documentation only. D-B gates implementation, not merging
+this planning record. Steve's instruction to merge when ready is recorded
+separately from an exception for Muse's actual effort.

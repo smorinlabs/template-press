@@ -1051,6 +1051,70 @@ def test_dispatcher_lists_and_routes_clean(tmp_path: Path, capsys):
     assert press_cli.main([]) == 0
     assert "clean" in capsys.readouterr().out
     assert press_cli.main(["clean", "--target", str(tmp_path / "nope")]) == 2
+
+
+@pytest.mark.parametrize("show", [False, True])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        pytest.param("fifo", marks=posix_only),
+        "directory",
+        pytest.param("symlink", marks=requires_symlink),
+    ],
+)
+def test_nonregular_configured_excludes_refuse_before_clean(
+    src_target, tmp_path, capsys, monkeypatch, show, kind
+):
+    write_source_config(src_target)
+    _declare(src_target, CLEAN_SRC_TESTS)
+    excludes = tmp_path / "excludes"
+    if kind == "fifo":
+        os.mkfifo(excludes)
+    elif kind == "directory":
+        excludes.mkdir()
+    else:
+        regular = tmp_path / "regular-excludes"
+        regular.write_text("*.pyc\n")
+        excludes.symlink_to(regular)
+    _git(src_target, "config", "core.excludesFile", str(excludes))
+    cache = src_target / "src/demo_widget/__pycache__/x.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"keep")
+    real_execute = clean_cli.execute_clean
+
+    def refuse_unsafe_clean(argv, target):
+        # The old implementation fails promptly here instead of hanging
+        # this test on the FIFO. Metadata/config queries still use real Git.
+        if "clean" in argv:
+            pytest.fail("unsafe git clean reached a nonregular excludes input")
+        return real_execute(argv, target)
+
+    monkeypatch.setattr(clean_cli, "execute_clean", refuse_unsafe_clean)
+    args = ["clean", "--target", str(src_target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == 2
+    captured = capsys.readouterr()
+    assert "error:" in captured.err
+    assert "run:" not in captured.out and "preview:" not in captured.out
+    assert cache.read_bytes() == b"keep"
+
+
+@pytest.mark.parametrize("show", [False, True])
+@pytest.mark.parametrize("configured", ["missing", "null"])
+def test_missing_or_null_configured_excludes_are_accepted(
+    src_target, tmp_path, show, configured
+):
+    write_source_config(src_target)
+    _declare(src_target, CLEAN_SRC_TESTS)
+    path = (
+        tmp_path / "missing-excludes" if configured == "missing" else Path(os.devnull)
+    )
+    _git(src_target, "config", "core.excludesFile", str(path))
+    cache = src_target / "src/demo_widget/__pycache__/x.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"cache")
+    args = ["clean", "--target", str(src_target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == 0
+    assert cache.exists() == show
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -1131,7 +1195,16 @@ def _clean_excludes_path(git: Path, target: Path) -> Path | None:
     if not raw:
         return None
     path = Path(os.fsdecode(raw))
-    return path if path.is_absolute() else target / path
+    if path == Path(os.devnull):
+        return None
+    if not path.is_absolute():
+        path = target / path
+    try:
+        read_regular_nofollow(path)
+    except FileNotFoundError:
+        # Git permits an absent configured excludes file.
+        pass
+    return path
 
 
 def _validate_git_metadata(git: Path, target: Path) -> None:
