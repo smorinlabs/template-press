@@ -50,12 +50,14 @@ the disposition carried into the new plan (R-numbers match the plan's
 | F15 | (absent) writer overlap | `_validate_writer_overlaps(regenerate, reset, remove, edit)` refuses two writers on one file. Clean paths name directories whose ignored children are removed; inventoried writer targets cannot be ignored. | R6: no overlap check. |
 | F16 | `press_cli.py:39-43` dispatch | The dispatcher is at lines 40–46 now and `_USAGE` is asserted only for the presence of verb names (`test_press_cli.py`), not snapshot-tested, so adding a `clean` line has no snapshot cost. | Task 3. |
 | F17 | Dependencies | P10 depends on nothing unmerged: the E2 hint (P12 Task 2) and `[[edit]]` (P09) are on `main`; P11 is independent. The Windows retry-test flake (#119) is unrelated but means new tests must stay `tmp_path`-isolated for the parallel matrix. | No change. |
+| F18 | Task 3 allowed the repository-configured `core.excludesFile` to equal or sit below a rendered clean path. | A real `git clean -fdX` probe deleted that active, untracked visibility input and exited 0. Exact-file and containing-directory cases reproduced with relative and absolute configured forms. On this case-insensitive macOS volume, `normcase(abspath(...))` and `realpath` preserve alternate casing even though `samefile` reports the paths as one node. | R11: refuse overlap with exit 2 before echo or Git clean. Use the normalized lexical relation plus existing-node identity for case aliases. Tests preserve configured bytes, cache bytes, and the complete snapshot. |
+| F19 | R11 protected only `core.excludesFile`; R7 still treated Git `-X` alone as sufficient for complete snapshot equality. | The exact planned helper deleted an active self-ignored `.gitignore` under exact and containing clean roots and an ignored repository `include.path` input under a clean root, then exited 0. These paths are recorded in `SurfaceSnapshot.visibility_inputs` or `git_config_inputs` but absent from its tracked-plus-nonignored `entries`. A distinct hardlink to a tracked path proved that inode equality cannot grant protected membership: Git deletes the active input's directory entry independently. | R7 and R12: capture the public snapshot before echo or clean; refuse every present active input below a clean path unless its exact directory entry is protected. Preserve tracked, non-ignored, disjoint, missing, and inactive controls. Keep R11's conservative identity rule for overlap only. |
 
 ## 3. Why the outcome is "revise"
 
 The 2026-09-01 tasks were correct in intent and wrong in no decision, but
-they were written before P09/P12 landed and before the parallel matrix. Nine
-points (R1–R9) were either silent, pointed at code that has since moved, or
+they were written before P09/P12 landed and before the parallel matrix. Twelve
+points (R1–R12) were either silent, pointed at code that has since moved, or
 relied on a claim the probe refuted. Leaving them for the implementer to
 rediscover would violate the handoff's rule that tasks be implementation
 ready. The spec's decisions are untouched; the non-goals (§4 of the spec)
@@ -70,7 +72,7 @@ ignore settings remain active. The explicit excludes-file pin in §5.5 also
 disables Git's default user ignore fallback, matching the surface inventory.
 An entry ignored only by the operator's global excludes file is preserved.
 
-**D-B — Muse review effort: owner exception pending.** The handoff requires
+**D-B — Muse review effort: UNRESOLVED owner exception.** The handoff requires
 ultra or a specific exception. Muse passes 3 and 4 requested ultra; both CLI
 startup diagnostics reported the closed `ultra_reasoning_effort` gate and
 actual xhigh. Pass 4 approved the final correction. Steve's universal
@@ -93,6 +95,12 @@ received, not as fixes chosen.
 | Claude Fable 5.1, resumed pass 3 at `4588d5e` | max / **max**, no fallback | FIX | 1 | invalid ordinary `.git` permits ancestor discovery; reproduced and corrected below |
 | Muse, final delta re-review | ultra / **xhigh** (provider gate closed) | APPROVE | 0 | plan hash `2306e917…` in §6; all five corrections checked against source |
 | Claude Fable 5.1, final delta re-review | max / **max**, no fallback | APPROVE | 0 | plan hash `2306e917…` in §6; prior unchanged sections retain their earlier review coverage |
+| Muse, configured-excludes overlap delta (plan `56549d64…`) | ultra / **xhigh** (provider gate closed); configured 100 max steps | APPROVE | 0 | historical R11-only verdict; the later whole-plan review found F19 |
+| Claude Fable 5.1, configured-excludes overlap delta (plan `56549d64…`) | max requested; usage-credit error before review | **NOT REVIEWED** | — | no verdict; no substitution inferred |
+| Internal whole-plan active-input review (plan `56549d64…`) | independent source and executable probes | FIX | 1 | F19 applied as R7/R12 in plan `b10ca82f…` |
+| Muse, combined active-input exact-delta review (plan `b10ca82f…`) | ultra / **xhigh** (provider gate closed); configured 100 max model steps | APPROVE | 0 | exact correction approved; receipt `muse-p10-active-inputs.log` |
+| Claude Fable 5.1, bounded combined active-input retry (plan `b10ca82f…`) | max requested; usage-credit rejection before review | **NOT REVIEWED** | — | no verdict; receipt `fable-p10-active-inputs.json`; substitution remains an owner decision |
+| Internal `gpt-6-astra` scoped final review (plan `b10ca82f…`) | session-configured effort | APPROVE | 0 | spec compliance and task quality approved; prior R1 resolved; receipt `p10-internal-major-rereview.md` |
 
 ### 5.1 Fable review of the reconciled plan
 
@@ -142,12 +150,22 @@ default user ignore fallback. The resumed pass reproduced that deletion path;
 
 ### 5.3 Gate status
 
-The final plan revision identified in §6 has completed both named reviews.
-Muse and Claude Fable approve the configured-excludes delta with no required
-findings remaining. All GitHub findings have a verified disposition.
-Earlier approvals remain tied to their original snapshots. Implementation
-remains gated on D-B, the explicit exception for Muse's actual xhigh effort.
-D-A uses the accepted scrubbed environment plus the excludes pin.
+The exact `b10ca82f…` correction has completed its available reviews and
+executable checks. Muse approved at actual xhigh after ultra was requested,
+with 100 max model steps configured. The internal `gpt-6-astra` scoped final
+review approved both spec compliance and task quality and marked prior R1
+resolved. Claude Fable's bounded retry failed before review because usage
+credits were exhausted, so it supplied no verdict. Historical approvals remain
+bound to their recorded hashes. The earlier GitHub findings retain their
+verified dispositions.
+
+Implementation remains gated on D-B's explicit owner exception for Muse's
+actual xhigh effort and on an explicit owner decision about substituting for
+the missing Fable review. Neither gate is waived or inferred. D-A uses the
+accepted scrubbed environment plus the excludes pin. The documentation
+worktree's final `just check` passed with 1412 tests and 2 skips in 247.86s.
+The exact materialized inventory suite passed 75 tests in 86.81s. The
+controller owns commit, push, and PR closeout.
 
 ### 5.4 Resumed review corrections
 
@@ -211,8 +229,8 @@ the planned clean verb and its supported-layout checks.
 - **Windows junction:** the original directory check accepted a marker
   reported as a junction. Use `Path.is_junction()` before directory acceptance.
   The portable regression simulates that filesystem classification, matching
-  existing inventory-test conventions; native Windows execution is pending
-  implementation CI.
+  existing inventory-test conventions. Native Windows execution is an
+  implementation-CI obligation outside this planning-gate record.
 - **Muse default-excludes finding:** a temporary XDG default Git ignore file
   made the old command delete an inventoried `debug.log`. Mirror inventory's
   NUL-delimited configured-excludes lookup and pin that path or the null
@@ -257,6 +275,80 @@ behavior receive changes. The latest GitHub wave had three findings:
 - **Review-provider authorization wording:** the live PR body already records
   Steve's universal sending authorization and separates it from D-B. The
   stale conditional wording request was refuted and resolved.
+
+### 5.7 Configured-excludes overlap correction — historical review state
+
+At commit `94cbd40868dd0273e632549527dddade53ee4045`, the previous
+planned helper could pass its configured `core.excludesFile` to the same
+`git clean -fdX` command whose pathspec selected that file or an ignored parent
+directory. Git deleted the active visibility input and exited 0. The complete
+`SurfaceSnapshot` therefore changed, violating E10.
+
+R11 adds a pre-execution `ValidationError` refusal after
+`_clean_excludes_path` and before argv construction, the `preview:` or `run:`
+line, and `execute_clean`. It compares `os.path.normcase(os.path.abspath(...))`
+paths for the ordinary exact-or-descendant relation. It then compares each
+existing configured-path ancestor to the clean root with `os.path.samefile`,
+because POSIX `normcase` is a no-op on case-insensitive macOS volumes. The
+existing `read_regular_nofollow` call remains the no-follow gate for the
+configured leaf and its ancestors. The correction adds no Git classification,
+post-mutation comparison, restoration, or race protocol.
+
+The refusal covers relative and absolute configured forms, SOURCE-rendered
+clean paths, exact-file and containing-directory relations, and missing
+configured paths inside a clean root. Absent and null-device configuration,
+plus disjoint existing or missing configured paths, retain the earlier
+behavior. Both preview and apply refuse with exit 2 while preserving configured
+bytes, cache bytes, and the complete snapshot. Muse approved this R11-only
+revision at requested ultra / actual xhigh with 100 configured max steps.
+Claude Fable returned a usage-credit error before reviewing; no Fable verdict
+or substitution is inferred. The later whole-plan review then found F19, so
+that Muse verdict remains historical and does not cover R12.
+
+### 5.8 Active Git-input preservation correction — final review outcome
+
+The whole-plan review of `56549d64…` demonstrated that Git `-X` can delete
+active inputs that are intentionally absent from ordinary inventory entries.
+Both preview and apply reached Git clean for an active self-ignored
+`.gitignore` under exact and containing clean roots and for an ignored
+repository config include under a clean root. Apply deleted the inputs and
+changed the complete `SurfaceSnapshot` while returning 0.
+
+R12 calls the existing public `capture_surface_snapshot` before any command
+echo or clean invocation. It checks every present `visibility_inputs` and
+`git_config_inputs` path below a rendered clean root. An input absent from
+`listed_paths(snapshot)` refuses with exit 2. Tracked and non-ignored paths are
+listed and remain protected by Git `-X`; disjoint active inputs are outside the
+clean roots; missing inputs cannot be deleted; inactive `.gitignore` files
+beneath ignored parents are absent from the active-input tuples and remain
+cleanable. The plan adds no second ignore traversal, post-mutation comparison,
+restoration, retry, or new classification protocol.
+
+Protected membership uses exact absolute spelling or verifies a filesystem
+case alias of the same directory entry. Unrestricted `samefile` membership is
+unsafe: a real ignored `.gitignore` hardlinked to a disjoint tracked file was
+still deleted by Git clean. R11 retains its conservative same-node fallback for
+overlap refusal, where a false positive cannot grant deletion authority.
+
+The new snapshot preflight moves a corrupt-index failure from executed-clean
+exit 1 to precondition exit 2. `subprocess.CalledProcessError` from the public
+snapshot API is therefore normalized inside the pre-clean exception boundary.
+A separate controlled clean failure proves that an invoked Git clean still
+forwards stdout and stderr and returns exit 1. The null-device control exposed
+one public-snapshot interaction: device timestamps change when Git opens
+`/dev/null`, causing the two-candidate capture to reject its own read. The plan
+normalizes the literal platform null device to the inventory's existing absent
+representation; it contributes no policy bytes, and `clean_argv` remains
+pinned to the null device.
+
+The frozen combined plan SHA-256 is
+`b10ca82f9323aafcf2823562e9aa5bc45bf5870725a7851e9c8d3329210ebb85`.
+Muse approved this exact correction at requested ultra / actual xhigh with 100
+max model steps configured. The internal `gpt-6-astra` final rereview approved
+spec compliance and task quality, with prior R1 resolved. Claude Fable's
+bounded retry failed before review because usage credits were exhausted and is
+recorded as NOT REVIEWED. D-B and the Fable-substitution decision remain
+unresolved owner gates; neither is waived or inferred.
 
 ## 6. Verification record
 
@@ -335,3 +427,80 @@ continue to cover unchanged plan sections.
 This PR remains documentation only. D-B gates implementation, not merging
 this planning record. Steve's instruction to merge when ready is recorded
 separately from an exception for Muse's actual effort.
+
+### Configured-excludes overlap correction
+
+Corrected plan SHA-256:
+`56549d64795b1676851e665bacde6599f3f60ed98d24450953809d31b6e6ede9`.
+At materialization time, the plan was pending a new exact-delta review. The
+results below validate its proposed snippets in disposable clones; they do not
+implement P10 in this branch or replace D-B. §5.7 records the later Muse
+approval, the Fable usage-credit failure, and supersession by F19.
+
+| Check | Result |
+| --- | --- |
+| Previous complete helper plus the new regressions | `12 failed, 83 passed in 50.08s`; all eight exact/ancestor, relative/absolute, preview/apply cases, both missing-overlap cases, and both case-alias cases reached the Git clean interceptor |
+| Corrected exact plan materialization | `95 passed in 54.27s` at `/private/tmp/pr120-overlap-fix-c7do6ai6` |
+| Case-alias normalization probe on this macOS volume | Alternate casing existed; `normcase(abspath(...))`, `realpath`, and `Path.resolve()` preserved different spellings while `os.path.samefile` returned true |
+| Inverse: remove only the `samefile` ancestor fallback | `2 failed, 71 deselected in 2.06s`; preview and apply both reached the Git clean interceptor |
+| Restored case-alias fallback | `2 passed, 71 deselected in 3.31s` |
+| Round-one exact Task 3 lint materialization | `/private/tmp/pr120-overlap-fix-lint-7t4vwwgc`; the rehearsal placed staged imports with the locked Ruff sorter and did not rerun behavioral tests |
+| Task 3 proposed source and test lint | `ruff check --no-fix` passed for `clean_cli.py`, `press_cli.py`, `cli.py`, and `test_clean_cli.py` |
+| Task 3 proposed source and test format | `ruff format --check` reported four files already formatted |
+| Proposed source type check | `All checks passed!` |
+
+The RED checkout was `/private/tmp/pr120-overlap-fix-qviybsgl`. The GREEN
+materialization used
+`/private/tmp/pr120_overlap_fix_rehearse.py`, which writes its latest checkout
+to `/private/tmp/template-press-group3-execution/pr120-fix-materialized-path`
+instead of overwriting the earlier session's evidence pointer.
+The round-one lint correction writes its materialization to
+`/private/tmp/template-press-group3-execution/pr120-fix-round1-lint-materialized-path`.
+
+### Active Git-input preservation correction
+
+Previous plan SHA-256:
+`56549d64795b1676851e665bacde6599f3f60ed98d24450953809d31b6e6ede9`.
+Frozen corrected plan SHA-256:
+`b10ca82f9323aafcf2823562e9aa5bc45bf5870725a7851e9c8d3329210ebb85`.
+
+| Check | Result |
+| --- | --- |
+| Previous complete helper plus new active-input regressions | `7 failed, 107 passed in 75.32s`; four exact/containing `.gitignore` and two repository-include cases reached the clean interceptor, while the corrupt index executed clean and returned 1 |
+| First corrected materialization | `1 failed, 113 passed in 101.55s`; all active-input guards passed, while corrupt-index snapshot capture propagated `subprocess.CalledProcessError` instead of returning exit 2 |
+| CalledProcessError normalization added | Corrupt-index preflight returned exit 2; a controlled invoked-clean failure retained exit 1 and stdout/stderr forwarding |
+| Second corrected materialization | `2 failed, 112 passed in 100.43s`; only explicit-null-device preview/apply failed because `/dev/null` timestamps changed between public snapshot candidates |
+| Null-device inventory normalization | Maps the literal platform null device to the existing absent representation; 26 active-input, exit-phase, null, and inverse controls passed with 68 deselected |
+| Inverse: grant protected membership by unrestricted `samefile` identity | `2 failed, 92 deselected in 3.16s`; preview and apply reached the clean interceptor for an ignored active `.gitignore` hardlinked to a disjoint tracked file |
+| Restored exact-directory-entry membership | Hardlink cases refuse; tracked/non-ignored and case-aliased tracked entries remain allowed; the controller's independent real-clean probe is `/private/tmp/template-press-group3-execution/p10-hardlink-probe.json` |
+| Final exact parser and clean-CLI materialization | `118 passed in 108.33s` |
+| Final combined parser/CLI interaction command | `220 passed, 1 skipped in 300.76s`; included `test_clean_rules.py`, `test_clean_cli.py`, `test_press_cli.py`, and `test_cli.py` |
+| Proposed source and test lint | Ruff check passed |
+| Proposed source and test format | Ruff reported 84 files already formatted |
+| Proposed source type check | `All checks passed!` |
+| Materialized shared-inventory suite | `tests/rebrand/test_surface_inventory.py`: 75 passed in 86.81s; receipt `p10-materialized-inventory-tests.log` |
+| Exact null-device interaction validation | The internal rereview verified that the final materialized `inventory.py` differs from the current source only by the two-line `os.devnull` normalization in `_core_excludes_path`; the downstream `None` path still pins `/dev/null`, and the 75-test shared-inventory suite passed; receipts `p10-internal-major-rereview.md` and `p10-materialized-inventory-tests.log` |
+| Final docs-worktree `just check` | 1412 passed, 2 skipped in 247.86s; Ruff, `ty`, spelling, and EditorConfig passed; existing YAML warnings remained; receipt `pr120-final-just-check.log` |
+| Muse exact-delta review | **APPROVE** at actual xhigh after ultra was requested, with 100 max model steps configured; receipt `muse-p10-active-inputs.log` |
+| Claude Fable 5.1 bounded retry | **NOT REVIEWED** because the provider rejected the attempt for exhausted usage credits before review; receipt `fable-p10-active-inputs.json` |
+| Internal `gpt-6-astra` scoped final review | **APPROVE** for spec compliance and task quality; prior R1 resolved; receipt `p10-internal-major-rereview.md` |
+
+The exact final materialization is
+`/private/tmp/pr120-overlap-fix-lint-nxss9xqc`; its pointer is
+`/private/tmp/template-press-group3-execution/pr120-active-inputs-final2-materialized-path`.
+The RED checkout is `/private/tmp/pr120-overlap-fix-lint-jbesfhvg`. The first
+and second integration-failure checkouts are
+`/private/tmp/pr120-overlap-fix-lint-pjnibvzh` and
+`/private/tmp/pr120-overlap-fix-lint-ip84jkhv`. The task-specific rehearsal is
+`/private/tmp/pr120_active_inputs_rehearse.py`; it derives from the prior
+rehearsal and uses distinct evidence pointers, so no earlier scratch evidence
+was overwritten.
+
+These results cover the executable plan in disposable clones and the final
+docs-worktree validation. A shipping-source implementation, matrix run, native
+R3 result, native Windows result, commit, and PR action remain outside this
+record-only correction. The exact correction has completed its available
+reviews: Muse and internal `gpt-6-astra` approved it, while Fable supplied no
+verdict. D-B and the decision to substitute for the unavailable Fable review
+remain unresolved owner gates. The controller owns commit, push, and PR
+closeout.

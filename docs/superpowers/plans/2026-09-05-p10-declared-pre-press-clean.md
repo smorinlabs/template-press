@@ -36,10 +36,12 @@ These are the points where the 2026-09-01 plan was silent or where merged code c
 - **R4 — `press clean` requires `press/press-source.toml`.** Paths render from the SOURCE identity loaded with `load_source_config(target, None)`; the E1 origin guard is not consulted, because clean writes no identity and only removes ignored entries under paths the target's own rules declare.
 - **R5 — the receipt records the declaration, unrendered.** `[[press.clean]] paths = [...]` carries the declared patterns as written; `press clean` itself never writes a receipt. No `ran` key: the table name plus docs state that it is a declaration.
 - **R6 — no writer-overlap check for clean paths.** `-X` removes only ignored entries, and every `[[edit]]`/`[[regenerate]]`/`[[reset]]`/`[[remove]]` target is inventoried, so the sets cannot intersect; `_validate_writer_overlaps` is unchanged.
-- **R7 — the snapshot-equality invariant is a test, not a runtime tripwire.** With the restricted form the invariant is git's own `-X` semantics; a runtime comparison would add an exit-1 path that cannot legitimately fire.
+- **R7 — Git `-X` semantics plus an active-input preflight support the snapshot invariant.** Before preview or apply, capture the public `SurfaceSnapshot` and refuse a present visibility or repository-config input below a clean path when that input is absent from the snapshot's tracked-plus-nonignored entries. Git then removes only ignored entries that are not active inputs. The complete snapshot equality remains a test assertion; no post-mutation runtime tripwire is added.
 - **R8 — this repository declares `[[clean]]` for itself.** The native R3 self-press then exercises parse → check-tools → receipt end to end, as it already does for `[[edit]]`.
 - **R9 — an ADR records the mechanism** (`docs/adr/0018-declared-pre-press-clean.md`), following ADR 0017 for `[[edit]]`.
 - **R10 — Git metadata must belong to the target.** Ordinary `.git` directories and registered linked-worktree gitfiles are supported. A hardened, scrubbed read-only Git query locates the selected Git directory for both marker kinds. An ordinary marker must resolve to this target's own `.git`, preventing ancestor discovery. For a gitfile, its regular `gitdir` backlink must resolve to this target's `.git`, and its regular `commondir` file must place the selected directory directly in the common repository's `worktrees/` registry. Symlinked or junctioned `.git` entries are refused. A foreign, dangling, or unbound gitfile is refused before cleaning. Standalone separate-Git-directory and submodule-root layouts without that backlink are outside this verb's v1 support; use an ordinary clone. Existing rebrand and verify behavior is unchanged.
+- **R11 — the configured excludes path must be disjoint from every rendered clean path.** After SOURCE placeholders render and `_clean_excludes_path` preserves the configured relative or absolute form, normalize both paths with `os.path.normcase(os.path.abspath(...))`. Refuse when the configured path equals or lies below a clean path. On filesystems where different path casing names the same existing node, use `os.path.samefile` on the configured path and its ancestors as the identity fallback; POSIX `normcase` does not fold case. The existing `read_regular_nofollow` validation still refuses symlinked path components and nonregular leaves before this comparison. A missing configured path below a clean root also refuses. An absent or null-device setting and a disjoint missing path retain their existing behavior. Preview and apply map the `ValidationError` to exit 2 before a `preview:` or `run:` line and before any Git clean invocation, so bytes and the complete `SurfaceSnapshot` remain unchanged.
+- **R12 — clean must not delete active Git inputs omitted from ordinary inventory entries.** Use `capture_surface_snapshot(target)` before the command echo or invocation. Protect every present path in `visibility_inputs` and `git_config_inputs` that is absent from `listed_paths(snapshot)`. Clean-root overlap keeps R11's conservative normalized spelling and existing-node identity comparison. Protected membership is stricter: exact absolute spelling or a verified case alias of the same directory entry counts, while `normcase` alone and a distinct hardlink to a protected path do not. This covers active self-ignored `.gitignore` files and ignored repository `include.path` inputs without duplicating inventory's active-ignore traversal. Tracked and non-ignored inputs remain allowed because they are already protected by Git `-X`; disjoint active inputs remain allowed; an inactive `.gitignore` below an ignored parent is absent from the active-input tuples and remains cleanable. Missing recorded inputs cannot be deleted and do not trigger R12. Snapshot-capture failure is a precondition failure with exit 2. The existing conservative R11 check still refuses a missing or present overlapping `core.excludesFile` first.
 
 ## File Structure
 
@@ -47,7 +49,8 @@ These are the points where the 2026-09-01 plan was silent or where merged code c
 | --- | --- |
 | `src/template_press/rebrand/rules.py` (modify) | `CleanRule`, `_CleanDeclaration`, `_CLEAN_KEYS`, `_parse_clean`, `_ParsedRules.clean`, raw-table extraction in `_parse_rules`, platform selection in `_select_rules`, `Rules.clean`, `_ROOT_KEYS`. |
 | `src/template_press/rebrand/clean.py` (create) | Pure logic: `render_clean_paths`, `clean_argv`, `shell_join`, `execute_clean`. No argparse, no exit codes. |
-| `src/template_press/rebrand/clean_cli.py` (create) | `clean_command(argv) -> int`: argument parsing, config loading, the 0/1/2 mapping, echo and output. |
+| `src/template_press/rebrand/clean_cli.py` (create) | `clean_command(argv) -> int`: argument parsing, config loading, configured-excludes and active-input overlap refusals, the 0/1/2 mapping, echo and output. |
+| `src/template_press/rebrand/inventory.py` (modify) | Normalize an explicit null-device `core.excludesFile` to the existing absent-value representation so `SurfaceSnapshot` does not fingerprint a volatile device node. |
 | `src/template_press/press_cli.py` (modify) | `clean` in `_USAGE` and the verb dispatch. |
 | `src/template_press/rebrand/cli.py` (modify) | Lines 185-186: `rules.clean` instead of `getattr`; the `write_receipt` call passes `clean=`. |
 | `src/template_press/rebrand/receipt.py` (modify) | `write_receipt(..., clean=...)` emits `[[press.clean]]` rows. |
@@ -191,7 +194,7 @@ def test_clean_coexists_with_every_other_mechanism(tmp_path: Path):
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run --no-sync pytest tests/rebrand/test_clean_rules.py -q`
-Expected: every test errors with `ImportError: cannot import name 'CleanRule'` (feature missing).
+Expected: collection fails with `ImportError: cannot import name 'CleanRule'` (feature missing).
 
 - [ ] **Step 3: Implement the parser**
 
@@ -293,7 +296,9 @@ def _parse_clean(entry: object) -> _CleanDeclaration:
 
 ```python
 raw_clean = data.get("clean", [])
-if not isinstance(raw_clean, list) or any(not isinstance(e, dict) for e in raw_clean):
+if not isinstance(raw_clean, list) or any(
+    not isinstance(e, dict) for e in raw_clean
+):
     raise ValidationError(f"{RULES_REL}: [[clean]] must be an array of tables")
 ```
 
@@ -589,6 +594,7 @@ git commit -m "feat(clean): render declared clean paths and build the git clean 
 
 **Files:**
 - Create: `src/template_press/rebrand/clean_cli.py`
+- Modify: `src/template_press/rebrand/inventory.py` (`_core_excludes_path`, null-device normalization)
 - Modify: `src/template_press/press_cli.py` (`_USAGE` and the verb dispatch, lines 18–46)
 - Modify: `src/template_press/rebrand/cli.py:185-186` (`getattr(rules, "clean", ())` → `rules.clean`)
 - Test: `tests/rebrand/test_clean_cli.py` (append)
@@ -596,7 +602,8 @@ git commit -m "feat(clean): render declared clean paths and build the git clean 
 **Interfaces:**
 - Consumes: Task 2's four functions; `load_selected_rules`, `RULES_REL` (rules.py); `load_source_config`, `SOURCE_CONFIG_REL` (config.py); `resolve_executable`, `command_env` (regen.py).
 - Produces: `clean_command(argv: list[str] | None = None) -> int` with `--target <dir>` (required) and `--show`.
-- Exit codes: `0` ran (or previewed) successfully; `2` target not a directory, not a git repository (no `.git` entry), or `.git` is a symlink, junction, or an unbound gitfile; rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing or malformed, a rendered path invalid, or `git` unresolvable — no clean command ran; a read-only metadata query may have run. `1` git clean exited non-zero — the tree may have changed.
+- Exit codes: `0` ran (or previewed) successfully; `2` target not a directory, not a git repository (no `.git` entry), or `.git` is a symlink, junction, or an unbound gitfile; rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing or malformed, a rendered path invalid, the configured `core.excludesFile` equals or lies below a rendered clean path, a deletable active Git input overlaps a rendered clean path, snapshot capture fails, or `git` is unresolvable — no clean command ran; a read-only metadata or surface query may have run. `1` git clean exited non-zero after preflight — the tree may have changed.
+- `inventory._core_excludes_path` maps the literal platform null device to `None`, matching `clean_cli._clean_excludes_path`. The null device supplies no policy bytes and its timestamps change when Git opens it, so treating it as a visibility input makes the public two-candidate snapshot refuse its own read. Missing configured paths retain their existing fingerprints and R11 refusal behavior.
 
 - [ ] **Step 1: Write the failing tests** (extend `tests/rebrand/test_clean_cli.py`)
 
@@ -718,13 +725,35 @@ class TestPressClean:
         assert press_cli.main(["clean", "--target", str(plain)]) == 2
         assert "not a git repository" in capsys.readouterr().err
 
-    def test_git_failure_exits_1(self, src_target: Path, capsys):
-        # Valid ordinary metadata reaches clean; a truncated index makes
-        # that command fail, independently of the gitfile precondition.
+    def test_corrupt_index_preflight_exits_2_before_clean(
+        self, src_target: Path, capsys
+    ):
+        # The active-input preflight captures the surface before cleaning.
+        # A corrupt index therefore fails as a precondition, before git clean.
         target = self._target(src_target)
         (target / ".git" / "index").write_bytes(b"corrupt")
+        assert press_cli.main(["clean", "--target", str(target)]) == 2
+        captured = capsys.readouterr()
+        assert "run:" not in captured.out
+        assert "error:" in captured.err
+
+    def test_executed_git_failure_exits_1(self, src_target: Path, capsys, monkeypatch):
+        target = self._target(src_target)
+        real_execute = clean_cli.execute_clean
+
+        def fail_clean(argv, command_target):
+            if "clean" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 5, stdout=b"partial output\n", stderr=b"clean failure\n"
+                )
+            return real_execute(argv, command_target)
+
+        monkeypatch.setattr(clean_cli, "execute_clean", fail_clean)
         assert press_cli.main(["clean", "--target", str(target)]) == 1
-        assert "git clean exited" in capsys.readouterr().err
+        captured = capsys.readouterr()
+        assert "run:" in captured.out and "partial output" in captured.out
+        assert "clean failure" in captured.err
+        assert "git clean exited 5" in captured.err
 
     @pytest.mark.parametrize("show", [False, True])
     def test_foreign_gitfile_refuses_before_clean(
@@ -973,6 +1002,358 @@ def test_clean_excludes_match_inventory(
     assert capture_surface_snapshot(target) == before
 
 
+@pytest.mark.parametrize("show", [False, True])
+@pytest.mark.parametrize("relation", ["exact", "ancestor"])
+@pytest.mark.parametrize("configured_form", ["relative", "absolute"])
+def test_configured_excludes_overlap_refuses_before_clean(
+    src_target, capsys, monkeypatch, show, relation, configured_form
+):
+    target = src_target
+    write_source_config(target)
+    if relation == "exact":
+        declared = "src/{package_name}/core-excludes"
+        excludes = target / "src/demo_widget/core-excludes"
+        excludes_bytes = b"core-excludes\n__pycache__/\n"
+    else:
+        declared = "src/{package_name}"
+        excludes = target / "src/demo_widget/.policy/core-excludes"
+        # This variant proves the guard runs before Git removes an ignored
+        # containing directory rather than naming the excludes file directly.
+        excludes_bytes = b".policy/\n__pycache__/\n"
+    _declare(target, f'[[clean]]\npaths = ["{declared}"]\n')
+    excludes.parent.mkdir(parents=True, exist_ok=True)
+    excludes.write_bytes(excludes_bytes)
+    configured = (
+        os.path.relpath(excludes, target)
+        if configured_form == "relative"
+        else str(excludes)
+    )
+    _git(target, "config", "core.excludesFile", configured)
+    cache = target / "src/demo_widget/__pycache__/x.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"cache bytes")
+    before = capture_surface_snapshot(target)
+    real_execute = clean_cli.execute_clean
+
+    def refuse_clean(argv, command_target):
+        if "clean" in argv:
+            pytest.fail("configured-excludes overlap reached git clean")
+        return real_execute(argv, command_target)
+
+    monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
+    args = ["clean", "--target", str(target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == 2
+    captured = capsys.readouterr()
+    assert "configured core.excludesFile" in captured.err
+    assert "overlaps [[clean]] path" in captured.err
+    assert "run:" not in captured.out and "preview:" not in captured.out
+    assert excludes.read_bytes() == excludes_bytes
+    assert cache.read_bytes() == b"cache bytes"
+    assert capture_surface_snapshot(target) == before
+
+
+@pytest.mark.parametrize("show", [False, True])
+def test_missing_configured_excludes_under_clean_path_refuses(
+    src_target, capsys, monkeypatch, show
+):
+    target = src_target
+    write_source_config(target)
+    _declare(target, CLEAN_SRC_TESTS)
+    excludes = target / "src/demo_widget/missing-excludes"
+    _git(
+        target,
+        "config",
+        "core.excludesFile",
+        os.path.relpath(excludes, target),
+    )
+    cache = target / "src/demo_widget/__pycache__/x.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"cache bytes")
+    before = capture_surface_snapshot(target)
+    real_execute = clean_cli.execute_clean
+
+    def refuse_clean(argv, command_target):
+        if "clean" in argv:
+            pytest.fail("missing configured-excludes overlap reached git clean")
+        return real_execute(argv, command_target)
+
+    monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
+    args = ["clean", "--target", str(target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == 2
+    captured = capsys.readouterr()
+    assert "overlaps [[clean]] path" in captured.err
+    assert "run:" not in captured.out and "preview:" not in captured.out
+    assert not excludes.exists()
+    assert cache.read_bytes() == b"cache bytes"
+    assert capture_surface_snapshot(target) == before
+
+
+@pytest.mark.parametrize("show", [False, True])
+def test_case_alias_configured_excludes_overlap_refuses(
+    src_target, capsys, monkeypatch, show
+):
+    target = src_target
+    write_source_config(target)
+    _declare(target, CLEAN_SRC_TESTS)
+    excludes = target / "src/demo_widget/core-excludes"
+    excludes.write_bytes(b"core-excludes\n__pycache__/\n")
+    alias = target / "SRC/DEMO_WIDGET/CORE-EXCLUDES"
+    if not alias.exists():
+        pytest.skip("requires a case-insensitive filesystem path alias")
+    assert os.path.samefile(excludes, alias)
+    _git(target, "config", "core.excludesFile", str(alias))
+    cache = target / "src/demo_widget/__pycache__/x.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"cache bytes")
+    before = capture_surface_snapshot(target)
+    real_execute = clean_cli.execute_clean
+
+    def refuse_clean(argv, command_target):
+        if "clean" in argv:
+            pytest.fail("case-aliased configured excludes reached git clean")
+        return real_execute(argv, command_target)
+
+    monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
+    args = ["clean", "--target", str(target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == 2
+    captured = capsys.readouterr()
+    assert "overlaps [[clean]] path" in captured.err
+    assert "run:" not in captured.out and "preview:" not in captured.out
+    assert excludes.read_bytes() == b"core-excludes\n__pycache__/\n"
+    assert cache.read_bytes() == b"cache bytes"
+    assert capture_surface_snapshot(target) == before
+
+
+@pytest.mark.parametrize("show", [False, True])
+@pytest.mark.parametrize("relation", ["exact", "ancestor"])
+def test_active_self_ignored_gitignore_refuses_before_clean(
+    src_target, capsys, monkeypatch, show, relation
+):
+    target = src_target
+    write_source_config(target)
+    declared = (
+        "src/{package_name}/.gitignore" if relation == "exact" else "src/{package_name}"
+    )
+    _declare(target, f'[[clean]]\npaths = ["{declared}"]\n')
+    policy = target / "src/demo_widget/.gitignore"
+    policy_bytes = b".gitignore\n*.tmp\n"
+    policy.write_bytes(policy_bytes)
+    cache = target / "src/demo_widget/cache.tmp"
+    cache.write_bytes(b"cache bytes")
+    before = capture_surface_snapshot(target)
+    assert any(
+        item.origin == "gitignore" and item.path == policy
+        for item in before.visibility_inputs
+    )
+    assert policy.relative_to(target) not in {entry.rel for entry in before.entries}
+    real_execute = clean_cli.execute_clean
+
+    def refuse_clean(argv, command_target):
+        if "clean" in argv:
+            pytest.fail("active self-ignored .gitignore reached git clean")
+        return real_execute(argv, command_target)
+
+    monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
+    args = ["clean", "--target", str(target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == 2
+    captured = capsys.readouterr()
+    assert "active Git input" in captured.err
+    assert "overlaps [[clean]] path" in captured.err
+    assert "run:" not in captured.out and "preview:" not in captured.out
+    assert policy.read_bytes() == policy_bytes
+    assert cache.read_bytes() == b"cache bytes"
+    assert capture_surface_snapshot(target) == before
+
+
+@posix_only
+@pytest.mark.parametrize("show", [False, True])
+def test_active_input_hardlinked_to_disjoint_tracked_path_still_refuses(
+    src_target, capsys, monkeypatch, show
+):
+    target = src_target
+    write_source_config(target)
+    _declare(target, CLEAN_SRC_TESTS)
+    tracked = target / "tracked-policy"
+    policy_bytes = b".gitignore\n*.tmp\n"
+    tracked.write_bytes(policy_bytes)
+    _git(target, "add", tracked.relative_to(target).as_posix())
+    _git(target, "commit", "-q", "-m", "track disjoint hardlink source")
+    policy = target / "src/demo_widget/.gitignore"
+    os.link(tracked, policy)
+    cache = target / "src/demo_widget/cache.tmp"
+    cache.write_bytes(b"cache bytes")
+    before = capture_surface_snapshot(target)
+    assert os.path.samefile(policy, tracked)
+    assert policy.relative_to(target) not in {entry.rel for entry in before.entries}
+    real_execute = clean_cli.execute_clean
+
+    def refuse_clean(argv, command_target):
+        if "clean" in argv:
+            pytest.fail("distinct hardlinked active input reached git clean")
+        return real_execute(argv, command_target)
+
+    monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
+    args = ["clean", "--target", str(target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == 2
+    captured = capsys.readouterr()
+    assert "active Git input" in captured.err
+    assert "run:" not in captured.out and "preview:" not in captured.out
+    assert policy.read_bytes() == policy_bytes
+    assert tracked.read_bytes() == policy_bytes
+    assert cache.read_bytes() == b"cache bytes"
+    assert capture_surface_snapshot(target) == before
+
+
+@pytest.mark.parametrize("show", [False, True])
+def test_ignored_repository_config_include_refuses_before_clean(
+    src_target, capsys, monkeypatch, show
+):
+    target = src_target
+    write_source_config(target)
+    _declare(target, CLEAN_SRC_TESTS)
+    (target / ".git/info/exclude").write_text("*.policy\n*.tmp\n", encoding="utf-8")
+    policy = target / "src/demo_widget/extra.policy"
+    policy_bytes = b"[probe]\n\tsentinel = stable-value\n"
+    policy.write_bytes(policy_bytes)
+    _git(target, "config", "--local", "include.path", str(policy))
+    cache = target / "src/demo_widget/cache.tmp"
+    cache.write_bytes(b"cache bytes")
+    before = capture_surface_snapshot(target)
+    assert any(
+        item.path == policy and item.kind != "missing"
+        for item in before.git_config_inputs
+    )
+    assert policy.relative_to(target) not in {entry.rel for entry in before.entries}
+    real_execute = clean_cli.execute_clean
+
+    def refuse_clean(argv, command_target):
+        if "clean" in argv:
+            pytest.fail("ignored repository config input reached git clean")
+        return real_execute(argv, command_target)
+
+    monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
+    args = ["clean", "--target", str(target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == 2
+    captured = capsys.readouterr()
+    assert "active Git input" in captured.err
+    assert "run:" not in captured.out and "preview:" not in captured.out
+    assert policy.read_bytes() == policy_bytes
+    assert cache.read_bytes() == b"cache bytes"
+    assert capture_surface_snapshot(target) == before
+
+
+@pytest.mark.parametrize("show", [False, True])
+@pytest.mark.parametrize("protected", ["tracked", "nonignored"])
+def test_listed_active_gitignore_is_preserved_and_clean_runs(
+    src_target, show, protected
+):
+    target = src_target
+    write_source_config(target)
+    _declare(target, CLEAN_SRC_TESTS)
+    policy = target / "src/demo_widget/.gitignore"
+    policy_bytes = b".gitignore\n*.tmp\n" if protected == "tracked" else b"*.tmp\n"
+    policy.write_bytes(policy_bytes)
+    if protected == "tracked":
+        _git(target, "add", "-f", policy.relative_to(target).as_posix())
+        _git(target, "commit", "-q", "-m", "track active policy")
+    cache = target / "src/demo_widget/cache.tmp"
+    cache.write_bytes(b"cache bytes")
+    before = capture_surface_snapshot(target)
+    assert policy.relative_to(target) in {entry.rel for entry in before.entries}
+    args = ["clean", "--target", str(target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == 0
+    assert policy.read_bytes() == policy_bytes
+    assert cache.exists() == show
+    assert capture_surface_snapshot(target) == before
+
+
+@pytest.mark.parametrize("show", [False, True])
+@pytest.mark.parametrize(
+    "protected", ["tracked-overlap", "tracked-case-alias", "ignored-disjoint"]
+)
+def test_safe_repository_config_include_is_preserved_and_clean_runs(
+    src_target, show, protected
+):
+    target = src_target
+    write_source_config(target)
+    _declare(target, CLEAN_SRC_TESTS)
+    (target / ".git/info/exclude").write_text("*.policy\n*.tmp\n", encoding="utf-8")
+    policy = target / (
+        "src/demo_widget/extra.policy"
+        if protected.startswith("tracked")
+        else "press/extra.policy"
+    )
+    policy_bytes = b"[probe]\n\tsentinel = stable-value\n"
+    policy.write_bytes(policy_bytes)
+    if protected.startswith("tracked"):
+        _git(target, "add", "-f", policy.relative_to(target).as_posix())
+        _git(target, "commit", "-q", "-m", "track config include")
+    configured_policy = policy
+    if protected == "tracked-case-alias":
+        configured_policy = target / "SRC/DEMO_WIDGET/EXTRA.POLICY"
+        if not configured_policy.exists():
+            pytest.skip("requires a case-insensitive filesystem path alias")
+        assert os.path.samefile(policy, configured_policy)
+    _git(target, "config", "--local", "include.path", str(configured_policy))
+    cache = target / "src/demo_widget/cache.tmp"
+    cache.write_bytes(b"cache bytes")
+    before = capture_surface_snapshot(target)
+    assert any(
+        item.path == configured_policy and item.kind != "missing"
+        for item in before.git_config_inputs
+    )
+    args = ["clean", "--target", str(target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == 0
+    assert policy.read_bytes() == policy_bytes
+    assert cache.exists() == show
+    assert capture_surface_snapshot(target) == before
+
+
+@pytest.mark.parametrize("show", [False, True])
+def test_disjoint_self_ignored_gitignore_is_preserved_and_clean_runs(src_target, show):
+    target = src_target
+    write_source_config(target)
+    _declare(target, CLEAN_SRC_TESTS)
+    policy = target / "press/.gitignore"
+    policy.write_bytes(b".gitignore\n")
+    cache = target / "src/demo_widget/__pycache__/x.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"cache bytes")
+    before = capture_surface_snapshot(target)
+    assert any(
+        item.origin == "gitignore" and item.path == policy
+        for item in before.visibility_inputs
+    )
+    args = ["clean", "--target", str(target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == 0
+    assert policy.read_bytes() == b".gitignore\n"
+    assert cache.exists() == show
+    assert capture_surface_snapshot(target) == before
+
+
+@pytest.mark.parametrize("show", [False, True])
+def test_inactive_gitignore_under_ignored_parent_remains_cleanable(src_target, show):
+    target = src_target
+    write_source_config(target)
+    _declare(target, CLEAN_SRC_TESTS)
+    parent_policy = target / "src/demo_widget/.gitignore"
+    parent_policy.write_bytes(b"cache/\n")
+    _git(target, "add", parent_policy.relative_to(target).as_posix())
+    _git(target, "commit", "-q", "-m", "ignore cache directory")
+    inactive_policy = target / "src/demo_widget/cache/.gitignore"
+    inactive_policy.parent.mkdir()
+    inactive_policy.write_bytes(b"*.tmp\n")
+    cache = inactive_policy.parent / "x.tmp"
+    cache.write_bytes(b"cache bytes")
+    before = capture_surface_snapshot(target)
+    assert all(item.path != inactive_policy for item in before.visibility_inputs)
+    args = ["clean", "--target", str(target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == 0
+    assert inactive_policy.exists() == show
+    assert cache.exists() == show
+    assert capture_surface_snapshot(target) == before
+
+
 def test_linked_worktree_with_absolute_common_dir_is_accepted(src_target, tmp_path):
     write_source_config(src_target)
     _declare(src_target, CLEAN_SRC_TESTS)
@@ -1122,7 +1503,25 @@ def test_missing_or_null_configured_excludes_are_accepted(
 Run: `uv run --no-sync pytest tests/rebrand/test_clean_cli.py -q`
 Expected: successful-clean and failed-clean cases fail because the dispatcher answers `unknown command 'clean'` with exit 2. Diagnostic assertions also fail where they expect a specific clean refusal. The exit-2-only missing-target test already passes and is not evidence that clean exists. The dispatcher test fails because `clean` is absent from usage. Both `TestClosureRefusalHint` tests pass already: after Task 1 `Rules.clean` exists, so the `getattr`-guarded hint at `cli.py:185-186` fires. They stay in this task as the pins that Step 3's `getattr` removal must keep green.
 
+Correction RED controls: materialize the previous complete Task 3 helper with
+the new regressions in a disposable exact checkout. The active self-ignored
+`.gitignore` cases (exact and containing roots, preview and apply), ignored
+repository-config include cases (preview and apply), and corrupt-index
+preflight assertion must fail for the demonstrated reasons. Existing
+configured-excludes tests remain green. The tracked and non-ignored active
+inputs, disjoint ignored inputs, and inactive nested `.gitignore` are inverse
+controls: preview and apply remain allowed, preserve the complete snapshot,
+and apply removes the ignored cache. Record exact counts and failure reasons.
+
 - [ ] **Step 3: Write `clean_cli.py`, wire the dispatcher, drop the `getattr`**
+
+In `inventory.py::_core_excludes_path`, normalize the explicit null device
+before resolving a relative configured path:
+
+    path = Path(text)
+    if path == Path(os.devnull):
+        return None
+    return path if path.is_absolute() else target / path
 
 ```python
 """`press clean` — remove ignored entries under declared [[clean]] paths (E10).
@@ -1137,6 +1536,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -1149,6 +1549,7 @@ from template_press.rebrand.clean import (
 )
 from template_press.rebrand.config import SOURCE_CONFIG_REL, load_source_config
 from template_press.rebrand.identity import ValidationError
+from template_press.rebrand.inventory import capture_surface_snapshot, listed_paths
 from template_press.rebrand.regen import command_env, resolve_executable
 from template_press.rebrand.rules import RULES_REL, load_selected_rules
 from template_press.rebrand.safety import (
@@ -1158,11 +1559,12 @@ from template_press.rebrand.safety import (
 )
 
 # The configuration exception set every entry point normalizes to exit 2,
-# plus SafetyError: source-config containment and no-follow Git backlink
-# reads refuse unsafe filesystem objects before a clean command runs.
+# plus safety and checked-Git failures from source/config/snapshot preflight;
+# all refuse before a clean command runs.
 _CONFIG_ERRORS = (
     ValidationError,
     SafetyError,
+    subprocess.CalledProcessError,
     tomllib.TOMLDecodeError,
     UnicodeDecodeError,
     OSError,
@@ -1205,6 +1607,97 @@ def _clean_excludes_path(git: Path, target: Path) -> Path | None:
         # Git permits an absent configured excludes file.
         pass
     return path
+
+
+def _paths_are_same(left: Path, right: Path) -> bool:
+    """Compare normalized spelling, then existing filesystem-node identity."""
+    normalized_left = Path(os.path.normcase(os.path.abspath(left)))
+    normalized_right = Path(os.path.normcase(os.path.abspath(right)))
+    if normalized_left == normalized_right:
+        return True
+    try:
+        return os.path.samefile(normalized_left, normalized_right)
+    except OSError:
+        return False
+
+
+def _paths_are_same_entry(left: Path, right: Path) -> bool:
+    """Match one directory entry across filesystem case aliases, not hardlinks."""
+    absolute_left = Path(os.path.abspath(left))
+    absolute_right = Path(os.path.abspath(right))
+    if absolute_left == absolute_right:
+        return True
+    try:
+        if not os.path.samefile(absolute_left.parent, absolute_right.parent):
+            return False
+        if not os.path.samefile(absolute_left, absolute_right):
+            return False
+    except OSError:
+        return False
+    if absolute_left.name == absolute_right.name:
+        return True
+    if absolute_left.name.casefold() != absolute_right.name.casefold():
+        return False
+    try:
+        stored_names = {entry.name for entry in os.scandir(absolute_left.parent)}
+    except OSError:
+        return False
+    # A case-insensitive alias has one stored name. If both spellings are
+    # stored, they are distinct hardlink entries and both can be removed alone.
+    return not (
+        absolute_left.name in stored_names and absolute_right.name in stored_names
+    )
+
+
+def _path_is_same_or_descendant(path: Path, root: Path) -> bool:
+    """Compare the lexical relation, then existing ancestor identities."""
+    candidate = Path(os.path.normcase(os.path.abspath(path)))
+    normalized_root = Path(os.path.normcase(os.path.abspath(root)))
+    if candidate.is_relative_to(normalized_root):
+        return True
+    # POSIX normcase is a no-op, including on case-insensitive macOS volumes.
+    # Match an existing candidate ancestor by identity so alternate case
+    # spellings cannot bypass containment checks.
+    for ancestor in (candidate, *candidate.parents):
+        if _paths_are_same(ancestor, normalized_root):
+            return True
+    return False
+
+
+def _validate_clean_excludes_disjoint(
+    target: Path, paths: tuple[str, ...], core_excludes: Path | None
+) -> None:
+    """Refuse when Git's configured excludes path is cleanable."""
+    if core_excludes is None:
+        return
+    for relative in paths:
+        if _path_is_same_or_descendant(core_excludes, target / relative):
+            raise ValidationError(
+                f"configured core.excludesFile {core_excludes} overlaps "
+                f"[[clean]] path {relative!r}"
+            )
+
+
+def _validate_clean_preserves_active_inputs(
+    target: Path, paths: tuple[str, ...]
+) -> None:
+    """Refuse a clean path that can delete a present active Git input."""
+    snapshot = capture_surface_snapshot(target)
+    protected = tuple(target / relative for relative in listed_paths(snapshot))
+    active_inputs = (*snapshot.visibility_inputs, *snapshot.git_config_inputs)
+    for active_input in active_inputs:
+        if active_input.kind == "missing" or any(
+            _paths_are_same_entry(active_input.path, protected_path)
+            for protected_path in protected
+        ):
+            continue
+        for relative in paths:
+            if _path_is_same_or_descendant(active_input.path, target / relative):
+                raise ValidationError(
+                    f"active Git input {active_input.path} overlaps "
+                    f"[[clean]] path {relative!r} but is absent from protected "
+                    "surface entries"
+                )
 
 
 def _validate_git_metadata(git: Path, target: Path) -> None:
@@ -1314,6 +1807,8 @@ def clean_command(argv: list[str] | None = None) -> int:
     try:
         _validate_git_metadata(git, target)
         core_excludes = _clean_excludes_path(git, target)
+        _validate_clean_excludes_disjoint(target, paths, core_excludes)
+        _validate_clean_preserves_active_inputs(target, paths)
     except _CONFIG_ERRORS as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -1349,12 +1844,20 @@ and the dispatch before `check-tools`:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run --no-sync pytest tests/rebrand/test_clean_cli.py tests/rebrand/test_press_cli.py tests/rebrand/test_cli.py -q && uv run --no-sync ruff check src/ tests/rebrand/test_clean_cli.py && uv run --no-sync ruff format --check src/ tests/ && uv run --no-sync ty check src/template_press/`
-Expected: all pass. If `Removing src/demo_widget/__pycache__/` is not in the output on some git version, read git's actual line from the failure and pin that exact text.
+Expected: all pass, including the overlap refusals and the existing disjoint
+controls. Both preview and apply refuse a configured-excludes or deletable
+active-input overlap with exit 2 before an echoed command or Git clean
+invocation; the input bytes, cache bytes, and complete snapshots remain
+unchanged. A corrupt index now fails during snapshot preflight with exit 2;
+the controlled executed-clean failure separately proves exit 1 plus stdout and
+stderr forwarding. If
+`Removing src/demo_widget/__pycache__/` is not in the output on some git
+version, read git's actual line from the failure and pin that exact text.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/template_press/rebrand/clean_cli.py src/template_press/press_cli.py src/template_press/rebrand/cli.py tests/rebrand/test_clean_cli.py
+git add src/template_press/rebrand/clean_cli.py src/template_press/rebrand/inventory.py src/template_press/press_cli.py src/template_press/rebrand/cli.py tests/rebrand/test_clean_cli.py
 git commit -m "feat(cli): press clean — declared, git clean -X based pre-press cleanup"
 ```
 
@@ -1465,7 +1968,7 @@ Expected: the check-tools and receipt tests fail on the missing row/table; the n
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run --no-sync pytest tests/rebrand/test_clean_cli.py tests/rebrand/test_check_tools.py tests/rebrand/test_receipt.py tests/rebrand/test_verify_cli.py -q && uv run --no-sync ruff check src/ && uv run --no-sync ruff format --check src/ tests/ && uv run --no-sync ty check src/template_press/`
-Expected: all pass (use the receipt test module's actual filename if it differs from `test_receipt.py`).
+Expected: all pass.
 
 - [ ] **Step 5: Commit**
 
@@ -1512,7 +2015,8 @@ Expected: `KeyError: 'clean'` — the repository declares no `[[clean]]` yet.
 # trees) are ignored, so they are invisible to the surface inventory and would
 # trip the rename-closure refusal (E2) when the package directory is renamed.
 # Declaring them lets `press clean --target <clone>` remove exactly those
-# before a press; nothing inventoried can be touched (git clean -X).
+# before a press; the active-input preflight and git clean -X preserve the
+# complete surface snapshot.
 [[clean]]
 paths = ["src/{package_name}", "tests"]
 ```
@@ -1550,6 +2054,18 @@ hardened argv, and runs `git --literal-pathspecs clean -fdX -- <paths>`
 removed. Global/system Git configuration is scrubbed, and the clean argv
 pins the repository-configured excludes file or the null device. This
 separate pin prevents Git from loading its default user ignore file.
+Before constructing that argv, the verb captures the target's public
+`SurfaceSnapshot`. It refuses with exit 2 when a rendered clean path equals or
+contains a present active Git visibility or repository-config input that is
+absent from the snapshot's protected tracked-plus-nonignored entries. This
+prevents deletion of active self-ignored `.gitignore` and ignored repository
+`include.path` files without duplicating inventory's active-ignore traversal.
+Tracked, non-ignored, disjoint, missing, and inactive inputs retain Git's
+normal behavior. The verb also keeps the stricter configured-excludes rule: a
+configured path equal to or below a clean path refuses even when it is missing.
+Both comparisons handle SOURCE-rendered paths and existing case aliases. Both
+preview and apply refuse before an echoed command or Git clean invocation,
+preserving input bytes and the complete surface snapshot.
 
 Clean is never a phase of `press rebrand`: dry-run and apply must observe the
 same tree. Ordering is structural — the closure refusal names `press clean`
@@ -1560,8 +2076,10 @@ receipt. `press check-tools` lists one informational row per rule.
 
 ## Consequences
 
-- Exit codes keep the 0/1/2 contract, with `1` meaning git ran and failed,
-  so the tree may have changed.
+- Exit codes keep the 0/1/2 contract. Exit `2` includes configured-excludes or
+  active-input overlap and snapshot-capture failure; no clean command ran.
+  Exit `1` means git clean ran after preflight and failed, so the tree may have
+  changed.
 - Arbitrary clean commands remain out of scope; they would need the
   before/after invariant the CLEAN review specified.
 - A declared path that matches nothing is a silent no-op (`git clean` exits 0).
@@ -1610,11 +2128,27 @@ prints runs in your ambient environment, so it can remove more than
 `press clean` would). A declared path that matches nothing is a silent
 no-op. Git warnings are forwarded to stderr even when Git exits 0.
 
+Before either preview or apply, `press clean` captures the same complete
+surface snapshot used by the rebrand engine. A present active `.gitignore` or
+repository-config input that is absent from the protected tracked-plus-
+nonignored entries exits 2 when it equals or lies below a rendered clean path.
+Tracked and non-ignored active inputs remain protected by Git `-X`; disjoint
+active inputs remain outside the command; inactive `.gitignore` files below an
+ignored parent remain cleanable. The check uses the inventory's public active
+input records instead of reproducing its traversal.
+
+The configured excludes path remains subject to a stricter rule. Relative and
+absolute configured forms are normalized after SOURCE placeholders render. A
+path equal to or below a clean path, including a missing configured path or an
+alternate-case alias of an existing node, exits 2 before the `preview:` or
+`run:` line and before Git clean runs. An absent or null-device setting and a
+disjoint missing path retain the behavior described above.
+
 | Code | Meaning |
 |------|---------|
 | `0` | The preview or the clean ran and git exited 0. |
-| `1` | git ran and exited non-zero — the tree may have changed; read git's message. |
-| `2` | No clean command ran: target missing, not a git repository, or its `.git` a symlink, junction, or an unbound gitfile; rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing, a path unrenderable, or `git` unresolvable. |
+| `1` | git clean ran after preflight and exited non-zero — the tree may have changed; read git's message. |
+| `2` | No clean command ran: target missing, not a git repository, or its `.git` a symlink, junction, or an unbound gitfile; rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing, a path unrenderable, configured `core.excludesFile` equal to or below a rendered clean path, a deletable active Git input overlapping a clean path, snapshot capture failure, or `git` unresolvable. |
 
 Supported targets have an ordinary `.git` directory or a linked-worktree
 gitfile whose selected Git directory has a regular `gitdir` backlink to this
