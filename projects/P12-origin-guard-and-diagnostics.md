@@ -2,6 +2,10 @@
 
 - **Status:** `[~]` in progress — PR #109 is part 1.
 
+The owner inserted [P11A — CI speed and cost optimization](P11A-ci-speed-and-cost-optimization.md)
+before the remaining P12 value review on 2026-09-07. P11A profiling runs in
+parallel with P11 closeout; P12 follow-up decisions resume after that work.
+
 E1 origin==destination acceptance + `--accept-origin-mismatch`; E2
 aggregated closure refusal with remedy argv and `--diagnostics-json`;
 E5(a)(b)(d) removal coverage warning/counts/own declarations; E8
