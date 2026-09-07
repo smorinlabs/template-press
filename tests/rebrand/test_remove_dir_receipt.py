@@ -498,6 +498,10 @@ def test_bounded_read_refuses_fifo_before_open(tmp_path):
         read_receipt(tmp_path, max_bytes=1024)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="replace-open race fixture requires POSIX rename semantics",
+)
 def test_bounded_read_refuses_replaced_leaf(tmp_path, monkeypatch):
     import template_press.rebrand.receipt as module
     from template_press.rebrand.safety import SafetyError

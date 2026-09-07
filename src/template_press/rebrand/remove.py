@@ -143,6 +143,48 @@ def _directory_status_problems(
     return problems
 
 
+def _require_exact_stored_directory_spelling(target: Path, current_dir: str) -> None:
+    """Refuse filesystem aliases of a directory's stored component names."""
+    parent = target
+    for component in PurePosixPath(current_dir).parts:
+        with os.scandir(parent) as entries:
+            stored = [(entry.name, Path(entry.path)) for entry in entries]
+        if any(name == component for name, _path in stored):
+            parent /= component
+            continue
+        candidate = parent / component
+        stored_alias = next(
+            (
+                name
+                for name, stored_path in stored
+                if _same_existing_directory(stored_path, candidate)
+            ),
+            None,
+        )
+        detail = (
+            f" {stored_alias!r}" if stored_alias is not None else " on the filesystem"
+        )
+        raise SafetyError(
+            f"remove directory {current_dir!r}: component {component!r} does not "
+            f"use exact stored spelling{detail}"
+        )
+
+
+def _same_existing_directory(left: Path, right: Path) -> bool:
+    """Compare real directory entries without following symlink-like nodes."""
+    try:
+        if (
+            not stat.S_ISDIR(left.lstat().st_mode)
+            or left.is_junction()
+            or not stat.S_ISDIR(right.lstat().st_mode)
+            or right.is_junction()
+        ):
+            return False
+        return os.path.samefile(left, right)
+    except OSError:
+        return False
+
+
 def _freeze_directory(
     target: Path,
     declaration: RemoveDirRule,
@@ -182,6 +224,7 @@ def _freeze_directory(
         )
     if not root.is_dir() or root.is_symlink():
         raise SafetyError(f"remove directory {current_dir!r} is not a real directory")
+    _require_exact_stored_directory_spelling(target, current_dir)
 
     stack = [root]
     while stack:
@@ -216,6 +259,22 @@ def _freeze_directory(
 
     snapshot = capture_surface_snapshot(target)
     prefix = current_dir + "/"
+    root_parts = PurePosixPath(current_dir).parts
+    for entry in snapshot.entries:
+        relative = entry.rel.as_posix()
+        if (
+            not entry.tracked
+            or relative == current_dir
+            or relative.startswith(prefix)
+            or len(entry.rel.parts) < len(root_parts)
+        ):
+            continue
+        indexed_root = target.joinpath(*entry.rel.parts[: len(root_parts)])
+        if _same_existing_directory(indexed_root, root):
+            raise SafetyError(
+                f"remove directory {current_dir!r}: tracked path {relative!r} does "
+                "not use the exact directory root spelling"
+            )
     present = {
         entry.rel.as_posix()
         for entry in snapshot.entries
@@ -273,13 +332,8 @@ def _freeze_directory(
         for member in (prior.members if prior is not None else ())
         if member.current_file in prior_missing
     )
-    prior_by_current = {
-        member.current_file: member for member in (prior.members if prior else ())
-    }
     members = tuple(
-        replace(prior_by_current[rel], reason=declaration.reason, missing_ok=False)
-        if rel in prior_by_current
-        else RemovalMember(
+        RemovalMember(
             file=rel,
             current_file=rel,
             reason=declaration.reason,

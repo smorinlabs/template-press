@@ -22,6 +22,7 @@ from template_press.rebrand.removal_types import (
     RemovalPlan,
 )
 from template_press.rebrand.remove import (
+    apply_removal_plan,
     frozen_remove_command_conflicts,
     render_frozen_remove_plan,
 )
@@ -29,7 +30,14 @@ from template_press.rebrand.rules import load_rules, load_selected_rules
 from template_press.rebrand.safety import SafetyError
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import DEST, SOURCE, _git, requires_symlink, write_answers_file
+from .conftest import (
+    DEST,
+    SOURCE,
+    _git,
+    posix_only,
+    requires_symlink,
+    write_answers_file,
+)
 from .test_verify_cli import _commit, make_pressable
 
 DIR_RULE = '[[remove]]\ndir = "research"\nreason = "template research"\n'
@@ -338,6 +346,7 @@ def test_directory_root_gitlink_refuses(tmp_path: Path):
         freeze_fresh(repo)
 
 
+@posix_only
 def test_directory_control_character_member_refuses(tmp_path: Path):
     repo = directory_repo(tmp_path)
     (repo / "research/line\nbreak.md").write_text("bad\n", encoding="utf-8")
@@ -346,12 +355,168 @@ def test_directory_control_character_member_refuses(tmp_path: Path):
         freeze_fresh(repo)
 
 
+@posix_only
 def test_directory_alias_member_refuses(tmp_path: Path):
     repo = directory_repo(tmp_path)
     (repo / "research/one.md.").write_text("alias\n", encoding="utf-8")
     _commit(repo)
     with pytest.raises(SafetyError, match="alias-colliding"):
         freeze_fresh(repo)
+
+
+@requires_symlink
+def test_directory_index_alias_guard_ignores_unrelated_symlink(tmp_path: Path):
+    repo = directory_repo(tmp_path)
+    link = repo / "research-link"
+    link.symlink_to("research", target_is_directory=True)
+    _commit(repo)
+
+    directory = freeze_fresh(repo)
+    assert [member.current_file for member in directory.members] == [
+        "research/one.md",
+        "research/sub/two.md",
+    ]
+    assert link.is_symlink()
+    assert os.readlink(link) == "research"
+
+
+@pytest.mark.parametrize(
+    ("stored_root", "alternate_root", "stored_component"),
+    [
+        ("research", "RESEARCH", "research"),
+        ("container/research", "CONTAINER/research", "container"),
+    ],
+)
+def test_directory_root_uses_exact_stored_spelling(
+    tmp_path: Path,
+    stored_root: str,
+    alternate_root: str,
+    stored_component: str,
+):
+    repo = directory_repo(tmp_path)
+    if stored_root != "research":
+        (repo / "container").mkdir()
+        (repo / "research").rename(repo / stored_root)
+        write_dir_rules(
+            repo,
+            f'[[remove]]\ndir="{stored_root}"\nreason="template research"\n',
+        )
+        _commit(repo)
+
+    exact = freeze_fresh(repo)
+    expected = {
+        f"{stored_root}/one.md",
+        f"{stored_root}/sub/two.md",
+    }
+    assert {member.current_file for member in exact.members} == expected
+
+    alternate_path = repo / alternate_root
+    stored_path = repo / stored_root
+    if alternate_path.is_dir() and os.path.samefile(alternate_path, stored_path):
+        write_dir_rules(
+            repo,
+            f'[[remove]]\ndir="{alternate_root}"\nreason="template research"\n',
+        )
+        _commit(repo)
+        before = {relative: (repo / relative).read_bytes() for relative in expected}
+        with pytest.raises(SafetyError, match="exact stored spelling") as error:
+            freeze_fresh(repo)
+        assert f"exact stored spelling {stored_component!r}" in str(error.value)
+        assert {
+            relative: (repo / relative).read_bytes() for relative in expected
+        } == before
+        assert not (repo / RECEIPT_REL).exists()
+    else:
+        alternate_path.mkdir(parents=True)
+        alternate_member = f"{alternate_root}/separate.md"
+        (repo / alternate_member).write_text("separate member\n", encoding="utf-8")
+        write_dir_rules(
+            repo,
+            f'[[remove]]\ndir="{alternate_root}"\nreason="template research"\n',
+        )
+        _commit(repo)
+        alternate = freeze_fresh(repo)
+        assert [member.current_file for member in alternate.members] == [
+            alternate_member
+        ]
+        assert all((repo / relative).is_file() for relative in expected)
+
+
+def test_directory_index_root_spelling_matches_stored_root(tmp_path: Path):
+    repo = directory_repo(tmp_path)
+    lowercase_root = repo / "research"
+    uppercase_root = repo / "RESEARCH"
+    if not uppercase_root.is_dir() or not os.path.samefile(
+        uppercase_root, lowercase_root
+    ):
+        pytest.skip("filesystem does not resolve the case-only directory alias")
+
+    lowercase_root.rename(uppercase_root)
+    if "RESEARCH" not in {entry.name for entry in os.scandir(repo)}:
+        pytest.skip("filesystem cannot store the requested case-only root spelling")
+    write_dir_rules(
+        repo,
+        '[[remove]]\ndir="RESEARCH"\nreason="template research"\n',
+    )
+    _git(repo, "add", "press/press-rules.toml")
+    _git(repo, "commit", "-q", "-m", "declare stored uppercase root")
+
+    indexed = subprocess.run(  # noqa: S603
+        ["git", "-C", str(repo), "ls-files"],  # noqa: S607
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert "research/one.md" in indexed
+    assert "research/sub/two.md" in indexed
+    assert (
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(repo), "status", "--porcelain"],  # noqa: S607
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        == ""
+    )
+
+    before = {
+        relative: (uppercase_root / relative).read_bytes()
+        for relative in ("one.md", "sub/two.md")
+    }
+    with pytest.raises(SafetyError, match="exact directory root spelling"):
+        freeze_fresh(repo)
+    assert {
+        relative: (uppercase_root / relative).read_bytes() for relative in before
+    } == before
+    assert not (repo / RECEIPT_REL).exists()
+
+
+def test_directory_apply_keeps_parent_above_declared_root(tmp_path: Path):
+    member_path = tmp_path / "outer/research/member.md"
+    member_path.parent.mkdir(parents=True)
+    member_path.write_text("member\n", encoding="utf-8")
+    row = DirectoryRemoval(
+        "outer/research",
+        "outer/research",
+        "r",
+        (
+            RemovalMember(
+                "outer/research/member.md",
+                "outer/research/member.md",
+                "r",
+                "outer/research",
+            ),
+        ),
+    )
+
+    assert apply_removal_plan(
+        tmp_path,
+        RemovalPlan(directories=(row,)),
+        {},
+    ) == ["outer/research/member.md"]
+    assert not (tmp_path / "outer/research").exists()
+    assert (tmp_path / "outer").is_dir()
+    assert list((tmp_path / "outer").iterdir()) == []
 
 
 def test_directory_audit_key_collision_with_history_refuses(tmp_path: Path):
@@ -1029,7 +1194,7 @@ def test_direct_press_dirty_directory_before_mutation(tmp_path, supply_table):
     assert not (repo / RECEIPT_REL).exists()
 
 
-def test_renewal_restored_members_keep_audit_coordinates(tmp_path):
+def test_renewal_present_members_get_fresh_coordinates(tmp_path):
     from template_press.rebrand.receipt import read_receipt
     from template_press.rebrand.remove import plan_removals
 
@@ -1041,15 +1206,68 @@ def test_renewal_restored_members_keep_audit_coordinates(tmp_path):
     (repo / "archive/one.md").write_text("restored first\n", encoding="utf-8")
     _git(repo, "add", "archive/one.md")
     _git(repo, "commit", "-q", "-m", "restore only recorded member")
+
     plan = plan_removals(
         repo, load_rules(repo), source=destination, receipt_text=read_receipt(repo)
     )
     restored = next(m for m in plan.members if m.current_file == "archive/one.md")
-    assert (restored.file, restored.source_dir, restored.missing_ok) == (
-        "research/one.md",
+    absent = next(m for m in plan.members if m.current_file == "archive/two.md")
+    assert (
+        restored.file,
+        restored.source_dir,
+        restored.current_file,
+        restored.missing_ok,
+    ) == ("archive/one.md", "archive", "archive/one.md", False)
+    assert (absent.file, absent.source_dir, absent.current_file, absent.missing_ok) == (
+        "research/two.md",
         "research",
-        False,
+        "archive/two.md",
+        True,
     )
+
+    next_identity = dataclasses.replace(destination, author="Next Maintainer")
+    next_answers = write_answers_file(tmp_path, next_identity)
+    assert (
+        main(
+            [
+                "--target",
+                str(repo),
+                "--config",
+                str(next_answers),
+                "--force",
+                "--allow-dirty",
+            ]
+        )
+        == 0
+    )
+    receipt = tomllib.loads((repo / RECEIPT_REL).read_text(encoding="utf-8"))
+    assert receipt["press"]["counts"]["removed"] == 1
+    assert receipt["press"]["remove"] == [
+        {"file": "archive/one.md", "reason": "template research"},
+        {"file": "research/two.md", "reason": "template research"},
+        {"file": "research/one.md", "reason": "template research"},
+    ]
+    assert len({row["file"] for row in receipt["press"]["remove"]}) == 3
+    assert (
+        sum(row["file"] == "research/one.md" for row in receipt["press"]["remove"]) == 1
+    )
+    members = {
+        member["file"]: member
+        for member in receipt["press"]["remove_dir"][0]["members"]
+    }
+    assert members["archive/one.md"] == {
+        "file": "archive/one.md",
+        "source_dir": "archive",
+        "current_file": "Next Maintainer/one.md",
+    }
+    assert members["research/two.md"] == {
+        "file": "research/two.md",
+        "source_dir": "research",
+        "current_file": "Next Maintainer/two.md",
+    }
+    assert not (repo / "archive/one.md").exists()
+    point_origin(repo, next_identity)
+    assert verify_command(["--target", str(repo)]) == 0
 
 
 def test_verify_history_does_not_expand_membership(tmp_path):

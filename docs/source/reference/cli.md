@@ -445,6 +445,10 @@ out of the directory or declare the remaining files individually. Ignored
 ordinary files are not added to the selection; they remain and can prevent the
 directory from becoming empty.
 
+Use each directory component's exact stored spelling. If Git records that root
+with a different spelling, reconcile the working tree and index before pressing.
+Filesystem aliases are refused; they cannot stand in for a complete selection.
+
 Removals run after rewriting and renaming, before declared commands. Only the
 selected members are deleted, at their successfully renamed locations. The
 selected directory and member ancestors are removed when empty. Unrelated empty
@@ -461,6 +465,15 @@ clean-directory checks. Missing directories require complete, verified history
 matching the current source identity. Ambiguous old/current roots refuse. Older
 versions that do not understand `dir` or directory history cannot safely
 re-press this target.
+
+Directory removal receipts have a 16 MiB size limit. Before changing files, the
+press budgets the complete receipt, including all planned operations. This
+conservative check can refuse a receipt close to the limit when shorter counts
+or fewer executed renames would have produced a smaller final receipt.
+Directory-history paths and reasons each have a 4,096-byte UTF-8 limit. The
+press also budgets possible path growth if a later shortening rename is skipped.
+This can refuse a path near that limit even when completing every rename would
+have shortened it enough to fit.
 
 `reason` is required — a removal is a deliberate, documented decision.
 Targets must exist, be git-tracked, and be clean at plan time; a

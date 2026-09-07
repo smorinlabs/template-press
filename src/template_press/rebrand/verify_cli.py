@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import subprocess  # nosec B404 — re-stages the OWNED sandbox git index only
 import sys
 import tomllib
@@ -584,6 +585,17 @@ def verify_command(argv: list[str] | None = None) -> int:
                 # removed by a prior press (a pressed fork's normal state);
                 # a missing target with NO record is stale config and must
                 # fail loud, never silently scan clean.
+                for member in removal_plan.files:
+                    current = translate_path(member.current_file, dict(report.renamed))
+                    if not member.missing_ok and not os.path.lexists(
+                        sandbox.path / current
+                    ):
+                        return _fail(
+                            f"[[remove]] target {member.file} does not "
+                            "exist and no receipt records its removal — a "
+                            "stale declaration is config drift; delete it "
+                            "or restore the file"
+                        )
                 apply_removal_plan(sandbox.path, removal_plan, dict(report.renamed))
                 _restage_sandbox(sandbox.path)
             except _PRESS_ENV_ERRORS as exc:

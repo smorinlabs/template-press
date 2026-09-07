@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -165,9 +166,231 @@ def write_receipt(
     clean: Sequence[Sequence[str]] = (),
     remove_dirs: Sequence[DirectoryRemoval] = (),
 ) -> Path:
+    text = _render_receipt(
+        source,
+        dest,
+        report,
+        regenerations,
+        resets,
+        removals,
+        exempt,
+        edits,
+        stamp=_receipt_stamp(),
+        platform=platform,
+        origin=origin,
+        clean=clean,
+        remove_dirs=remove_dirs,
+    )
+    return write_control(target, RECEIPT_REL, text)
+
+
+def _receipt_stamp() -> str:
+    """UTC with seconds precision always has the same 25-byte ISO representation."""
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def preflight_receipt(
+    source: Identity,
+    dest: Identity,
+    regenerations: Sequence[tuple[str, Sequence[str]]] = (),
+    resets: Sequence[str] = (),
+    removals: Sequence[tuple[str, str]] = (),
+    exempt: Sequence[tuple[str, str]] = (),
+    edits: Sequence[tuple[str, Sequence[str], str]] = (),
+    *,
+    platform: str | None = None,
+    origin: OriginDecision | None = None,
+    clean: Sequence[Sequence[str]] = (),
+    remove_dirs: Sequence[DirectoryRemoval] = (),
+    renames: Mapping[str, str] | None = None,
+) -> int | None:
+    """Bound complete output before writes; file-only receipts remain uncapped.
+
+    Supply all planned successful phase rows and SOURCE-current directory
+    coordinates. Actual phase rows are subsets of those plans. Each count is
+    len(an ApplyReport list), bounded by sys.maxsize without allocating a list.
+    Rendering that maximum decimal width may conservatively refuse near the
+    cap even when the final smaller counts would fit. Every other output byte
+    uses the writer's renderer, including its fixed-width UTC timestamp.
+
+    Renames may execute only partly. Budget possible growth from the original
+    current paths, not just their fully projected (possibly shorter) endpoints.
+    The per-field UTF-8 bound likewise includes intermediate growth, so it
+    may refuse near 4096 bytes even when every final shortened path fits.
+    """
+    if not remove_dirs:
+        return None
+    text = _render_receipt(
+        source,
+        dest,
+        None,
+        regenerations,
+        resets,
+        removals,
+        exempt,
+        edits,
+        stamp=_receipt_stamp(),
+        platform=platform,
+        origin=origin,
+        clean=clean,
+        remove_dirs=remove_dirs,
+    )
+    rename_map = renames or {}
+    _validate_current_path_text_limits(remove_dirs, rename_map)
+    size = len(text.encode("utf-8")) + _current_path_growth(remove_dirs, rename_map)
+    if size > REMOVE_HISTORY_MAX_BYTES:
+        raise ValidationError(
+            f"directory receipt byte limit {REMOVE_HISTORY_MAX_BYTES} exceeded"
+        )
+    return size
+
+
+def _validate_current_path_text_limits(
+    directories: Sequence[DirectoryRemoval], renames: Mapping[str, str]
+) -> None:
+    """Bound raw UTF-8 widths for any subset of the frozen prefix moves.
+
+    Compiled renames preserve component count. At each fixed component index,
+    every prefix substitution follows an old-value -> new-value edge. The
+    maximum reachable width at each index, plus separators, bounds any finite
+    translation. Ignoring parent context and combining independent maxima is
+    conservative: even a successful growth-then-shortening plan may refuse
+    near the field cap. Unrelated sibling values do not multiply the bound.
+
+    Arbitrary depth-changing mappings use a coarser fallback: translate_path
+    can succeed after at most len(renames) substitutions, each adding at most
+    the largest positive raw prefix delta. Production compiled plans do not
+    take this fallback; many unrelated entries may overcharge such callers.
+    """
+    largest_delta = max(
+        (
+            len(new.encode("utf-8")) - len(old.encode("utf-8"))
+            for old, new in renames.items()
+        ),
+        default=0,
+    )
+    if largest_delta <= 0:
+        # No subset can grow a path when every whole-prefix delta is nonpositive.
+        return
+    depth_preserving = all(
+        old.count("/") == new.count("/") for old, new in renames.items()
+    )
+    edges: dict[tuple[int, str], set[str]] = {}
+    if depth_preserving:
+        for old, new in renames.items():
+            for index, (before, after) in enumerate(
+                zip(old.split("/"), new.split("/"), strict=True)
+            ):
+                if before != after:
+                    edges.setdefault((index, before), set()).add(after)
+    widths: dict[tuple[int, str], int] = {}
+
+    def component_width(index: int, initial: str) -> int:
+        key = (index, initial)
+        if key not in widths:
+            pending = [initial]
+            seen: set[str] = set()
+            maximum = 0
+            while pending:
+                value = pending.pop()
+                if value in seen:
+                    continue
+                seen.add(value)
+                maximum = max(maximum, len(value.encode("utf-8")))
+                pending.extend(edges.get((index, value), ()))
+            # Publish only complete results, including every value in a cycle.
+            widths[key] = maximum
+        return widths[key]
+
+    for directory in directories:
+        for path in (
+            directory.current_dir,
+            *(member.current_file for member in directory.members),
+        ):
+            parts = path.split("/")
+            if not any(
+                "/".join(parts[:i]) in renames for i in range(1, len(parts) + 1)
+            ):
+                # Without a first matching prefix no executed subset can move it.
+                continue
+            if depth_preserving:
+                size = (
+                    len(parts)
+                    - 1
+                    + sum(
+                        component_width(index, value)
+                        for index, value in enumerate(parts)
+                    )
+                )
+            else:
+                size = len(path.encode("utf-8")) + len(renames) * largest_delta
+            if size > REMOVE_HISTORY_MAX_TEXT_BYTES:
+                raise ValidationError(
+                    f"directory text byte limit {REMOVE_HISTORY_MAX_TEXT_BYTES} "
+                    "exceeded by conservative rename-growth preflight bound"
+                )
+
+
+def _current_path_growth(
+    directories: Sequence[DirectoryRemoval], renames: Mapping[str, str]
+) -> int:
+    """Bound only the two directory-history fields translated by the writer.
+
+    translate_path must finish within len(renames) substitutions to succeed;
+    the next loop iteration observes convergence. Any executed subset has no
+    more entries. Each substitution adds at most the largest positive encoded
+    prefix delta, so their product bounds growth even when shortening steps
+    are skipped. TOML quoting/UTF-8 use the same field serializer as output.
+
+    A path matching no initial old prefix cannot take a first substitution,
+    so unrelated renames add nothing to it. A matching path may be overcharged
+    when many other renames are unrelated; no reachability search is needed.
+    """
+    largest_delta = max(
+        (
+            len(toml_string(new).encode("utf-8"))
+            - len(toml_string(old).encode("utf-8"))
+            for old, new in renames.items()
+        ),
+        default=0,
+    )
+    if largest_delta <= 0:
+        return 0
+    paths = (
+        path
+        for directory in directories
+        for path in (
+            directory.current_dir,
+            *(member.current_file for member in directory.members),
+        )
+    )
+    affected = 0
+    for path in paths:
+        parts = path.split("/")
+        if any("/".join(parts[:i]) in renames for i in range(1, len(parts) + 1)):
+            affected += 1
+    return affected * len(renames) * largest_delta
+
+
+def _render_receipt(
+    source: Identity,
+    dest: Identity,
+    report: ApplyReport | None,
+    regenerations: Sequence[tuple[str, Sequence[str]]] = (),
+    resets: Sequence[str] = (),
+    removals: Sequence[tuple[str, str]] = (),
+    exempt: Sequence[tuple[str, str]] = (),
+    edits: Sequence[tuple[str, Sequence[str], str]] = (),
+    *,
+    stamp: str,
+    platform: str | None = None,
+    origin: OriginDecision | None = None,
+    clean: Sequence[Sequence[str]] = (),
+    remove_dirs: Sequence[DirectoryRemoval] = (),
+) -> str:
+    """Render once for preflight and output; report=None budgets list widths."""
     if remove_dirs:
         validate_directory_history(remove_dirs, removals)
-    stamp = datetime.now(UTC).isoformat(timespec="seconds")
     # Each key is written only when that relaxation actually fired (E1): a
     # receipt without them means the guard relaxed nothing — origin agreed
     # with the source-config, or had no discoverable value (no remote, or a
@@ -207,13 +430,18 @@ def write_receipt(
         *_identity_table("to", dest),
         "",
         "[press.counts]",
-        f"replaced = {len(report.replaced)}",
-        f"renamed = {len(report.renamed)}",
-        f"reset = {len(report.reset)}",
-        f"removed = {len(report.removed)}",
-        f"edited = {len(report.edited)}",
-        f"regenerated = {len(report.regenerated)}",
-        f"skipped = {len(report.skipped)}",
+        *(
+            f"{name} = {sys.maxsize if report is None else len(getattr(report, name))}"
+            for name in (
+                "replaced",
+                "renamed",
+                "reset",
+                "removed",
+                "edited",
+                "regenerated",
+                "skipped",
+            )
+        ),
     ]
     # Edits precede regenerations here for the same reason they precede them
     # in the plan and in execution: the receipt reads in phase order (E4).
@@ -275,8 +503,10 @@ def write_receipt(
         ]
     text = "\n".join(lines) + "\n"
     if remove_dirs and len(text.encode("utf-8")) > REMOVE_HISTORY_MAX_BYTES:
-        raise ValidationError("directory receipt byte limit 16777216 exceeded")
-    return write_control(target, RECEIPT_REL, text)
+        raise ValidationError(
+            f"directory receipt byte limit {REMOVE_HISTORY_MAX_BYTES} exceeded"
+        )
+    return text
 
 
 def _press_table(text: str | None) -> dict[str, object]:
@@ -463,10 +693,14 @@ def _directory_lines(directories: Sequence[DirectoryRemoval]) -> list[str]:
             )
             used_bytes += len(rendered.encode("utf-8")) + (2 if rendered_members else 0)
             if used_bytes > REMOVE_HISTORY_MAX_BYTES:
-                raise ValidationError("directory receipt byte limit 16777216 exceeded")
+                raise ValidationError(
+                    f"directory receipt byte limit {REMOVE_HISTORY_MAX_BYTES} exceeded"
+                )
             rendered_members.append(rendered)
         if used_bytes > REMOVE_HISTORY_MAX_BYTES:
-            raise ValidationError("directory receipt byte limit 16777216 exceeded")
+            raise ValidationError(
+                f"directory receipt byte limit {REMOVE_HISTORY_MAX_BYTES} exceeded"
+            )
         lines += [*header, "members = [" + ", ".join(rendered_members) + "]"]
     return lines
 
@@ -492,7 +726,7 @@ def validate_directory_history(
 
     File-only callers retain legacy behavior. For directory callers this checks
     the schema and serialized history limits shared by reader and writer; the
-    writer additionally bounds the entire receipt including unrelated phases.
+    complete-output preflight and writer also bound all other receipt fields.
     """
     if len(directories) > REMOVE_HISTORY_MAX_DIRS:
         raise ValidationError("directory row limit 1024 exceeded")
@@ -564,9 +798,13 @@ def validate_directory_history(
         rendered = f"\n[[press.remove]]\nfile = {toml_string(file)}\nreason = {toml_string(reason)}\n"
         used_bytes += len(rendered.encode("utf-8"))
         if used_bytes > REMOVE_HISTORY_MAX_BYTES:
-            raise ValidationError("directory receipt byte limit 16777216 exceeded")
+            raise ValidationError(
+                f"directory receipt byte limit {REMOVE_HISTORY_MAX_BYTES} exceeded"
+            )
     if used_bytes > REMOVE_HISTORY_MAX_BYTES:
-        raise ValidationError("directory receipt byte limit 16777216 exceeded")
+        raise ValidationError(
+            f"directory receipt byte limit {REMOVE_HISTORY_MAX_BYTES} exceeded"
+        )
 
 
 def directory_history_from_receipt(
@@ -580,7 +818,9 @@ def directory_history_from_receipt(
     except UnicodeEncodeError as exc:
         raise ValidationError("directory receipt is not valid UTF-8") from exc
     if size > REMOVE_HISTORY_MAX_BYTES:
-        raise ValidationError("directory receipt byte limit 16777216 exceeded")
+        raise ValidationError(
+            f"directory receipt byte limit {REMOVE_HISTORY_MAX_BYTES} exceeded"
+        )
     try:
         parsed = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:

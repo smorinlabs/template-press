@@ -2089,3 +2089,53 @@ six tasks under the existing PR creation and merge authorization. Technical
 review approval does not substitute for the required tests, committed-head
 acceptance, or current PR checks and review-thread resolution. P12 remains an
 evaluation step after P10 and P11 delivery.
+
+
+## Final implementation review corrections
+
+The whole-branch review found gaps in the implementation after the six task
+commits. These corrections enforce the accepted contract before final acceptance
+and delivery. They do not add P12 implementation or close any delivery gate.
+
+- Fresh present members use their current physical audit path and source root.
+  Absent members keep their earlier audit coordinates. Prior flat audit rows
+  remain once even when the directory member has a newer source coordinate.
+- A selected directory must use exact stored component spelling. Git index
+  entries that reach the same physical root through a different spelling refuse
+  before literal-prefix selection. Physically distinct case-sensitive roots must
+  remain separate. Native case and index-spelling controls preserve the files and
+  prior receipt on refusal; nested-root cleanup preserves the root's parent.
+- `preflight_receipt`, the complete output budget in `receipt.py`, shares field
+  serialization with the final writer. It includes mandatory envelope fields and
+  all planned phase, cleanup-declaration, exemption, removal and retained-history
+  rows. Count fields reserve the maximum representable list-length width.
+  Current-path growth uses a conservative bound from the frozen rename map,
+  including skipped shortening steps. The preflight can refuse near-limit output
+  whose eventual smaller counts or fewer renames would fit. Both public dry-run
+  and real press check this before receipt invalidation or source writes; direct
+  directory `_press` calls check before their first write. Legacy file-only
+  receipts keep their existing uncapped output behavior.
+- Preflight also bounds raw UTF-8 `current_dir` and `current_file` lengths
+  against the existing 4,096-byte field limit. A destination present under an old
+  parent can be carried into a later shortening destination by the parent move;
+  the later move then predictably skips. Use a per-component reachable-width
+  bound for compiled maps, preserving ordinary paths with many unrelated renames.
+  The check conservatively refuses near-limit growth-then-shortening cases even
+  when all steps would succeed. Test real stable destination occupancy before
+  planning, public dry-run/apply and direct refusal before writes, shorter success
+  controls, raw UTF-8 exact boundaries, and the arbitrary depth-changing-map
+  fallback. Do not substitute a destination injected after preflight for this
+  stable-input regression.
+- Physical filename and replace-over-open fixtures use narrow platform markers
+  when Windows cannot construct their intended state. Their original assertions
+  and portable schema/alias controls remain. The Windows module and native R3
+  are not exempted.
+- File-only verify restores the existing missing-removal configuration-drift
+  diagnostic and remedy. Its exit and JSON-stream behavior remain unchanged;
+  P12's proposed operational JSON envelope is a separate decision.
+
+Each production correction requires a meaningful failing regression followed by
+its passing counterpart. Final acceptance uses the combined corrected tree,
+independent correction review, full checks, and a committed-head native matrix.
+Partial failure after an unexpected execution-time change remains a documented
+possibility; the receipt budget does not promise atomic execution or rollback.

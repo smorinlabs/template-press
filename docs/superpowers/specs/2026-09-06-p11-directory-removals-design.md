@@ -181,9 +181,13 @@ For a fresh directory expansion:
    reuse valid complete history and translate its locations through later ancestor
    renames; do not require already-successful deletions to become clean again.
 3. Capture one Git surface snapshot; take sorted tracked files beneath the exact
-   selected root. Reject tracked symlink/gitlink entries even if an inventory
-   exclusion would hide them from rewriting. Refuse missing selected files unless
-   that exact current path is a completed member of matching directory history.
+   selected root. Each selected root component must match its stored filesystem
+   spelling. Refuse alternate-spelling declarations and index paths that reach
+   that same physical root through a different root spelling. Do not combine
+   physically distinct case-sensitive trees through a portable alias key.
+   Reject tracked symlink/gitlink entries even if an inventory exclusion would
+   hide them from rewriting. Refuse missing selected files unless that exact
+   current path is a completed member of matching directory history.
 4. Check the selected root and all present descendants without following links.
    Refuse symlinks, Windows junctions, gitlinks, and other non-regular leaf kinds.
    Do not walk `.git` of an embedded repository; refuse that boundary. Use
@@ -300,6 +304,31 @@ metadata reason conflicts. Check raw flat rows before the tolerant reader can
 collapse duplicates. Keep the existing legacy reader unchanged for file-only
 receipts and file declarations. Directory parser limits apply equally to writer
 output, before mutation when a frozen plan would exceed them.
+
+The output-size preflight includes the complete receipt envelope and every
+planned phase, clean, exemption, removal, and retained-history row. It shares
+serialization with the writer. Count fields reserve the maximum decimal width
+of a Python list length; translated current paths use a bound derived from the
+frozen rename map, including skipped shortening steps. This conservative budget
+can refuse a near-limit receipt whose eventual counts or executed renames would
+produce fewer bytes. Dry-run and real press use the same budget before source
+writes or prior receipt invalidation. Direct directory `_press` calls enforce
+it before their first write. The final writer repeats the complete limit check;
+legacy file-only receipts keep their existing uncapped behavior.
+
+The preflight separately bounds the raw UTF-8 lengths of `current_dir` and each
+`current_file` against the 4,096-byte field limit. For component-count-preserving
+rename maps, each component's bound is the maximum width reachable through
+same-position component substitutions. Sum those widths and the unchanged
+separators. Ignore parent correlations conservatively, terminate graph cycles,
+and do not charge paths that match no initial old prefix. This may refuse a
+near-limit path even if every rename would execute and its final value would fit.
+Unrelated sibling renames must not multiply an ordinary path's field budget.
+For arbitrary depth-changing maps supplied to the receipt helper, use the raw
+prefix-growth bound over at most the mapping's entry count; that fallback is
+coarser and is not used by the component-count-preserving production compiler.
+This field check precedes the same mutation boundaries as the complete-output
+budget. It changes neither destination-occupancy skips nor removal membership.
 
 Use all validated directory metadata to retain absence authorization, including
 rows whose declarations are no longer active. They cannot authorize new
