@@ -645,7 +645,7 @@ git commit -m "feat(remove): freeze clean tracked directory members"
 `directory_history_from_receipt`, bounded `read_receipt`, and the `remove_dirs`
 writer keyword in the shared interface table. Legacy file helpers stay callable.
 
-- [ ] **Step 1: Add executor and round-trip tests.**
+- [x] **Step 1: Add executor and round-trip tests.**
 
 ```python
 def test_cleanup_preserves_nonmembers(tmp_path):
@@ -823,7 +823,7 @@ def test_history_limits(tmp_path):
 
   `ApplyReport()` is the actual baseline constructor; its fields have defaults.
 
-- [ ] **Step 2: RED.**
+- [x] **Step 2: RED.**
 
 ```bash
 uv run pytest tests/rebrand/test_remove_dir_receipt.py tests/rebrand/test_remove_dirs.py -k 'history or translate or cleanup' -q -x
@@ -833,7 +833,7 @@ uv run pytest tests/rebrand/test_remove_dir_receipt.py tests/rebrand/test_remove
   metadata fails the independently expected TOML object; a parser/writer
   round-trip alone is not sufficient evidence.
 
-- [ ] **Step 3: Implement exact operations and bounded serialization.**
+- [x] **Step 3: Implement exact operations and bounded serialization.**
 
 ```python
 def translate_removal_plan(plan, renamed):
@@ -1133,7 +1133,7 @@ def test_history_byte_limit_has_valid_boundary():
   `(tmp_path / "press/press-receipt.toml").write_bytes(b"\xff")` followed by
   `read_receipt(tmp_path, max_bytes=16 * 1024 * 1024)`; assert `ValidationError`.
 
-- [ ] **Step 4: GREEN, compatibility and full gates.**
+- [x] **Step 4: GREEN, compatibility and full gates.**
 
 ```bash
 uv run pytest tests/rebrand/test_remove_dir_receipt.py tests/rebrand/test_remove_dirs.py tests/rebrand/test_remove_rules.py -q
@@ -1141,7 +1141,7 @@ PYTEST_ADDOPTS='-n 8' just check
 just matrix
 ```
 
-- [ ] **Step 5: Commit and review.**
+- [x] **Step 5: Commit and review.**
 
 ```bash
 git add src/template_press/rebrand/remove.py src/template_press/rebrand/receipt.py tests/rebrand/test_remove_dirs.py tests/rebrand/test_remove_dir_receipt.py

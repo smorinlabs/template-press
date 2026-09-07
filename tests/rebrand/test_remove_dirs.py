@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import subprocess
 import sys
@@ -462,3 +463,191 @@ def test_verify_refuses_directory_rules_until_executor_exists(tmp_path: Path, ca
     repo = directory_repo(tmp_path)
     assert verify_command(["--target", str(repo)]) == 2
     assert "complete P11 executor and history integration" in capsys.readouterr().err
+
+
+def test_cleanup_preserves_nonmembers(tmp_path):
+    from template_press.rebrand.removal_types import RemovalPlan
+    from template_press.rebrand.remove import apply_removal_plan
+
+    repo = directory_repo(tmp_path)
+    directory = freeze_fresh(repo)
+    (repo / "research/unselected-empty").mkdir()
+    (repo / "research/cache.bin").write_bytes(b"must survive")
+    removed = apply_removal_plan(repo, RemovalPlan(directories=(directory,)), {})
+    assert removed == ["research/one.md", "research/sub/two.md"]
+    assert not (repo / "research/sub").exists()
+    assert (repo / "research/unselected-empty").is_dir()
+    assert (repo / "research/cache.bin").read_bytes() == b"must survive"
+
+
+def test_empty_history_round_trip(tmp_path):
+    from template_press.rebrand.removal_types import RemovalPlan
+    from template_press.rebrand.remove import apply_removal_plan
+
+    repo = make_pressable(tmp_path)
+    write_dir_rules(repo)
+    _commit(repo)
+    (repo / "research").mkdir()
+    directory = freeze_fresh(repo)
+    assert apply_removal_plan(repo, RemovalPlan(directories=(directory,)), {}) == []
+    assert not (repo / "research").exists()
+
+
+def test_executor_validates_entire_plan_before_unlink(tmp_path):
+    from dataclasses import replace
+
+    from template_press.rebrand.remove import apply_removal_plan
+
+    repo = directory_repo(tmp_path)
+    directory = freeze_fresh(repo)
+    bad = replace(directory.members[-1], current_file="incoming/late.md")
+    directory = replace(directory, members=(directory.members[0], bad))
+    with pytest.raises(ValidationError, match="current_dir"):
+        apply_removal_plan(repo, RemovalPlan(directories=(directory,)), {})
+    assert (repo / "research/one.md").read_text() == "first member\n"
+    assert (repo / "incoming/late.md").read_text() == "outside member\n"
+
+
+def test_executor_translates_once_and_preserves_retained_history(tmp_path):
+    from template_press.rebrand.remove import apply_removal_plan
+
+    repo = directory_repo(tmp_path)
+    directory = freeze_fresh(repo)
+    (repo / "research").rename(repo / "archive")
+    retained = DirectoryRemoval(
+        "incoming",
+        "incoming",
+        "inactive",
+        (
+            RemovalMember(
+                "incoming/late.md", "incoming/late.md", "inactive", "incoming", True
+            ),
+        ),
+    )
+    removed = apply_removal_plan(
+        repo,
+        RemovalPlan(directories=(directory,), retained_history=(retained,)),
+        {"research": "archive"},
+    )
+    assert removed == ["archive/one.md", "archive/sub/two.md"]
+    assert not (repo / "archive").exists()
+    assert (repo / "incoming/late.md").read_text() == "outside member\n"
+
+
+@pytest.mark.parametrize("missing_ok", [False, True])
+def test_executor_absence_requires_member_authorization(tmp_path, missing_ok):
+    from dataclasses import replace
+
+    from template_press.rebrand.remove import apply_removal_plan
+
+    repo = directory_repo(tmp_path)
+    directory = freeze_fresh(repo)
+    (repo / "research/one.md").unlink()
+    directory = replace(
+        directory,
+        members=tuple(replace(m, missing_ok=missing_ok) for m in directory.members),
+    )
+    plan = RemovalPlan(directories=(directory,))
+    if missing_ok:
+        assert apply_removal_plan(repo, plan, {}) == ["research/sub/two.md"]
+        assert not (repo / "research").exists()
+    else:
+        with pytest.raises(SafetyError, match="does not exist"):
+            apply_removal_plan(repo, plan, {})
+        assert (repo / "research/sub/two.md").exists()
+
+
+def test_executor_history_limits_precede_any_unlink(tmp_path):
+    from dataclasses import replace
+
+    from template_press.rebrand.remove import apply_removal_plan
+
+    repo = directory_repo(tmp_path)
+    directory = freeze_fresh(repo)
+    directory = replace(directory, reason="x" * 4097)
+    with pytest.raises(
+        ValidationError, match="directory text byte limit 4096 exceeded"
+    ):
+        apply_removal_plan(repo, RemovalPlan(directories=(directory,)), {})
+    assert (repo / "research/one.md").read_text() == "first member\n"
+
+
+@pytest.mark.parametrize("error", [errno.EACCES, errno.EIO])
+def test_cleanup_propagates_unexpected_errors(tmp_path, monkeypatch, error):
+    import template_press.rebrand.remove as module
+
+    repo = directory_repo(tmp_path)
+    directory = freeze_fresh(repo)
+    actual_rmdir = module.os.rmdir
+
+    def failing_rmdir(path, *args, **kwargs):
+        if Path(path) == repo / "research/sub":
+            raise OSError(error, "injected cleanup failure")
+        return actual_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "rmdir", failing_rmdir)
+    with pytest.raises(OSError) as exc:
+        module.apply_removal_plan(repo, RemovalPlan(directories=(directory,)), {})
+    assert exc.value.errno == error
+    assert not (repo / "research/one.md").exists()
+    assert not (repo / "research/sub/two.md").exists()
+    assert (repo / "incoming/late.md").read_text() == "outside member\n"
+
+
+def test_cleanup_rejects_wrong_kind_selected_empty_root(tmp_path):
+    from template_press.rebrand.remove import apply_removal_plan
+
+    (tmp_path / "research").write_text("sentinel", encoding="utf-8")
+    row = DirectoryRemoval("research", "research", "r", ())
+    with pytest.raises(SafetyError, match="not a real directory"):
+        apply_removal_plan(tmp_path, RemovalPlan(directories=(row,)), {})
+    assert (tmp_path / "research").read_text() == "sentinel"
+
+
+def test_file_only_executor_preserves_empty_parent(tmp_path):
+    from template_press.rebrand.remove import apply_removal_plan
+
+    (tmp_path / "ordinary").mkdir()
+    (tmp_path / "ordinary/a.md").write_text("file", encoding="utf-8")
+    plan = RemovalPlan(files=(RemovalMember("ordinary/a.md", "ordinary/a.md", "r"),))
+    assert apply_removal_plan(tmp_path, plan, {}) == ["ordinary/a.md"]
+    assert (tmp_path / "ordinary").is_dir()
+
+
+def test_frozen_history_byte_limit_precedes_unlink(tmp_path):
+    from template_press.rebrand.remove import apply_removal_plan
+
+    (tmp_path / "research").mkdir()
+    sentinel = tmp_path / "research/first"
+    sentinel.write_text("preserved", encoding="utf-8")
+    members = [RemovalMember("research/first", "research/first", "r", "research")]
+    for index in range(2100):
+        path = f"research/{index}" + "x" * 3900
+        members.append(RemovalMember(path, path, "r", "research", True))
+    row = DirectoryRemoval("research", "research", "r", tuple(members))
+    with pytest.raises(
+        ValidationError, match="directory receipt byte limit 16777216 exceeded"
+    ):
+        apply_removal_plan(tmp_path, RemovalPlan(directories=(row,)), {})
+    assert sentinel.read_text() == "preserved"
+
+
+def test_executor_refuses_junction_ancestor_before_unlink(tmp_path, monkeypatch):
+    from template_press.rebrand.remove import apply_removal_plan
+
+    (tmp_path / "research/sub").mkdir(parents=True)
+    path = tmp_path / "research/sub/member"
+    path.write_text("preserved", encoding="utf-8")
+    member = RemovalMember(
+        "research/sub/member", "research/sub/member", "r", "research"
+    )
+    row = DirectoryRemoval("research", "research", "r", (member,))
+    actual_is_junction = Path.is_junction
+
+    def junction_at_parent(path):
+        return path == tmp_path / "research/sub" or actual_is_junction(path)
+
+    monkeypatch.setattr(Path, "is_junction", junction_at_parent)
+    with pytest.raises(SafetyError):
+        apply_removal_plan(tmp_path, RemovalPlan(directories=(row,)), {})
+    assert path.read_text() == "preserved"

@@ -23,16 +23,22 @@ equivalent. Contract:
 
 from __future__ import annotations
 
+import errno
 import os
 import posixpath
 import stat
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from template_press.rebrand.inventory import capture_surface_snapshot
 from template_press.rebrand.pathing import translate_path
+from template_press.rebrand.receipt import (
+    REMOVE_HISTORY_MAX_BYTES,
+    read_receipt,
+    validate_directory_history,
+)
 from template_press.rebrand.regen import has_uncommitted_changes, tracked_paths
 from template_press.rebrand.removal_types import (
     DirectoryRemoval,
@@ -591,4 +597,117 @@ def apply_removals(
             )
         os.unlink(path)
         removed.append(rel)
+    return removed
+
+
+def removal_receipt_text(target: Path, rules: Rules) -> str | None:
+    """Bound active-directory receipt allocation before its first content read."""
+    return read_receipt(
+        target, max_bytes=REMOVE_HISTORY_MAX_BYTES if rules.remove_dirs else None
+    )
+
+
+def translate_removal_plan(
+    plan: RemovalPlan, renamed: Mapping[str, str]
+) -> RemovalPlan:
+    """Translate exact current locations while preserving source audit coordinates."""
+
+    def member_at_current(member: RemovalMember) -> RemovalMember:
+        return replace(
+            member, current_file=translate_path(member.current_file, renamed)
+        )
+
+    def directory_at_current(directory: DirectoryRemoval) -> DirectoryRemoval:
+        return replace(
+            directory,
+            current_dir=translate_path(directory.current_dir, renamed),
+            members=tuple(member_at_current(m) for m in directory.members),
+        )
+
+    return RemovalPlan(
+        files=tuple(member_at_current(m) for m in plan.files),
+        directories=tuple(directory_at_current(d) for d in plan.directories),
+        retained_history=tuple(directory_at_current(d) for d in plan.retained_history),
+    )
+
+
+def validate_removal_plan(plan: RemovalPlan) -> None:
+    """Validate all frozen history before the caller's first target mutation.
+
+    Planning callers must invoke this before reset/rewrite, including on the
+    projected translated plan. The executor repeats it before any unlink.
+    """
+    history = plan.directories + plan.retained_history
+    if not history:
+        return
+    rows = [(member.file, member.reason) for member in plan.files]
+    rows += [
+        (member.file, member.reason)
+        for directory in history
+        for member in directory.members
+    ]
+    validate_directory_history(history, rows)
+
+
+def _guard_frozen_remove_path(path: Path, target: Path) -> None:
+    """Repeat static containment and junction guards for each exact operation."""
+    assert_under_root(path, target)
+    assert_ancestors_real(path, target)
+    for ancestor in path.relative_to(target).parents:
+        if (target / ancestor).is_junction():
+            raise SafetyError("remove path has a junction ancestor")
+
+
+def apply_removal_plan(
+    target: Path, plan: RemovalPlan, renamed: Mapping[str, str]
+) -> list[str]:
+    """Unlink frozen members, then remove only their empty bounded ancestors."""
+    translated = translate_removal_plan(plan, renamed)
+    validate_removal_plan(translated)
+    cleanup: set[str] = set()
+    for directory in translated.directories:
+        cleanup.add(directory.current_dir)
+        root = PurePosixPath(directory.current_dir)
+        for member in directory.members:
+            for parent in PurePosixPath(member.current_file).parents:
+                if parent == root:
+                    break
+                if root not in parent.parents:
+                    raise SafetyError(
+                        "directory member escaped its recorded current root"
+                    )
+                cleanup.add(parent.as_posix())
+    removed: list[str] = []
+    for member in translated.members:
+        rel = member.current_file
+        path = target / rel
+        _guard_frozen_remove_path(path, target)
+        if not os.path.lexists(path):
+            if member.missing_ok:
+                continue
+            raise SafetyError(f"remove target {rel!r} does not exist at apply time")
+        if path.is_junction() or not is_regular_lstat(path):
+            raise SafetyError(
+                f"remove target {rel!r} is not a regular file at apply time (no-follow check)"
+            )
+        os.unlink(path)
+        removed.append(rel)
+    for rel in sorted(cleanup, key=lambda value: (-value.count("/"), value)):
+        path = target / rel
+        _guard_frozen_remove_path(path, target)
+        if not os.path.lexists(path):
+            continue
+        if (
+            path.is_symlink()
+            or path.is_junction()
+            or not stat.S_ISDIR(path.lstat().st_mode)
+        ):
+            raise SafetyError(f"remove directory {rel!r} is not a real directory")
+        try:
+            os.rmdir(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+                raise
     return removed
