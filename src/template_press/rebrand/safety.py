@@ -787,6 +787,10 @@ def rename_noreplace_best_effort(src: Path, dst: Path) -> None:
 # G5 / G5+ — subprocess env scrub + on-target git hardening
 # ---------------------------------------------------------------------------
 GIT_ENV_UNSET: tuple[str, ...] = (
+    "GIT_GLOB_PATHSPECS",
+    "GIT_NOGLOB_PATHSPECS",
+    "GIT_LITERAL_PATHSPECS",
+    "GIT_ICASE_PATHSPECS",
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",

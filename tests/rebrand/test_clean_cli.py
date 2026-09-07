@@ -153,7 +153,7 @@ def test_clean_excludes_decodes_git_utf8_independently_of_filesystem_encoding(
     monkeypatch.setattr(
         clean_cli,
         "execute_clean",
-        lambda argv, command_target: subprocess.CompletedProcess(
+        lambda argv, command_target, *, stdin=None: subprocess.CompletedProcess(
             argv,
             0,
             stdout=str(excludes).encode("utf-8") + b"\0",
@@ -183,7 +183,7 @@ def test_git_metadata_decodes_git_utf8_independently_of_filesystem_encoding(
     monkeypatch.setattr(
         clean_cli,
         "execute_clean",
-        lambda argv, command_target: subprocess.CompletedProcess(
+        lambda argv, command_target, *, stdin=None: subprocess.CompletedProcess(
             argv,
             0,
             stdout=str(git_dir).encode("utf-8") + b"\n",
@@ -381,6 +381,7 @@ class TestPressClean:
 
     def test_show_previews_and_removes_nothing(self, src_target: Path, capsys):
         target = self._target(src_target)
+        (target / "tests").mkdir()  # Both delegated directory selections exist.
         cache = target / "src" / "demo_widget" / "__pycache__" / "x.pyc"
         cache.parent.mkdir()
         cache.write_bytes(b"\x00")
@@ -394,6 +395,7 @@ class TestPressClean:
         self, src_target: Path, capsys
     ):
         target = self._target(src_target)
+        (target / "tests").mkdir()  # Both delegated directory selections exist.
         cache = target / "src" / "demo_widget" / "__pycache__" / "x.pyc"
         cache.parent.mkdir()
         cache.write_bytes(b"\x00")
@@ -427,8 +429,7 @@ class TestPressClean:
     def test_absent_declared_path_is_a_silent_no_op(self, src_target: Path, capsys):
         target = self._target(src_target, '[[clean]]\npaths = ["missing"]\n')
         assert press_cli.main(["clean", "--target", str(target)]) == 0
-        lines = capsys.readouterr().out.splitlines()
-        assert len(lines) == 1 and lines[0].startswith("run: ")
+        assert capsys.readouterr().out == ""
 
     def test_no_active_rule_exits_2(self, src_target: Path, capsys):
         foreign = "linux" if sys.platform == "win32" else "win32"
@@ -475,12 +476,12 @@ class TestPressClean:
         target = self._target(src_target)
         real_execute = clean_cli.execute_clean
 
-        def fail_clean(argv, command_target):
+        def fail_clean(argv, command_target, *, stdin=None):
             if "clean" in argv:
                 return subprocess.CompletedProcess(
                     argv, 5, stdout=b"partial output\n", stderr=b"clean failure\n"
                 )
-            return real_execute(argv, command_target)
+            return real_execute(argv, command_target, stdin=stdin)
 
         monkeypatch.setattr(clean_cli, "execute_clean", fail_clean)
         assert press_cli.main(["clean", "--target", str(target)]) == 1
@@ -731,10 +732,10 @@ def test_success_stderr_is_forwarded(src_target, capsys, monkeypatch, show):
     warning = b"warning: could not open directory: Permission denied\n"
     real_execute = clean_cli.execute_clean
 
-    def warn_on_clean(argv, target):
+    def warn_on_clean(argv, target, *, stdin=None):
         if "clean" in argv:
             return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=warning)
-        return real_execute(argv, target)
+        return real_execute(argv, target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", warn_on_clean)
     args = ["clean", "--target", str(target)] + (["--show"] if show else [])
@@ -825,10 +826,10 @@ def test_configured_excludes_overlap_refuses_before_clean(
     before = capture_surface_snapshot(target)
     real_execute = clean_cli.execute_clean
 
-    def refuse_clean(argv, command_target):
+    def refuse_clean(argv, command_target, *, stdin=None):
         if "clean" in argv:
             pytest.fail("configured-excludes overlap reached git clean")
-        return real_execute(argv, command_target)
+        return real_execute(argv, command_target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
     args = ["clean", "--target", str(target)] + (["--show"] if show else [])
@@ -862,10 +863,10 @@ def test_missing_configured_excludes_under_clean_path_refuses(
     before = capture_surface_snapshot(target)
     real_execute = clean_cli.execute_clean
 
-    def refuse_clean(argv, command_target):
+    def refuse_clean(argv, command_target, *, stdin=None):
         if "clean" in argv:
             pytest.fail("missing configured-excludes overlap reached git clean")
-        return real_execute(argv, command_target)
+        return real_execute(argv, command_target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
     args = ["clean", "--target", str(target)] + (["--show"] if show else [])
@@ -898,10 +899,10 @@ def test_case_alias_configured_excludes_overlap_refuses(
     before = capture_surface_snapshot(target)
     real_execute = clean_cli.execute_clean
 
-    def refuse_clean(argv, command_target):
+    def refuse_clean(argv, command_target, *, stdin=None):
         if "clean" in argv:
             pytest.fail("case-aliased configured excludes reached git clean")
-        return real_execute(argv, command_target)
+        return real_execute(argv, command_target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
     args = ["clean", "--target", str(target)] + (["--show"] if show else [])
@@ -938,10 +939,10 @@ def test_active_self_ignored_gitignore_refuses_before_clean(
     assert policy.relative_to(target) not in {entry.rel for entry in before.entries}
     real_execute = clean_cli.execute_clean
 
-    def refuse_clean(argv, command_target):
+    def refuse_clean(argv, command_target, *, stdin=None):
         if "clean" in argv:
             pytest.fail("active self-ignored .gitignore reached git clean")
-        return real_execute(argv, command_target)
+        return real_execute(argv, command_target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
     args = ["clean", "--target", str(target)] + (["--show"] if show else [])
@@ -977,10 +978,10 @@ def test_active_input_hardlinked_to_disjoint_tracked_path_still_refuses(
     assert policy.relative_to(target) not in {entry.rel for entry in before.entries}
     real_execute = clean_cli.execute_clean
 
-    def refuse_clean(argv, command_target):
+    def refuse_clean(argv, command_target, *, stdin=None):
         if "clean" in argv:
             pytest.fail("distinct hardlinked active input reached git clean")
-        return real_execute(argv, command_target)
+        return real_execute(argv, command_target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
     args = ["clean", "--target", str(target)] + (["--show"] if show else [])
@@ -1016,10 +1017,10 @@ def test_ignored_repository_config_include_refuses_before_clean(
     assert policy.relative_to(target) not in {entry.rel for entry in before.entries}
     real_execute = clean_cli.execute_clean
 
-    def refuse_clean(argv, command_target):
+    def refuse_clean(argv, command_target, *, stdin=None):
         if "clean" in argv:
             pytest.fail("ignored repository config input reached git clean")
-        return real_execute(argv, command_target)
+        return real_execute(argv, command_target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
     args = ["clean", "--target", str(target)] + (["--show"] if show else [])
@@ -1255,12 +1256,12 @@ def test_nonregular_configured_excludes_refuse_before_clean(
     cache.write_bytes(b"keep")
     real_execute = clean_cli.execute_clean
 
-    def refuse_unsafe_clean(argv, target):
+    def refuse_unsafe_clean(argv, target, *, stdin=None):
         # The old implementation fails promptly here instead of hanging
         # this test on the FIFO. Metadata/config queries still use real Git.
         if "clean" in argv:
             pytest.fail("unsafe git clean reached a nonregular excludes input")
-        return real_execute(argv, target)
+        return real_execute(argv, target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", refuse_unsafe_clean)
     args = ["clean", "--target", str(src_target)] + (["--show"] if show else [])
@@ -1303,10 +1304,10 @@ def test_clean_launch_oserror_is_precondition_refusal(
     before = capture_surface_snapshot(src_target)
     real_execute = clean_cli.execute_clean
 
-    def execute_with_launch_control(argv, target):
+    def execute_with_launch_control(argv, target, *, stdin=None):
         if launch_missing and "clean" in argv:
             argv = [str(tmp_path / "git-gone"), *argv[1:]]
-        return real_execute(argv, target)
+        return real_execute(argv, target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", execute_with_launch_control)
     args = ["clean", "--target", str(src_target)] + (["--show"] if show else [])
