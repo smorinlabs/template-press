@@ -2065,7 +2065,7 @@ PYTEST_ADDOPTS='-n 8' just check
   limit formatting to `src/`. Review any formatting changes so unrelated files
   are not swept into the commit.
 
-- [ ] **Step 5: Commit the native declaration, then run committed-head acceptance.**
+- [x] **Step 5: Commit the native declaration, then run committed-head acceptance.**
 
 ```bash
 git add press/press-rules.toml tests/rebrand/test_matrix.py docs/source/reference/cli.md docs/superpowers/specs/2026-09-06-p11-directory-removals-design.md docs/superpowers/plans/2026-09-06-p11-directory-removals.md
@@ -2139,3 +2139,17 @@ its passing counterpart. Final acceptance uses the combined corrected tree,
 independent correction review, full checks, and a committed-head native matrix.
 Partial failure after an unexpected execution-time change remains a documented
 possibility; the receipt budget does not promise atomic execution or rollback.
+
+
+## Local acceptance closeout
+
+Implementation commit `e53e5333cffef7522b885bd559013811cda88a8b` contains the
+final reviewed corrections and the native research declaration. Its exact tree
+`46df63f16f926f1a989f9879f7afe1cb0d747905` passed `just check` with 2,045 tests
+and 24 skips, plus root formatting of all 188 Python files. The committed-head
+R1/R2/R3 matrix passed four cases with six deselections. Independent internal
+and Muse correction reviews approved that tree. Muse requested Ultra and a
+100-step maximum; the provider reported `xhigh`, with no measured step count.
+All six implementation tasks are locally accepted. Native Windows CI and
+current-head PR checks, review closure and merge remain delivery requirements
+tracked by P11-T07.

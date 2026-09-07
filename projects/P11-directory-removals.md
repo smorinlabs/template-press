@@ -12,9 +12,9 @@
 - **Status:** `[~]` in progress — Group 3C. Declaration parsing, frozen
   directory selection, exact deletion, complete receipt history, and public
   press/verifier integration are implemented and reviewed. Discriminating
-  membership controls also pass independent review. The native migration and
-  documentation are implemented. Committed-head native acceptance and final
-  delivery remain open.
+  membership controls also pass independent review. The native migration,
+  documentation, final corrections and committed-head acceptance are complete.
+  Native Windows CI, PR review closure and merge remain delivery gates.
 
 ### Scope
 
@@ -34,7 +34,7 @@ rename with a separate injected nonmember and broken-executor control.
 - [x] [P11-T03] Task 3: exact deletion, safe empty-directory pruning, and complete bounded receipt history.
 - [x] [P11-T04] Task 4: real press, historical verification, and explicit membership renewal.
 - [x] [P11-T05] Task 5: prove production preserves nonmembers and deliberately broken alternatives fail the same oracles.
-- [ ] [P11-T06] Task 6: migrate research declarations, preserve project scaffolding, document behavior, and validate committed-head acceptance.
+- [x] [P11-T06] Task 6: migrate research declarations, preserve project scaffolding, document behavior, and validate committed-head acceptance.
 - [ ] [P11-T07] Delivery: final independent review, PR checks and thread resolution, authorized merge, then project closeout.
 
 ### Verification
@@ -74,3 +74,23 @@ removals and `projects/.gitkeep` remain. The final `just check` passed with
 1,723 tests and three skips; root formatting passed. The native R3 assertions
 require acceptance after the declaration commit and are not yet certified by
 this targeted or full default-suite result.
+
+
+Final local closeout is bound to implementation commit
+`e53e5333cffef7522b885bd559013811cda88a8b`, tree
+`46df63f16f926f1a989f9879f7afe1cb0d747905`. The combined `just check` passed
+with 2,045 tests and 24 platform/marker skips; all 188 Python files passed root
+formatting. The committed-head R1/R2/R3 matrix passed all four cases with six
+deselections. Native R3 verifies the research directory history and retained
+project scaffolding after cloning that commit.
+
+Final review corrections preserve renewed audit history, reject directory
+spelling aliases, retain file-only diagnostics, and preflight complete receipt
+bytes and translated field limits before writes. Stable-input occupied-rename
+regressions first failed, then passed alongside exact-limit success controls.
+Independent internal and Muse correction reviews both approved the final tree.
+Muse requested Ultra with a 100-step maximum but reported an `xhigh` fallback;
+the maximum is not an observed step count. The earlier whole-branch Opus review
+completed after Fable was unavailable. These local results close P11-T06.
+P11-T07 and the trunk remain in progress until remote checks, all review
+threads and the authorized merge are complete. P12 remains evaluation-only.
