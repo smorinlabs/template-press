@@ -177,6 +177,25 @@ class _EditDeclaration:
 
 
 @dataclass(frozen=True)
+class CleanRule:
+    """One declared pre-press clean (E10, restricted v1).
+
+    Paths are stored as declared in SOURCE coordinates; rendering happens at
+    clean-command run time.
+    """
+
+    paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _CleanDeclaration:
+    """One parsed clean rule plus its environment-independent selector."""
+
+    rule: CleanRule
+    platforms: frozenset[str]
+
+
+@dataclass(frozen=True)
 class _RegenerateDeclaration:
     """One parsed regeneration plus its environment-independent selector."""
 
@@ -232,6 +251,8 @@ class Rules:
     # on purpose: Rules is constructed positionally in places, and an
     # insertion higher up rebinds every later argument silently.
     edit: tuple[EditRule, ...] = ()
+    # Declared pre-press clean paths (E10), appended for positional safety.
+    clean: tuple[CleanRule, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -251,6 +272,7 @@ class _ParsedRules:
     reset: tuple[_ResetDeclaration, ...] = ()
     remove: tuple[_RemoveDeclaration, ...] = ()
     edit: tuple[_EditDeclaration, ...] = ()
+    clean: tuple[_CleanDeclaration, ...] = ()
 
 
 DEFAULT_RULES = Rules(
@@ -297,12 +319,13 @@ _RULES_KEYS = frozenset(
 
 # The exact set of ROOT-level tables press-rules.toml legitimately carries —
 # every table some loader in this codebase actually reads from the file:
-# [rules], [[replace]], [[regenerate]], [[reset]], [[remove]], and [[edit]]
+# [rules], [[replace]], [[regenerate]], [[reset]], [[remove]], [[edit]], and
+# [[clean]]
 # here, [verify] in verify_cli.py's _load_verify_config (same file). An
 # unknown root key (e.g. a `[[replace]]` typo like `[[replcae]]`) must fail
 # loud instead of silently loading as zero rules.
 _ROOT_KEYS = frozenset(
-    {"rules", "replace", "verify", "regenerate", "reset", "remove", "edit"}
+    {"rules", "replace", "verify", "regenerate", "reset", "remove", "edit", "clean"}
 )
 _REMOVE_KEYS = frozenset({"file", "reason", "platforms"})
 
@@ -315,6 +338,7 @@ _RESET_KEYS = frozenset({"file", "stub", "stub_file", "platforms"})
 # based exemption, so both keys are unknown here rather than merely ignored.
 # The separate path-component `verify_ignore` policy remains unchanged.
 _EDIT_KEYS = frozenset({"file", "command", "expect", "env", "platforms"})
+_CLEAN_KEYS = frozenset({"paths", "platforms"})
 
 
 def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
@@ -801,6 +825,51 @@ def _parse_edit(entry: object) -> _EditDeclaration:
     )
 
 
+def _parse_clean(entry: object) -> _CleanDeclaration:
+    """Parse one ``[[clean]]`` declaration (E10)."""
+    if not isinstance(entry, dict):
+        raise ValidationError(f"{RULES_REL}: [[clean]] entry must be a table")
+    unknown = set(entry) - _CLEAN_KEYS
+    if unknown:
+        raise ValidationError(
+            f"{RULES_REL}: [[clean]] unknown key(s): {', '.join(sorted(unknown))}"
+        )
+    raw_paths = entry.get("paths")
+    if (
+        not isinstance(raw_paths, list)
+        or not raw_paths
+        or any(not isinstance(path, str) for path in raw_paths)
+    ):
+        raise ValidationError(
+            f"{RULES_REL}: [[clean]] paths must be a non-empty list of strings"
+        )
+    paths: list[str] = []
+    for raw in raw_paths:
+        path = _declared_rel_path("[[clean]] paths", raw)
+        for token in re.findall(r"\{[^{}]*\}", path):
+            inner = token[1:-1]
+            if not re.fullmatch(r"[a-z_]+", inner) or inner not in ALLOWED_PLACEHOLDERS:
+                raise ValidationError(
+                    f"{RULES_REL}: [[clean]] path {path!r} references an invalid "
+                    f"or unknown placeholder {token!r}"
+                )
+        stripped = re.sub(r"\{[^{}]*\}", "", path)
+        if "{" in stripped or "}" in stripped:
+            raise ValidationError(
+                f"{RULES_REL}: [[clean]] path {path!r} has an unbalanced or "
+                f"nested brace"
+            )
+        if path in paths:
+            raise ValidationError(
+                f"{RULES_REL}: [[clean]] paths contains duplicate value {path!r}"
+            )
+        paths.append(path)
+    return _CleanDeclaration(
+        rule=CleanRule(paths=tuple(paths)),
+        platforms=_parse_platforms(entry, "[[clean]]", ", ".join(paths)),
+    )
+
+
 def _validate_exclude_membership(
     regenerate: tuple[_RegenerateDeclaration, ...],
     reset: tuple[_ResetDeclaration, ...],
@@ -1152,6 +1221,11 @@ def _parse_rules(target: Path) -> _ParsedRules:
     raw_edit = data.get("edit", [])
     if not isinstance(raw_edit, list) or any(not isinstance(e, dict) for e in raw_edit):
         raise ValidationError(f"{RULES_REL}: [[edit]] must be an array of tables")
+    raw_clean = data.get("clean", [])
+    if not isinstance(raw_clean, list) or any(
+        not isinstance(e, dict) for e in raw_clean
+    ):
+        raise ValidationError(f"{RULES_REL}: [[clean]] must be an array of tables")
     substring_fields = frozenset(_str_list(table, "substring_rewrite_fields", []))
     bad_substring = substring_fields - ALLOWED_PLACEHOLDERS
     if bad_substring:
@@ -1190,6 +1264,7 @@ def _parse_rules(target: Path) -> _ParsedRules:
     reset = tuple(_parse_reset(e) for e in raw_reset)
     remove = tuple(_parse_remove(e) for e in raw_remove)
     edit = tuple(_parse_edit(e) for e in raw_edit)
+    clean = tuple(_parse_clean(e) for e in raw_clean)
     _validate_writer_overlaps(regenerate, reset, remove, edit)
     _validate_exclude_membership(regenerate, reset, edit, exclude_files, exclude_dirs)
     return _ParsedRules(
@@ -1207,6 +1282,7 @@ def _parse_rules(target: Path) -> _ParsedRules:
         reset=reset,
         remove=remove,
         edit=edit,
+        clean=clean,
     )
 
 
@@ -1221,6 +1297,11 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
     active_edits = tuple(
         declaration.rule
         for declaration in parsed.edit
+        if platform in declaration.platforms
+    )
+    active_clean = tuple(
+        declaration.rule
+        for declaration in parsed.clean
         if platform in declaration.platforms
     )
     # Exact strings, deliberately: config load already refused every pairing
@@ -1258,6 +1339,7 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
             if platform in declaration.platforms
         ),
         edit=active_edits,
+        clean=active_clean,
     )
     return SelectedRules(platform=platform, rules=rules)
 
