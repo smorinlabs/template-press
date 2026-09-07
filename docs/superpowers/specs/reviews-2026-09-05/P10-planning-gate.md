@@ -10,9 +10,11 @@ approved against plan
 `614827a8e848eeecb1215ce2d48b63252c78c8b26049d82439bd8a2408405e15`.
 The current plan is
 `ebde81fd2208bc4f23b6dd3bcd6646d2ebf5fad15b56230def3db8b3d985d764`;
-§5.11 records its defensive implementation alignment. Historical owner,
-provider, and internal-review results remain bound to their recorded
-snapshots. No correction-review approval or feature merge is claimed here.
+§5.11 records its defensive implementation alignment and subsequent scoped
+approval. §5.12 closes the local implementation-review gate at
+`8d6a6a301c74d75a50de2325aec12674a5b5012d`. Historical owner, provider,
+and internal-review results remain bound to their recorded snapshots.
+Publication, current PR checks, merge, and P10 tracker completion remain open.
 
 ## Purpose
 
@@ -446,7 +448,7 @@ The controller's required `PYTEST_ADDOPTS="-n 8" just check` completed with
 The test portion took 246.60 seconds. Root Ruff check and format checks passed
 on the corrected documents. No required planning-gate finding remains.
 
-### 5.11 Defensive path-entry implementation alignment — review pending
+### 5.11 Defensive path-entry implementation alignment — review complete
 
 The final source review at implementation commit
 `034d7e758b6bf017003694b5f523d81f0d4d2b4c` found two ordinary defects in
@@ -469,8 +471,44 @@ The plan SHA-256 changed from
 `614827a8e848eeecb1215ce2d48b63252c78c8b26049d82439bd8a2408405e15`
 to `ebde81fd2208bc4f23b6dd3bcd6646d2ebf5fad15b56230def3db8b3d985d764`.
 The §5.10 implementation-entry approval remains historical and bound to the
-old hash. Earlier provider verdicts remain bound to their recorded snapshots;
-this alignment awaits the controller's scoped independent correction review.
+old hash. Earlier provider verdicts remain bound to their recorded snapshots.
+After correction commit `8d6a6a301c74d75a50de2325aec12674a5b5012d`, the
+independent Astra review approved spec compliance and implementation quality
+for the exact five-file correction from `034d7e7` to `8d6a6a3`. F1 and F2
+are resolved; no required finding remains. The reviewer read the complete
+diff, implementer report, and recorded validation without rerunning tests.
+This subsequent approval supersedes the correction commit's pending status.
+
+### 5.12 Local implementation review closeout
+
+The complete feature review covered baseline
+`4386d7508355115ce7876833827d871d7a22ab79` through implementation commit
+`034d7e758b6bf017003694b5f523d81f0d4d2b4c`.
+
+| Review | Actual result and scope |
+| --- | --- |
+| Muse | Spec and quality APPROVE, no required findings. Ultra was requested; the provider used `xhigh` because Ultra was unavailable. The run configured 100 maximum model steps; the actual step count was not emitted. |
+| Claude Code | Spec and quality APPROVE, no required findings. The authorized Opus fallback launched as `claude-opus-5` with maximum effort requested and completed 45 turns. Accounting also lists auxiliary Fable and Haiku usage; this is not a separate Fable verdict. |
+| Internal Astra | The complete review found F1; a focused Windows metadata follow-up found F2. The scoped correction review at `8d6a6a3` approved both spec compliance and quality and closed both findings, as recorded in §5.11. |
+
+The Muse and Claude approvals remain bound to `034d7e7`; neither independently
+approves the later correction or closes findings they missed. The owner's
+internal-review policy covers this small, demonstrated correction within the
+accepted R10/R12 requirements. No material product-plan alteration was made.
+
+The correction's four intended regression assertions failed before the fix,
+while five valid controls passed. After the fix, all nine cases passed.
+The complete clean CLI test file passed 109 tests. The required
+`PYTEST_ADDOPTS='-n 8' just check` passed 1,543 tests with 2 skipped and all
+remaining checks passing; its test portion took 314.05 seconds. Root Ruff
+checks passed. The rebrand acceptance matrix passed 4 tests with 5 deselected
+in 37.65 seconds, and the correction commit's hooks passed. These are recorded
+local results for `8d6a6a3`, not native Windows or unpublished GitHub CI results.
+
+The local implementation-review gate is complete. Publication approval,
+current PR checks, review-thread disposition, merge, and the subsequent
+project-harness tracker closeout remain required by Task 6. This record does
+not mark P10 delivered or authorize P11 implementation.
 
 ## 6. Verification record
 
