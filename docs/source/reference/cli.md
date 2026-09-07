@@ -730,8 +730,8 @@ disjoint missing path retain the behavior described above.
 | Code | Meaning |
 |------|---------|
 | `0` | The preview or the clean ran and git exited 0. |
-| `1` | git clean ran after preflight and exited non-zero — the tree may have changed; read git's message. |
-| `2` | No clean command ran: target missing, not a git repository, or its `.git` a symlink, junction, or an unbound gitfile; rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing, a path unrenderable, configured `core.excludesFile` equal to or below a rendered clean path, a deletable active Git input overlapping a clean path, snapshot capture failure, process-launch failure, or `git` unresolvable. |
+| `1` | git clean ran after preflight and exited non-zero — in apply mode, the tree may have changed; read git's message. |
+| `2` | No clean command ran: target missing, not a git repository, or its `.git` a symlink, junction, or an unbound gitfile; rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing, a path unrenderable, configured `core.excludesFile` nonregular or unreadable, configured `core.excludesFile` equal to or below a rendered clean path, a deletable active Git input overlapping a clean path, snapshot capture failure, process-launch failure, or `git` unresolvable. |
 
 Supported targets have an ordinary `.git` directory or a linked-worktree
 gitfile whose selected Git directory has a regular `gitdir` backlink to this

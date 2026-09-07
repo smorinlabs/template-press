@@ -9,7 +9,9 @@ import shutil
 import subprocess
 import sys
 import tomllib
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -96,6 +98,169 @@ class TestArgv:
     def test_execute_returns_nonzero_without_raising(self, tmp_path: Path):
         result = execute_clean([sys.executable, "-c", "raise SystemExit(3)"], tmp_path)
         assert result.returncode == 3
+
+
+@pytest.mark.parametrize(
+    ("other", "same_node", "stored_names", "expected"),
+    [
+        pytest.param(
+            "C:/repo/src/demo_widget/EXTRA.POLICY",
+            False,
+            ("extra.policy", "EXTRA.POLICY"),
+            False,
+            id="separate-case-differing-entries",
+        ),
+        pytest.param(
+            "C:/repo/src/demo_widget/EXTRA.POLICY",
+            True,
+            ("extra.policy",),
+            True,
+            id="one-real-case-alias",
+        ),
+        pytest.param(
+            "C:/repo/src/demo_widget/EXTRA.POLICY",
+            True,
+            ("extra.policy", "EXTRA.POLICY"),
+            False,
+            id="case-differing-hardlink-entries",
+        ),
+        pytest.param(
+            "C:/repo/src/demo_widget/extra.policy",
+            False,
+            ("extra.policy",),
+            True,
+            id="identical-spelling",
+        ),
+    ],
+)
+def test_paths_are_same_entry_uses_exact_windows_spelling(
+    other: str, same_node: bool, stored_names: tuple[str, ...], expected: bool
+):
+    left = PureWindowsPath("C:/repo/src/demo_widget/extra.policy")
+    right = PureWindowsPath(other)
+    with (
+        patch.object(clean_cli, "Path", PureWindowsPath),
+        patch.object(
+            clean_cli.os.path,
+            "abspath",
+            side_effect=lambda path: os.fspath(path),
+        ),
+        patch.object(clean_cli.os.path, "samefile", return_value=same_node),
+        patch.object(
+            clean_cli.os,
+            "scandir",
+            return_value=[SimpleNamespace(name=name) for name in stored_names],
+        ),
+    ):
+        assert clean_cli._paths_are_same_entry(left, right) is expected
+
+
+@pytest.mark.parametrize(
+    ("git_dir", "backlink", "aliases", "expected"),
+    [
+        pytest.param(
+            "C:/unit/common/.git/worktrees/slot",
+            "C:/unit/TARGET/.git",
+            {},
+            False,
+            id="separate-case-differing-backlink",
+        ),
+        pytest.param(
+            "C:/unit/common/.git/WORKTREES/slot",
+            "C:/unit/target/.git",
+            {},
+            False,
+            id="separate-case-differing-registry",
+        ),
+        pytest.param(
+            "C:/unit/common/.git/worktrees/slot",
+            "C:/unit/target/.git",
+            {},
+            True,
+            id="ordinary-registration",
+        ),
+        pytest.param(
+            "C:/unit/common/.git/worktrees/slot",
+            "C:/unit/TARGET/.git",
+            {
+                "C:\\unit\\TARGET": "C:\\unit\\target",
+                "C:\\unit\\TARGET\\.git": "C:\\unit\\target\\.git",
+            },
+            True,
+            id="one-real-backlink-case-alias",
+        ),
+        pytest.param(
+            "C:/unit/common/.git/WORKTREES/slot",
+            "C:/unit/target/.git",
+            {
+                "C:\\unit\\common\\.git\\WORKTREES": (
+                    "C:\\unit\\common\\.git\\worktrees"
+                )
+            },
+            True,
+            id="one-real-registry-case-alias",
+        ),
+    ],
+)
+def test_validate_git_metadata_uses_entry_identity_for_windows_paths(
+    git_dir: str, backlink: str, aliases: dict[str, str], expected: bool
+):
+    class PhysicalWindowsPath(PureWindowsPath):
+        def resolve(self):
+            return self
+
+        def is_dir(self):
+            return False
+
+    target = PhysicalWindowsPath("C:/unit/target")
+    metadata = {
+        "gitdir": f"{backlink}\n".encode(),
+        "commondir": b"C:/unit/common/.git\n",
+    }
+
+    def identical_node(left, right):
+        left_spelling = os.fspath(left)
+        right_spelling = os.fspath(right)
+        return aliases.get(left_spelling, left_spelling) == aliases.get(
+            right_spelling, right_spelling
+        )
+
+    with (
+        patch.object(clean_cli, "Path", PhysicalWindowsPath),
+        patch.object(
+            clean_cli.os.path,
+            "abspath",
+            side_effect=lambda path: os.fspath(path),
+        ),
+        patch.object(clean_cli.os.path, "samefile", side_effect=identical_node),
+        patch.object(
+            clean_cli.os,
+            "scandir",
+            return_value=[SimpleNamespace(name="worktrees")],
+        ),
+        patch.object(
+            clean_cli,
+            "execute_clean",
+            return_value=subprocess.CompletedProcess(
+                [], 0, stdout=f"{git_dir}\n".encode(), stderr=b""
+            ),
+        ),
+        patch.object(
+            clean_cli,
+            "read_regular_nofollow",
+            side_effect=lambda path: metadata[path.name],
+        ),
+    ):
+        try:
+            clean_cli._validate_git_metadata(
+                PhysicalWindowsPath("C:/unit/git.exe"), target
+            )
+        except ValidationError:
+            accepted = False
+        else:
+            accepted = True
+
+    assert accepted is expected
 
 
 CLEAN_SRC_TESTS = '[[clean]]\npaths = ["src/{package_name}", "tests"]\n'

@@ -5,10 +5,14 @@ PR #117 parallel test matrix, PR #118 batched `rev-parse`) · **Scope:** plan
 Tasks 16–18 of `docs/superpowers/plans/2026-09-01-press-improvements-g2p.md`
 · **Output:** `docs/superpowers/plans/2026-09-05-p10-declared-pre-press-clean.md`
 
-**Implementation entry: READY (2026-09-06).** Task 1 may start against plan
+**Implementation entry: READY (2026-09-06; historical approval).** Task 1 was
+approved against plan
 `614827a8e848eeecb1215ce2d48b63252c78c8b26049d82439bd8a2408405e15`.
-The owner continuation, provider results, correction evidence, and internal
-review closeout are recorded in §5.9–5.10.
+The current plan is
+`ebde81fd2208bc4f23b6dd3bcd6646d2ebf5fad15b56230def3db8b3d985d764`;
+§5.11 records its defensive implementation alignment. Historical owner,
+provider, and internal-review results remain bound to their recorded
+snapshots. No correction-review approval or feature merge is claimed here.
 
 ## Purpose
 
@@ -441,6 +445,32 @@ The controller's required `PYTEST_ADDOPTS="-n 8" just check` completed with
 1412 tests passed, 2 skipped, and all remaining checks passing in this run.
 The test portion took 246.60 seconds. Root Ruff check and format checks passed
 on the corrected documents. No required planning-gate finding remains.
+
+### 5.11 Defensive path-entry implementation alignment — review pending
+
+The final source review at implementation commit
+`034d7e758b6bf017003694b5f523d81f0d4d2b4c` found two ordinary defects in
+the accepted R12 entry-identity and R10 linked-worktree ownership behavior.
+Under Windows path semantics, `Path` equality folds case and can treat two
+case-differing directory entries as the same entry before filesystem identity
+is checked.
+
+The illustrative helper now compares the absolute spellings with
+`os.fspath(absolute_left) == os.fspath(absolute_right)`. The linked-worktree
+backlink and common-repository `worktrees/` registry checks now reuse that
+helper, retaining exact spellings and verified aliases while refusing distinct
+case-differing entries. The ordinary-directory discovery check, conservative
+overlap helpers, stored-name guard, and fail-closed behavior are unchanged.
+Focused pure unit fixtures cover four distinct-entry refusals plus five valid
+exact-entry, alias, and registration controls. They are not native Windows,
+real Git cleanup, or filesystem-mutation evidence.
+
+The plan SHA-256 changed from
+`614827a8e848eeecb1215ce2d48b63252c78c8b26049d82439bd8a2408405e15`
+to `ebde81fd2208bc4f23b6dd3bcd6646d2ebf5fad15b56230def3db8b3d985d764`.
+The §5.10 implementation-entry approval remains historical and bound to the
+old hash. Earlier provider verdicts remain bound to their recorded snapshots;
+this alignment awaits the controller's scoped independent correction review.
 
 ## 6. Verification record
 

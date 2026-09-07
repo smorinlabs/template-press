@@ -99,7 +99,7 @@ def _paths_are_same_entry(left: Path, right: Path) -> bool:
     """Match one directory entry across filesystem case aliases, not hardlinks."""
     absolute_left = Path(os.path.abspath(left))
     absolute_right = Path(os.path.abspath(right))
-    if absolute_left == absolute_right:
+    if os.fspath(absolute_left) == os.fspath(absolute_right):
         return True
     try:
         if not os.path.samefile(absolute_left.parent, absolute_right.parent):
@@ -209,7 +209,7 @@ def _validate_git_metadata(git: Path, target: Path) -> None:
     backlink = Path(os.fsdecode(backlink_raw))
     if not backlink.is_absolute():
         backlink = git_dir / backlink
-    if backlink.resolve() != target / ".git":
+    if not _paths_are_same_entry(backlink.resolve(), target / ".git"):
         raise ValidationError(".git gitfile does not belong to this linked worktree")
 
     # A normal foreign Git directory can forge the backlink above. A linked
@@ -220,7 +220,9 @@ def _validate_git_metadata(git: Path, target: Path) -> None:
     common_dir = Path(os.fsdecode(common_raw))
     if not common_dir.is_absolute():
         common_dir = git_dir / common_dir
-    if git_dir.resolve().parent != common_dir.resolve() / "worktrees":
+    if not _paths_are_same_entry(
+        git_dir.resolve().parent, common_dir.resolve() / "worktrees"
+    ):
         raise ValidationError(".git gitfile is not registered linked-worktree metadata")
 
 
