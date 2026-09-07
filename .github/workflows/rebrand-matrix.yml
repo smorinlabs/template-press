@@ -32,4 +32,6 @@ jobs:
           sibling_worktree_gitfile_is_refused or
           invalid_gitfile_is_a_precondition_refusal or
           linked_worktree_with_absolute_common_dir_is_accepted or
-          clean_launch_oserror_is_precondition_refusal"
+          clean_launch_oserror_is_precondition_refusal or
+          clean_excludes_decodes_git_utf8 or git_metadata_decodes_git_utf8 or
+          carriage_return_git_slot_uses_actual_ownership"
