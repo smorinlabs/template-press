@@ -92,9 +92,10 @@ def clean_argv(
 
 def shell_join(argv: list[str]) -> str:
     """Render argv for display; the scrubbed environment is not represented."""
-    if sys.platform == "win32":
-        return subprocess.list2cmdline(argv)
-    return shlex.join(argv)
+    joined = (
+        subprocess.list2cmdline(argv) if sys.platform == "win32" else shlex.join(argv)
+    )
+    return repr(joined) if any(not char.isprintable() for char in joined) else joined
 
 
 def execute_clean(argv: list[str], target: Path) -> subprocess.CompletedProcess[bytes]:

@@ -4,7 +4,9 @@ standalone verb, and its integrations (E2 hint, check-tools, receipt, verify).
 
 from __future__ import annotations
 
+import ast
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -16,7 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from template_press import press_cli
-from template_press.rebrand import clean_cli
+from template_press.rebrand import clean, clean_cli
 from template_press.rebrand.clean import (
     clean_argv,
     execute_clean,
@@ -94,6 +96,47 @@ class TestArgv:
         joined = shell_join(["git", "clean", "-ndX", "--", "src/demo widget"])
         assert "src/demo widget" in joined or "'src/demo widget'" in joined
         assert joined.startswith("git clean -ndX --")
+
+    @pytest.mark.parametrize("platform", ["darwin", "win32"])
+    def test_shell_join_preserves_printable_arguments(self, monkeypatch, platform):
+        monkeypatch.setattr(clean, "sys", type("Platform", (), {"platform": platform}))
+        argv = ["git", "clean", "--", "src/demo widget"]
+        assert shell_join(argv) == (
+            subprocess.list2cmdline(argv) if platform == "win32" else shlex.join(argv)
+        )
+
+    @pytest.mark.parametrize("platform", ["darwin", "win32"])
+    @pytest.mark.parametrize("control", ["\n", "\x1b", "\r", "\x7f"])
+    def test_shell_join_escapes_nonprintable_arguments(
+        self, monkeypatch, platform, control
+    ):
+        monkeypatch.setattr(clean, "sys", type("Platform", (), {"platform": platform}))
+        raw = ["git", "clean", "--", f"src/demo{control}widget"]
+        expected_display = (
+            subprocess.list2cmdline(raw) if platform == "win32" else shlex.join(raw)
+        )
+        joined = shell_join(raw)
+        assert all(char.isprintable() for char in joined)
+        assert ast.literal_eval(joined) == expected_display
+
+    @pytest.mark.parametrize("platform", ["darwin", "win32"])
+    def test_execute_clean_passes_original_argv_unchanged(
+        self, monkeypatch, platform, tmp_path
+    ):
+        monkeypatch.setattr(clean, "sys", type("Platform", (), {"platform": platform}))
+        argv = ["git", "clean", "--", "src/demo\nwidget", "x\x1b"]
+        expected = tuple(argv)
+        shell_join(argv)
+        observed: dict[str, tuple[str, ...]] = {}
+
+        def run(actual, **kwargs):
+            observed["argv"] = tuple(actual)
+            return subprocess.CompletedProcess(actual, 0)
+
+        monkeypatch.setattr(clean.subprocess, "run", run)
+        execute_clean(argv, tmp_path)
+        assert observed["argv"] == expected
+        assert tuple(argv) == expected
 
     def test_execute_returns_nonzero_without_raising(self, tmp_path: Path):
         result = execute_clean([sys.executable, "-c", "raise SystemExit(3)"], tmp_path)
