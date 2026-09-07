@@ -60,8 +60,9 @@ These are the points where the 2026-09-01 plan was silent or where merged code c
 | `tests/rebrand/test_clean_cli.py` (create) | `clean.py`, `press clean`, the E2 hint, check-tools row, receipt row, verify no-op, dispatcher. |
 | `tests/rebrand/test_matrix.py` (modify) | R3 asserts the native receipt row and a `--show` preview. |
 | `docs/adr/0018-declared-pre-press-clean.md` (create) | The decision record. |
+| `docs/adr/README.md` (modify) | ADR index row for 0018. |
 | `docs/source/reference/cli.md` (modify) | `## press clean` section after `## press check-tools`. |
-| `.claude/skills/press-target/SKILL.md` (modify) | Step 1b: run `press clean` before the dry run when rules are declared. |
+| `.claude/skills/press-target/SKILL.md` (modify) | Nested step-1 bullet: run `press clean` before the dry run when rules are declared. |
 
 ---
 
@@ -458,7 +459,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
-import subprocess
+import subprocess  # nosec B404 — engine-owned hardened Git invocations
 import sys
 from pathlib import Path
 
@@ -576,8 +577,8 @@ def execute_clean(argv: list[str], target: Path) -> subprocess.CompletedProcess[
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `uv run --no-sync pytest tests/rebrand/test_clean_cli.py -q && uv run --no-sync ruff check src/template_press/rebrand/clean.py tests/rebrand/test_clean_cli.py && uv run --no-sync ruff format --check src/ tests/ && uv run --no-sync ty check src/template_press/`
-Expected: all pass, no lint or type findings (bandit at pre-push accepts the annotated `subprocess.run`).
+Run: `uv run --no-sync pytest tests/rebrand/test_clean_cli.py -q && uv run --no-sync ruff check src/template_press/rebrand/clean.py tests/rebrand/test_clean_cli.py && uv run --no-sync ruff format --check src/ tests/ && uv run --no-sync ty check src/template_press/ && uv run --no-sync bandit -r src/template_press/rebrand/clean.py -c pyproject.toml`
+Expected: all pass, no lint or type findings; Bandit accepts the annotated `subprocess` import (B404) and the annotated `subprocess.run` call (B603) under the locked command.
 
 - [ ] **Step 5: Commit**
 
@@ -1494,12 +1495,43 @@ def test_missing_or_null_configured_excludes_are_accepted(
     args = ["clean", "--target", str(src_target)] + (["--show"] if show else [])
     assert press_cli.main(args) == 0
     assert cache.exists() == show
+
+
+@pytest.mark.parametrize("show", [False, True])
+@pytest.mark.parametrize("launch_missing", [False, True])
+def test_clean_launch_oserror_is_precondition_refusal(
+    src_target, tmp_path, monkeypatch, capsys, show, launch_missing
+):
+    write_source_config(src_target)
+    _declare(src_target, CLEAN_SRC_TESTS)
+    cache = src_target / "src/demo_widget/__pycache__/x.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"cache")
+    before = capture_surface_snapshot(src_target)
+    real_execute = clean_cli.execute_clean
+
+    def execute_with_launch_control(argv, target):
+        if launch_missing and "clean" in argv:
+            argv = [str(tmp_path / "git-gone"), *argv[1:]]
+        return real_execute(argv, target)
+
+    monkeypatch.setattr(clean_cli, "execute_clean", execute_with_launch_control)
+    args = ["clean", "--target", str(src_target)] + (["--show"] if show else [])
+    assert press_cli.main(args) == (2 if launch_missing else 0)
+    captured = capsys.readouterr()
+    if launch_missing:
+        assert "error:" in captured.err
+        assert "git-gone" in captured.err
+    assert cache.exists() == (show or launch_missing)
+    assert capture_surface_snapshot(src_target) == before
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run --no-sync pytest tests/rebrand/test_clean_cli.py -q`
-Expected: successful-clean and failed-clean cases fail because the dispatcher answers `unknown command 'clean'` with exit 2. Diagnostic assertions also fail where they expect a specific clean refusal. The exit-2-only missing-target test already passes and is not evidence that clean exists. The dispatcher test fails because `clean` is absent from usage. Both `TestClosureRefusalHint` tests pass already: after Task 1 `Rules.clean` exists, so the `getattr`-guarded hint at `cli.py:185-186` fires. They stay in this task as the pins that Step 3's `getattr` removal must keep green.
+Expected: collection fails with `ImportError: cannot import name 'clean_cli' from 'template_press.rebrand'` because the module arrives in Step 3. No individual test runs at this stage.
+
+After Step 3, every command test must pass: successful clean returns 0, precondition and process-launch refusals return 2, executed Git failure returns 1, and dispatcher usage includes `clean`. Both `TestClosureRefusalHint` tests must pass after Step 3. Task 1 supplies `Rules.clean`, and Step 3's `getattr` removal must preserve the existing hint behavior in both directions.
 
 Correction RED controls: materialize the previous complete Task 3 helper with
 the new regressions in a disposable exact checkout. The active self-ignored
@@ -1534,7 +1566,7 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
+import subprocess  # nosec B404 — engine-owned hardened Git invocations
 import sys
 import tomllib
 from pathlib import Path
@@ -1815,7 +1847,12 @@ def clean_command(argv: list[str] | None = None) -> int:
         git, target, paths, show=args.show, core_excludes=core_excludes
     )
     print(f"{'preview' if args.show else 'run'}: {shell_join(command)}")
-    result = execute_clean(command, target)
+    try:
+        result = execute_clean(command, target)
+    except OSError as exc:
+        # The process could not start, so no clean command ran.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     sys.stdout.write(result.stdout.decode("utf-8", "replace"))
     sys.stderr.write(result.stderr.decode("utf-8", "replace"))
     if result.returncode != 0:
@@ -1841,7 +1878,7 @@ and the dispatch before `check-tools`:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `uv run --no-sync pytest tests/rebrand/test_clean_cli.py tests/rebrand/test_press_cli.py tests/rebrand/test_cli.py -q && uv run --no-sync ruff check src/ tests/rebrand/test_clean_cli.py && uv run --no-sync ruff format --check src/ tests/ && uv run --no-sync ty check src/template_press/`
+Run: `uv run --no-sync pytest tests/rebrand/test_clean_cli.py tests/rebrand/test_press_cli.py tests/rebrand/test_cli.py tests/rebrand/test_surface_inventory.py -q && uv run --no-sync ruff check src/ tests/rebrand/test_clean_cli.py && uv run --no-sync ruff format --check src/ tests/ && uv run --no-sync ty check src/template_press/`
 Expected: all pass, including the overlap refusals and the existing disjoint
 controls. Both preview and apply refuse a configured-excludes or deletable
 active-input overlap with exit 2 before an echoed command or Git clean
@@ -1981,6 +2018,7 @@ git commit -m "feat(clean): report clean rules in check-tools and record them in
 
 **Files:**
 - Create: `docs/adr/0018-declared-pre-press-clean.md`
+- Modify: `docs/adr/README.md` (append the ADR 0018 index row)
 - Modify: `docs/source/reference/cli.md` (new `## press clean` section after `## press check-tools`, which ends near line 670)
 - Modify: `.claude/skills/press-target/SKILL.md` (Steps, line 17 onward)
 - Modify: `press/press-rules.toml` (this repository's declaration)
@@ -2017,6 +2055,13 @@ Expected: `KeyError: 'clean'` — the repository declares no `[[clean]]` yet.
 # complete surface snapshot.
 [[clean]]
 paths = ["src/{package_name}", "tests"]
+```
+
+`docs/adr/README.md` — append this existing-format ADR index row when ADR0018
+is created:
+
+```markdown
+| [0018](0018-declared-pre-press-clean.md) | Declared pre-press clean is a standalone verb over `git clean -X` | Accepted |
 ```
 
 `docs/adr/0018-declared-pre-press-clean.md`:
@@ -2165,16 +2210,16 @@ rule. `press verify` ignores the declaration by construction: its sandbox
 receives inventoried entries only.
 ````
 
-`.claude/skills/press-target/SKILL.md` — insert after step 1:
+`.claude/skills/press-target/SKILL.md` — add this nested bullet under step 1:
 
 ```markdown
-1b. If `press check-tools --target <TARGET>` printed a `git — … (cleans …)`
-    row, a `[[clean]]` rule is active on this platform: preview it before
-    the dry run with `press clean --target <TARGET> --show`, confirm the
-    listing holds nothing to keep, then run `press clean --target <TARGET>`.
-    Skip this when no such row appears (no rule, or a rule scoped to another
-    platform; `press clean` would exit 2 with `no [[clean]] rules declared`).
-    The dry run's closure refusal names `press clean` if it is needed.
+   - If `press check-tools --target <TARGET>` printed a `git — … (cleans …)`
+     row, a `[[clean]]` rule is active on this platform: preview it before
+     the dry run with `press clean --target <TARGET> --show`, confirm the
+     listing holds nothing to keep, then run `press clean --target <TARGET>`.
+     Skip this when no such row appears (no rule, or a rule scoped to another
+     platform; `press clean` would exit 2 with `no [[clean]] rules declared`).
+     The dry run's closure refusal names `press clean` if it is needed.
 ```
 
 - [ ] **Step 4: Run the docs gates and commit the declaration**
@@ -2183,7 +2228,7 @@ Run: `uv run --no-sync codespell docs/adr/0018-declared-pre-press-clean.md docs/
 Expected: spelling, editorconfig, and TOML checks pass. Run `just check` before the commit below. The native R3 test clones committed `HEAD`, so its new declaration must be committed before the acceptance run. Do not treat a pre-commit missing receipt key as an implementation failure.
 
 ```bash
-git add press/press-rules.toml tests/rebrand/test_matrix.py docs/adr/0018-declared-pre-press-clean.md docs/source/reference/cli.md .claude/skills/press-target/SKILL.md
+git add press/press-rules.toml tests/rebrand/test_matrix.py docs/adr/0018-declared-pre-press-clean.md docs/adr/README.md docs/source/reference/cli.md .claude/skills/press-target/SKILL.md
 git commit -m "docs(clean): adr 0018, press clean reference, runbook step, and this repo's own [[clean]] declaration"
 ```
 
