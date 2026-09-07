@@ -9,10 +9,10 @@
 - **Depends on:** P10
 - **Review:** [Original removal review](../docs/superpowers/specs/reviews-2026-09-01/E5-review.md)
 
-- **Status:** `[~]` in progress — Group 3C; declaration parsing, frozen
-  directory selection, exact deletion, and complete receipt history are reviewed
-  and validated. Public directory execution remains gated until CLI and verifier
-  integration are complete.
+- **Status:** `[~]` in progress — Group 3C. Declaration parsing, frozen
+  directory selection, exact deletion, complete receipt history, and public
+  press/verifier integration are implemented and reviewed. Discriminating
+  membership controls, native migration, and final delivery remain open.
 
 ### Scope
 
@@ -30,7 +30,7 @@ rename with a separate injected nonmember and broken-executor control.
 - [x] [P11-T02] Task 2: immutable membership, directory safety/status checks, compatibility view, rendering, and command-conflict checks.
 - [ ] [P11-TS02] Add executor/history, CLI/verify, renewal, and discriminating membership controls before their corresponding implementations.
 - [x] [P11-T03] Task 3: exact deletion, safe empty-directory pruning, and complete bounded receipt history.
-- [ ] [P11-T04] Task 4: real press, historical verification, and explicit membership renewal.
+- [x] [P11-T04] Task 4: real press, historical verification, and explicit membership renewal.
 - [ ] [P11-T05] Task 5: prove production preserves nonmembers and deliberately broken alternatives fail the same oracles.
 - [ ] [P11-T06] Task 6: migrate research declarations, preserve project scaffolding, document behavior, and validate committed-head acceptance.
 - [ ] [P11-T07] Delivery: final independent review, PR checks and thread resolution, authorized merge, then project closeout.
@@ -45,5 +45,13 @@ remains a remote CI gate. These results do not certify the unfinished tasks.
 Task 3 passed independent specification and quality review, `just check` with
 1,651 tests and three skips, root formatting, and all four acceptance tests.
 The receipt reader enforces complete bounded history; the executor deletes exact
-frozen members and preserves unselected contents. CLI and verifier integration,
-renewal controls, native migration, and remote Windows validation remain open.
+frozen members and preserves unselected contents.
+
+
+Task 4 passed independent specification and quality review after correcting
+known receipt-metadata preflight and file-only compatibility regressions.
+The final `just check` passed with 1,718 tests and three skips. Root formatting
+and all four acceptance tests passed. Public directory execution, historical
+verification, and explicit membership renewal now share the frozen removal
+plan. The deliberately broken alternatives, native declaration migration, and
+remote Windows validation remain separate gates.

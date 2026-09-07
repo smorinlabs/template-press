@@ -1,4 +1,4 @@
-"""Declared file removal (P08 T2, issue #80).
+"""Declared file and frozen directory removal (P08 T2 and P11).
 
 Template-only files — maintenance CI workflows, dogfood history docs —
 must not ship to pressed forks, and the legacy embedded engines deleted
@@ -28,15 +28,19 @@ import os
 import posixpath
 import stat
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
+from template_press.rebrand.identity import Identity
 from template_press.rebrand.inventory import capture_surface_snapshot
 from template_press.rebrand.pathing import translate_path
 from template_press.rebrand.receipt import (
     REMOVE_HISTORY_MAX_BYTES,
     read_receipt,
+    removed_files_from_receipt,
+    selected_directory_history,
     validate_directory_history,
 )
 from template_press.rebrand.regen import has_uncommitted_changes, tracked_paths
@@ -269,8 +273,13 @@ def _freeze_directory(
         for member in (prior.members if prior is not None else ())
         if member.current_file in prior_missing
     )
+    prior_by_current = {
+        member.current_file: member for member in (prior.members if prior else ())
+    }
     members = tuple(
-        RemovalMember(
+        replace(prior_by_current[rel], reason=declaration.reason, missing_ok=False)
+        if rel in prior_by_current
+        else RemovalMember(
             file=rel,
             current_file=rel,
             reason=declaration.reason,
@@ -350,6 +359,163 @@ def _freeze_directory(
     )
 
 
+def _paths_overlap(left: str, right: str) -> bool:
+    """Compare exact paths and ancestors using all-platform filesystem aliases."""
+    left_key = _control_alias_key(left)
+    right_key = _control_alias_key(right)
+    return (
+        left_key == right_key
+        or left_key.startswith(right_key + "/")
+        or right_key.startswith(left_key + "/")
+    )
+
+
+def validate_removal_conflicts(
+    rules: Rules, plan: RemovalPlan, renamed: Mapping[str, str]
+) -> None:
+    """Refuse resolved active removal overlaps before reset or rewrite."""
+    translated = translate_removal_plan(plan, renamed)
+    validate_removal_plan(translated)
+    history = translated.directories + translated.retained_history
+    if history:
+        seen_current: set[str] = set()
+        for member in (
+            *translated.files,
+            *(member for directory in history for member in directory.members),
+        ):
+            alias = _control_alias_key(member.current_file)
+            if alias in seen_current:
+                raise SafetyError("removal plan has duplicate or alias current paths")
+            seen_current.add(alias)
+    writers = [
+        (kind, translate_path(rule.file, renamed))
+        for kind, declarations in (
+            ("edit", rules.edit),
+            ("regenerate", rules.regenerate),
+            ("reset", rules.reset),
+        )
+        for rule in declarations
+    ]
+    stubs = [
+        translate_path(rule.stub_file, renamed)
+        for rule in rules.reset
+        if rule.stub_file is not None
+    ]
+    for directory in translated.directories:
+        for kind, path in writers:
+            if _paths_overlap(directory.current_dir, path):
+                raise SafetyError(
+                    f"remove directory {directory.current_dir!r} has "
+                    f"resolved {kind} writer overlap at {path!r}"
+                )
+        for path in stubs:
+            if _paths_overlap(directory.current_dir, path):
+                raise SafetyError(
+                    f"remove directory {directory.current_dir!r} has "
+                    f"resolved stub_file overlap at {path!r}"
+                )
+        for member in translated.files:
+            if _paths_overlap(directory.current_dir, member.current_file):
+                raise SafetyError("resolved file/directory removal overlap")
+
+
+def _guard_directory_history(target: Path, prior: DirectoryRemoval) -> None:
+    """Check recorded roots and members without enumerating or reading status."""
+    root = target / prior.current_dir
+    _guard_frozen_remove_path(root, target)
+    if os.path.lexists(root) and (
+        root.is_junction() or not stat.S_ISDIR(root.lstat().st_mode)
+    ):
+        raise SafetyError(
+            f"remove directory {prior.current_dir!r} is not a real directory"
+        )
+    for member in prior.members:
+        path = target / member.current_file
+        _guard_frozen_remove_path(path, target)
+        if os.path.lexists(path) and (path.is_junction() or not is_regular_lstat(path)):
+            raise SafetyError(
+                f"remove target {member.current_file!r} is not a regular file"
+            )
+
+
+def plan_removals(
+    target: Path,
+    rules: Rules,
+    *,
+    source: Identity,
+    receipt_text: str | None = None,
+    mode: Literal["press", "verify"] = "press",
+    legacy_removed: Mapping[str, str] | None = None,
+) -> RemovalPlan:
+    """Freeze active deletions and carry validated inactive directory history."""
+    history = selected_directory_history(
+        receipt_text, source, directory_declared=bool(rules.remove_dirs)
+    )
+    history_by_dir = {row.dir: row for row in history}
+    directories: list[DirectoryRemoval] = []
+    for declaration in rules.remove_dirs:
+        for row in history:
+            if declaration.dir != row.dir and any(
+                _paths_overlap(declaration.dir, root)
+                for root in (row.dir, row.current_dir)
+            ):
+                raise SafetyError(
+                    "directory declaration conflicts with recorded history aliases"
+                )
+        prior = history_by_dir.get(declaration.dir)
+        if prior is not None:
+            prior = replace(
+                prior,
+                reason=declaration.reason,
+                members=tuple(
+                    replace(m, reason=declaration.reason) for m in prior.members
+                ),
+            )
+            _guard_directory_history(target, prior)
+        if mode == "verify" and prior is not None:
+            directories.append(prior)
+            continue
+        current_dir = declaration.dir
+        if prior is not None and prior.current_dir != declaration.dir:
+            declared_path = target / declaration.dir
+            _guard_frozen_remove_path(declared_path, target)
+            if os.path.lexists(declared_path):
+                raise SafetyError(
+                    f"remove directory {declaration.dir!r} conflicts with recorded "
+                    f"current root {prior.current_dir!r}; restore a coherent root"
+                )
+            current_dir = prior.current_dir
+        if prior is not None and not os.path.lexists(target / current_dir):
+            directories.append(prior)
+            continue
+        directories.append(
+            _freeze_directory(target, declaration, current_dir=current_dir, prior=prior)
+        )
+    legacy = (
+        removed_files_from_receipt(receipt_text)
+        if legacy_removed is None
+        else legacy_removed
+    )
+    file_members = tuple(
+        RemovalMember(
+            file=rule.file,
+            current_file=rule.file,
+            reason=rule.reason,
+            missing_ok=rule.file in legacy,
+        )
+        for rule in rules.remove
+    )
+    declared = {rule.dir for rule in rules.remove_dirs}
+    plan = RemovalPlan(
+        files=file_members,
+        directories=tuple(directories),
+        retained_history=tuple(row for row in history if row.dir not in declared),
+    )
+    validate_removal_plan(plan)
+    validate_removal_conflicts(rules, plan, {})
+    return plan
+
+
 def removal_rules_view(rules: Rules, plan: RemovalPlan) -> Rules:
     """Expose frozen members to legacy file-oriented plan gates."""
     files = tuple(
@@ -360,6 +526,8 @@ def removal_rules_view(rules: Rules, plan: RemovalPlan) -> Rules:
         RemoveDirRule(dir=directory.current_dir, reason=directory.reason)
         for directory in plan.directories
     )
+    if files == rules.remove and dirs == rules.remove_dirs:
+        return rules
     return replace(rules, remove=files, remove_dirs=dirs)
 
 
@@ -400,6 +568,8 @@ def frozen_remove_command_conflicts(
     rules: Rules, plan: RemovalPlan, renamed: Mapping[str, str]
 ) -> list[str]:
     """Find command argv paths removed by the frozen plan."""
+    if not plan.directories:
+        return remove_command_conflicts(removal_rules_view(rules, plan), renamed)
     removed: dict[str, str] = {}
     for member in plan.members:
         current = translate_path(member.current_file, renamed)
@@ -629,6 +799,45 @@ def translate_removal_plan(
         directories=tuple(directory_at_current(d) for d in plan.directories),
         retained_history=tuple(directory_at_current(d) for d in plan.retained_history),
     )
+
+
+def removal_receipt_metadata(
+    plan: RemovalPlan,
+    legacy_removed: Mapping[str, str],
+    *,
+    removed: Collection[str] | None = None,
+) -> tuple[list[tuple[str, str]], tuple[DirectoryRemoval, ...]]:
+    """Build and validate known removal metadata before mutation and at output.
+
+    Preflight omits ``removed``: every planned file must be unlinked or have
+    licensed absence for execution to succeed. At output, actual unlinks select
+    the emitted file rows. Directory rows always retain their frozen history.
+    File-only legacy receipts deliberately keep their tolerant schema.
+    """
+    directories = (*plan.directories, *plan.retained_history)
+    file_rows = [
+        (member.file, member.reason)
+        for member in plan.files
+        if removed is None or member.current_file in removed or member.missing_ok
+    ]
+    directory_rows = [
+        (member.file, member.reason)
+        for directory in directories
+        for member in directory.members
+    ]
+    emitted = {file for file, _ in (*file_rows, *directory_rows)}
+    removals = [
+        *file_rows,
+        *directory_rows,
+        *(
+            (file, reason)
+            for file, reason in legacy_removed.items()
+            if file not in emitted
+        ),
+    ]
+    if directories:
+        validate_directory_history(directories, removals)
+    return removals, directories
 
 
 def validate_removal_plan(plan: RemovalPlan) -> None:

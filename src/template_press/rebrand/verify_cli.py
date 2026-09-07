@@ -41,7 +41,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
-import os
 import subprocess  # nosec B404 — re-stages the OWNED sandbox git index only
 import sys
 import tomllib
@@ -52,6 +51,7 @@ from template_press.rebrand.config import SOURCE_CONFIG_REL, load_source_config
 from template_press.rebrand.discovery import Discovered, discover, mismatches
 from template_press.rebrand.engine import (
     apply,
+    build_plan,
     exempt_regenerated_paths,
     scan_paths,
     translate_path,
@@ -65,15 +65,19 @@ from template_press.rebrand.inventory import (
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.receipt import (
     accepted_origin_from_receipt,
-    read_receipt,
     receipt_binding_problem,
-    removed_files_from_receipt,
+)
+from template_press.rebrand.remove import (
+    apply_removal_plan,
+    plan_removals,
+    removal_receipt_text,
+    removal_rules_view,
+    validate_removal_conflicts,
 )
 from template_press.rebrand.reset import load_stub_content
 from template_press.rebrand.rules import RULES_REL, Rules, load_selected_rules
 from template_press.rebrand.safety import (
     SafetyError,
-    assert_ancestors_real,
     git_hardening_args,
     is_regular_lstat,
     owned_sandbox,
@@ -113,6 +117,7 @@ _CONFIG_ERRORS: tuple[type[Exception], ...] = (
 # A failure raised BY the press (apply / re-stage) — an env/tool error, not a
 # leak — is exit 2, distinct from a surviving finding's exit 1.
 _PRESS_ENV_ERRORS: tuple[type[Exception], ...] = (
+    ValidationError,
     FileNotFoundError,
     OSError,
     subprocess.CalledProcessError,
@@ -466,11 +471,6 @@ def verify_command(argv: list[str] | None = None) -> int:
     try:
         selected = load_selected_rules(target)
         rules = selected.rules
-        if rules.remove_dirs:
-            return _fail(
-                "directory removals require the complete P11 executor and "
-                "history integration"
-            )
         cfg = _load_verify_config(target)
         scan_fields: tuple[str, ...] = cfg.fields
         if source.display_name is not None and "display_name" not in scan_fields:
@@ -500,9 +500,13 @@ def verify_command(argv: list[str] | None = None) -> int:
         # receipt describing a different identity, is refused — and the
         # refusal says which condition failed, because "verify still exits 2"
         # is otherwise indistinguishable from "the flag never worked".
-        receipt_text = read_receipt(target)
+        receipt_text = removal_receipt_text(target, rules)
         recorded = accepted_origin_from_receipt(receipt_text)
         unbound = receipt_binding_problem(receipt_text, source)
+        removal_plan = plan_removals(
+            target, rules, source=source, receipt_text=receipt_text, mode="verify"
+        )
+        effective_rules = removal_rules_view(rules, removal_plan)
         accepted_origin = {} if unbound is not None else recorded
         recorded_but_unbound = unbound is not None and bool(recorded)
         problems, honored_origin = _preflight(
@@ -559,13 +563,16 @@ def verify_command(argv: list[str] | None = None) -> int:
                 # the press (codex 3654853355): apply() renames
                 # identity-bearing dirs, so a stub_file path beneath one
                 # would no longer resolve afterwards.
-                prior_removed = removed_files_from_receipt(read_receipt(sandbox.path))
                 reset_stubs = [
                     (rule, load_stub_content(sandbox.path, rule))
                     for rule in rules.reset
                 ]
                 source_snapshot = capture_surface_snapshot(sandbox.path)
-                report = apply(sandbox.path, source, synth, rules)
+                sandbox_plan = build_plan(sandbox.path, source, synth, effective_rules)
+                validate_removal_conflicts(rules, removal_plan, sandbox_plan.renames)
+                report = apply(
+                    sandbox.path, source, synth, rules, table=sandbox_plan.table
+                )
                 for reset_rule, stub in reset_stubs:
                     rel = translate_path(reset_rule.file, dict(report.renamed))
                     safe_write(sandbox.path, rel, stub, refuse_hardlink=False)
@@ -577,28 +584,7 @@ def verify_command(argv: list[str] | None = None) -> int:
                 # removed by a prior press (a pressed fork's normal state);
                 # a missing target with NO record is stale config and must
                 # fail loud, never silently scan clean.
-                for remove_rule in rules.remove:
-                    rel = translate_path(remove_rule.file, dict(report.renamed))
-                    removed_path = sandbox.path / rel
-                    # The unlink must not travel through a symlinked
-                    # ancestor — an absolute link in the copied tree could
-                    # point OUTSIDE the sandbox (same guard as the real
-                    # press's apply_removals).
-                    assert_ancestors_real(removed_path, sandbox.path)
-                    if os.path.lexists(removed_path):
-                        if not is_regular_lstat(removed_path):
-                            raise SafetyError(
-                                f"remove target {rel} is not a regular file "
-                                f"(no-follow check)"
-                            )
-                        os.unlink(removed_path)
-                    elif remove_rule.file not in prior_removed:
-                        return _fail(
-                            f"[[remove]] target {remove_rule.file} does not "
-                            f"exist and no receipt records its removal — a "
-                            f"stale declaration is config drift; delete it "
-                            f"or restore the file"
-                        )
+                apply_removal_plan(sandbox.path, removal_plan, dict(report.renamed))
                 _restage_sandbox(sandbox.path)
             except _PRESS_ENV_ERRORS as exc:
                 return _fail(

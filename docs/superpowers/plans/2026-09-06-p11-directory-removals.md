@@ -1157,7 +1157,7 @@ git commit -m "feat(remove): execute frozen members and record complete history"
 keyword. All producers/consumers in the shared interface table are now connected.
 Remove the temporary public gate from Task 1 only in this task.
 
-- [ ] **Step 1: Add production composition and history tests.** Use a legal
+- [x] **Step 1: Add production composition and history tests.** Use a legal
   component substitution: source author `research` → destination author
   `archive`, not a fabricated path separator or filesystem injection.
 
@@ -1463,7 +1463,7 @@ def test_partial_repress_invalidates_previous_receipt(tmp_path, monkeypatch, cap
     assert not (repo / RECEIPT_REL).exists()
 ```
 
-- [ ] **Step 2: RED.**
+- [x] **Step 2: RED.**
 
 ```bash
 uv run pytest tests/rebrand/test_remove_dirs.py -k 'cli_directory or renewal or partial_directory or partial_repress or receipt_read or direct_press or history_router' -q -x
@@ -1474,7 +1474,7 @@ uv run pytest tests/rebrand/test_remove_dirs.py -k 'cli_directory or renewal or 
   receipt object and subsequent real verify both pass. A parser-only acceptance
   or internal helper pass does not satisfy this task.
 
-- [ ] **Step 3: Implement history selection and all consumers.**
+- [x] **Step 3: Implement history selection and all consumers.**
 
 ```python
 history = selected_directory_history(
@@ -1709,7 +1709,7 @@ def test_historical_ancestor_translation():
   plan; assert it produces the same member receipt and refuses a dirty directory
   before mutation. Existing `_press` tests provide the actual call fixture.
 
-- [ ] **Step 4: GREEN and required gates.**
+- [x] **Step 4: GREEN and required gates.**
 
 ```bash
 uv run pytest tests/rebrand/test_remove_dirs.py tests/rebrand/test_remove_dir_receipt.py tests/rebrand/test_remove_rules.py tests/rebrand/test_verify_cli.py -q
@@ -1717,7 +1717,7 @@ PYTEST_ADDOPTS='-n 8' just check
 just matrix
 ```
 
-- [ ] **Step 5: Commit and review.**
+- [x] **Step 5: Commit and review.**
 
 ```bash
 git add src/template_press/rebrand/remove.py src/template_press/rebrand/cli.py src/template_press/rebrand/verify_cli.py src/template_press/rebrand/regen.py tests/rebrand/test_remove_dirs.py

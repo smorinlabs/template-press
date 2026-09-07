@@ -41,7 +41,7 @@ from template_press.rebrand.receipt import (
     RECEIPT_REL,
     OriginDecision,
     invalidate_receipt,
-    read_receipt,
+    receipt_present,
     removed_files_from_receipt,
     write_receipt,
 )
@@ -64,11 +64,20 @@ from template_press.rebrand.regen import (
     validate_control_files,
     validate_visibility_state,
 )
+from template_press.rebrand.removal_types import DirectoryRemoval, RemovalPlan
 from template_press.rebrand.remove import (
+    apply_removal_plan,
     apply_removals,
+    frozen_remove_command_conflicts,
+    plan_removals,
     preflight_remove_targets,
-    remove_command_conflicts,
-    render_remove_plan,
+    removal_receipt_metadata,
+    removal_receipt_text,
+    removal_rules_view,
+    render_frozen_remove_plan,
+    translate_removal_plan,
+    validate_removal_conflicts,
+    validate_removal_plan,
 )
 from template_press.rebrand.reset import (
     apply_resets,
@@ -80,6 +89,7 @@ from template_press.rebrand.rules import (
     ReplaceRule,
     ResetRule,
     Rules,
+    SelectedRules,
     load_selected_rules,
 )
 from template_press.rebrand.safety import (
@@ -94,6 +104,11 @@ from template_press.rebrand.substitutions import (
     declared_rule_triples,
     revalidate_substitution_table,
     validate_reset_visibility,
+)
+
+_EXISTING_RECEIPT_PROBLEM = (
+    "target already has a press receipt (press/press-receipt.toml); "
+    "re-press with --force"
 )
 
 
@@ -220,11 +235,8 @@ def check_preconditions(target: Path, force: bool, allow_dirty: bool) -> str | N
         return f"target does not exist or is not a directory: {target}"
     if not (target / ".git").exists():
         return f"target is not a git repository: {target}"
-    if read_receipt(target) is not None and not force:
-        return (
-            "target already has a press receipt (press/press-receipt.toml); "
-            "re-press with --force"
-        )
+    if receipt_present(target) and not force:
+        return _EXISTING_RECEIPT_PROBLEM
     if not allow_dirty:
         # A working-tree read on an untrusted target: hardening args
         # neutralize fsmonitor/hooksPath/ext-transport, but a repo-local
@@ -419,6 +431,12 @@ def display_name_problem(source: Identity, dest: Identity) -> str | None:
     return None
 
 
+def _load_rules_and_removal_receipt(target: Path) -> tuple[SelectedRules, str | None]:
+    """Capture one platform selection and read its correctly bounded receipt."""
+    selected = load_selected_rules(target)
+    return selected, removal_receipt_text(target, selected.rules)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="press rebrand", description=__doc__)
     parser.add_argument("--target", type=Path, required=True)
@@ -464,6 +482,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         problem = check_preconditions(target, args.force, args.allow_dirty)
         if problem is not None:
+            if problem == _EXISTING_RECEIPT_PROBLEM:
+                # Preserve legacy decoding diagnostics on this refusal only.
+                # Selected directory rules still require the bounded reader.
+                _load_rules_and_removal_receipt(target)
             return _fail(problem)
 
         # The answers file is read BEFORE the guard so the guard can ask
@@ -503,7 +525,7 @@ def main(argv: list[str] | None = None) -> int:
             message = (
                 "source and destination identities are identical — nothing to press"
             )
-            if read_receipt(target) is None:
+            if not receipt_present(target):
                 # A press that rewrote press-source.toml but died before its
                 # receipt landed leaves exactly this state: the target already
                 # declares the DESTINATION while nothing records a completed
@@ -519,14 +541,23 @@ def main(argv: list[str] | None = None) -> int:
         # Pipeline stability, ambiguity, and termination are validated together
         # by build_plan before any write.  Keeping the target rules here ensures
         # the adapter preserves each field's effective substring posture.
-        selected = load_selected_rules(target)
+        selected, receipt_text = _load_rules_and_removal_receipt(target)
         rules = selected.rules
-        if rules.remove_dirs:
-            return _fail(
-                "directory removals require the complete P11 executor and "
-                "history integration"
-            )
-        plan = build_plan(target, source, dest, rules)
+        prior_removed = removed_files_from_receipt(receipt_text)
+        removal_plan = plan_removals(
+            target,
+            rules,
+            source=source,
+            receipt_text=receipt_text,
+            legacy_removed=prior_removed,
+        )
+        removal_receipt_metadata(removal_plan, prior_removed)
+        effective_rules = removal_rules_view(rules, removal_plan)
+        plan = build_plan(target, source, dest, effective_rules)
+        validate_removal_conflicts(rules, removal_plan, plan.renames)
+        removal_receipt_metadata(
+            translate_removal_plan(removal_plan, plan.renames), prior_removed
+        )
         rename_preflight = preflight_rename_noreplace(
             target,
             plan.table.rename_plan if plan.table is not None else plan.renames,
@@ -566,7 +597,7 @@ def main(argv: list[str] | None = None) -> int:
         # env, stub scans, and the translated reset-path identity scan — all
         # before any write, under the exit-2-nothing-written contract
         # (dry-run included).
-        gate_problems = preflight_excluded_files(target, rules)
+        gate_problems = preflight_excluded_files(target, effective_rules)
         # Edit problems are collected BEFORE regeneration problems so a
         # refusal listing both reads in the order the phases actually run
         # (E4): every edit precedes every regeneration. Edits are planned
@@ -593,11 +624,12 @@ def main(argv: list[str] | None = None) -> int:
             table=plan.table,
         )
         gate_problems += reset_problems
-        prior_removed = removed_files_from_receipt(read_receipt(target))
         gate_problems += preflight_remove_targets(
             target, rules, previously_removed=frozenset(prior_removed)
         )
-        gate_problems += remove_command_conflicts(rules, plan.renames)
+        gate_problems += frozen_remove_command_conflicts(
+            rules, removal_plan, plan.renames
+        )
         if plan.table is not None:
             try:
                 validate_reset_visibility(
@@ -637,8 +669,8 @@ def main(argv: list[str] | None = None) -> int:
             print(render_regenerate_plan(regen_plans))
         if reset_previews:
             print(render_reset_plan(reset_previews, verbose=args.verbose))
-        if rules.remove:
-            print(render_remove_plan(rules))
+        if removal_plan.members or removal_plan.directories:
+            print(render_frozen_remove_plan(removal_plan))
         for warning in plan.removal_warnings:
             print(warning)
         for warning in plan.prefix_warnings:
@@ -687,6 +719,7 @@ def main(argv: list[str] | None = None) -> int:
         [(preview.rule, preview.stub_text) for preview in reset_previews],
         edit_plans=edit_plans,
         previously_removed=prior_removed,
+        removal_plan=removal_plan,
         platform=selected.platform,
         rename_preflight=rename_preflight,
         allow_unsafe_rename=args.force,
@@ -721,6 +754,7 @@ def _press(
     *,
     edit_plans: list[EditPlan] | None = None,
     previously_removed: dict[str, str] | None = None,
+    removal_plan: RemovalPlan | None = None,
     platform: str | None = None,
     rename_preflight: RenamePreflight | None = None,
     allow_unsafe_rename: bool = False,
@@ -728,17 +762,50 @@ def _press(
     table: SubstitutionTable | None = None,
     origin: OriginDecision | None = None,
 ) -> PressOutcome:
+    legacy_removed_was_supplied = previously_removed is not None
     if previously_removed is None:
         previously_removed = {}
     if edit_plans is None:
         edit_plans = []
     try:
+        if removal_plan is None and rules.remove_dirs:
+            receipt_text = removal_receipt_text(target, rules)
+            removal_plan = plan_removals(
+                target,
+                rules,
+                source=source,
+                receipt_text=receipt_text,
+                legacy_removed=(
+                    previously_removed if legacy_removed_was_supplied else {}
+                ),
+            )
+        if removal_plan is not None:
+            removal_receipt_metadata(removal_plan, previously_removed)
+        effective_rules = (
+            removal_rules_view(rules, removal_plan)
+            if removal_plan is not None
+            else rules
+        )
         if table is None:
-            fallback_plan = build_plan(target, source, dest, rules)
+            fallback_plan = build_plan(target, source, dest, effective_rules)
             rendered_rules = fallback_plan.rendered_rules
             table = fallback_plan.table
         elif rendered_rules is None:
             rendered_rules = declared_rule_triples(table)
+        if removal_plan is not None:
+            validate_removal_plan(removal_plan)
+            if table is None:
+                raise SafetyError(
+                    "substitution table is unavailable at removal preflight"
+                )
+            projected = table.rename_plan.as_mapping()
+            validate_removal_conflicts(rules, removal_plan, projected)
+            removal_receipt_metadata(
+                translate_removal_plan(removal_plan, projected), previously_removed
+            )
+            conflicts = frozen_remove_command_conflicts(rules, removal_plan, projected)
+            if conflicts:
+                raise SafetyError("; ".join(conflicts))
     except (
         ValidationError,
         OSError,
@@ -778,11 +845,15 @@ def _press(
         # Declared removals run right after the rewrite/rename passes, at
         # their post-rename locations (P08 T2) — before any declared command
         # so a regeneration never observes a doomed file.
-        removed_rels = apply_removals(
-            target,
-            rules,
-            dict(report.renamed),
-            previously_removed=frozenset(previously_removed),
+        removed_rels = (
+            apply_removal_plan(target, removal_plan, dict(report.renamed))
+            if removal_plan is not None
+            else apply_removals(
+                target,
+                rules,
+                dict(report.renamed),
+                previously_removed=frozenset(previously_removed),
+            )
         )
         report.removed.extend(removed_rels)
         # Declared commands run against the FINAL tree: declared paths are
@@ -964,6 +1035,33 @@ def _press(
         # source-config write ABOVE. Ordered this way, an OSError there leaves
         # no receipt and the press can be re-run without --force. Nothing
         # between the two writes reads the receipt.
+        all_directories: tuple[DirectoryRemoval, ...] = ()
+        if removal_plan is None:
+            removals = [
+                # Recorded in DECLARED (source) coordinates, matching
+                # [[press.regenerate]] — that is the coordinate every later
+                # consumer (re-press preflight, verify tri-state) compares
+                # against, and press-rules.toml is never rewritten. A target
+                # satisfied by a PRIOR press carries forward, so the
+                # satisfied-chain survives any number of re-presses.
+                (rule.file, rule.reason)
+                for rule in rules.remove
+                if translate_path(rule.file, dict(report.renamed)) in report.removed
+                or rule.file in previously_removed
+            ] + [
+                # Prior records with no active declaration on THIS platform
+                # (or whose declaration was retired) carry forward with
+                # their recorded reasons: a cross-platform re-press must
+                # not drop another platform's satisfied removals.
+                (file, reason)
+                for file, reason in previously_removed.items()
+                if file not in {rule.file for rule in rules.remove}
+            ]
+        else:
+            translated = translate_removal_plan(removal_plan, dict(report.renamed))
+            removals, all_directories = removal_receipt_metadata(
+                translated, previously_removed, removed=report.removed
+            )
         receipt_path = write_receipt(
             target,
             source,
@@ -989,27 +1087,8 @@ def _press(
                 if plan.rule.file in report.regenerated
             ],
             resets=report.reset,
-            removals=[
-                # Recorded in DECLARED (source) coordinates, matching
-                # [[press.regenerate]] — that is the coordinate every later
-                # consumer (re-press preflight, verify tri-state) compares
-                # against, and press-rules.toml is never rewritten. A target
-                # satisfied by a PRIOR press carries forward, so the
-                # satisfied-chain survives any number of re-presses.
-                (rule.file, rule.reason)
-                for rule in rules.remove
-                if translate_path(rule.file, dict(report.renamed)) in report.removed
-                or rule.file in previously_removed
-            ]
-            + [
-                # Prior records with no active declaration on THIS platform
-                # (or whose declaration was retired) carry forward with
-                # their recorded reasons: a cross-platform re-press must
-                # not drop another platform's satisfied removals.
-                (file, reason)
-                for file, reason in previously_removed.items()
-                if file not in {rule.file for rule in rules.remove}
-            ],
+            removals=removals,
+            remove_dirs=all_directories,
             exempt=[
                 # A declared verify_exempt reason travels VERBATIM into the
                 # receipt's exempt record (issue #81); the generic mechanism
