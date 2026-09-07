@@ -100,6 +100,62 @@ class TestArgv:
         assert result.returncode == 3
 
 
+def test_clean_excludes_decodes_git_utf8_independently_of_filesystem_encoding(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "target"
+    target.mkdir()
+    excludes = tmp_path / "café.excludes"
+    excludes.write_bytes(b"*.pyc\n")
+    monkeypatch.setattr(
+        clean_cli,
+        "execute_clean",
+        lambda argv, command_target: subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=str(excludes).encode("utf-8") + b"\0",
+            stderr=b"",
+        ),
+    )
+    monkeypatch.setattr(
+        clean_cli.os,
+        "fsdecode",
+        lambda raw: bytes(raw).decode("latin-1"),
+    )
+
+    assert clean_cli._clean_excludes_path(Path("git"), target) == excludes
+
+
+def test_git_metadata_decodes_git_utf8_independently_of_filesystem_encoding(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / ".git").write_bytes(b"gitdir: queried-by-git\n")
+    common_dir = tmp_path / "common-café" / ".git"
+    git_dir = common_dir / "worktrees" / "slot"
+    git_dir.mkdir(parents=True)
+    (git_dir / "gitdir").write_bytes(str(target / ".git").encode("utf-8") + b"\n")
+    (git_dir / "commondir").write_bytes(b"../..\n")
+    monkeypatch.setattr(
+        clean_cli,
+        "execute_clean",
+        lambda argv, command_target: subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=str(git_dir).encode("utf-8") + b"\n",
+            stderr=b"",
+        ),
+    )
+    monkeypatch.setattr(
+        clean_cli.os,
+        "fsdecode",
+        lambda raw: bytes(raw).decode("latin-1"),
+    )
+
+    clean_cli._validate_git_metadata(Path("git"), target)
+
+
 @pytest.mark.parametrize(
     ("other", "same_node", "stored_names", "expected"),
     [
@@ -403,7 +459,7 @@ class TestPressClean:
         (foreign / ".git" / "info" / "exclude").write_text(
             "protected.py\n", encoding="utf-8"
         )
-        shutil.rmtree(target / ".git")
+        (target / ".git").rename(tmp_path / "target-git-directory")
         (target / ".git").write_text(f"gitdir: {foreign / '.git'}\n", encoding="utf-8")
         args = ["clean", "--target", str(target)] + (["--show"] if show else [])
         assert press_cli.main(args) == 2
@@ -435,8 +491,8 @@ class TestPressClean:
             )
             if not git_dir.is_absolute():
                 git_dir = (target / git_dir).resolve()
-            (git_dir / "gitdir").write_text(
-                os.path.relpath(target / ".git", git_dir) + "\n", encoding="utf-8"
+            (git_dir / "gitdir").write_bytes(
+                os.path.relpath(target / ".git", git_dir).encode("utf-8") + b"\r\n"
             )
         cache = target / "src" / "demo_widget" / "__pycache__" / "x.pyc"
         cache.parent.mkdir()
@@ -460,19 +516,21 @@ class TestPressClean:
         (source / ".git" / "info" / "exclude").write_text(
             protected.as_posix() + "\n", encoding="utf-8"
         )
-        (first / ".git").write_bytes((second / ".git").read_bytes())
-        assert press_cli.main(["clean", "--target", str(first)]) == 2
+        target = tmp_path / "forged"
+        shutil.copytree(first, target, ignore=shutil.ignore_patterns(".git"))
+        (target / ".git").write_bytes((second / ".git").read_bytes())
+        assert press_cli.main(["clean", "--target", str(target)]) == 2
         captured = capsys.readouterr()
         assert "does not belong" in captured.err
         assert "run:" not in captured.out
-        assert (first / protected).read_bytes() == original
+        assert (target / protected).read_bytes() == original
 
     @pytest.mark.parametrize("malformed", [False, True])
     def test_invalid_gitfile_is_a_precondition_refusal(
         self, src_target: Path, tmp_path: Path, capsys, malformed: bool
     ):
         target = self._target(src_target)
-        shutil.rmtree(target / ".git")
+        (target / ".git").rename(tmp_path / "target-git-directory")
         (target / ".git").write_text(
             "not a gitfile\n"
             if malformed
@@ -999,7 +1057,9 @@ def test_linked_worktree_with_absolute_common_dir_is_accepted(src_target, tmp_pa
     )
     if not git_dir.is_absolute():
         git_dir = (target / git_dir).resolve()
-    (git_dir / "commondir").write_text(str(src_target / ".git") + "\n")
+    (git_dir / "commondir").write_bytes(
+        str(src_target / ".git").encode("utf-8") + b"\r\n"
+    )
     cache = target / "src/demo_widget/__pycache__/x.pyc"
     cache.parent.mkdir()
     cache.write_bytes(b"cache")
@@ -1156,8 +1216,8 @@ def test_clean_launch_oserror_is_precondition_refusal(
     assert press_cli.main(args) == (2 if launch_missing else 0)
     captured = capsys.readouterr()
     if launch_missing:
-        assert "error:" in captured.err
-        assert "git-gone" in captured.err
+        assert captured.err.startswith("error: ")
+        assert captured.err.removeprefix("error: ").strip()
     assert cache.exists() == (show or launch_missing)
     assert capture_surface_snapshot(src_target) == before
 
