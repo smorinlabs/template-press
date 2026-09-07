@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -23,8 +24,10 @@ from template_press.rebrand.clean import (
 from template_press.rebrand.cli import main
 from template_press.rebrand.identity import ValidationError
 from template_press.rebrand.inventory import capture_surface_snapshot
+from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.rules import CleanRule
 from template_press.rebrand.safety import git_hardening_args
+from template_press.rebrand.verify_cli import verify_command
 
 from .conftest import SOURCE, _git, posix_only, requires_symlink
 from .test_cli import write_answers, write_source_config
@@ -992,3 +995,48 @@ def test_clean_launch_oserror_is_precondition_refusal(
         assert "git-gone" in captured.err
     assert cache.exists() == (show or launch_missing)
     assert capture_surface_snapshot(src_target) == before
+
+
+class TestIntegrations:
+    def test_check_tools_reports_one_row_per_clean_rule(self, src_target: Path, capsys):
+        write_source_config(src_target)
+        _declare(src_target, CLEAN_SRC_TESTS + '[[clean]]\npaths = ["build"]\n')
+        assert press_cli.main(["check-tools", "--target", str(src_target)]) == 0
+        out = capsys.readouterr().out
+        assert "(cleans src/{package_name}, tests)" in out
+        assert "(cleans build)" in out
+
+    def test_receipt_records_the_declaration_unrendered(
+        self, src_target: Path, tmp_path: Path
+    ):
+        write_source_config(src_target)
+        _declare(src_target, CLEAN_SRC_TESTS)
+        answers = write_answers(tmp_path)
+        assert main(["--target", str(src_target), "--config", str(answers)]) == 0
+        raw = (src_target / RECEIPT_REL).read_text(encoding="utf-8")
+        assert "[[press.clean]]" in raw
+        assert 'paths = ["src/{package_name}", "tests"]' in raw
+        receipt = tomllib.loads(raw)
+        assert receipt["press"]["clean"] == [{"paths": ["src/{package_name}", "tests"]}]
+        assert "ran" not in receipt["press"]["clean"][0]
+
+    def test_receipt_has_no_clean_table_without_rules(
+        self, src_target: Path, tmp_path: Path
+    ):
+        write_source_config(src_target)
+        answers = write_answers(tmp_path)
+        assert main(["--target", str(src_target), "--config", str(answers)]) == 0
+        assert "[[press.clean]]" not in (src_target / RECEIPT_REL).read_text(
+            encoding="utf-8"
+        )
+
+    def test_verify_is_unaffected_by_a_clean_declaration(
+        self, src_target: Path, capsys
+    ):
+        write_source_config(src_target)
+        _declare(src_target, CLEAN_SRC_TESTS)
+        code = verify_command(["--target", str(src_target)])
+        with_rule = capsys.readouterr().out
+        _declare(src_target, "[rules]\n")
+        assert verify_command(["--target", str(src_target)]) == code
+        assert capsys.readouterr().out == with_rule

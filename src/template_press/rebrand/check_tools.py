@@ -50,6 +50,11 @@ def check_tools_command(argv: list[str] | None = None) -> int:
         reports.append("git — missing (press itself needs it)")
     else:
         reports.append(f"git — {git}")
+    # Clean runs BEFORE a press, so its rows lead. Git is the only tool a
+    # clean needs and is already reported above; these rows are informational.
+    if git is not None:
+        for clean in rules.clean:
+            reports.append(f"git — {git} (cleans {', '.join(clean.paths)})")
     # Edits first: they are the phase that runs first, and the report reads
     # in the order a press would launch these tools.
     for edit in rules.edit:

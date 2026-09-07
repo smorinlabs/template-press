@@ -93,6 +93,7 @@ def write_receipt(
     *,
     platform: str | None = None,
     origin: OriginDecision | None = None,
+    clean: Sequence[Sequence[str]] = (),
 ) -> Path:
     stamp = datetime.now(UTC).isoformat(timespec="seconds")
     # Each key is written only when that relaxation actually fired (E1): a
@@ -178,6 +179,15 @@ def write_receipt(
             "[[press.remove]]",
             f"file = {toml_string(file)}",
             f"reason = {toml_string(reason)}",
+        ]
+    # Declared clean paths (E10). `press clean` is a standalone verb that
+    # never writes a receipt, so this row records the DECLARATION an
+    # operator should run before re-pressing — never that cleaning ran.
+    for paths in clean:
+        lines += [
+            "",
+            "[[press.clean]]",
+            "paths = [" + ", ".join(toml_string(p) for p in paths) + "]",
         ]
     # Machine-readable coverage record (P04 D3): every file the ordinary
     # doctor/verify inventories skip, with the mechanism that covered it —

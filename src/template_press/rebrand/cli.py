@@ -966,6 +966,7 @@ def _press(
             report,
             platform=platform,
             origin=origin,
+            clean=[rule.paths for rule in rules.clean],
             edits=[
                 # Every PLANNED edit, unconditionally: a failed edit withholds
                 # the receipt entirely, so reaching this write means each one
