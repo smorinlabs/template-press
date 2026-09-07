@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from template_press import press_cli
 from template_press.rebrand.cli import main
 from template_press.rebrand.config import SOURCE_CONFIG_REL
 from template_press.rebrand.receipt import RECEIPT_REL
@@ -128,6 +129,10 @@ def test_r3_self_press_native(tmp_path: Path) -> None:
     assert root_package["version"] == "0.1.0"
     raw_receipt = (target / RECEIPT_REL).read_text(encoding="utf-8")
     receipt = tomllib.loads(raw_receipt)
+    # E10: this repo declares its own clean paths; the native press records
+    # the declaration, unrendered, and `press clean --show` previews cleanly.
+    assert receipt["press"]["clean"] == [{"paths": ["src/{package_name}", "tests"]}]
+    assert press_cli.main(["clean", "--target", str(target), "--show"]) == 0
     assert receipt["press"]["platform"] == sys.platform
     bun_actions = [
         item for item in receipt["press"]["regenerate"] if item["file"] == "bun.lock"

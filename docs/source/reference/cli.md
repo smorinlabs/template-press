@@ -666,3 +666,85 @@ bun — missing (declared to regenerate bun.lock)
 | `0` | Every tool resolved. |
 | `1` | At least one tool is missing. |
 | `2` | Configuration or usage error. |
+
+## `press clean`
+
+Removes ignored entries under the paths a target declares in
+`press/press-rules.toml`, so a stale build cache under a directory that a
+press will rename does not trip the rename-closure refusal. It is a
+standalone verb — never a phase of `press rebrand`, because dry-run and apply
+must observe the same tree — and it writes no receipt.
+
+```toml
+[[clean]]
+paths = ["src/{package_name}", "tests"]   # optional: platforms = ["darwin", "linux"]
+```
+
+Placeholders render from the SOURCE identity in `press/press-source.toml`
+(the rules file is never rewritten). Each path must be relative and
+contained; unknown placeholders and control characters are refused at
+config load, and the rendered path is validated again at run time.
+
+The following examples abbreviate the Git hardening flags with an ellipsis.
+Real `preview:` and `run:` lines contain the complete argv.
+
+```console
+$ press clean --target ../my-repo --show
+preview: git -C /abs/my-repo --work-tree=/abs/my-repo -c core.fsmonitor= … --literal-pathspecs clean -ndX -- src/my_pkg tests
+Would remove src/my_pkg/__pycache__/
+$ press clean --target ../my-repo
+run: git -C /abs/my-repo --work-tree=/abs/my-repo -c core.fsmonitor= … --literal-pathspecs clean -fdX -- src/my_pkg tests
+Removing src/my_pkg/__pycache__/
+```
+
+The echoed line is the exact argv that runs, hardening flags included, but
+`press clean` runs it under a scrubbed git environment (global and system
+config neutralized). The argv also pins the excludes file; pasting it into
+an ambient shell could still honor other Git configuration or environment
+overrides. Treat the line as a record of what ran, not an equivalent command.
+`-X` removes ignored entries only (never `-x`), `--literal-pathspecs` makes
+each declared path a path rather than a glob, and the explicit
+`core.excludesFile` pin matches inventory: the repository-configured path
+or the null device, never Git's implicit default user ignore file (the
+hand-typed remedy the closure refusal prints runs in your ambient environment,
+so it can remove more than `press clean` would). A declared path that matches
+nothing is a silent no-op. Git warnings are forwarded to stderr even when Git
+exits 0.
+
+Before either preview or apply, `press clean` captures the same complete
+surface snapshot used by the rebrand engine. A present active `.gitignore` or
+repository-config input that is absent from the protected tracked-plus-
+nonignored entries exits 2 when it equals or lies below a rendered clean path.
+Tracked and non-ignored active inputs remain protected by Git `-X`; disjoint
+active inputs remain outside the command; inactive `.gitignore` files below an
+ignored parent remain cleanable. The check uses the inventory's public active
+input records instead of reproducing its traversal.
+
+The configured excludes path remains subject to a stricter rule. Relative and
+absolute configured forms are normalized after SOURCE placeholders render. A
+path equal to or below a clean path, including a missing configured path or an
+alternate-case alias of an existing node, exits 2 before the `preview:` or
+`run:` line and before Git clean runs. An absent or null-device setting and a
+disjoint missing path retain the behavior described above.
+
+| Code | Meaning |
+|------|---------|
+| `0` | The preview or the clean ran and git exited 0. |
+| `1` | git clean ran after preflight and exited non-zero — the tree may have changed; read git's message. |
+| `2` | No clean command ran: target missing, not a git repository, or its `.git` a symlink, junction, or an unbound gitfile; rules invalid, no active `[[clean]]` rule, `press/press-source.toml` missing, a path unrenderable, configured `core.excludesFile` equal to or below a rendered clean path, a deletable active Git input overlapping a clean path, snapshot capture failure, process-launch failure, or `git` unresolvable. |
+
+Supported targets have an ordinary `.git` directory or a linked-worktree
+gitfile whose selected Git directory has a regular `gitdir` backlink to this
+target and a regular `commondir` file placing that directory directly under
+the common repository's `worktrees/` registry. Gitfiles pointing at foreign
+metadata, submodule roots, and standalone separate-Git-directory layouts
+without that registration are refused with exit 2;
+use an ordinary clone for those layouts. Read-only metadata queries may run
+before this refusal, but no clean command runs.
+
+A successful `press rebrand` records the declaration in the receipt as
+`[[press.clean]] paths = [...]` (as declared, unrendered) so a later operator
+knows to run `press clean` before re-pressing; the row never means that a
+clean ran. `press check-tools` lists one `git — … (cleans …)` row per active
+rule. `press verify` ignores the declaration by construction: its sandbox
+receives inventoried entries only.

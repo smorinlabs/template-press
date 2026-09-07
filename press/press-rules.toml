@@ -19,6 +19,15 @@ file = "pyproject.toml"
 command = ["uv", "version", "0.1.0", "--frozen"]
 expect = 'version = "0.1.0"'
 
+# Stale build caches under the package directory (`__pycache__`, `.pytest_cache`
+# trees) are ignored, so they are invisible to the surface inventory and would
+# trip the rename-closure refusal (E2) when the package directory is renamed.
+# Declaring them lets `press clean --target <clone>` remove exactly those
+# before a press; the active-input preflight and git clean -X preserve the
+# complete surface snapshot.
+[[clean]]
+paths = ["src/{package_name}", "tests"]
+
 [[regenerate]]
 file = "uv.lock"
 command = ["uv", "lock"]
