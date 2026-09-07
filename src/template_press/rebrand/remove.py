@@ -27,7 +27,7 @@ import errno
 import os
 import posixpath
 import stat
-import subprocess
+import subprocess  # nosec B404 -- hardened Git reads of an untrusted target
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
