@@ -12,7 +12,6 @@ import stat
 import subprocess  # nosec B404 — engine-owned hardened Git invocations
 import sys
 import tomllib
-import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -116,7 +115,7 @@ def _paths_are_same(left: Path, right: Path) -> bool:
 
 
 def _paths_are_same_entry(left: Path, right: Path) -> bool:
-    """Match one entry across case/Unicode filesystem aliases, not hardlinks."""
+    """Match actual filesystem aliases while keeping stored hardlink names distinct."""
     absolute_left = Path(os.path.abspath(left))
     absolute_right = Path(os.path.abspath(right))
     if os.fspath(absolute_left) == os.fspath(absolute_right):
@@ -130,13 +129,8 @@ def _paths_are_same_entry(left: Path, right: Path) -> bool:
         return False
     if absolute_left.name == absolute_right.name:
         return True
-    # Case folding alone does not equate composed and decomposed Unicode.
-    # Normalize comparison keys only: actual path and stored-name bytes stay
-    # literal, including the hardlink-entry distinction below.
-    left_key = unicodedata.normalize("NFC", absolute_left.name.casefold())
-    right_key = unicodedata.normalize("NFC", absolute_right.name.casefold())
-    if left_key != right_key:
-        return False
+    # Different spellings can still be aliases (including Windows short names).
+    # Only the actual stored names can establish two distinct hardlink entries.
     # Unavailable alias evidence must refuse cleanup, not authorize unlink.
     stored_names = {entry.name for entry in os.scandir(absolute_left.parent)}
     # A filesystem alias has one stored name. If both literal spellings are

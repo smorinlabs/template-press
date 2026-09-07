@@ -1402,14 +1402,14 @@ def test_unreadable_alias_parent_refuses_with_exact_and_hardlink_controls(
 
         code, output = _run(src_target, show, capsys)
 
-        assert code == (2 if kind == "alias" else 0), output
+        assert code == (0 if kind == "same-spelling" else 2), output
         assert stored.read_bytes() == b"tracked bytes under unreadable parent\n"
         _preserved_pair(src_target)
-        assert chosen.exists() == (show or kind != "independent-hardlink")
-        if kind != "independent-hardlink":
-            assert output.out == ""
-        if kind == "alias":
+        assert chosen.read_bytes() == b"tracked bytes under unreadable parent\n"
+        assert output.out == ""
+        if kind != "same-spelling":
             assert "Permission denied" in output.err
+        if kind == "alias":
             assert earlier.read_bytes() == b"earlier valid batch selection\n"
         assert clean_processes == []
     finally:
