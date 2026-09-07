@@ -1,10 +1,7 @@
-"""Declared pre-press clean (E10, restricted v1).
+"""Declared cleanup rendering, directory Git argv and hardened subprocess I/O.
 
-``press clean`` removes ignored entries under declared paths with
-``git clean -fdX``. It is a standalone verb, never a phase of
-``press rebrand`` (dry-run/apply parity, docs/source/reference/cli.md), so
-this module holds only the pure pieces: render the declared paths from the
-SOURCE identity, build the exact hardened git argv, and run it.
+The filesystem planner and exact-file executor live in clean_cli.py. Cleanup
+is a standalone verb, never a phase of press rebrand.
 """
 
 from __future__ import annotations
@@ -92,17 +89,21 @@ def clean_argv(
 
 def shell_join(argv: list[str]) -> str:
     """Render argv for display; the scrubbed environment is not represented."""
-    if sys.platform == "win32":
-        return subprocess.list2cmdline(argv)
-    return shlex.join(argv)
+    joined = (
+        subprocess.list2cmdline(argv) if sys.platform == "win32" else shlex.join(argv)
+    )
+    return repr(joined) if any(not char.isprintable() for char in joined) else joined
 
 
-def execute_clean(argv: list[str], target: Path) -> subprocess.CompletedProcess[bytes]:
+def execute_clean(
+    argv: list[str], target: Path, *, stdin: bytes | None = None
+) -> subprocess.CompletedProcess[bytes]:
     """Run argv under the scrubbed Git environment and return all exit codes."""
     return subprocess.run(  # noqa: S603 # nosec B603
         argv,
         cwd=target,
         capture_output=True,
+        input=stdin,
         env=scrubbed_git_env(),
         check=False,
     )

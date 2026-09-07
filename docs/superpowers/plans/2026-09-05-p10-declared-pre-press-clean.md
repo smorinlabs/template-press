@@ -1,5 +1,12 @@
 # P10 — Declared pre-press clean (`[[clean]] paths`, `press clean`) Implementation Plan
 
+**Approved amendment, 2026-09-07:** The [exact-file cleanup contract](../specs/2026-09-07-p10-exact-file-clean-amendment.md)
+supersedes the Git-only regular-file execution, missing-path command output,
+and related error/documentation examples below. It also adds the approved
+input protections and directory scope guards. Original Tasks 1–5 describe the
+implemented baseline; the amended work and final Task 6 delivery gate are
+tracked in [P10](../../../projects/P10-declared-pre-press-clean.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the restricted `[[clean]] paths = [...]` declaration and the standalone `press clean [--show]` verb, which removes only ignored entries under the declared paths with `git clean -fdX`, so a target can clear stale build caches before a press instead of tripping the rename-closure refusal.
@@ -1652,7 +1659,7 @@ def _paths_are_same(left: Path, right: Path) -> bool:
 
 
 def _paths_are_same_entry(left: Path, right: Path) -> bool:
-    """Match one directory entry across filesystem case aliases, not hardlinks."""
+    """Match actual filesystem aliases while keeping stored hardlink names distinct."""
     absolute_left = Path(os.path.abspath(left))
     absolute_right = Path(os.path.abspath(right))
     if os.fspath(absolute_left) == os.fspath(absolute_right):
@@ -1666,13 +1673,11 @@ def _paths_are_same_entry(left: Path, right: Path) -> bool:
         return False
     if absolute_left.name == absolute_right.name:
         return True
-    if absolute_left.name.casefold() != absolute_right.name.casefold():
-        return False
-    try:
-        stored_names = {entry.name for entry in os.scandir(absolute_left.parent)}
-    except OSError:
-        return False
-    # A case-insensitive alias has one stored name. If both spellings are
+    # Different spellings can still be aliases (including Windows short names).
+    # Only the actual stored names can establish two distinct hardlink entries.
+    # Unavailable alias evidence must refuse cleanup, not authorize unlink.
+    stored_names = {entry.name for entry in os.scandir(absolute_left.parent)}
+    # A filesystem alias has one stored name. If both literal spellings are
     # stored, they are distinct hardlink entries and both can be removed alone.
     return not (
         absolute_left.name in stored_names and absolute_right.name in stored_names

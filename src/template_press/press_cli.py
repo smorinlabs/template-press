@@ -21,7 +21,7 @@ usage: press <command> [options]
 commands:
   rebrand      press an identity onto a target repo (press rebrand --help)
   verify       check that a template presses cleanly (press verify --help)
-  clean        remove ignored entries under declared [[clean]] paths (press clean --help)
+  clean        remove ignored entries under declared [[clean]] paths
   check-tools  report whether declared commands resolve (press check-tools --help)
   provision    configure a target's features (coming in M6)
   status       report a target's provisioned state (coming in M6)

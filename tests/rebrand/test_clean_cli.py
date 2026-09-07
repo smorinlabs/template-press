@@ -4,7 +4,9 @@ standalone verb, and its integrations (E2 hint, check-tools, receipt, verify).
 
 from __future__ import annotations
 
+import ast
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -16,7 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from template_press import press_cli
-from template_press.rebrand import clean_cli
+from template_press.rebrand import clean, clean_cli
 from template_press.rebrand.clean import (
     clean_argv,
     execute_clean,
@@ -95,9 +97,106 @@ class TestArgv:
         assert "src/demo widget" in joined or "'src/demo widget'" in joined
         assert joined.startswith("git clean -ndX --")
 
+    @pytest.mark.parametrize("platform", ["darwin", "win32"])
+    def test_shell_join_preserves_printable_arguments(self, monkeypatch, platform):
+        monkeypatch.setattr(clean, "sys", type("Platform", (), {"platform": platform}))
+        argv = ["git", "clean", "--", "src/demo widget"]
+        assert shell_join(argv) == (
+            subprocess.list2cmdline(argv) if platform == "win32" else shlex.join(argv)
+        )
+
+    @pytest.mark.parametrize("platform", ["darwin", "win32"])
+    @pytest.mark.parametrize("control", ["\n", "\x1b", "\r", "\x7f"])
+    def test_shell_join_escapes_nonprintable_arguments(
+        self, monkeypatch, platform, control
+    ):
+        monkeypatch.setattr(clean, "sys", type("Platform", (), {"platform": platform}))
+        raw = ["git", "clean", "--", f"src/demo{control}widget"]
+        expected_display = (
+            subprocess.list2cmdline(raw) if platform == "win32" else shlex.join(raw)
+        )
+        joined = shell_join(raw)
+        assert all(char.isprintable() for char in joined)
+        assert ast.literal_eval(joined) == expected_display
+
+    @pytest.mark.parametrize("platform", ["darwin", "win32"])
+    def test_execute_clean_passes_original_argv_unchanged(
+        self, monkeypatch, platform, tmp_path
+    ):
+        monkeypatch.setattr(clean, "sys", type("Platform", (), {"platform": platform}))
+        argv = ["git", "clean", "--", "src/demo\nwidget", "x\x1b"]
+        expected = tuple(argv)
+        shell_join(argv)
+        observed: dict[str, tuple[str, ...]] = {}
+
+        def run(actual, **kwargs):
+            observed["argv"] = tuple(actual)
+            return subprocess.CompletedProcess(actual, 0)
+
+        monkeypatch.setattr(clean.subprocess, "run", run)
+        execute_clean(argv, tmp_path)
+        assert observed["argv"] == expected
+        assert tuple(argv) == expected
+
     def test_execute_returns_nonzero_without_raising(self, tmp_path: Path):
         result = execute_clean([sys.executable, "-c", "raise SystemExit(3)"], tmp_path)
         assert result.returncode == 3
+
+
+def test_clean_excludes_decodes_git_utf8_independently_of_filesystem_encoding(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "target"
+    target.mkdir()
+    excludes = tmp_path / "café.excludes"
+    excludes.write_bytes(b"*.pyc\n")
+    monkeypatch.setattr(
+        clean_cli,
+        "execute_clean",
+        lambda argv, command_target, *, stdin=None: subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=str(excludes).encode("utf-8") + b"\0",
+            stderr=b"",
+        ),
+    )
+    monkeypatch.setattr(
+        clean_cli.os,
+        "fsdecode",
+        lambda raw: bytes(raw).decode("latin-1"),
+    )
+
+    assert clean_cli._clean_excludes_path(Path("git"), target) == excludes
+
+
+def test_git_metadata_decodes_git_utf8_independently_of_filesystem_encoding(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / ".git").write_bytes(b"gitdir: queried-by-git\n")
+    common_dir = tmp_path / "common-café" / ".git"
+    git_dir = common_dir / "worktrees" / "slot"
+    git_dir.mkdir(parents=True)
+    (git_dir / "gitdir").write_bytes(str(target / ".git").encode("utf-8") + b"\n")
+    (git_dir / "commondir").write_bytes(b"../..\n")
+    monkeypatch.setattr(
+        clean_cli,
+        "execute_clean",
+        lambda argv, command_target, *, stdin=None: subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=str(git_dir).encode("utf-8") + b"\n",
+            stderr=b"",
+        ),
+    )
+    monkeypatch.setattr(
+        clean_cli.os,
+        "fsdecode",
+        lambda raw: bytes(raw).decode("latin-1"),
+    )
+
+    clean_cli._validate_git_metadata(Path("git"), target)
 
 
 @pytest.mark.parametrize(
@@ -282,6 +381,7 @@ class TestPressClean:
 
     def test_show_previews_and_removes_nothing(self, src_target: Path, capsys):
         target = self._target(src_target)
+        (target / "tests").mkdir()  # Both delegated directory selections exist.
         cache = target / "src" / "demo_widget" / "__pycache__" / "x.pyc"
         cache.parent.mkdir()
         cache.write_bytes(b"\x00")
@@ -295,6 +395,7 @@ class TestPressClean:
         self, src_target: Path, capsys
     ):
         target = self._target(src_target)
+        (target / "tests").mkdir()  # Both delegated directory selections exist.
         cache = target / "src" / "demo_widget" / "__pycache__" / "x.pyc"
         cache.parent.mkdir()
         cache.write_bytes(b"\x00")
@@ -328,8 +429,7 @@ class TestPressClean:
     def test_absent_declared_path_is_a_silent_no_op(self, src_target: Path, capsys):
         target = self._target(src_target, '[[clean]]\npaths = ["missing"]\n')
         assert press_cli.main(["clean", "--target", str(target)]) == 0
-        lines = capsys.readouterr().out.splitlines()
-        assert len(lines) == 1 and lines[0].startswith("run: ")
+        assert capsys.readouterr().out == ""
 
     def test_no_active_rule_exits_2(self, src_target: Path, capsys):
         foreign = "linux" if sys.platform == "win32" else "win32"
@@ -376,12 +476,12 @@ class TestPressClean:
         target = self._target(src_target)
         real_execute = clean_cli.execute_clean
 
-        def fail_clean(argv, command_target):
+        def fail_clean(argv, command_target, *, stdin=None):
             if "clean" in argv:
                 return subprocess.CompletedProcess(
                     argv, 5, stdout=b"partial output\n", stderr=b"clean failure\n"
                 )
-            return real_execute(argv, command_target)
+            return real_execute(argv, command_target, stdin=stdin)
 
         monkeypatch.setattr(clean_cli, "execute_clean", fail_clean)
         assert press_cli.main(["clean", "--target", str(target)]) == 1
@@ -403,7 +503,7 @@ class TestPressClean:
         (foreign / ".git" / "info" / "exclude").write_text(
             "protected.py\n", encoding="utf-8"
         )
-        shutil.rmtree(target / ".git")
+        (target / ".git").rename(tmp_path / "target-git-directory")
         (target / ".git").write_text(f"gitdir: {foreign / '.git'}\n", encoding="utf-8")
         args = ["clean", "--target", str(target)] + (["--show"] if show else [])
         assert press_cli.main(args) == 2
@@ -435,8 +535,8 @@ class TestPressClean:
             )
             if not git_dir.is_absolute():
                 git_dir = (target / git_dir).resolve()
-            (git_dir / "gitdir").write_text(
-                os.path.relpath(target / ".git", git_dir) + "\n", encoding="utf-8"
+            (git_dir / "gitdir").write_bytes(
+                os.path.relpath(target / ".git", git_dir).encode("utf-8") + b"\r\n"
             )
         cache = target / "src" / "demo_widget" / "__pycache__" / "x.pyc"
         cache.parent.mkdir()
@@ -460,19 +560,75 @@ class TestPressClean:
         (source / ".git" / "info" / "exclude").write_text(
             protected.as_posix() + "\n", encoding="utf-8"
         )
-        (first / ".git").write_bytes((second / ".git").read_bytes())
-        assert press_cli.main(["clean", "--target", str(first)]) == 2
+        target = tmp_path / "forged"
+        shutil.copytree(first, target, ignore=shutil.ignore_patterns(".git"))
+        (target / ".git").write_bytes((second / ".git").read_bytes())
+        assert press_cli.main(["clean", "--target", str(target)]) == 2
         captured = capsys.readouterr()
         assert "does not belong" in captured.err
         assert "run:" not in captured.out
-        assert (first / protected).read_bytes() == original
+        assert (target / protected).read_bytes() == original
+
+    @posix_only
+    @pytest.mark.parametrize("foreign_index", [False, True])
+    def test_carriage_return_git_slot_uses_actual_ownership(
+        self, src_target: Path, tmp_path: Path, capsys, foreign_index: bool
+    ):
+        source = self._target(src_target)
+        target = tmp_path / "linked-target"
+        foreign = tmp_path / "linked-foreign"
+        _git(source, "worktree", "add", "--detach", str(target))
+        _git(source, "worktree", "add", "--detach", str(foreign))
+        protected = Path("src/demo_widget/__init__.py")
+        original = (target / protected).read_bytes()
+        _git(foreign, "rm", "--cached", "--", protected.as_posix())
+        (source / ".git/info/exclude").write_text(
+            protected.as_posix() + "\n", encoding="utf-8"
+        )
+        target_slot = Path(
+            (target / ".git")
+            .read_text(encoding="utf-8")
+            .removeprefix("gitdir: ")
+            .removesuffix("\n")
+        )
+        selected_slot = target_slot
+        if foreign_index:
+            selected_slot = Path(
+                (foreign / ".git")
+                .read_text(encoding="utf-8")
+                .removeprefix("gitdir: ")
+                .removesuffix("\n")
+            )
+        cr_slot = target_slot.with_name(target_slot.name + "\r")
+        selected_slot.rename(cr_slot)
+        # The suffix prevents Git's metadata-line reader from treating the
+        # actual CR in the slot name as a line terminator.
+        (target / ".git").write_bytes(b"gitdir: " + os.fsencode(cr_slot) + b"/.\n")
+        # Fixed Git argv against this test's owned worktree.
+        query = subprocess.run(  # noqa: S603
+            ["git", "-C", str(target), "rev-parse", "--absolute-git-dir"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        assert query.stdout == os.fsencode(cr_slot) + b"\n"
+        capsys.readouterr()
+        code = press_cli.main(["clean", "--target", str(target), "--show"])
+        captured = capsys.readouterr()
+        assert code == (2 if foreign_index else 0)
+        if foreign_index:
+            assert "does not belong" in captured.err
+            assert "preview:" not in captured.out
+        else:
+            assert "preview:" in captured.out
+        assert "Would remove" not in captured.out
+        assert (target / protected).read_bytes() == original
 
     @pytest.mark.parametrize("malformed", [False, True])
     def test_invalid_gitfile_is_a_precondition_refusal(
         self, src_target: Path, tmp_path: Path, capsys, malformed: bool
     ):
         target = self._target(src_target)
-        shutil.rmtree(target / ".git")
+        (target / ".git").rename(tmp_path / "target-git-directory")
         (target / ".git").write_text(
             "not a gitfile\n"
             if malformed
@@ -576,10 +732,10 @@ def test_success_stderr_is_forwarded(src_target, capsys, monkeypatch, show):
     warning = b"warning: could not open directory: Permission denied\n"
     real_execute = clean_cli.execute_clean
 
-    def warn_on_clean(argv, target):
+    def warn_on_clean(argv, target, *, stdin=None):
         if "clean" in argv:
             return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=warning)
-        return real_execute(argv, target)
+        return real_execute(argv, target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", warn_on_clean)
     args = ["clean", "--target", str(target)] + (["--show"] if show else [])
@@ -670,10 +826,10 @@ def test_configured_excludes_overlap_refuses_before_clean(
     before = capture_surface_snapshot(target)
     real_execute = clean_cli.execute_clean
 
-    def refuse_clean(argv, command_target):
+    def refuse_clean(argv, command_target, *, stdin=None):
         if "clean" in argv:
             pytest.fail("configured-excludes overlap reached git clean")
-        return real_execute(argv, command_target)
+        return real_execute(argv, command_target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
     args = ["clean", "--target", str(target)] + (["--show"] if show else [])
@@ -707,10 +863,10 @@ def test_missing_configured_excludes_under_clean_path_refuses(
     before = capture_surface_snapshot(target)
     real_execute = clean_cli.execute_clean
 
-    def refuse_clean(argv, command_target):
+    def refuse_clean(argv, command_target, *, stdin=None):
         if "clean" in argv:
             pytest.fail("missing configured-excludes overlap reached git clean")
-        return real_execute(argv, command_target)
+        return real_execute(argv, command_target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
     args = ["clean", "--target", str(target)] + (["--show"] if show else [])
@@ -743,10 +899,10 @@ def test_case_alias_configured_excludes_overlap_refuses(
     before = capture_surface_snapshot(target)
     real_execute = clean_cli.execute_clean
 
-    def refuse_clean(argv, command_target):
+    def refuse_clean(argv, command_target, *, stdin=None):
         if "clean" in argv:
             pytest.fail("case-aliased configured excludes reached git clean")
-        return real_execute(argv, command_target)
+        return real_execute(argv, command_target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
     args = ["clean", "--target", str(target)] + (["--show"] if show else [])
@@ -783,10 +939,10 @@ def test_active_self_ignored_gitignore_refuses_before_clean(
     assert policy.relative_to(target) not in {entry.rel for entry in before.entries}
     real_execute = clean_cli.execute_clean
 
-    def refuse_clean(argv, command_target):
+    def refuse_clean(argv, command_target, *, stdin=None):
         if "clean" in argv:
             pytest.fail("active self-ignored .gitignore reached git clean")
-        return real_execute(argv, command_target)
+        return real_execute(argv, command_target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
     args = ["clean", "--target", str(target)] + (["--show"] if show else [])
@@ -822,10 +978,10 @@ def test_active_input_hardlinked_to_disjoint_tracked_path_still_refuses(
     assert policy.relative_to(target) not in {entry.rel for entry in before.entries}
     real_execute = clean_cli.execute_clean
 
-    def refuse_clean(argv, command_target):
+    def refuse_clean(argv, command_target, *, stdin=None):
         if "clean" in argv:
             pytest.fail("distinct hardlinked active input reached git clean")
-        return real_execute(argv, command_target)
+        return real_execute(argv, command_target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
     args = ["clean", "--target", str(target)] + (["--show"] if show else [])
@@ -861,10 +1017,10 @@ def test_ignored_repository_config_include_refuses_before_clean(
     assert policy.relative_to(target) not in {entry.rel for entry in before.entries}
     real_execute = clean_cli.execute_clean
 
-    def refuse_clean(argv, command_target):
+    def refuse_clean(argv, command_target, *, stdin=None):
         if "clean" in argv:
             pytest.fail("ignored repository config input reached git clean")
-        return real_execute(argv, command_target)
+        return real_execute(argv, command_target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", refuse_clean)
     args = ["clean", "--target", str(target)] + (["--show"] if show else [])
@@ -999,7 +1155,9 @@ def test_linked_worktree_with_absolute_common_dir_is_accepted(src_target, tmp_pa
     )
     if not git_dir.is_absolute():
         git_dir = (target / git_dir).resolve()
-    (git_dir / "commondir").write_text(str(src_target / ".git") + "\n")
+    (git_dir / "commondir").write_bytes(
+        str(src_target / ".git").encode("utf-8") + b"\r\n"
+    )
     cache = target / "src/demo_widget/__pycache__/x.pyc"
     cache.parent.mkdir()
     cache.write_bytes(b"cache")
@@ -1098,12 +1256,12 @@ def test_nonregular_configured_excludes_refuse_before_clean(
     cache.write_bytes(b"keep")
     real_execute = clean_cli.execute_clean
 
-    def refuse_unsafe_clean(argv, target):
+    def refuse_unsafe_clean(argv, target, *, stdin=None):
         # The old implementation fails promptly here instead of hanging
         # this test on the FIFO. Metadata/config queries still use real Git.
         if "clean" in argv:
             pytest.fail("unsafe git clean reached a nonregular excludes input")
-        return real_execute(argv, target)
+        return real_execute(argv, target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", refuse_unsafe_clean)
     args = ["clean", "--target", str(src_target)] + (["--show"] if show else [])
@@ -1146,18 +1304,18 @@ def test_clean_launch_oserror_is_precondition_refusal(
     before = capture_surface_snapshot(src_target)
     real_execute = clean_cli.execute_clean
 
-    def execute_with_launch_control(argv, target):
+    def execute_with_launch_control(argv, target, *, stdin=None):
         if launch_missing and "clean" in argv:
             argv = [str(tmp_path / "git-gone"), *argv[1:]]
-        return real_execute(argv, target)
+        return real_execute(argv, target, stdin=stdin)
 
     monkeypatch.setattr(clean_cli, "execute_clean", execute_with_launch_control)
     args = ["clean", "--target", str(src_target)] + (["--show"] if show else [])
     assert press_cli.main(args) == (2 if launch_missing else 0)
     captured = capsys.readouterr()
     if launch_missing:
-        assert "error:" in captured.err
-        assert "git-gone" in captured.err
+        assert captured.err.startswith("error: ")
+        assert captured.err.removeprefix("error: ").strip()
     assert cache.exists() == (show or launch_missing)
     assert capture_surface_snapshot(src_target) == before
 

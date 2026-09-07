@@ -1956,6 +1956,14 @@ def test_native_directory_declaration():
     assert sum(r.file.startswith("projects/") for r in rules.remove) == 12
 ```
 
+  **Native acceptance correction:** R3 uses a dedicated `r3_dest` identity
+  assembled at runtime, separate from the shared adversarial `DEST` fixture.
+  The shared values already occur in the repository's own negative controls
+  and make the second press report unrelated pre-existing strings. Construct
+  the dedicated identity before writing answers; use it for answers, the
+  normalized root-package lookup, and the corrected origin. Preserve every
+  existing native assertion and full scanner coverage, with no exemptions.
+
   Append these assertions inside existing `test_r3_self_press_native`, after its
   parsed receipt:
 
@@ -1979,7 +1987,7 @@ _git(
     "remote",
     "set-url",
     "origin",
-    f"https://github.com/{DEST.owner}/{DEST.repo_name}.git",
+    f"https://github.com/{r3_dest.owner}/{r3_dest.repo_name}.git",
 )
 assert verify_command(["--target", str(target)]) == 0
 ```

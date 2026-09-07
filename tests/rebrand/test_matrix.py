@@ -99,6 +99,16 @@ def test_general_ci_provisions_bun_for_native_r3() -> None:
 def test_r3_self_press_native(tmp_path: Path) -> None:
     """Execute the checked-in declaration selected by this native host."""
 
+    r3_package_name = "_".join(("r3", "matrix", "fixture"))
+    r3_dest = dataclasses.replace(
+        DEST,
+        package_name=r3_package_name,
+        repo_name=r3_package_name.replace("_", "-"),
+        app_name="_".join(("r3", "tool")),
+        author=" ".join(("R3", "Matrix", "Fixture")),
+        email="@".join(("r3-matrix", "fixture.invalid")),
+        owner="-".join(("r3", "matrix", "labs")),
+    )
     target = clone(str(REPO_ROOT), tmp_path / "self")
     subprocess.run(  # noqa: S603
         [  # noqa: S607
@@ -113,7 +123,7 @@ def test_r3_self_press_native(tmp_path: Path) -> None:
         check=True,
         capture_output=True,
     )
-    answers = write_answers_file(tmp_path, DEST)
+    answers = write_answers_file(tmp_path, r3_dest)
 
     code = main(
         [
@@ -135,7 +145,7 @@ def test_r3_self_press_native(tmp_path: Path) -> None:
     root_package = next(
         package
         for package in uv_lock["package"]
-        if package["name"] == "potato-launcher"
+        if package["name"] == r3_dest.repo_name
     )
     assert manifest["."] == "0.1.0"
     assert pyproject["project"]["version"] == "0.1.0"
@@ -161,7 +171,7 @@ def test_r3_self_press_native(tmp_path: Path) -> None:
         "remote",
         "set-url",
         "origin",
-        f"https://github.com/{DEST.owner}/{DEST.repo_name}.git",
+        f"https://github.com/{r3_dest.owner}/{r3_dest.repo_name}.git",
     )
     assert verify_command(["--target", str(target)]) == 0
     # E10: this repo declares its own clean paths; the native press records
