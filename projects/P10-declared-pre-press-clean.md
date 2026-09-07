@@ -10,10 +10,9 @@
 - **Discussion:** [PR #122](https://github.com/smorinlabs/template-press/pull/122)
 - **Review:** [Original clean review](../docs/superpowers/specs/reviews-2026-09-01/CLEAN-review.md)
 
-- **Status:** `[~]` in progress — Group 3B. Approved input protections and
-  exact individual-file cleanup are implemented and reviewed. Native Windows
-  validation, current PR checks, acceptance, and merge remain delivery gates
-  for PR #122.
+- **Status:** `[x]` complete — Group 3B. Declared cleanup, input protections
+  and exact individual-file selections shipped in [PR #122](https://github.com/smorinlabs/template-press/pull/122),
+  merged on 2026-09-07 as `3f8c9fa8adc34aad8dc7dc7c776660070ad93c43`.
 
 ### Scope
 
@@ -36,10 +35,10 @@ corrections below precede the original Task 6 delivery gate.
 - [x] [P10-T03] Task 3: standalone command, dispatcher, and closure remedy hint.
 - [x] [P10-T04] Task 4: tool availability and declaration receipt coverage.
 - [x] [P10-T05] Task 5: initial docs, decision record, runbook, and native declaration.
-- [ ] [P10-TS02] Prove input preservation, exact-file sibling preservation, alias safety, native Windows behavior, and partial failures with independent controls.
+- [x] [P10-TS02] Prove input preservation, exact-file sibling preservation, alias safety, native Windows behavior, and partial failures with independent controls.
 - [x] [P10-T07] Approved correction: protect declared config includes and press controls; prevent ignored-parent scope widening while supporting exact regular-file selections.
 - [x] [P10-T08] Amend output, error, and safety documentation; run complete corrected-code checks and final independent review.
-- [ ] [P10-T06] Task 6: resolve PR findings, pass current CI and committed-head acceptance, merge under existing authorization, and close out tracking.
+- [x] [P10-T06] Task 6: resolve PR findings, pass current CI and committed-head acceptance, merge under existing authorization, and close out tracking.
 
 ### Remaining limitation
 
@@ -59,6 +58,28 @@ independent internal approval. Muse was requested at Ultra with a maximum of
 100 model steps; the provider used xhigh. Fable was unavailable before
 inference, so the approved Opus fallback was used.
 
-The local skips include native Windows cases. They do not establish Windows
-acceptance. Isolated native short-name regression/correction runs and the
-shipping PR's platform checks remain required before delivery can close.
+Those local skips included native Windows cases and did not establish Windows
+acceptance. The subsequent isolated native short-name runs and shipping platform
+checks passed, as recorded in the delivery closeout below.
+
+
+### Delivery closeout
+
+Shipping commit `34d95817e0dd4044c9f1ed9544cb76b5b6beac7e` passed isolated
+native Windows validation before the full shipping suite. The baseline run
+[34163206247](https://github.com/smorinlabs/template-press/actions/runs/34163206247)
+produced six expected failures and six passes. The corrected run
+[34163419361](https://github.com/smorinlabs/template-press/actions/runs/34163419361)
+passed the same twelve tests, with no skips in either run. Independent hardlink
+controls passed on both revisions. The diagnostic workflow stayed separate
+from shipping source.
+
+[Full CI](https://github.com/smorinlabs/template-press/actions/runs/34163591598)
+passed on Linux (1,775 passed, 57 skipped), macOS (1,809 passed, 23 skipped) and
+Windows (1,728 passed, 104 skipped). The separate
+[acceptance run](https://github.com/smorinlabs/template-press/actions/runs/34163591589)
+passed all four POSIX cases and native Windows R3. All ten review threads were
+resolved with evidence before the normal merge. The two final concurrent-writer
+findings were reproduced in disposable fixtures and remain the already approved
+P12-T-defer-10 value evaluation. No stronger coordination mechanism is promised
+by this closeout. No release or tag is included in P10 delivery.
