@@ -4,6 +4,7 @@
 
 - **Trunk:** [PROJECTS.md](../PROJECTS.md)
 - **Plan:** [CI measurement and optimization gates](../docs/superpowers/plans/2026-09-07-p11a-ci-optimization.md)
+- **Review:** [Measured CI baseline](../docs/superpowers/reviews/2026-09-07-p11a-ci-baseline.md)
 - **Depends on:** P11 for integration and delivery; profiling runs in parallel.
 - **Discussion:** [P11 delivery and current CI](https://github.com/smorinlabs/template-press/pull/123)
 
@@ -26,9 +27,9 @@ No workflow, runner plan or test-coverage change is made by this capture.
 ### Tests & Tasks
 
 - [x] [P11A-TS01] Preserve starting source/run IDs and existing passing controls; distinguish the stalled P11 Windows run from normal duration evidence.
-- [ ] [P11A-T01] Profile completed CI runs, queue/setup/test timing, cumulative runner minutes and repeated or canceled work.
-- [ ] [P11A-T02] Rank concrete optimizations by measured value, coverage risk, complexity and validation needs.
-- [ ] [P11A-TS02] Define discriminating correctness controls and before/after benchmarks for the selected candidates.
+- [x] [P11A-T01] Profile completed CI runs, queue/setup/test timing, cumulative runner minutes and repeated or canceled work.
+- [x] [P11A-T02] Rank concrete optimizations by measured value, coverage risk, complexity and validation needs.
+- [x] [P11A-TS02] Define discriminating correctness controls and before/after benchmarks for the selected candidates.
 - [ ] [P11A-T03] Complete independent major plan review, including Muse requested at Ultra with a 100-step maximum and the approved Fable/Opus fallback policy; record actual provider capability.
 - [ ] [P11A-T04] Resolve any real coverage, platform or spending decisions from the concrete reviewed plan and record the selected scope.
 - [ ] [P11A-T05] Implement and validate selected optimizations in an isolated PR, or record an evidence-based decision to make no change.
@@ -47,8 +48,9 @@ P11 head `6304a5d5c090d06272c744f9651e2520d53ce16d` passed Linux/macOS and
 [acceptance 34164445623](https://github.com/smorinlabs/template-press/actions/runs/34164445623).
 Its Windows coverage step in
 [34164445625](https://github.com/smorinlabs/template-press/actions/runs/34164445625)
-was still active roughly 90 minutes after starting, so it is a stall to diagnose,
-not a passing performance baseline. P11 delivery owns that investigation and
+was cancelled after a 98m06s Windows job allocation. Windows logs were
+unavailable, so its cause remains unknown. It is not a passing performance
+baseline. P11 delivery owns that investigation and
 its correctness findings; P11A must not silently absorb or bypass those gates.
 
 ### Decision boundaries
@@ -59,3 +61,10 @@ first. Changes to paid runner plans or deliberate reductions in validation are
 owner decisions. Benchmark plausible scheduling/cache candidates before claiming
 savings. When Windows fails, run the isolated failed remote job or test family,
 validate its correction there, then return to the full batch.
+
+### Measurement closeout
+
+The profile and concrete three-phase, five-milestone plan are recorded. Native
+Windows tests dominate the healthy-run sample; setup is already short. Independent
+major plan review is next. No optimization, benchmark or coverage change is
+claimed complete. P12 remains paused behind P11 and this follow-up.
