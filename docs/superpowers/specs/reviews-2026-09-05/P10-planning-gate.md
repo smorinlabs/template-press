@@ -5,6 +5,17 @@ PR #117 parallel test matrix, PR #118 batched `rev-parse`) · **Scope:** plan
 Tasks 16–18 of `docs/superpowers/plans/2026-09-01-press-improvements-g2p.md`
 · **Output:** `docs/superpowers/plans/2026-09-05-p10-declared-pre-press-clean.md`
 
+**Implementation entry: READY (2026-09-06; historical approval).** Task 1 was
+approved against plan
+`614827a8e848eeecb1215ce2d48b63252c78c8b26049d82439bd8a2408405e15`.
+The current plan is
+`ebde81fd2208bc4f23b6dd3bcd6646d2ebf5fad15b56230def3db8b3d985d764`;
+§5.11 records its defensive implementation alignment and subsequent scoped
+approval. §5.12 closes the local implementation-review gate at
+`8d6a6a301c74d75a50de2325aec12674a5b5012d`. Historical owner, provider,
+and internal-review results remain bound to their recorded snapshots.
+Publication, current PR checks, merge, and P10 tracker completion remain open.
+
 ## Purpose
 
 The P09 closeout handoff requires a major planning review before P10
@@ -72,12 +83,14 @@ ignore settings remain active. The explicit excludes-file pin in §5.5 also
 disables Git's default user ignore fallback, matching the surface inventory.
 An entry ignored only by the operator's global excludes file is preserved.
 
-**D-B — Muse review effort: UNRESOLVED owner exception.** The handoff requires
-ultra or a specific exception. Muse passes 3 and 4 requested ultra; both CLI
-startup diagnostics reported the closed `ultra_reasoning_effort` gate and
-actual xhigh. Pass 4 approved the final correction. Steve's universal
-authorization covers sending review material; the actual-effort exception
-for this planning gate remains a separate recorded decision.
+**D-B — Muse review effort and Fable substitution: RESOLVED owner
+continuation (2026-09-06).** The owner answered yes to the prior disclosed
+fallback/continue question, then specified Opus when Fable is unavailable and
+requested Muse Ultra with 100 maximum model steps. Muse again reported the
+Ultra gate closed; its actual effort was xhigh. This continuation authorizes
+the Opus review as the Fable substitution and accepts Muse's actual xhigh for
+this gate. It does not claim actual Ultra or that the owner separately named
+xhigh in an utterance.
 
 ## 5. Review log
 
@@ -101,6 +114,8 @@ received, not as fixes chosen.
 | Muse, combined active-input exact-delta review (plan `b10ca82f…`) | ultra / **xhigh** (provider gate closed); configured 100 max model steps | APPROVE | 0 | exact correction approved; receipt `muse-p10-active-inputs.log` |
 | Claude Fable 5.1, bounded combined active-input retry (plan `b10ca82f…`) | max requested; usage-credit rejection before review | **NOT REVIEWED** | — | no verdict; receipt `fable-p10-active-inputs.json`; substitution remains an owner decision |
 | Internal `gpt-6-astra` scoped final review (plan `b10ca82f…`) | session-configured effort | APPROVE | 0 | spec compliance and task quality approved; prior R1 resolved; receipt `p10-internal-major-rereview.md` |
+| Muse, final plan review (plan `95c16db…`) | ultra requested / **xhigh** actual; configured 100 maximum model steps | APPROVE | 0 | no required findings; receipt `p10-muse-adversarial-resumed.log` |
+| Claude Code Opus, final plan review (plan `95c16db…`) | max requested / **claude-opus-5** actual, 78 turns, zero permission denials | FIX | 4 | F1–F4 applied; structured `is_error=false`; receipt `p10-opus-adversarial-receipt.json` |
 
 ### 5.1 Fable review of the reconciled plan
 
@@ -164,13 +179,14 @@ credits were exhausted, so it supplied no verdict. Historical approvals remain
 bound to their recorded hashes. The earlier GitHub findings retain their
 verified dispositions.
 
-Implementation remains gated on D-B's explicit owner exception for Muse's
-actual xhigh effort and on an explicit owner decision about substituting for
-the missing Fable review. Neither gate is waived or inferred. D-A uses the
-accepted scrubbed environment plus the excludes pin. The documentation
-worktree's final `just check` passed with 1412 tests and 2 skips in 247.86s.
-The exact materialized inventory suite passed 75 tests in 86.81s. The
-controller owns commit, push, and PR closeout.
+At the time of this historical `b10ca82f…` entry, implementation was gated on
+D-B's owner exception for Muse's actual xhigh effort and on an owner decision
+about substituting for the missing Fable review. Section 4 and §5.9 supersede
+that pending-decision status: the continuation and substitution are now
+recorded. D-A uses the accepted scrubbed environment plus the excludes pin.
+The documentation worktree's final `just check` passed with 1412 tests and 2
+skips in 247.86s. The exact materialized inventory suite passed 75 tests in
+86.81s. The controller owns commit, push, and PR closeout.
 
 ### 5.4 Resumed review corrections
 
@@ -360,8 +376,139 @@ actual xhigh with 100 max model steps configured. The internal `gpt-6-astra`
 final rereview approved that same `b10ca82f…` snapshot for spec compliance and
 task quality, with prior R1 resolved. Claude Fable's
 bounded retry failed before review because usage credits were exhausted and is
-recorded as NOT REVIEWED. D-B and the Fable-substitution decision remain
-unresolved owner gates; neither is waived or inferred.
+recorded as NOT REVIEWED. At that historical snapshot, D-B and the
+Fable-substitution decision remained unresolved owner gates; neither was
+waived or inferred at that time.
+
+### 5.9 Resumed final-plan review and correction disposition
+
+The complete final-plan review wave was bound to the then-current plan
+SHA-256 `95c16db4ae1ac43899e50f1ceec31c22285c16bfd65e0f46be3bc26bd8e4fcbd`.
+Muse returned **APPROVE** with no required findings. Ultra was requested, the
+provider gate remained closed, actual effort was xhigh, and 100 maximum model
+steps were configured; the receipt is `p10-muse-adversarial-resumed.log`.
+That review was read/search only and makes no executed-test claim. Claude Code
+Opus returned **FIX** after source read/search only: requested effort was max,
+actual model `claude-opus-5`, 78 turns, zero permission denials, and structured
+`is_error=false`; the full report and receipt are
+`p10-opus-adversarial-report.md` and `p10-opus-adversarial-receipt.json`.
+This is a Claude Code Opus FIX verdict, not an external APPROVE.
+
+Required corrections applied to the plan:
+
+| Finding | Disposition |
+| --- | --- |
+| F1 — proposed `clean.py` and `clean_cli.py` omitted Bandit B404 import annotations | Both proposed `subprocess` imports now carry concise `# nosec B404` comments; Task 2 names the locked Bandit command and both B404 and B603 annotations. The extracted exact `clean.py` and `clean_cli.py` each produced only B404 and exit 1 before annotation, then exit 0 after annotation; test imports were untouched. |
+| F2 — the gate record retained an unresolved owner continuation and Fable substitution | Section 4 now records the 2026-09-06 owner continuation: Opus is authorized when Fable is unavailable, and Muse Ultra was requested with 100 maximum model steps; Muse reported actual xhigh because the Ultra gate was closed. The scoped internal correction review is now complete and approved in §5.10. |
+| F3 — Task 3 Step 2 claimed an unobservable RED result and wrong failure class | The initial collection result is corrected to `ImportError: cannot import name 'clean_cli' from 'template_press.rebrand'`; individual descriptions are behavior pins after Step 3 creates the module. |
+| F4 — ADR 0018 had no index row | Added `docs/adr/README.md` to the File Structure table and Task 5 staging command, with the required existing-format 0018 index row. |
+
+The table preserves the external report's F1–F4 dispositions and binds each
+one to the corrected plan snapshot.
+
+Optional triage is settled in the same correction: O2 adds
+`tests/rebrand/test_surface_inventory.py` to Task 3's focused validation;
+O4 catches final clean-process launch `OSError` as exit 2, with no clean
+process started; and O5 expresses the clean guidance as a nested bullet under
+runbook step 1 while preserving preview, apply, then dry-run order. The
+launch-error regression had 2 failed and 2 passed controls in the original
+helper and 4 passed controls after correction (`p10-opus-exec-red.log` and
+`p10-opus-exec-green.log`); the separate executed-clean failure control passed
+1 test with 99 deselected (`p10-opus-exec-exit1-control.log`). O1 is
+nonblocking because the new clean section describes the check-tools row and
+the existing check-tools example remains unchanged. O3 is declined as an
+unmeasured performance suggestion; O6 is declined because its new reserved
+path refusal has no demonstrated E10 violation; O7 is a fragile line-pointer
+nit; and O8/O9 are nonblocking interface/module-description suggestions.
+None is deferred as new P12 work.
+
+The corrected plan's new SHA-256 is
+`614827a8e848eeecb1215ce2d48b63252c78c8b26049d82439bd8a2408405e15`.
+It supersedes the reviewed `95c16db4…` snapshot for implementation
+purposes. Historical provider approvals remain bound to their recorded
+snapshots; no provider approval is attributed to this new hash. The owner
+fallback is settled and all required corrections are applied. The scoped internal correction review approved spec compliance and task
+quality after the S1 wording correction in §5.10. Implementation may start.
+This uses the owner's internal-review policy for small corrections; it does
+not convert the earlier Opus FIX verdict into a new provider approval.
+
+### 5.10 S1 round-one correction — internal review complete
+
+The entire Task 3 Step 2 `Expected` paragraph was replaced with the exact
+two-paragraph wording required by S1. It now states the observed collection
+`ImportError`, says that no individual test runs before Step 3, and describes
+the post-Step-3 command-test and hint behavior pins. The corrected plan hash is
+`614827a8e848eeecb1215ce2d48b63252c78c8b26049d82439bd8a2408405e15`.
+The independent `gpt-5.6-sol` scoped rereview returned **APPROVE** for both
+spec compliance and task quality and closed S1. Its receipt is
+`p10-opus-corrections-rereview.md`; earlier accepted correction findings remain
+accepted. The review read the exact correction and did not repeat test suites.
+The controller's required `PYTEST_ADDOPTS="-n 8" just check` completed with
+1412 tests passed, 2 skipped, and all remaining checks passing in this run.
+The test portion took 246.60 seconds. Root Ruff check and format checks passed
+on the corrected documents. No required planning-gate finding remains.
+
+### 5.11 Defensive path-entry implementation alignment — review complete
+
+The final source review at implementation commit
+`034d7e758b6bf017003694b5f523d81f0d4d2b4c` found two ordinary defects in
+the accepted R12 entry-identity and R10 linked-worktree ownership behavior.
+Under Windows path semantics, `Path` equality folds case and can treat two
+case-differing directory entries as the same entry before filesystem identity
+is checked.
+
+The illustrative helper now compares the absolute spellings with
+`os.fspath(absolute_left) == os.fspath(absolute_right)`. The linked-worktree
+backlink and common-repository `worktrees/` registry checks now reuse that
+helper, retaining exact spellings and verified aliases while refusing distinct
+case-differing entries. The ordinary-directory discovery check, conservative
+overlap helpers, stored-name guard, and fail-closed behavior are unchanged.
+Focused pure unit fixtures cover four distinct-entry refusals plus five valid
+exact-entry, alias, and registration controls. They are not native Windows,
+real Git cleanup, or filesystem-mutation evidence.
+
+The plan SHA-256 changed from
+`614827a8e848eeecb1215ce2d48b63252c78c8b26049d82439bd8a2408405e15`
+to `ebde81fd2208bc4f23b6dd3bcd6646d2ebf5fad15b56230def3db8b3d985d764`.
+The §5.10 implementation-entry approval remains historical and bound to the
+old hash. Earlier provider verdicts remain bound to their recorded snapshots.
+After correction commit `8d6a6a301c74d75a50de2325aec12674a5b5012d`, the
+independent Astra review approved spec compliance and implementation quality
+for the exact five-file correction from `034d7e7` to `8d6a6a3`. F1 and F2
+are resolved; no required finding remains. The reviewer read the complete
+diff, implementer report, and recorded validation without rerunning tests.
+This subsequent approval supersedes the correction commit's pending status.
+
+### 5.12 Local implementation review closeout
+
+The complete feature review covered baseline
+`4386d7508355115ce7876833827d871d7a22ab79` through implementation commit
+`034d7e758b6bf017003694b5f523d81f0d4d2b4c`.
+
+| Review | Actual result and scope |
+| --- | --- |
+| Muse | Spec and quality APPROVE, no required findings. Ultra was requested; the provider used `xhigh` because Ultra was unavailable. The run configured 100 maximum model steps; the actual step count was not emitted. |
+| Claude Code | Spec and quality APPROVE, no required findings. The authorized Opus fallback launched as `claude-opus-5` with maximum effort requested and completed 45 turns. Accounting also lists auxiliary Fable and Haiku usage; this is not a separate Fable verdict. |
+| Internal Astra | The complete review found F1; a focused Windows metadata follow-up found F2. The scoped correction review at `8d6a6a3` approved both spec compliance and quality and closed both findings, as recorded in §5.11. |
+
+The Muse and Claude approvals remain bound to `034d7e7`; neither independently
+approves the later correction or closes findings they missed. The owner's
+internal-review policy covers this small, demonstrated correction within the
+accepted R10/R12 requirements. No material product-plan alteration was made.
+
+The correction's four intended regression assertions failed before the fix,
+while five valid controls passed. After the fix, all nine cases passed.
+The complete clean CLI test file passed 109 tests. The required
+`PYTEST_ADDOPTS='-n 8' just check` passed 1,543 tests with 2 skipped and all
+remaining checks passing; its test portion took 314.05 seconds. Root Ruff
+checks passed. The rebrand acceptance matrix passed 4 tests with 5 deselected
+in 37.65 seconds, and the correction commit's hooks passed. These are recorded
+local results for `8d6a6a3`, not native Windows or unpublished GitHub CI results.
+
+The local implementation-review gate is complete. Publication approval,
+current PR checks, review-thread disposition, merge, and the subsequent
+project-harness tracker closeout remain required by Task 6. This record does
+not mark P10 delivered or authorize P11 implementation.
 
 ## 6. Verification record
 
@@ -515,8 +662,8 @@ was overwritten.
 These results cover the executable plan in disposable clones and the final
 docs-worktree validation. A shipping-source implementation, matrix run, native
 R3 result, native Windows result, commit, and PR action remain outside this
-record-only correction. The exact correction has completed its available
-reviews: Muse and internal `gpt-6-astra` approved it, while Fable supplied no
-verdict. D-B and the decision to substitute for the unavailable Fable review
-remain unresolved owner gates. The controller owns commit, push, and PR
-closeout.
+record-only correction. At that historical snapshot, the exact correction had completed its
+available reviews: Muse and internal `gpt-6-astra` approved it, while Fable
+supplied no verdict. D-B and the Fable substitution were unresolved then.
+The resumed decisions and review closeout in §5.9–5.10 supersede those holds.
+The controller owns commit, push, and PR closeout.
