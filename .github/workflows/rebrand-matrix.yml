@@ -1,65 +1,35 @@
-# R1/R2/R3 rebrand acceptance matrix (EMPIRICAL_BUGS.md, reborn as a
-# repeatable harness). Live: R1/R2 clone the real py-launch-blueprint from
-# GitHub; R3 presses a throwaway clone of this repo. Scheduled (network
-# dependency + real clones shouldn't gate every PR) plus workflow_dispatch
-# and a paths-filtered pull_request trigger for direct rebrand changes.
-# Locally: `just matrix` runs the identical script.
-
-name: rebrand-matrix
+# Diagnostic branch only: never merge this workflow override.
+name: p10-windows-isolated
+run-name: P10 isolated Windows failure cases at ${{ github.sha }}
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 6 * * 1'  # weekly, Monday 06:00 UTC
-  pull_request:
-    paths:
-      - src/template_press/rebrand/**
-      - tests/rebrand/**
-      - scripts/rebrand_matrix.sh
-      - scripts/regen-bun-lock.sh
-      - scripts/regen-bun-lock.ps1
-      - press/press-rules.toml
 
 permissions: {}
 
-concurrency:
-  group: rebrand-matrix-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  matrix:
-    name: ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: r1-r2-r3-posix
-            os: blacksmith-4vcpu-ubuntu-2404
-            command: scripts/rebrand_matrix.sh
-          - name: r3-windows
-            os: windows-latest
-            command: >-
-              uv run pytest
-              tests/rebrand/test_matrix.py::test_r3_self_press_native
-              -m live -q
-    runs-on: ${{ matrix.os }}
+  isolated-windows:
+    runs-on: blacksmith-4vcpu-windows-2025
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.0
-
-      # R3's self-press runs the declared `bun install` regeneration for
-      # bun.lock; without bun the press exits 2 at the plan gate.
-      - name: Install bun (pinned)
-        uses: oven-sh/setup-bun@v2.2.0
         with:
-          bun-version: '1.3.14'
-
-      - name: Sync locked dev env
+          persist-credentials: false
+      - name: Install uv and Python 3.13
+        uses: astral-sh/setup-uv@v10.0.0
+        with:
+          python-version: "3.13"
+      - name: Sync locked dev environment
         run: uv sync --locked --group dev
-
-      - name: Run native acceptance
-        run: ${{ matrix.command }}
+      - name: Run failed Windows cases and their paired controls only
+        run: >-
+          uv run --no-sync pytest -q -vv
+          tests/rebrand/test_clean_cli.py
+          -k "foreign_gitfile_refuses_before_clean or
+          linked_worktree_is_accepted or
+          sibling_worktree_gitfile_is_refused or
+          invalid_gitfile_is_a_precondition_refusal or
+          linked_worktree_with_absolute_common_dir_is_accepted or
+          clean_launch_oserror_is_precondition_refusal"
