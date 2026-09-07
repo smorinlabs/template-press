@@ -182,7 +182,7 @@ def _print_closure_refusal_prose(
             print(f"  # then rmdir each newly-empty parent up to {prefix_abs}")
         if len(empty_dirs) > cap:
             print(f"  … ({len(empty_dirs) - cap} more)")
-    if getattr(rules, "clean", ()):
+    if rules.clean:
         print(f"declared clean rules exist — run: press clean --target {target}")
 
 

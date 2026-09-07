@@ -533,6 +533,8 @@ def _core_excludes_path(target: Path) -> Path | None:
     if not text:
         return None
     path = Path(text)
+    if path == Path(os.devnull):
+        return None
     return path if path.is_absolute() else target / path
 
 
