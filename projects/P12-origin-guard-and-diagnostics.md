@@ -21,6 +21,8 @@ test.
 - [ ] [P12-T-defer-8] Prefix-only tally: count occurrences after earlier `[[replace]]` rows have consumed their matches, so a token rewritten by a prior row is not reported as a prefix-only survivor — promised in PR #109 triage.
 - [ ] [P12-T-defer-9] `press verify --json` emits no JSON object on a preflight refusal (source-config, identity mismatch, unhonored receipt): stderr + exit 2 with empty stdout, pre-existing. Give it a structured refusal object like `press rebrand --diagnostics-json` — from the Task 10b Codex re-check.
 
+- [ ] [P12-T-defer-10] Evaluate stronger concurrent-writer protection for `press clean`. P10 requires ignore/configuration inputs, the index, and selected paths to stay stable; its immediate file checks can refuse detected changes but do not make Git directory cleanup or exact unlink atomic. Assess whether binding deletion to a frozen selection or adding a stronger coordination protocol is worth the complexity, or close this follow-up with the stable-input contract documented. This is a P12 value decision after P10/P11 delivery, not a promised implementation. Tracked from [PR #122 concurrency review](https://github.com/smorinlabs/template-press/pull/122#discussion_r3946789616).
+
 **References**
 
 - **Trunk:** [PROJECTS.md](../PROJECTS.md)
