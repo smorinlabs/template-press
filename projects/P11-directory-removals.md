@@ -12,7 +12,8 @@
 - **Status:** `[~]` in progress — Group 3C. Declaration parsing, frozen
   directory selection, exact deletion, complete receipt history, and public
   press/verifier integration are implemented and reviewed. Discriminating
-  membership controls, native migration, and final delivery remain open.
+  membership controls also pass independent review. Native migration and final
+  delivery remain open.
 
 ### Scope
 
@@ -28,10 +29,10 @@ rename with a separate injected nonmember and broken-executor control.
 - [x] [P11-TS01] Establish parser and frozen-selection refusal controls; 51 focused tests passed with one Windows-only skip before the first implementation commit.
 - [x] [P11-T01] Task 1: typed directory declarations, static overlap checks, and temporary public execution gate.
 - [x] [P11-T02] Task 2: immutable membership, directory safety/status checks, compatibility view, rendering, and command-conflict checks.
-- [ ] [P11-TS02] Add executor/history, CLI/verify, renewal, and discriminating membership controls before their corresponding implementations.
+- [x] [P11-TS02] Establish executor/history, CLI/verify, renewal, and discriminating membership controls; implementation tests include recorded RED results, and Task 5 rejects deliberately broken alternatives.
 - [x] [P11-T03] Task 3: exact deletion, safe empty-directory pruning, and complete bounded receipt history.
 - [x] [P11-T04] Task 4: real press, historical verification, and explicit membership renewal.
-- [ ] [P11-T05] Task 5: prove production preserves nonmembers and deliberately broken alternatives fail the same oracles.
+- [x] [P11-T05] Task 5: prove production preserves nonmembers and deliberately broken alternatives fail the same oracles.
 - [ ] [P11-T06] Task 6: migrate research declarations, preserve project scaffolding, document behavior, and validate committed-head acceptance.
 - [ ] [P11-T07] Delivery: final independent review, PR checks and thread resolution, authorized merge, then project closeout.
 
@@ -55,3 +56,11 @@ and all four acceptance tests passed. Public directory execution, historical
 verification, and explicit membership renewal now share the frozen removal
 plan. The deliberately broken alternatives, native declaration migration, and
 remote Windows validation remain separate gates.
+
+
+Task 5 passed independent specification and quality review with no findings.
+All four focused controls passed. Production preserves nonmembers, while both
+deliberately broken alternatives fail the same independent assertions. These
+are inverse controls, not production failures. The final `just check` passed
+with 1,722 tests and three skips. Root formatting and all four acceptance tests
+passed. No production changes were needed.

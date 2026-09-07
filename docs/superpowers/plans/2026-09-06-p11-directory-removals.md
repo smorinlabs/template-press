@@ -1737,7 +1737,7 @@ occurs strictly after successful production `engine.apply` and immediately befor
 `apply_removal_plan`. The lower-level harness does not call the full CLI after
 injection and does not promise concurrent CLI acceptance.
 
-- [ ] **Step 1: Add the actual production and broken-control harness.**
+- [x] **Step 1: Add the actual production and broken-control harness.**
 
 ```python
 from __future__ import annotations
@@ -1862,7 +1862,7 @@ def test_verify_membership_oracle(tmp_path, monkeypatch, capsys):
   shared oracle is expected to fail. JSON parsing or fixture/discovery failure
   occurs outside `pytest.raises`, so it cannot masquerade as discrimination.
 
-- [ ] **Step 2: Execute positive and inverse controls.**
+- [x] **Step 2: Execute positive and inverse controls.**
 
 ```bash
 uv run pytest tests/rebrand/test_remove_dir_controls.py -q -vv
@@ -1875,7 +1875,7 @@ uv run pytest tests/rebrand/test_remove_dir_controls.py -q -vv
   production RED from Task 1. If either candidate fails, reproduce its defect
   before fixing and repeat only the affected tests plus required gates.
 
-- [ ] **Step 3: Pressure-test no-receipt and history ambiguity.** Add exact
+- [x] **Step 3: Pressure-test no-receipt and history ambiguity.** Add exact
   paired controls: after a successful directory press, recreate both the
   declaration root and different recorded current root, then assert re-press
   exits 2 without rewriting either file. Change one receipt member's current
@@ -1903,14 +1903,14 @@ def test_history_cannot_delete_outside_member(tmp_path, capsys):
     assert (repo / "incoming/late.md").read_text(encoding="utf-8") == "outside member\n"
 ```
 
-- [ ] **Step 4: Full required gates.**
+- [x] **Step 4: Full required gates.**
 
 ```bash
 PYTEST_ADDOPTS='-n 8' just check
 just matrix
 ```
 
-- [ ] **Step 5: Commit and review.**
+- [x] **Step 5: Commit and review.**
 
 ```bash
 git add tests/rebrand/test_remove_dir_controls.py
