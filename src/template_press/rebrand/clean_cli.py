@@ -205,7 +205,8 @@ def _validate_git_metadata(git: Path, target: Path) -> None:
         "--absolute-git-dir",
     ]
     result = execute_clean(query, target)
-    raw = _remove_git_line_ending(result.stdout)
+    # Git stdout adds LF; a preceding CR can be part of a POSIX path.
+    raw = result.stdout.removesuffix(b"\n")
     if result.returncode != 0 or not raw or b"\x00" in raw:
         raise ValidationError("cannot resolve .git gitfile")
     git_dir = Path(_decode_git_path(raw))

@@ -525,6 +525,60 @@ class TestPressClean:
         assert "run:" not in captured.out
         assert (target / protected).read_bytes() == original
 
+    @posix_only
+    @pytest.mark.parametrize("foreign_index", [False, True])
+    def test_carriage_return_git_slot_uses_actual_ownership(
+        self, src_target: Path, tmp_path: Path, capsys, foreign_index: bool
+    ):
+        source = self._target(src_target)
+        target = tmp_path / "linked-target"
+        foreign = tmp_path / "linked-foreign"
+        _git(source, "worktree", "add", "--detach", str(target))
+        _git(source, "worktree", "add", "--detach", str(foreign))
+        protected = Path("src/demo_widget/__init__.py")
+        original = (target / protected).read_bytes()
+        _git(foreign, "rm", "--cached", "--", protected.as_posix())
+        (source / ".git/info/exclude").write_text(
+            protected.as_posix() + "\n", encoding="utf-8"
+        )
+        target_slot = Path(
+            (target / ".git")
+            .read_text(encoding="utf-8")
+            .removeprefix("gitdir: ")
+            .removesuffix("\n")
+        )
+        selected_slot = target_slot
+        if foreign_index:
+            selected_slot = Path(
+                (foreign / ".git")
+                .read_text(encoding="utf-8")
+                .removeprefix("gitdir: ")
+                .removesuffix("\n")
+            )
+        cr_slot = target_slot.with_name(target_slot.name + "\r")
+        selected_slot.rename(cr_slot)
+        # The suffix prevents Git's metadata-line reader from treating the
+        # actual CR in the slot name as a line terminator.
+        (target / ".git").write_bytes(b"gitdir: " + os.fsencode(cr_slot) + b"/.\n")
+        # Fixed Git argv against this test's owned worktree.
+        query = subprocess.run(  # noqa: S603
+            ["git", "-C", str(target), "rev-parse", "--absolute-git-dir"],  # noqa: S607
+            check=True,
+            capture_output=True,
+        )
+        assert query.stdout == os.fsencode(cr_slot) + b"\n"
+        capsys.readouterr()
+        code = press_cli.main(["clean", "--target", str(target), "--show"])
+        captured = capsys.readouterr()
+        assert code == (2 if foreign_index else 0)
+        if foreign_index:
+            assert "does not belong" in captured.err
+            assert "preview:" not in captured.out
+        else:
+            assert "preview:" in captured.out
+        assert "Would remove" not in captured.out
+        assert (target / protected).read_bytes() == original
+
     @pytest.mark.parametrize("malformed", [False, True])
     def test_invalid_gitfile_is_a_precondition_refusal(
         self, src_target: Path, tmp_path: Path, capsys, malformed: bool
