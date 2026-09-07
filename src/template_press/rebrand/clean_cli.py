@@ -45,6 +45,18 @@ _CONFIG_ERRORS = (
 )
 
 
+def _decode_git_path(raw: bytes) -> str:
+    """Decode Git path bytes consistently with the surface inventory."""
+    return raw.decode("utf-8", "surrogateescape")
+
+
+def _remove_git_line_ending(raw: bytes) -> bytes:
+    """Remove one LF or CRLF metadata terminator without stripping path bytes."""
+    if raw.endswith(b"\r\n"):
+        return raw[:-2]
+    return raw.removesuffix(b"\n")
+
+
 def _clean_excludes_path(git: Path, target: Path) -> Path | None:
     """Match inventory's configured excludes; never inherit Git's default file."""
     query = [
@@ -70,7 +82,7 @@ def _clean_excludes_path(git: Path, target: Path) -> Path | None:
     raw = result.stdout[:-1]
     if not raw:
         return None
-    path = Path(os.fsdecode(raw))
+    path = Path(_decode_git_path(raw))
     if path == Path(os.devnull):
         return None
     if not path.is_absolute():
@@ -193,20 +205,21 @@ def _validate_git_metadata(git: Path, target: Path) -> None:
         "--absolute-git-dir",
     ]
     result = execute_clean(query, target)
+    # Git stdout adds LF; a preceding CR can be part of a POSIX path.
     raw = result.stdout.removesuffix(b"\n")
     if result.returncode != 0 or not raw or b"\x00" in raw:
         raise ValidationError("cannot resolve .git gitfile")
-    git_dir = Path(os.fsdecode(raw))
+    git_dir = Path(_decode_git_path(raw))
     if not git_dir.is_absolute():
         raise ValidationError("Git returned a relative Git directory")
     if (target / ".git").is_dir():
         if git_dir.resolve() != target / ".git":
             raise ValidationError(".git directory discovery escaped the target")
         return
-    backlink_raw = read_regular_nofollow(git_dir / "gitdir").removesuffix(b"\n")
+    backlink_raw = _remove_git_line_ending(read_regular_nofollow(git_dir / "gitdir"))
     if not backlink_raw or b"\x00" in backlink_raw:
         raise ValidationError("invalid linked-worktree gitdir backlink")
-    backlink = Path(os.fsdecode(backlink_raw))
+    backlink = Path(_decode_git_path(backlink_raw))
     if not backlink.is_absolute():
         backlink = git_dir / backlink
     if not _paths_are_same_entry(backlink.resolve(), target / ".git"):
@@ -214,10 +227,10 @@ def _validate_git_metadata(git: Path, target: Path) -> None:
 
     # A normal foreign Git directory can forge the backlink above. A linked
     # worktree must also occupy a registered slot in its common repository.
-    common_raw = read_regular_nofollow(git_dir / "commondir").removesuffix(b"\n")
+    common_raw = _remove_git_line_ending(read_regular_nofollow(git_dir / "commondir"))
     if not common_raw or b"\x00" in common_raw:
         raise ValidationError("invalid linked-worktree commondir")
-    common_dir = Path(os.fsdecode(common_raw))
+    common_dir = Path(_decode_git_path(common_raw))
     if not common_dir.is_absolute():
         common_dir = git_dir / common_dir
     if not _paths_are_same_entry(
