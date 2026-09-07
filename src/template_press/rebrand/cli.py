@@ -521,6 +521,11 @@ def main(argv: list[str] | None = None) -> int:
         # the adapter preserves each field's effective substring posture.
         selected = load_selected_rules(target)
         rules = selected.rules
+        if rules.remove_dirs:
+            return _fail(
+                "directory removals require the complete P11 executor and "
+                "history integration"
+            )
         plan = build_plan(target, source, dest, rules)
         rename_preflight = preflight_rename_noreplace(
             target,

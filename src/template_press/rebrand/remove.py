@@ -25,19 +25,414 @@ from __future__ import annotations
 
 import os
 import posixpath
+import stat
+import subprocess
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
+from template_press.rebrand.inventory import capture_surface_snapshot
 from template_press.rebrand.pathing import translate_path
 from template_press.rebrand.regen import has_uncommitted_changes, tracked_paths
-from template_press.rebrand.rules import Rules, _control_alias_key
+from template_press.rebrand.removal_types import (
+    DirectoryRemoval,
+    RemovalMember,
+    RemovalPlan,
+)
+from template_press.rebrand.rules import (
+    RemoveDirRule,
+    RemoveRule,
+    Rules,
+    _control_alias_key,
+    _reject_reserved,
+)
 from template_press.rebrand.safety import (
     SafetyError,
     assert_ancestors_real,
     assert_under_root,
+    git_hardening_args,
     is_regular_lstat,
+    scrubbed_git_env,
 )
+
+
+def _directory_git_bytes(target: Path, *args: str) -> bytes:
+    """Run one hardened, target-pinned Git query for directory preflight."""
+    command = [
+        "git",
+        "--literal-pathspecs",
+        "-C",
+        str(target),
+        f"--work-tree={target.absolute()}",
+        *git_hardening_args(),
+        *args,
+    ]
+    return subprocess.run(  # noqa: S603 # nosec B603
+        command,
+        check=True,
+        capture_output=True,
+        env=scrubbed_git_env(),
+    ).stdout
+
+
+def _directory_status_problems(
+    target: Path,
+    root: str,
+    missing_recorded: frozenset[str],
+    present_members: frozenset[str],
+) -> list[str]:
+    """Return dirty or hidden-index paths beneath one frozen directory root."""
+    problems: list[str] = []
+    raw_status = _directory_git_bytes(
+        target,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--",
+        root,
+    )
+    records = raw_status.split(b"\0")
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if not record:
+            continue
+        if len(record) < 4 or record[2:3] != b" ":
+            raise SafetyError("malformed directory status record")
+        code = record[:2]
+        rel = record[3:].decode("utf-8", "surrogateescape")
+        has_second_path = b"R" in code or b"C" in code
+        if has_second_path:
+            if index >= len(records) or not records[index]:
+                raise SafetyError("malformed directory rename status record")
+            index += 1
+        missing_history = (
+            not has_second_path
+            and code in (b" D", b"D ")
+            and rel in missing_recorded
+            and not os.path.lexists(target / rel)
+        )
+        if not missing_history:
+            problems.append(f"remove directory {root!r}: dirty path {rel!r}")
+    raw_flags = _directory_git_bytes(target, "ls-files", "-v", "-z", "--", root)
+    for record in raw_flags.split(b"\0"):
+        if not record:
+            continue
+        if len(record) < 3 or record[1:2] != b" ":
+            raise SafetyError("malformed directory index-flag record")
+        tag = record[:1]
+        rel = record[2:].decode("utf-8", "surrogateescape")
+        if rel in present_members and (tag.islower() or tag == b"S"):
+            problems.append(
+                f"remove directory {root!r}: {rel!r} has uncommitted changes "
+                "(assume-unchanged/skip-worktree) — refused even under "
+                "--allow-dirty"
+            )
+    return problems
+
+
+def _freeze_directory(
+    target: Path,
+    declaration: RemoveDirRule,
+    *,
+    current_dir: str,
+    prior: DirectoryRemoval | None = None,
+) -> DirectoryRemoval:
+    """Freeze tracked regular members and reject all directory dirtiness."""
+    root = target / current_dir
+    try:
+        assert_under_root(root, target)
+        assert_ancestors_real(root, target)
+    except SafetyError:
+        raise
+    if root.is_junction():
+        raise SafetyError(f"remove directory {current_dir!r} is a junction")
+    if not os.path.lexists(root):
+        if prior is not None:
+            retained = tuple(
+                RemovalMember(
+                    file=member.file,
+                    current_file=member.current_file,
+                    reason=declaration.reason,
+                    source_dir=member.source_dir,
+                    missing_ok=True,
+                )
+                for member in prior.members
+            )
+            return DirectoryRemoval(
+                dir=declaration.dir,
+                current_dir=current_dir,
+                reason=declaration.reason,
+                members=retained,
+            )
+        raise SafetyError(
+            f"remove directory {current_dir!r} does not exist — stale declaration"
+        )
+    if not root.is_dir() or root.is_symlink():
+        raise SafetyError(f"remove directory {current_dir!r} is not a real directory")
+
+    stack = [root]
+    while stack:
+        directory = stack.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                entry_path = Path(entry.path)
+                relative = entry_path.relative_to(target).as_posix()
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode):
+                    raise SafetyError(
+                        f"remove directory {current_dir!r}: symlink {relative!r}"
+                    )
+                if entry.name == ".git":
+                    raise SafetyError(
+                        f"remove directory {current_dir!r}: embedded git boundary {relative!r}"
+                    )
+                if stat.S_ISDIR(info.st_mode):
+                    if entry_path.is_junction():
+                        raise SafetyError(
+                            f"remove directory {current_dir!r}: junction {relative!r}"
+                        )
+                    stack.append(entry_path)
+                elif not stat.S_ISREG(info.st_mode):
+                    raise SafetyError(
+                        f"remove directory {current_dir!r}: unsafe node {relative!r}"
+                    )
+                if entry.name in {".gitignore", ".gitattributes", ".gitmodules"}:
+                    raise SafetyError(
+                        f"remove directory {current_dir!r}: Git visibility input {relative!r}"
+                    )
+
+    snapshot = capture_surface_snapshot(target)
+    prefix = current_dir + "/"
+    present = {
+        entry.rel.as_posix()
+        for entry in snapshot.entries
+        if entry.tracked
+        and entry.rel.as_posix().startswith(prefix)
+        and entry.index_kind == "file"
+        and os.path.lexists(target / entry.rel)
+        and is_regular_lstat(target / entry.rel)
+    }
+    selected_tracked = {
+        entry.rel.as_posix()
+        for entry in snapshot.entries
+        if entry.tracked
+        and entry.rel.as_posix().startswith(prefix)
+        and entry.index_kind == "file"
+    }
+    unsafe = [
+        f"{entry.rel.as_posix()} ({entry.index_kind})"
+        for entry in snapshot.entries
+        if entry.tracked
+        and entry.rel.as_posix().startswith(prefix)
+        and entry.index_kind != "file"
+    ]
+    if unsafe:
+        raise SafetyError(
+            f"remove directory {current_dir!r}: unsafe tracked node {unsafe[0]!r}"
+        )
+    prior_missing = frozenset(
+        member.current_file
+        for member in (prior.members if prior is not None else ())
+        if not os.path.lexists(target / member.current_file)
+    )
+    unauthorized_missing = selected_tracked - present - prior_missing
+    if unauthorized_missing:
+        missing = sorted(unauthorized_missing)[0]
+        raise SafetyError(
+            f"remove directory {current_dir!r}: tracked member {missing!r} is "
+            "missing without validated prior absence history"
+        )
+    problems = _directory_status_problems(
+        target, current_dir, prior_missing, frozenset(present)
+    )
+    if problems:
+        omitted = len(problems) - min(len(problems), 20)
+        suffix = f"; {omitted} additional path(s) omitted" if omitted else ""
+        raise SafetyError("; ".join(problems[:20]) + suffix)
+    retained = tuple(
+        RemovalMember(
+            file=member.file,
+            current_file=member.current_file,
+            reason=declaration.reason,
+            source_dir=member.source_dir,
+            missing_ok=True,
+        )
+        for member in (prior.members if prior is not None else ())
+        if member.current_file in prior_missing
+    )
+    members = tuple(
+        RemovalMember(
+            file=rel,
+            current_file=rel,
+            reason=declaration.reason,
+            source_dir=current_dir,
+        )
+        for rel in sorted(present)
+    )
+    root_entry = next(
+        (entry for entry in snapshot.entries if entry.rel.as_posix() == current_dir),
+        None,
+    )
+    if root_entry is not None and root_entry.index_kind == "gitlink":
+        raise SafetyError(f"remove directory {current_dir!r}: root gitlink")
+    seen_current: dict[str, str] = {}
+    seen_audit: dict[str, str] = {}
+    for member in members + retained:
+        if any(ord(char) < 0x20 or ord(char) == 0x7F for char in member.file):
+            raise SafetyError(
+                f"remove directory {current_dir!r}: unsafe member path {member.file!r}"
+            )
+        _reject_reserved("[[remove]] directory member", member.file)
+        if member.file.rsplit("/", 1)[-1] in {
+            ".gitignore",
+            ".gitattributes",
+            ".gitmodules",
+        }:
+            raise SafetyError(
+                f"remove directory {current_dir!r}: Git visibility input {member.file!r}"
+            )
+        alias = _control_alias_key(member.current_file)
+        if alias in seen_current:
+            raise SafetyError(
+                f"remove directory {current_dir!r}: alias-colliding members "
+                f"{seen_current[alias]!r} and {member.current_file!r}"
+            )
+        seen_current[alias] = member.current_file
+        audit_alias = _control_alias_key(member.file)
+        if audit_alias in seen_audit:
+            raise SafetyError(
+                f"remove directory {current_dir!r}: alias-colliding audit members "
+                f"{seen_audit[audit_alias]!r} and {member.file!r}"
+            )
+        seen_audit[audit_alias] = member.file
+        member_path = target / member.current_file
+        if os.path.lexists(member_path):
+            for visibility in snapshot.visibility_inputs:
+                if not os.path.lexists(visibility.path):
+                    continue
+                try:
+                    member_stat = os.stat(member_path)
+                    visibility_stat = os.stat(visibility.path)
+                except OSError:
+                    continue
+                same_resolved_path = member_path.resolve(
+                    strict=False
+                ) == visibility.path.resolve(strict=False)
+                if same_resolved_path or (
+                    member_stat.st_dev == visibility_stat.st_dev
+                    and member_stat.st_ino == visibility_stat.st_ino
+                    and member_stat.st_dev != 0
+                    and member_stat.st_ino != 0
+                ):
+                    raise SafetyError(
+                        f"remove directory {current_dir!r}: configured visibility "
+                        f"input {member.file!r}"
+                    )
+    return DirectoryRemoval(
+        dir=declaration.dir,
+        current_dir=current_dir,
+        reason=declaration.reason,
+        members=tuple(
+            sorted(
+                members + retained,
+                key=lambda member: (member.file, member.current_file),
+            )
+        ),
+    )
+
+
+def removal_rules_view(rules: Rules, plan: RemovalPlan) -> Rules:
+    """Expose frozen members to legacy file-oriented plan gates."""
+    files = tuple(
+        RemoveRule(file=member.current_file, reason=member.reason)
+        for member in plan.members
+    )
+    dirs = tuple(
+        RemoveDirRule(dir=directory.current_dir, reason=directory.reason)
+        for directory in plan.directories
+    )
+    return replace(rules, remove=files, remove_dirs=dirs)
+
+
+def render_frozen_remove_plan(plan: RemovalPlan) -> str:
+    """Render every frozen file and directory member before mutation."""
+    lines = ["Remove (frozen declared deletions, applied after the rewrite pass):"]
+    counts: dict[str, int] = {}
+    for member in plan.files:
+        location = (
+            f" → {member.current_file}" if member.file != member.current_file else ""
+        )
+        lines.append(f"  [remove ] {member.file}{location}  —  {member.reason}")
+        head, separator, _ = member.file.partition("/")
+        if separator:
+            counts[head] = counts.get(head, 0) + 1
+    for directory in plan.directories:
+        count = len(directory.members)
+        noun = "file" if count == 1 else "files"
+        lines.append(
+            f"  [remove ] {directory.current_dir}/ ({count} {noun}, dir) "
+            f"— {directory.reason}"
+        )
+        for member in directory.members:
+            location = (
+                f" → {member.current_file}"
+                if member.file != member.current_file
+                else ""
+            )
+            lines.append(f"    member {member.file}{location}")
+    for dirname in sorted(counts):
+        count = counts[dirname]
+        noun = "file" if count == 1 else "files"
+        lines.append(f"  removing {count} {noun} under {dirname}/")
+    return "\n".join(lines)
+
+
+def frozen_remove_command_conflicts(
+    rules: Rules, plan: RemovalPlan, renamed: Mapping[str, str]
+) -> list[str]:
+    """Find command argv paths removed by the frozen plan."""
+    removed: dict[str, str] = {}
+    for member in plan.members:
+        current = translate_path(member.current_file, renamed)
+        removed[_control_alias_key(member.current_file)] = member.current_file
+        removed[_control_alias_key(current)] = member.current_file
+    directory_roots: list[tuple[str, str]] = []
+    for directory in plan.directories:
+        current_dir = translate_path(directory.current_dir, renamed)
+        directory_roots.extend(
+            (
+                (directory.current_dir, directory.current_dir),
+                (current_dir, directory.current_dir),
+            )
+        )
+        removed[_control_alias_key(directory.current_dir)] = directory.current_dir
+        removed[_control_alias_key(current_dir)] = directory.current_dir
+    problems: list[str] = []
+    for kind, declarations in (("edit", rules.edit), ("regenerate", rules.regenerate)):
+        for declaration in declarations:
+            for element in declaration.command:
+                normalized = posixpath.normpath(element.replace("\\", "/"))
+                alias = _control_alias_key(normalized)
+                matching_root = next(
+                    (
+                        declared
+                        for root, declared in directory_roots
+                        if alias == _control_alias_key(root)
+                        or alias.startswith(_control_alias_key(root) + "/")
+                    ),
+                    None,
+                )
+                if alias not in removed and matching_root is None:
+                    continue
+                problems.append(
+                    f"frozen removal {(removed.get(alias) or matching_root)!r}: "
+                    f"argv element {element!r} in the [[{kind}]] command for "
+                    f"{declaration.file!r} names a removed path"
+                )
+    return problems
 
 
 @dataclass(frozen=True)

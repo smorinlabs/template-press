@@ -466,6 +466,11 @@ def verify_command(argv: list[str] | None = None) -> int:
     try:
         selected = load_selected_rules(target)
         rules = selected.rules
+        if rules.remove_dirs:
+            return _fail(
+                "directory removals require the complete P11 executor and "
+                "history integration"
+            )
         cfg = _load_verify_config(target)
         scan_fields: tuple[str, ...] = cfg.fields
         if source.display_name is not None and "display_name" not in scan_fields:
