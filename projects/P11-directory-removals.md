@@ -12,7 +12,8 @@
 - **Status:** `[~]` in progress — Group 3C. Declaration parsing, frozen
   directory selection, exact deletion, complete receipt history, and public
   press/verifier integration are implemented and reviewed. Discriminating
-  membership controls also pass independent review. Native migration and final
+  membership controls also pass independent review. The native migration and
+  documentation are implemented. Committed-head native acceptance and final
   delivery remain open.
 
 ### Scope
@@ -64,3 +65,12 @@ deliberately broken alternatives fail the same independent assertions. These
 are inverse controls, not production failures. The final `just check` passed
 with 1,722 tests and three skips. Root formatting and all four acceptance tests
 passed. No production changes were needed.
+
+
+Task 6 passed independent specification and quality review with no findings.
+The native declaration test first failed against the six file declarations,
+then passed with the directory declaration. All twelve explicit project-history
+removals and `projects/.gitkeep` remain. The final `just check` passed with
+1,723 tests and three skips; root formatting passed. The native R3 assertions
+require acceptance after the declaration commit and are not yet certified by
+this targeted or full default-suite result.

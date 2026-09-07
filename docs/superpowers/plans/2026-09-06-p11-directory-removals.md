@@ -1930,7 +1930,7 @@ git commit -m "test(remove): discriminate frozen membership from re-expansion"
 
 **Interfaces:** public TOML `[[remove]] dir` and existing native matrix harness.
 
-- [ ] **Step 1: Verify the native migration boundary and add RED assertions.**
+- [x] **Step 1: Verify the native migration boundary and add RED assertions.**
 
 ```bash
 git ls-files -- docs/research projects/.gitkeep
@@ -1991,7 +1991,7 @@ assert verify_command(["--target", str(target)]) == 0
   command/exemption assertions remain. The additional verify models declared
   commands according to existing exemptions; it is not a second real tool run.
 
-- [ ] **Step 2: RED against the six file declarations.**
+- [x] **Step 2: RED against the six file declarations.**
 
 ```bash
 uv run pytest tests/rebrand/test_matrix.py::test_native_directory_declaration -q
@@ -2000,7 +2000,7 @@ uv run pytest tests/rebrand/test_matrix.py::test_native_directory_declaration -q
   Expected mismatch: no directory declarations. This is the meaningful native
   RED before changing the checked-in TOML.
 
-- [ ] **Step 3: Replace only the six research rows and add public documentation.**
+- [x] **Step 3: Replace only the six research rows and add public documentation.**
 
 ```toml
 # Engine design research is template history; the project scaffold is retained.
@@ -2046,7 +2046,7 @@ reason = "engine research notes"
 > source identity. Ambiguous old/current roots refuse. Older versions that do
 > not understand `dir` or directory history cannot safely re-press this target.
 
-- [ ] **Step 4: GREEN and full checks before the native declaration commit.**
+- [x] **Step 4: GREEN and full checks before the native declaration commit.**
 
 ```bash
 uv run pytest tests/rebrand/test_matrix.py::test_native_directory_declaration -q

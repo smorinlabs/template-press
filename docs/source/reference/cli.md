@@ -426,6 +426,42 @@ file = "docs/maintenance-log.md"
 reason = "template maintenance history; forks must not inherit it"
 ```
 
+Use `dir` to remove the tracked files selected from a directory at planning
+time. Declare exactly one of `file` or `dir`, with a nonempty reason. Globs and
+per-directory exclusions are not supported.
+
+```toml
+[[remove]]
+dir = "research"
+reason = "template-only research notes"
+```
+
+The preview lists every selected file and the directory count, including zero
+files for an existing empty directory. Uncommitted or untracked work inside the
+directory refuses the press even with `--allow-dirty`. Symlinks, junctions and
+gitlinks refuse. A `.gitignore`, `.gitattributes`, `.gitmodules`, or configured
+Git visibility input anywhere under the directory also refuses. Move that input
+out of the directory or declare the remaining files individually. Ignored
+ordinary files are not added to the selection; they remain and can prevent the
+directory from becoming empty.
+
+Removals run after rewriting and renaming, before declared commands. Only the
+selected members are deleted, at their successfully renamed locations. The
+selected directory and member ancestors are removed when empty. Unrelated empty
+child directories remain. A partial failure can leave changed files and writes
+no success receipt; use the reported Git recovery guidance.
+
+The receipt records each member's source path and its current location,
+including complete empty selections. `press verify` uses that recorded
+membership and keeps subsequently added files visible to its scan. Without
+recorded history, `press verify` applies the same clean-directory check as a
+real press, so uncommitted work inside that directory refuses verification too.
+A later explicit real press can select newly committed members after its
+clean-directory checks. Missing directories require complete, verified history
+matching the current source identity. Ambiguous old/current roots refuse. Older
+versions that do not understand `dir` or directory history cannot safely
+re-press this target.
+
 `reason` is required — a removal is a deliberate, documented decision.
 Targets must exist, be git-tracked, and be clean at plan time; a
 `[[remove]]` naming a missing file refuses the press (exit 2 — a stale
