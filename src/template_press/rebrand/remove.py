@@ -203,6 +203,18 @@ def _freeze_directory(
         raise SafetyError(f"remove directory {current_dir!r} is a junction")
     if not os.path.lexists(root):
         if prior is not None:
+            recorded = {member.current_file for member in prior.members}
+            indexed = _directory_git_bytes(target, "ls-files", "-z", "--", current_dir)
+            for raw_path in indexed.split(b"\0"):
+                if not raw_path:
+                    continue
+                relative = raw_path.decode("utf-8", "surrogateescape")
+                if relative not in recorded:
+                    raise SafetyError(
+                        f"remove directory {current_dir!r}: tracked member "
+                        f"{relative!r} is missing without validated prior "
+                        "absence history"
+                    )
             retained = tuple(
                 RemovalMember(
                     file=member.file,
@@ -258,6 +270,30 @@ def _freeze_directory(
                     )
 
     snapshot = capture_surface_snapshot(target)
+    resolved_root = root.resolve(strict=False)
+    root_stat = os.stat(root)
+    for visibility in snapshot.visibility_inputs:
+        if not os.path.lexists(visibility.path):
+            continue
+        resolved_input = visibility.path.resolve(strict=False)
+        under_root = resolved_input.is_relative_to(resolved_root)
+        if not under_root and root_stat.st_dev != 0 and root_stat.st_ino != 0:
+            for parent in resolved_input.parents:
+                try:
+                    parent_stat = os.stat(parent)
+                except OSError:
+                    continue
+                if (
+                    parent_stat.st_dev == root_stat.st_dev
+                    and parent_stat.st_ino == root_stat.st_ino
+                ):
+                    under_root = True
+                    break
+        if under_root:
+            raise SafetyError(
+                f"remove directory {current_dir!r}: configured visibility "
+                f"input {str(visibility.path)!r}"
+            )
     prefix = current_dir + "/"
     root_parts = PurePosixPath(current_dir).parts
     for entry in snapshot.entries:
@@ -539,9 +575,6 @@ def plan_removals(
                     f"current root {prior.current_dir!r}; restore a coherent root"
                 )
             current_dir = prior.current_dir
-        if prior is not None and not os.path.lexists(target / current_dir):
-            directories.append(prior)
-            continue
         directories.append(
             _freeze_directory(target, declaration, current_dir=current_dir, prior=prior)
         )
