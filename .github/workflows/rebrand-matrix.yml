@@ -1,6 +1,6 @@
 # Diagnostic branch only: never merge this workflow override.
 name: p11-removal-isolated
-run-name: P11 correction and parallel-runner isolation at ${{ github.sha }}
+run-name: P11 auto-worker and member-limit isolation at ${{ github.sha }}
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        case: [review-serial, smoke-two-workers]
+        case: [smoke-auto-coverage, member-limit]
     permissions:
       contents: read
     env:
@@ -48,12 +48,43 @@ jobs:
             $hash = (Get-FileHash -Algorithm SHA256 $path).Hash
             Write-Host "$path=$hash"
           }
-          if ($env:P11_CASE -eq "review-serial") {
-            uv run --no-sync pytest -n 0 -s -vv -ra `
-              -o faulthandler_timeout=30 --durations=17 `
-              tests/rebrand/test_remove_dir_review.py
-          } else {
-            uv run --no-sync pytest -n 2 -s -vv -ra `
-              -o faulthandler_timeout=30 `
-              tests/rebrand/test_remove_dirs.py::test_freeze_exact_members
-          }
+          $script = @'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+          kind = os.environ["P11_CASE"]
+          base = [sys.executable, "-u", "-m", "pytest", "-s", "-vv", "-ra",
+                  "-o", "faulthandler_timeout=30", "--durations=5"]
+          if kind == "smoke-auto-coverage":
+              command = base + ["-n", "auto", "--cov=template_press",
+                  "--cov-report=xml",
+                  "tests/rebrand/test_remove_dirs.py::test_freeze_exact_members"]
+          else:
+              command = base + ["-n", "0", "-k", "members",
+                  "tests/rebrand/test_remove_dir_receipt.py::"
+                  "test_history_count_and_text_limits"]
+          path = Path("p11-diagnostic-pytest.log")
+          print("COMMAND:", command, "PROCESS_TIMEOUT_SECONDS: 180", flush=True)
+          with path.open("w", encoding="utf-8") as stream:
+              proc = subprocess.Popen(command, stdout=stream,
+                                      stderr=subprocess.STDOUT)
+              try:
+                  result = proc.wait(timeout=180)
+              except subprocess.TimeoutExpired:
+                  print("PYTEST_PROCESS_TIMEOUT", flush=True)
+                  subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                                 check=False, timeout=20)
+                  result = 124
+          print(path.read_text(encoding="utf-8", errors="replace"), flush=True)
+          raise SystemExit(result)
+          '@
+          $script | uv run --no-sync python -
+      - name: Preserve isolated pytest output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: p11-diagnostic-${{ matrix.case }}
+          path: p11-diagnostic-pytest.log
+          if-no-files-found: warn
+          retention-days: 7
