@@ -79,3 +79,19 @@ plans and dependency versions remain within the reviewed contract. No speedup,
 native diagnostic validation or controlled performance comparison is claimed
 complete. Accepted P11 is required before performance experiments and delivery.
 P12 remains paused behind P11 and this follow-up.
+
+### Local implementation checkpoint
+
+Milestone 3's first local slice is committed at
+`01fba91ee95cb40058d3e555c7cf7f669587a692`. It adds bounded diagnostics, execution
+limits and required-check repairs. The full local pipeline passed with 2,125
+tests and 24 skips. Focused controls and independent internal implementation
+review passed. Committed R1a/R1b/R2/R3 acceptance passed all four cases and
+preserved the empty project scaffolding. The
+[implementation checkpoint](../docs/superpowers/reviews/2026-09-08-p11a-local-implementation.md)
+records exact evidence and limitations.
+
+The upload step awaits the specific approval requested after automatic review
+rejected that edit. Native provider controls, accepted P11 integration, controlled
+performance comparisons and delivery remain pending. P11A-T05 and P11A-T06 are
+still open; this checkpoint does not claim faster healthy CI or project closeout.
