@@ -1,6 +1,6 @@
 # Diagnostic branch only: never merge this workflow override.
 name: p11-removal-isolated
-run-name: P11 removal families with preserved timeout output at ${{ github.sha }}
+run-name: P11 bounded Windows pytest node-id proof at ${{ github.sha }}
 
 on:
   workflow_dispatch:
@@ -8,20 +8,14 @@ on:
 permissions: {}
 
 jobs:
-  focused:
-    name: focused (${{ matrix.case }})
+  smoke:
+    name: oversized pytest node-id proof
     runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: 5
-    strategy:
-      fail-fast: false
-      max-parallel: 3
-      matrix:
-        case: [dirs, controls, receipt, preflight, diagnostics]
     permissions:
       contents: read
     env:
       PYTHONUNBUFFERED: "1"
-      P11_CASE: ${{ matrix.case }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -32,7 +26,7 @@ jobs:
           python-version: "3.13"
       - name: Sync locked dev environment
         run: uv sync --locked --group dev
-      - name: Print tools and run isolated cases
+      - name: Print tools and verify bounded pytest setup failure
         shell: pwsh
         run: |
           git --version
@@ -43,58 +37,51 @@ jobs:
             "import platform,sys; print(sys.version); print(platform.platform())"
           foreach ($path in @(
             "src/template_press/rebrand/remove.py",
-            "tests/rebrand/test_remove_dirs.py",
-            "tests/rebrand/test_remove_dir_review.py"
+            "tests/rebrand/test_remove_dirs.py"
           )) {
             $hash = (Get-FileHash -Algorithm SHA256 $path).Hash
             Write-Host "$path=$hash"
           }
           $script = @'
-          import hashlib
+          import json
           import os
-          import subprocess
-          import sys
           from pathlib import Path
-          kind = os.environ["P11_CASE"]
-          base = [sys.executable, "-u", "-m", "pytest", "-s", "-vv", "-ra",
-                  "-o", "faulthandler_timeout=30", "--durations=5"]
-          tests = {
-              "dirs": "test_remove_dirs.py",
-              "controls": "test_remove_dir_controls.py",
-              "receipt": "test_remove_dir_receipt.py",
-              "preflight": "test_remove_receipt_preflight.py",
-              "diagnostics": "test_verify_remove_diagnostics.py",
-          }
-          selected = "tests/rebrand/" + tests[kind]
-          digest = hashlib.sha256(Path(selected).read_bytes()).hexdigest()
-          print("TEST_SHA256:", selected, digest, flush=True)
-          subprocess.run(["git", "rev-parse", "HEAD:" + selected], check=True)
-          command = base + ["-n", "auto", "--cov=template_press",
-                            "--cov-report=xml", selected]
-          path = Path("p11-diagnostic-pytest.log")
-          print("COMMAND:", command, "PROCESS_TIMEOUT_SECONDS: 180", flush=True)
-          with path.open("w", encoding="utf-8") as stream:
-              proc = subprocess.Popen(command, stdout=stream,
-                                      stderr=subprocess.STDOUT)
+          import pytest
+          from _pytest.runner import _update_current_test_var
+          class Collected:
+              def pytest_collection_finish(self, session):
+                  self.items = list(session.items)
+          plugin = Collected()
+          code = pytest.main(["--collect-only", "-n", "0", "-p", "no:terminal",
+              "tests/rebrand/test_remove_dir_receipt.py::"
+              "test_bounded_read_rejects_invalid_or_oversize"], plugins=[plugin])
+          assert code == 0
+          assert len(plugin.items) == 2
+          results = []
+          for item in plugin.items:
+              row = {"node_id_chars": len(item.nodeid)}
               try:
-                  result = proc.wait(timeout=180)
-              except subprocess.TimeoutExpired:
-                  print("PYTEST_PROCESS_TIMEOUT", flush=True)
-                  try:
-                      subprocess.run(["taskkill", "/PID", str(proc.pid),
-                                      "/T", "/F"], check=False, timeout=20)
-                  except subprocess.TimeoutExpired:
-                      print("TASKKILL_TIMEOUT", flush=True)
-                  result = 124
-          print(path.read_text(encoding="utf-8", errors="replace"), flush=True)
-          raise SystemExit(result)
+                  _update_current_test_var(item, "setup")
+                  row["outcome"] = "setup variable accepted"
+              except Exception as exc:
+                  row.update(outcome="setup variable rejected",
+                             error_type=type(exc).__name__, error=str(exc)[:240])
+              finally:
+                  os.environ.pop("PYTEST_CURRENT_TEST", None)
+              results.append(row)
+          output = json.dumps({"observations": results}, indent=2)
+          Path("p11-nodeid-proof.json").write_text(output, encoding="utf-8")
+          print(output, flush=True)
+          assert results[0]["outcome"] == "setup variable accepted"
+          assert results[1]["outcome"] == "setup variable rejected"
+          print("CONFIRMED_NATIVE_PYTEST_SETUP_FAILURE", flush=True)
           '@
           $script | uv run --no-sync python -
-      - name: Preserve isolated pytest output
+      - name: Preserve bounded node-id observations
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: p11-diagnostic-${{ matrix.case }}
-          path: p11-diagnostic-pytest.log
+          name: p11-nodeid-proof
+          path: p11-nodeid-proof.json
           if-no-files-found: warn
           retention-days: 7
