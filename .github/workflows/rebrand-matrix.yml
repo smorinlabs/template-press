@@ -1,65 +1,165 @@
-# R1/R2/R3 rebrand acceptance matrix (EMPIRICAL_BUGS.md, reborn as a
-# repeatable harness). Live: R1/R2 clone the real py-launch-blueprint from
-# GitHub; R3 presses a throwaway clone of this repo. Scheduled (network
-# dependency + real clones shouldn't gate every PR) plus workflow_dispatch
-# and a paths-filtered pull_request trigger for direct rebrand changes.
-# Locally: `just matrix` runs the identical script.
-
-name: rebrand-matrix
+# Disposable diagnostic branch only; never merge this harness into production.
+name: P11A finite native diagnostic proof
+run-name: 'P11A native proof: ${{ inputs.case }} / ${{ inputs.platform }}'
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 6 * * 1'  # weekly, Monday 06:00 UTC
-  pull_request:
-    paths:
-      - src/template_press/rebrand/**
-      - tests/rebrand/**
-      - scripts/rebrand_matrix.sh
-      - scripts/regen-bun-lock.sh
-      - scripts/regen-bun-lock.ps1
-      - press/press-rules.toml
+    inputs:
+      case:
+        description: One diagnostic case per workflow invocation
+        required: true
+        type: choice
+        default: pass
+        options:
+          - pass
+          - fail
+          - exit7
+          - worker-loss
+      platform:
+        description: Finite Windows controls must pass before POSIX expansion
+        required: true
+        type: choice
+        default: windows
+        options: [windows, posix]
 
 permissions: {}
 
-concurrency:
-  group: rebrand-matrix-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  matrix:
-    name: ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: r1-r2-r3-posix
-            os: blacksmith-4vcpu-ubuntu-2404
-            command: scripts/rebrand_matrix.sh
-          - name: r3-windows
-            os: windows-latest
-            command: >-
-              uv run pytest
-              tests/rebrand/test_matrix.py::test_r3_self_press_native
-              -m live -q
+  native-proof:
+    name: proof (${{ matrix.os }} / py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
     permissions:
       contents: read
+      id-token: write  # Match production test-job permissions without adding grants.
+    defaults:
+      run:
+        shell: ${{ matrix.os == 'blacksmith-4vcpu-windows-2025' && 'pwsh' || 'bash' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        os: ${{ fromJSON(inputs.platform == 'windows' && '["blacksmith-4vcpu-windows-2025"]' || '["blacksmith-4vcpu-ubuntu-2404"]') }}
+        include:
+          - python-version: '3.13'
     steps:
       - uses: actions/checkout@v7
-
+        timeout-minutes: 1
+        with:
+          fetch-depth: 0
       - name: Install uv
+        timeout-minutes: 1
         uses: astral-sh/setup-uv@v10.0.0
-
-      # R3's self-press runs the declared `bun install` regeneration for
-      # bun.lock; without bun the press exits 2 at the plan gate.
-      - name: Install bun (pinned)
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install bun (same production version)
+        timeout-minutes: 1
         uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version: '1.3.14'
-
-      - name: Sync locked dev env
+      - name: Sync locked dev environment
+        timeout-minutes: 2
         run: uv sync --locked --group dev
+      - name: Verify source and payload freeze
+        timeout-minutes: 1
+        run: uv run --no-sync python .p11a-harness/verify.py freeze
 
-      - name: Run native acceptance
-        run: ${{ matrix.command }}
+      - name: Passing preflight control
+        if: inputs.case == 'pass'
+        timeout-minutes: 1
+        env:
+          P11A_CASE: pass
+        run: >-
+          uv run --no-sync python scripts/ci_run_pytest.py ci-results/preflight --
+          -c .p11a-harness/pytest.ini --rootdir=.p11a-harness
+          --confcutdir=.p11a-harness -m "" -n 0
+          --dist=load --max-worker-restart=1
+          --durations=25 --durations-min=1 -o faulthandler_timeout=3
+          --junitxml=ci-results/preflight.xml .p11a-harness/test_probe.py
+      - name: Preserve preflight hash checkpoint outside upload paths
+        if: inputs.case == 'pass'
+        timeout-minutes: 1
+        run: uv run --no-sync python .p11a-harness/verify.py checkpoint
+      - name: Passing full control
+        if: inputs.case == 'pass'
+        timeout-minutes: 1
+        env:
+          P11A_CASE: pass
+        run: >-
+          uv run --no-sync python scripts/ci_run_pytest.py ci-results/full --
+          -c .p11a-harness/pytest.ini --rootdir=.p11a-harness
+          --confcutdir=.p11a-harness -m "" -n 2
+          --dist=load --max-worker-restart=1
+          --durations=25 --durations-min=1 -o faulthandler_timeout=3
+          --junitxml=ci-results/full.xml .p11a-harness/test_probe.py
+
+      - name: Finite Windows exit control
+        if: >-
+          runner.os == 'Windows' &&
+          contains(fromJSON('["fail", "exit7", "worker-loss"]'), inputs.case)
+        shell: pwsh
+        timeout-minutes: 1
+        env:
+          P11A_CASE: ${{ inputs.case }}
+          PROBE_MODE: ${{ inputs.case == 'worker-loss' && 'full' || 'preflight' }}
+          PROBE_WORKERS: ${{ inputs.case == 'worker-loss' && 2 || 0 }}
+          EXPECTED_EXIT: ${{ inputs.case == 'exit7' && 7 || 1 }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          uv run --no-sync python scripts/ci_run_pytest.py "ci-results/$env:PROBE_MODE" -- `
+            -c .p11a-harness/pytest.ini --rootdir=.p11a-harness `
+            --confcutdir=.p11a-harness -m "" -n $env:PROBE_WORKERS `
+            --dist=load --max-worker-restart=1 `
+            --durations=25 --durations-min=1 -o faulthandler_timeout=3 `
+            "--junitxml=ci-results/$env:PROBE_MODE.xml" .p11a-harness/test_probe.py
+          $code = $LASTEXITCODE
+          Write-Output "Observed child exit: $code"
+          if ($code -ne [int]$env:EXPECTED_EXIT) { throw "wrong child exit" }
+          exit 0
+      - name: Finite POSIX exit control
+        if: >-
+          runner.os != 'Windows' &&
+          contains(fromJSON('["fail", "exit7", "worker-loss"]'), inputs.case)
+        shell: bash
+        timeout-minutes: 1
+        env:
+          P11A_CASE: ${{ inputs.case }}
+          PROBE_MODE: ${{ inputs.case == 'worker-loss' && 'full' || 'preflight' }}
+          PROBE_WORKERS: ${{ inputs.case == 'worker-loss' && 2 || 0 }}
+          EXPECTED_EXIT: ${{ inputs.case == 'exit7' && 7 || 1 }}
+        run: |
+          set +e
+          uv run --no-sync python scripts/ci_run_pytest.py "ci-results/$PROBE_MODE" -- \
+            -c .p11a-harness/pytest.ini --rootdir=.p11a-harness \
+            --confcutdir=.p11a-harness -m "" -n "$PROBE_WORKERS" \
+            --dist=load --max-worker-restart=1 \
+            --durations=25 --durations-min=1 -o faulthandler_timeout=3 \
+            "--junitxml=ci-results/$PROBE_MODE.xml" .p11a-harness/test_probe.py
+          code=$?
+          set -e
+          echo "Observed child exit: $code"
+          test "$code" -eq "$EXPECTED_EXIT"
+
+      - name: Check production diagnostic evidence
+        if: always()
+        timeout-minutes: 1
+        env:
+          P11A_CASE: ${{ inputs.case }}
+        run: uv run --no-sync python .p11a-harness/verify.py ${{ inputs.case }}
+      - name: Upload test diagnostics
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-tests-${{ matrix.os }}-py${{ matrix.python-version }}-attempt${{ github.run_attempt }}
+          path: |
+            ci-results/preflight.xml
+            ci-results/full.xml
+            ci-results/preflight/*.log
+            ci-results/preflight/*.jsonl
+            ci-results/preflight/*.json
+            ci-results/full/*.log
+            ci-results/full/*.jsonl
+            ci-results/full/*.json
+          retention-days: 7
+          if-no-files-found: warn

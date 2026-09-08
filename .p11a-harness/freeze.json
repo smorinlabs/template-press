@@ -1,0 +1,67 @@
+{
+  "scope": "Stage A finite native diagnostic proof only; never merge into production",
+  "source_commit": "e7d7ea2e9843bcf7328808360ec4ac53edf9c617",
+  "source_tree": "46615c6fb07ed7ff0d411585acf56b36ba067a7b",
+  "payload_paths": [
+    ".github/workflows/rebrand-matrix.yml",
+    ".p11a-harness/conftest.py",
+    ".p11a-harness/test_probe.py",
+    ".p11a-harness/pytest.ini",
+    ".p11a-harness/verify.py",
+    ".p11a-harness/freeze.json"
+  ],
+  "files": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "36848b9e5af06c124b5e060596f7f55f71a14f1805aba673b6e1fbd770c9f7e2"
+    },
+    {
+      "path": ".github/workflows/lint.yml",
+      "sha256": "f19e1ca6eab41f0dd7204ebe44e6c1b42f39868fb4577aba6c7ed3cdf0654ba3"
+    },
+    {
+      "path": ".github/workflows/rebrand-matrix.yml",
+      "sha256": "d11a643c825ec4d36f8f5721348c275dd544a08accdcca01c8c168becb7d7482"
+    },
+    {
+      "path": ".github/workflows/secret-scan.yml",
+      "sha256": "82dcf5e2a14aaa6e923b187b07a0e231111ef9103b9f4984fdb6759a697e2a5b"
+    },
+    {
+      "path": ".p11a-harness/conftest.py",
+      "sha256": "51e35172080c6ebc24f170af9ad51f0d470d3764a0081fbab0aea2b272f22381"
+    },
+    {
+      "path": ".p11a-harness/pytest.ini",
+      "sha256": "713f986ee48be06ad4bff2a700d39514a9f69e34b3547af52366c0a274e30e5b"
+    },
+    {
+      "path": ".p11a-harness/test_probe.py",
+      "sha256": "79937dfa194bc962d6e7f4cdeaf933d839f6d3f382ac27138e1a0d349e5c57b4"
+    },
+    {
+      "path": ".p11a-harness/verify.py",
+      "sha256": "4b9726f47eee545442a0416c7d05c7918acd3fa10b60609877a4290e4adb9125"
+    },
+    {
+      "path": "pyproject.toml",
+      "sha256": "04581a0046ccbf19d68573ede94acc4b89308c53a504f08c8635a938eba1ebb5"
+    },
+    {
+      "path": "scripts/ci_logs.py",
+      "sha256": "4112ed86dd8caf5ab09c519e4545639d0c520485beb252c45252dd6a5d142af9"
+    },
+    {
+      "path": "scripts/ci_pytest.py",
+      "sha256": "7264850caa8e9fcffa53cec759262f8a8e15b0913c814be4617129f95cf411ad"
+    },
+    {
+      "path": "scripts/ci_run_pytest.py",
+      "sha256": "2f06227a9f9cb6fde1286220aa02b7fc5629d787a072c762bdff806030d4173f"
+    },
+    {
+      "path": "uv.lock",
+      "sha256": "93434d016b70d65438528108eb9845a28a3d6a61f0be5fc088e831a6687be2e2"
+    }
+  ]
+}
