@@ -135,3 +135,23 @@ not change them or establish delivered savings.
 Windows remains the waiting-time target. Shared fixture improvements that also
 reduce macOS work may have greater cost value than a Windows-only change.
 Keep platform coverage intact while evaluating that possibility.
+
+## Independent reconciliation of job and step totals
+
+The [complete per-job audit](2026-09-08-p11a-cost-reconciliation.md) rechecked
+all 26 jobs against the saved raw timestamps. All 23 allocated jobs equal
+recorded step intervals plus uncovered job intervals; three unallocated skipped
+jobs contribute zero. No total or conditional credit share needs correction.
+
+| P10 test job | Job allocation | Recorded steps | Uncovered time |
+|---|---:|---:|---:|
+| Linux | 88s | 84s | 4s |
+| macOS | 137s | 135s | 2s |
+| Windows | 419s | 417s | 2s |
+
+The full-test REST step durations are 72/117/380 seconds. The corresponding
+pytest-internal durations are 71.24/116.58/379.59 seconds. Their small differences
+are included when reconciling the review's residuals. For Windows,
+`419 - 23 - 379.59 = 14 + 2 + 0.41 = 16.41` seconds: other steps, uncovered time,
+and enclosing-step overhead cover the residual exactly. The other seven Linux
+CI jobs total 57 seconds, giving `88 + 57 + 137 + 419 = 701` CI runner-seconds.

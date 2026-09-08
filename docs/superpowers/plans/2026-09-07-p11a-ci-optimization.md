@@ -2,8 +2,8 @@
 
 Reduce avoidable CI waiting and runner consumption before the P12 value review.
 Measurement is complete; this implementation plan awaits independent review.
-No optimization or controlled performance comparison has run yet. Revision 2
-incorporates the first independent internal and Muse reviews.
+No optimization or controlled performance comparison has run yet. Revision 3
+incorporates internal, Muse and Opus plan review findings.
 
 **Project:** [P11A](../../../projects/P11A-ci-speed-and-cost-optimization.md).
 **Evidence:** [Measured baseline](../reviews/2026-09-07-p11a-ci-baseline.md).
@@ -107,18 +107,26 @@ Task: P11A-T05, first implementation slice. Use locked tools without adding
    artifact names must also include platform and Python version. Preserve
    selection and coverage. Capture Python patch, Git, uv, Bun, runner image,
    actual CPU/worker counts, plugin versions and source revision.
+   If the command is reflowed or its surrounding job layout changes, update
+   `test_general_ci_provisions_bun_for_native_r3` in the same commit to inspect
+   command semantics across whitespace, retaining its full-suite/Bun contract.
+   Run that focused, non-live test against the edited workflow before pushing.
 2. Request stack traces after 120 seconds in one test using locked pytest's
    fault handler with `-o faulthandler_timeout=120` on both invocations. Prove
    useful retained output on native Windows and POSIX under
    xdist, the parallel runner. A stack dump does not terminate a hung process.
-   Add a small opt-in progress journal only if native probes show built-in
-   output cannot identify and retain the active worker/test.
+   Add a small opt-in progress journal if native in-test, collection or worker
+   loss probes show built-in output cannot identify the last active phase,
+   worker and test. Before any test starts, evidence must explicitly identify
+   collection/session setup and report that no test has started.
 3. Propose a 5-minute preflight limit, a 15-minute full-test limit and a 25-minute
    enclosing test-job limit. Bound diagnostic upload to 2 minutes. The extra
    job margin accommodates setup, a slow preflight and evidence upload. Check
    margins against corrected P11 first, including total setup/preflight elapsed
    before a full-test timeout. Do not claim a guaranteed artifact if the runner
    itself stops responding. Do not add an arbitrary per-test failure deadline.
+   Verify `job limit > setup + preflight limit + full-test limit + upload bound`
+   with a positive measured margin. Step timeout must normally fire first.
 4. Upload available diagnostics on success and failure, with unique platform
    names and 7-day retention. Each upload uses `if: always()` and an explicit
    timeout so it can run after a failed test step without extending indefinitely.
@@ -134,7 +142,10 @@ Task: P11A-T05, first implementation slice. Use locked tools without adding
 7. Make required `actionlint` and `yamllint` fail when `lint-changes` fails,
    is cancelled or omits/invalidates its selectors. Preserve deliberate skips
    after valid `false` selectors and retain the exact required context names.
-8. Add `merge_group` to `secret-scan.yml`. Use the existing non-PR full-history
+8. Map all required contexts to their workflows/events before editing. The
+   current source already gives `commitlint (humans)` a merge-group context;
+   its lint step deliberately skips because the PR commits were checked earlier.
+   Add `merge_group` to `secret-scan.yml`. Use the existing non-PR full-history
    scan of the speculative merge revision, with full checkout history and no
    equal-base/head diff. Preserve ordinary PR/main scan behavior. Do not change
    branch protection or enable the merge queue as part of this correction.
@@ -145,6 +156,14 @@ Validate behavior rather than merely compare YAML text:
   testing on native Windows and POSIX. Use short harness limits. Require
   bounded non-success, identifiable test/worker
   context, retained stack/progress evidence and a failed aggregate gate.
+- Add a collection/session-setup hang and intentional xdist worker loss. Retain
+  the affected phase/worker, last-started test or explicit no-test-started state,
+  the interruption/restart outcome and bounded failure. These controls also
+  determine whether the progress journal is necessary. Do not infer worker
+  identity solely from interleaved stack output.
+- Exercise step timeout and enclosing job timeout separately. Step-timeout
+  artifacts are required; report whether job-timeout artifacts survive and
+  retain the limitation if the provider prevents their upload.
 - A passing control with the same options completes with expected test IDs,
   outcomes and useful artifacts.
 - Verify production selects those validated options, and failed/cancelled
@@ -183,22 +202,37 @@ reference; exclude cancelled/incomplete runs. Record mismatches and discard
 confounded pairs. Screen at most two plausible variants unless new evidence
 justifies more work, and stop after one useful result.
 
+Allocate at most 30 cumulative Windows runner-minutes to initial screening and
+confirmation experiments, plus 10 minutes across other platforms to assess a
+shared change. Count timed-out and discarded experiment runs against this
+budget. Normal required PR validation is reported separately. Before each pair,
+compare measured savings per future run with experiment allocation already
+spent and report the implied number of runs to recover that cost. Stop at the
+budget or when evidence no longer supports a worthwhile result; do not expand
+the experiment merely to obtain a positive finding.
+
 For measured live tests, record the actual commit and relevant input hashes of
 each external blueprint clone against its test ID, from the clone that ran.
 An earlier `ls-remote` query is insufficient. Different or missing clone
 provenance makes a pair inconclusive. Apply this to full-suite confirmation;
 ordinary live-test default-branch behavior remains unchanged. Validate the
 comparison rule with matching, differing and missing external-input records.
+Capture from the actual clone under the test's temporary directory using the
+existing guarded Git helper. Use identical capture in both comparison arms;
+never query the working checkout outside the test sandbox for this evidence.
 
 Retain source/test hashes, test IDs, outcomes/skips, test-step elapsed time,
 queue delay, allocated runner time and failure-detection behavior. Use medians
 and observed ranges. Compute each paired improvement as baseline seconds minus
-candidate seconds. Adopt when all three are positive, their median exceeds the
-range of the three baseline timings from this same controlled experiment, and
-results/isolation remain equivalent. Never use the historical 234–381s range
+candidate seconds. Adopt when all three are positive and their median exceeds
+the largest of the controlled baseline range, 5% of the controlled baseline
+median, and 2 seconds. Results/isolation must remain equivalent. This minimum
+effect avoids adopting a one-second measurement artifact in a tiny family.
+Never use the historical 234–381s range
 as the threshold. Report each paired delta and any allocated-time regression.
 For example, controlled baselines of 100/102/101s and candidates of 85/86/86s
-give improvements of 15/16/15s versus a 2s baseline range. This is an illustrative
+give improvements of 15/16/15s versus a 5.05s minimum effect. Baselines of
+100/100/100s and candidates of 99/99/99s are inconclusive. This is an illustrative
 decision rule, not a performed benchmark or a significance test. Treat noisy
 or contradictory evidence as inconclusive.
 

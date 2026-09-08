@@ -42,3 +42,24 @@ also permits independent CI-only work in parallel with P11 closeout, but require
 accepted P11 integration before performance comparisons and final delivery.
 No source/workflow optimization or behavioral control has been implemented by
 these documentation corrections.
+
+## Opus review and revision 3
+
+Opus completed the approved Fable fallback review: SPEC PASS / QUALITY CHANGES
+REQUIRED. The receipt records `claude-opus-5`, auxiliary Haiku, 19 turns and
+561.92 seconds. Root read the full report. Revision 3 makes these dispositions:
+
+| Finding | Assessment and correction |
+|---|---|
+| `P11A-R2-01`: workflow reflow can break the existing native-Bun command assertion | Confirmed test-maintenance dependency. Update the whitespace-sensitive assertion with any reflow and run its focused non-live control before pushing. |
+| `P11A-R2-02`: in-test hangs do not cover collection or worker loss | Accepted. Add collection/session and worker-loss probes. Require actual phase/worker/test evidence, including explicit no-test-started state where appropriate; use the journal when built-in output is insufficient. |
+| `P11A-R2-03`: allocation residuals may not cover setup | Refuted by the independent raw-timestamp reconciliation of all 26 jobs. All 23 allocated jobs equal step intervals plus uncovered gaps. Totals and conditional shares remain correct; full evidence is linked from the baseline. |
+| `P11A-R2-04`: enclosing job limit may preempt artifacts | State the limit-ordering inequality and test step/job timeout separately; retain actual provider limitations. |
+| `P11A-R2-05`: a zero baseline range permits trivial gains | Add a minimum effect: improvement must exceed baseline range, 5% of baseline median and 2 seconds. A one-second gain on a 100-second family is inconclusive. |
+| `P11A-R2-06`: required-context mapping must precede repair | Map first. Existing `commitlint (humans)` already reports on merge groups; its lint step deliberately skips. Preserve that behavior. |
+| `P11A-R2-07`: clone provenance must respect test containment | Use the guarded Git helper on the actual temporary clone, identically in both benchmark arms. |
+| `P11A-R2-08`: experiments need an allocation budget | Cap initial experiments at 30 Windows runner-minutes plus 10 across other platforms; count discarded runs and report cost recovery in future runs before more pairs. |
+
+These are plan corrections. Native diagnostic controls, workflow repairs and
+performance comparisons remain pending. Ordinary required PR validation is
+recorded separately from the discretionary experiment budget.
