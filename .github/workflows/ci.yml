@@ -114,6 +114,7 @@ jobs:
   test:
     name: test (${{ matrix.os }} / py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     needs: changes
     if: needs.changes.outputs.code == 'true'
     permissions:
@@ -153,14 +154,23 @@ jobs:
       - name: Sync dev env
         run: uv sync --locked --group dev
       - name: Run edit visibility regressions first
+        timeout-minutes: 5
         run: >-
-          uv run --no-sync pytest -q tests/rebrand/test_edit_execute.py
+          uv run --no-sync python scripts/ci_run_pytest.py ci-results/preflight --
+          -q tests/rebrand/test_edit_execute.py
           -k "configured_ignore_edit or external_ignore_input or zero_inodes"
+          --durations=25 --durations-min=1 -o faulthandler_timeout=120
+          --junitxml=ci-results/preflight.xml
       - name: Run tests with coverage
         # Default skips slow/live markers (ITM-046 addopts); CI runs everything.
         # -n auto: pytest-xdist workers, CI only (local runs stay serial, and
         # syrupy `--snapshot-update` must run WITHOUT -n).
-        run: uv run --no-sync pytest -m "" -n auto --cov=template_press --cov-report=xml
+        timeout-minutes: 15
+        run: >-
+          uv run --no-sync python scripts/ci_run_pytest.py ci-results/full --
+          -m "" -n auto --cov=template_press --cov-report=xml
+          --durations=25 --durations-min=1 -o faulthandler_timeout=120
+          --junitxml=ci-results/full.xml
       - name: Upload coverage to Codecov
         # Single matrix combo uploads (avoids 4x duplicate reports).
         # use_oidc: tokenless upload (public repo). Requires `id-token: write`.
@@ -242,8 +252,7 @@ jobs:
 
   # WL-006 - single gate for branch protection. Require ONLY this check;
   # job renames/additions then never desync the required-checks list.
-  # Skipped jobs (docs-only PRs, WL-019) count as success; anything that
-  # failed or was cancelled fails the gate.
+  # Only a successfully detected docs-only PR may skip the heavy jobs.
   ci-ok:
     name: ci-ok
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -253,14 +262,44 @@ jobs:
     steps:
       - name: Check aggregate result
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+          EVENT_NAME: ${{ github.event_name }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CODE_CHANGED: ${{ needs.changes.outputs.code }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          DOCS_RESULT: ${{ needs.docs.result }}
+          TOML_RESULT: ${{ needs.toml-format.result }}
+          TYPECHECK_RESULT: ${{ needs.typecheck.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          BUILD_RESULT: ${{ needs.build-smoke.result }}
         run: |
           set -euo pipefail
-          echo "job results: ${RESULTS}"
-          for r in ${RESULTS}; do
-            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
-              echo "FAIL: at least one required job did not succeed" >&2
+          if [ "$CHANGES_RESULT" != success ]; then
+            echo "FAIL: change detection did not succeed" >&2
+            exit 1
+          fi
+          case "$CODE_CHANGED" in
+            true) ;;
+            false)
+              if [ "$EVENT_NAME" != pull_request ]; then
+                echo "FAIL: only a docs-only PR may skip heavy jobs" >&2
+                exit 1
+              fi
+              ;;
+            *) echo "FAIL: missing or invalid code selector" >&2; exit 1 ;;
+          esac
+          for result in "$LINT_RESULT" "$DOCS_RESULT" "$TOML_RESULT"; do
+            if [ "$result" != success ]; then
+              echo "FAIL: an always-required job did not succeed" >&2
               exit 1
             fi
           done
-          echo "PASS: all required jobs succeeded or were skipped"
+          for result in "$TYPECHECK_RESULT" "$TEST_RESULT" "$BUILD_RESULT"; do
+            if [ "$result" = success ]; then
+              continue
+            fi
+            if [ "$CODE_CHANGED" != false ] || [ "$result" != skipped ]; then
+              echo "FAIL: a selected heavy job did not succeed" >&2
+              exit 1
+            fi
+          done
+          echo "PASS: required jobs succeeded; any skips belong to a docs-only PR"
