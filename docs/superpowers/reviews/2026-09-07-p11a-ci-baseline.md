@@ -106,3 +106,32 @@ The primary run and source links above make this summary reviewable without it.
 Metric invariants, raw/source provenance hashes and configured actionlint passed.
 The investigator performed no source/workflow edits, test runs or CI mutations.
 P11 cancellation belonged to the separate authorized delivery task.
+
+## Published credit model
+
+A later read of [Blacksmith's official runner documentation](https://docs.blacksmith.sh/blacksmith-runners/overview)
+provides relative credit weights. These are published rates, not verified
+account pricing. One credit unit here means one x64 2-vCPU credit-minute.
+The same documentation notes that a job may receive extra CPUs automatically,
+so experiments must record actual CPU and worker counts as well as runner labels.
+
+Applying the published weights to P10's 10-workflow shipping batch gives this
+conditional model for Blacksmith jobs only:
+
+| Runner | Recorded seconds | Credits per minute | Modeled credits |
+|---|---:|---:|---:|
+| Linux 4 vCPU | 320 | 2 | 10.67 |
+| macOS 6 vCPU | 137 | 20 | 45.67 |
+| Windows 4 vCPU | 419 | 4 | 27.93 |
+| Total Blacksmith | 876 | Different by runner | 84.27 |
+
+Each row is allocated seconds divided by 60, multiplied by published credits
+per minute. macOS contributes about 54.2% and Windows about 33.1% of this model.
+The other 109 runner-seconds use GitHub-hosted runners and are excluded.
+No account credits, invoice rounding, contract discounts or actual charge is
+inferred. This supplements the unweighted runner-time measurements; it does
+not change them or establish delivered savings.
+
+Windows remains the waiting-time target. Shared fixture improvements that also
+reduce macOS work may have greater cost value than a Windows-only change.
+Keep platform coverage intact while evaluating that possibility.

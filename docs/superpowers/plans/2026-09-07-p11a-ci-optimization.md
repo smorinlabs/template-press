@@ -2,7 +2,8 @@
 
 Reduce avoidable CI waiting and runner consumption before the P12 value review.
 Measurement is complete; this implementation plan awaits independent review.
-No optimization or controlled performance comparison has run yet.
+No optimization or controlled performance comparison has run yet. Revision 2
+incorporates the first independent internal and Muse reviews.
 
 **Project:** [P11A](../../../projects/P11A-ci-speed-and-cost-optimization.md).
 **Evidence:** [Measured baseline](../reviews/2026-09-07-p11a-ci-baseline.md).
@@ -30,11 +31,13 @@ Runner-minutes measure allocated job intervals, not dollars or proven CPU use.
 Account pricing, discounts and billing records are unavailable. Do not translate
 these measurements into monetary savings.
 
-Bind relevant workflow, lock, fixture and test files to accepted P11 before
-implementation. P11 owns its defects, isolated Windows validation, full CI and
-merge. P11A must not absorb or bypass those gates.
+CI-only implementation may proceed in an isolated branch after this plan passes
+review, using the recorded source. Before performance experiments or final
+delivery, integrate accepted P11 and rebind workflow, lock, fixture and test
+files. P11 owns its defects, isolated Windows validation, full CI and merge.
+P11A must not absorb or bypass those gates.
 
-Preserve these requirements:
+Preserve these requirements and repair the explicitly identified gate gaps:
 
 - Native Linux, macOS and Windows behavior tests, including live tests and
   committed-source self-press acceptance.
@@ -47,6 +50,21 @@ Preserve these requirements:
 - Per-test repositories, Git configuration isolation, containment guards and
   native filesystem controls. Never share mutable test repositories.
 
+Two guarantees need small repairs in Milestone 3. The current aggregate accepts
+successful change detection with a missing output. Required lint jobs can also
+skip after their change detector fails. Separately, required `trufflehog` has
+no merge-group trigger. These are source-demonstrated gaps, not evidence of an
+actual bad merge or a currently enabled merge queue.
+
+Published Blacksmith credit weights provide a separate, conditional cost model:
+Linux 4 vCPU uses 2 units per minute, Windows 4 vCPU uses 4, and macOS 6 vCPU uses
+20. One unit is one published x64 2-vCPU credit-minute. Applying those rates to
+P10's Blacksmith jobs assigns about 54% of modeled credits to macOS and 33% to
+Windows. This is not an account bill. Prioritize Windows for latency, and assess
+shared test/helper improvements on macOS before claiming a cost improvement.
+The [baseline supplement](../reviews/2026-09-07-p11a-ci-baseline.md#published-credit-model)
+records the formula, source and exclusions.
+
 ### Milestone 2: Review and select the bounded scope
 
 Tasks: P11A-T03 and P11A-T04.
@@ -58,6 +76,7 @@ preserve this contract and demonstrate a repeatable benefit.
 | Candidate | Recommendation | Benefit to establish | Cost or tradeoff |
 |---|---|---|---|
 | Timing, diagnostics and limits | Implement after plan review | Identify slow tests and cap abandoned work | Artifact/log overhead; limits need measured margins. |
+| Selector and merge-group gate gaps | Repair with focused controls | Preserve meaningful required checks while optimizing | Small CI-only changes; no protection-setting changes. |
 | Windows fixture or Git subprocess work | Change only a measured hot helper | Less startup with equivalent fixture behavior | Shared helpers require isolation and Git-state controls. |
 | `load` versus `worksteal` scheduling | Compare if timings show worker imbalance | Keep workers busy with the same tests | More scheduling overhead; no gain if the host is saturated. |
 | Worker count | Try one additional setting only if justified | Better use of the existing runner | More collection work and disk contention are possible. |
@@ -79,35 +98,69 @@ requested CI work. Do not ask for another P10/P11 approval.
 
 ### Milestone 3: Make failures bounded and observable
 
-Task: P11A-T05, first implementation slice.
+Task: P11A-T05, first implementation slice. Use locked tools without adding
+`pytest-timeout` or upgrading dependencies for this work.
 
-1. Report the slowest 25 test phases above one second and produce one JUnit
-   result file per platform. Preserve full test selection and coverage. Capture
-   Python patch, Git, uv, runner image, plugin versions, worker count and source.
+1. Add `--durations=25 --durations-min=1` and separate JUnit files for preflight
+   and full tests, such as `--junitxml=ci-results/preflight.xml` and
+   `--junitxml=ci-results/full.xml`. Jobs have separate filesystems; uploaded
+   artifact names must also include platform and Python version. Preserve
+   selection and coverage. Capture Python patch, Git, uv, Bun, runner image,
+   actual CPU/worker counts, plugin versions and source revision.
 2. Request stack traces after 120 seconds in one test using locked pytest's
-   fault handler. Prove useful retained output on native Windows and POSIX under
+   fault handler with `-o faulthandler_timeout=120` on both invocations. Prove
+   useful retained output on native Windows and POSIX under
    xdist, the parallel runner. A stack dump does not terminate a hung process.
    Add a small opt-in progress journal only if native probes show built-in
    output cannot identify and retain the active worker/test.
-3. Propose a 15-minute full-test step limit inside a 20-minute test-job limit.
-   Bound the short visibility preflight separately; leave time for diagnostics
-   upload. Check margins against corrected P11 native timings first. Do not add
-   an arbitrary per-test failure deadline.
+3. Propose a 5-minute preflight limit, a 15-minute full-test limit and a 25-minute
+   enclosing test-job limit. Bound diagnostic upload to 2 minutes. The extra
+   job margin accommodates setup, a slow preflight and evidence upload. Check
+   margins against corrected P11 first, including total setup/preflight elapsed
+   before a full-test timeout. Do not claim a guaranteed artifact if the runner
+   itself stops responding. Do not add an arbitrary per-test failure deadline.
 4. Upload available diagnostics on success and failure, with unique platform
-   names and short retention. Forced stops may prevent final JUnit output;
-   retain active-test evidence before the terminal limit.
+   names and 7-day retention. Each upload uses `if: always()` and an explicit
+   timeout so it can run after a failed test step without extending indefinitely.
+   Forced stops may prevent final JUnit output; retain active-test evidence
+   before the terminal limit. Prove preflight and full-suite artifacts cannot
+   overwrite each other.
 5. Preserve the owner's Windows sequence: isolate the failed remote job/family,
    reproduce it, validate the correction there, then run the full batch.
+6. Make `ci-ok` require successful `changes` with exactly `true` or `false`
+   output. Permit heavy-job skips only for a validated documentation-only PR.
+   Selected heavy jobs and always-required jobs must succeed. Missing/invalid
+   output, an unexpectedly skipped selected job, failure and cancellation fail.
+7. Make required `actionlint` and `yamllint` fail when `lint-changes` fails,
+   is cancelled or omits/invalidates its selectors. Preserve deliberate skips
+   after valid `false` selectors and retain the exact required context names.
+8. Add `merge_group` to `secret-scan.yml`. Use the existing non-PR full-history
+   scan of the speculative merge revision, with full checkout history and no
+   equal-base/head diff. Preserve ordinary PR/main scan behavior. Do not change
+   branch protection or enable the merge queue as part of this correction.
 
 Validate behavior rather than merely compare YAML text:
 
-- A tiny scratch harness deliberately hangs on native Windows and POSIX. Use
-  short harness limits. Require bounded non-success, identifiable test/worker
+- A tiny scratch harness deliberately hangs in preflight and in parallel full
+  testing on native Windows and POSIX. Use short harness limits. Require
+  bounded non-success, identifiable test/worker
   context, retained stack/progress evidence and a failed aggregate gate.
 - A passing control with the same options completes with expected test IDs,
   outcomes and useful artifacts.
 - Verify production selects those validated options, and failed/cancelled
   outcomes cannot create successful `ci-ok` results.
+- Exercise the actual production gate logic with successful detection plus
+  empty/invalid output, selected-but-skipped jobs, failure and cancellation.
+  They must fail; valid documentation-only skips and fully passing selections
+  must pass. Test the equivalent failure and valid-false controls for both
+  required lint contexts. Use scratch remote cases to confirm GitHub job
+  conditions and outcomes, not just the local decision function.
+- Map all eight required contexts to PR, main and merge-group inputs. For the
+  added secret-scan trigger, bind checkout/scanning to the speculative merge
+  SHA and prove passing/failing scanner outcomes retain the `trufflehog` name.
+  Use the production configuration plus a bounded event/runner harness where
+  a live merge-group event cannot be produced without changing owner settings;
+  label that limitation rather than claiming an actual merge-queue run.
 - If provider cancellation loses artifacts, record the limitation and improve
   earlier diagnostics before claiming failures are observable.
 
@@ -121,16 +174,33 @@ baseline source, tests and runner allocation.
 
 Start with one baseline/candidate screening pair on the smallest representative
 family. Stop an unpromising candidate. For a promising change, complete at least
-three alternating baseline/candidate pairs. Keep Python patch, Git, uv, locked
-plugins, coverage, runner image, worker count and cache state comparable. Vary
-only the proposed mechanism. Record mismatches; discard confounded pairs.
+three alternating baseline/candidate pairs; a valid screening pair counts
+toward those three. Keep Python patch, Git, uv, Bun, locked plugins, coverage,
+runner image, actual CPU/worker count and cache state comparable. Vary only the
+proposed mechanism. Blacksmith may automatically provide extra CPUs, so runner
+label alone is insufficient. Run pairs without a superseding push to their
+reference; exclude cancelled/incomplete runs. Record mismatches and discard
+confounded pairs. Screen at most two plausible variants unless new evidence
+justifies more work, and stop after one useful result.
+
+For measured live tests, record the actual commit and relevant input hashes of
+each external blueprint clone against its test ID, from the clone that ran.
+An earlier `ls-remote` query is insufficient. Different or missing clone
+provenance makes a pair inconclusive. Apply this to full-suite confirmation;
+ordinary live-test default-branch behavior remains unchanged. Validate the
+comparison rule with matching, differing and missing external-input records.
 
 Retain source/test hashes, test IDs, outcomes/skips, test-step elapsed time,
 queue delay, allocated runner time and failure-detection behavior. Use medians
-and observed ranges. Adopt a candidate when all three paired timings improve,
-its median improvement exceeds the observed baseline spread, and results and
-isolation remain equivalent. Treat contradictory or noisy evidence as
-inconclusive. This is an engineering rule, not a significance test.
+and observed ranges. Compute each paired improvement as baseline seconds minus
+candidate seconds. Adopt when all three are positive, their median exceeds the
+range of the three baseline timings from this same controlled experiment, and
+results/isolation remain equivalent. Never use the historical 234–381s range
+as the threshold. Report each paired delta and any allocated-time regression.
+For example, controlled baselines of 100/102/101s and candidates of 85/86/86s
+give improvements of 15/16/15s versus a 2s baseline range. This is an illustrative
+decision rule, not a performed benchmark or a significance test. Treat noisy
+or contradictory evidence as inconclusive.
 
 For a helper change, first add a discriminating regression for an unsafe shortcut.
 Check independent repositories, Git status/config, tracked/ignored paths and
