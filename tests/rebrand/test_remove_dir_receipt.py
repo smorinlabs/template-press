@@ -276,7 +276,11 @@ def test_writer_rejects_alias_and_oversize_before_writing(tmp_path):
         assert not (tmp_path / "press/press-receipt.toml").exists()
 
 
-@pytest.mark.parametrize("body", [b"\xff", b"#" + b"x" * (16 * 1024 * 1024)])
+@pytest.mark.parametrize(
+    "body",
+    [b"\xff", b"#" + b"x" * (16 * 1024 * 1024)],
+    ids=["invalid-utf8", "over-byte-limit"],
+)
 def test_bounded_read_rejects_invalid_or_oversize(tmp_path, body):
     (tmp_path / "press").mkdir()
     (tmp_path / "press/press-receipt.toml").write_bytes(body)

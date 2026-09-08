@@ -1,6 +1,6 @@
 # Diagnostic branch only: never merge this workflow override.
 name: p11-removal-isolated
-run-name: P11 bounded Windows pytest node-id proof at ${{ github.sha }}
+run-name: P11 corrected Windows receipt family at ${{ github.sha }}
 
 on:
   workflow_dispatch:
@@ -8,8 +8,8 @@ on:
 permissions: {}
 
 jobs:
-  smoke:
-    name: oversized pytest node-id proof
+  receipt:
+    name: corrected receipt family with coverage
     runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: 5
     permissions:
@@ -26,62 +26,50 @@ jobs:
           python-version: "3.13"
       - name: Sync locked dev environment
         run: uv sync --locked --group dev
-      - name: Print tools and verify bounded pytest setup failure
+      - name: Verify source and bounded test labels
         shell: pwsh
         run: |
           git --version
           uv --version
           git rev-parse HEAD
           Write-Host "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
-          uv run --no-sync python -c `
-            "import platform,sys; print(sys.version); print(platform.platform())"
-          foreach ($path in @(
-            "src/template_press/rebrand/remove.py",
-            "tests/rebrand/test_remove_dirs.py"
-          )) {
-            $hash = (Get-FileHash -Algorithm SHA256 $path).Hash
-            Write-Host "$path=$hash"
-          }
           $script = @'
+          import hashlib
           import json
-          import os
+          import platform
+          import sys
           from pathlib import Path
           import pytest
-          from _pytest.runner import _update_current_test_var
+          expected = {
+              "src/template_press/rebrand/remove.py":
+                  "2e4c73109f6df169daf8e340395445c611b2c9104938d65885fbd9072baffa53",
+              "tests/rebrand/test_remove_dir_review.py":
+                  "73f969738408ec6e6f44de9a1bc6ea7235f34290a3bf800f69ad7759a25f322c",
+              "tests/rebrand/test_remove_dir_receipt.py":
+                  "5ddcb066716125c2f04cc6cac2f719fb5153648467b41e6d4af3677c8ef924fc",
+          }
+          for name, digest in expected.items():
+              raw = Path(name).read_bytes()
+              actual = hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()
+              print(json.dumps({"path": name, "normalized_sha256": actual}), flush=True)
+              assert actual == digest
           class Collected:
               def pytest_collection_finish(self, session):
                   self.items = list(session.items)
           plugin = Collected()
           code = pytest.main(["--collect-only", "-n", "0", "-p", "no:terminal",
-              "tests/rebrand/test_remove_dir_receipt.py::"
-              "test_bounded_read_rejects_invalid_or_oversize"], plugins=[plugin])
+              "tests/rebrand/test_remove_dir_receipt.py"], plugins=[plugin])
           assert code == 0
-          assert len(plugin.items) == 2
-          results = []
-          for item in plugin.items:
-              row = {"node_id_chars": len(item.nodeid)}
-              try:
-                  _update_current_test_var(item, "setup")
-                  row["outcome"] = "setup variable accepted"
-              except Exception as exc:
-                  row.update(outcome="setup variable rejected",
-                             error_type=type(exc).__name__, error=str(exc)[:240])
-              finally:
-                  os.environ.pop("PYTEST_CURRENT_TEST", None)
-              results.append(row)
-          output = json.dumps({"observations": results}, indent=2)
-          Path("p11-nodeid-proof.json").write_text(output, encoding="utf-8")
-          print(output, flush=True)
-          assert results[0]["outcome"] == "setup variable accepted"
-          assert results[1]["outcome"] == "setup variable rejected"
-          print("CONFIRMED_NATIVE_PYTEST_SETUP_FAILURE", flush=True)
+          assert len(plugin.items) == 44
+          maximum = max(len(item.nodeid) for item in plugin.items)
+          assert maximum == 133
+          print(json.dumps({"python": sys.version, "platform": platform.platform(),
+              "collected": len(plugin.items), "max_nodeid_chars": maximum}), flush=True)
           '@
           $script | uv run --no-sync python -
-      - name: Preserve bounded node-id observations
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: p11-nodeid-proof
-          path: p11-nodeid-proof.json
-          if-no-files-found: warn
-          retention-days: 7
+      - name: Run only corrected receipt family with shipping worker and coverage settings
+        run: >-
+          uv run --no-sync pytest -m "" -n auto
+          --cov=template_press --cov-report=xml
+          tests/rebrand/test_remove_dir_receipt.py
+          -vv -ra --durations=10 -o faulthandler_timeout=30
