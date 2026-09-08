@@ -145,7 +145,7 @@ jobs:
         timeout-minutes: 1
         env:
           P11A_CASE: ${{ inputs.case }}
-        run: uv run --no-sync python .p11a-harness/verify.py ${{ inputs.case }}
+        run: uv run --no-sync python .p11a-harness/verify.py
       - name: Upload test diagnostics
         if: always()
         timeout-minutes: 2

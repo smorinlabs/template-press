@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -29,12 +30,15 @@ def git(*args: str) -> str:
     return subprocess.check_output([executable, *args], text=True).strip()  # noqa: S603
 
 
-def hashes(paths: list[Path]) -> dict[str, str]:
-    return {
-        path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(paths)
-        if path.is_file()
-    }
+def hashes(paths: list[Path], *, normalize_crlf: bool = False) -> dict[str, str]:
+    result = {}
+    for path in sorted(paths):
+        if path.is_file():
+            data = path.read_bytes()
+            if normalize_crlf:
+                data = data.replace(b"\r\n", b"\n")
+            result[path.relative_to(ROOT).as_posix()] = hashlib.sha256(data).hexdigest()
+    return result
 
 
 def preflight_files() -> list[Path]:
@@ -43,8 +47,11 @@ def preflight_files() -> list[Path]:
 
 def frozen_source() -> None:
     freeze = json.loads((HARNESS / "freeze.json").read_text())
+    require(freeze["text_normalization"] == "crlf-to-lf", "unknown normalization")
     expected = {entry["path"]: entry["sha256"] for entry in freeze["files"]}
-    actual = hashes([ROOT / name for name in expected])
+    # Only the manifest's declared source text files permit checkout newlines.
+    # Generated evidence and preflight checkpoints remain byte-exact.
+    actual = hashes([ROOT / name for name in expected], normalize_crlf=True)
     require(actual == expected, "source or harness bytes differ from freeze")
     git("merge-base", "--is-ancestor", freeze["source_commit"], "HEAD")
     changed = git("diff", "--name-only", freeze["source_commit"], "HEAD").splitlines()
@@ -105,69 +112,161 @@ def evidence(mode: str) -> tuple[dict, list[dict]]:
     return metadata, records
 
 
+NODE = "test_probe.py::test_probe"
+
+
+def verify_junit(mode: str, case: str) -> None:
+    path = ROOT / f"ci-results/{mode}.xml"
+    if case == "exit7" and not path.exists():
+        return
+    root = ET.parse(path).getroot()  # noqa: S314 - synthetic fixture output.
+    tests = root.findall(".//testcase")
+    suites = root.findall(".//testsuite")
+    if case == "exit7":
+        require(not tests, "exit7 JUnit reports test execution")
+        require(
+            all(int(suite.attrib["tests"]) == 0 for suite in suites),
+            "exit7 JUnit test count is nonzero",
+        )
+        return
+    require(
+        len(tests) == 1 and tests[0].attrib["name"] == "test_probe",
+        "JUnit must report exactly the fixture test",
+    )
+    require(
+        len(suites) == 1 and int(suites[0].attrib["tests"]) == 1,
+        "JUnit fixture count differs",
+    )
+    counts = {
+        name: len(tests[0].findall(tag))
+        for name, tag in [
+            ("failures", "failure"),
+            ("errors", "error"),
+            ("skipped", "skipped"),
+        ]
+    }
+    require(
+        all(int(suites[0].attrib[name]) == count for name, count in counts.items()),
+        "JUnit totals contradict fixture outcome",
+    )
+    if case == "pass":
+        require(not any(counts.values()), "passing fixture has failure, error or skip")
+    elif case == "fail":
+        require(
+            counts == {"failures": 1, "errors": 0, "skipped": 0},
+            "assertion fixture did not fail",
+        )
+    else:
+        require(
+            counts["failures"] + counts["errors"] == 1 and counts["skipped"] == 0,
+            "worker crash is absent from JUnit",
+        )
+
+
+def same_test(row: dict, active: dict) -> bool:
+    return all(row.get(key) == active[key] for key in ("worker", "pid", "nodeid"))
+
+
+def verify_completed_test(records: list[dict], active: dict, case: str) -> None:
+    results = [row for row in records if row["phase"] == "test_result"]
+    expected = {
+        ("setup", "passed"),
+        ("call", "passed" if case == "pass" else "failed"),
+        ("teardown", "passed"),
+    }
+    require(
+        len(results) == 3 and all(same_test(row, active) for row in results),
+        "fixture results lack matching process/test identity",
+    )
+    require(
+        {(row["when"], row["outcome"]) for row in results} == expected,
+        "fixture call outcome or phase is wrong",
+    )
+    finished = [row for row in records if row["phase"] == "test_finished"]
+    require(
+        len(finished) == 1 and same_test(finished[0], active),
+        "fixture protocol did not finish",
+    )
+
+
 def verify_case(case: str) -> None:
     require(case in {"pass", "fail", "exit7", "worker-loss"}, "unknown finite case")
-    if case == "pass":
-        modes = ["preflight", "full"]
-    else:
-        modes = ["full" if case == "worker-loss" else "preflight"]
+    modes = (
+        ["preflight", "full"]
+        if case == "pass"
+        else ["full" if case == "worker-loss" else "preflight"]
+    )
     for mode in modes:
         metadata, records = evidence(mode)
         workers = 0 if mode == "preflight" else 2
-        expected = 0 if case == "pass" else 7 if case == "exit7" else 1
-        require(metadata["returncode"] == expected, "native evidence condition failed")
+        expected_exit = 0 if case == "pass" else 7 if case == "exit7" else 1
+        require(metadata["returncode"] == expected_exit, "runtime exit differs")
         require(
-            metadata["finished_at"] >= metadata["started_at"],
-            "native evidence condition failed",
+            metadata["finished_at"] >= metadata["started_at"], "runtime did not finish"
         )
+        verify_junit(mode, case)
         active = [row for row in records if row["phase"] == "test_call"]
         if case == "exit7":
             require(
-                any(
-                    row["phase"] == "session_setup"
-                    and row["worker"] == "controller"
+                any(row["phase"] == "session_setup" for row in records),
+                "exit7 has no session evidence",
+            )
+            require(
+                all(
+                    row["worker"] == "controller"
                     and row["no_test_started"]
                     and row["nodeid"] is None
+                    and not row["phase"].startswith("test_")
                     for row in records
                 ),
-                "native evidence condition failed",
+                "exit7 contains test execution",
             )
         else:
-            expected_worker = "controller" if not workers else "gw"
+            allowed = {"controller"} if not workers else {"gw0", "gw1"}
             require(
-                any(
-                    row["nodeid"].endswith("::test_probe")
-                    and not row["no_test_started"]
-                    and row["worker"].startswith(expected_worker)
-                    for row in active
-                ),
-                "missing active test/process identity",
+                len(active) == 1
+                and active[0]["worker"] in allowed
+                and active[0]["nodeid"] == NODE
+                and not active[0]["no_test_started"],
+                "missing exact fixture/process identity",
             )
-            cases = ET.parse(ROOT / f"ci-results/{mode}.xml").findall(".//testcase")  # noqa: S314 - synthetic local fixture output.
             require(
-                cases and any(item.attrib["name"] == "test_probe" for item in cases),
-                "native evidence condition failed",
+                active[0]["nodeid_sha256"] == hashlib.sha256(NODE.encode()).hexdigest()
+                and active[0]["nodeid_chars"] == len(NODE),
+                "fixture node hash or length differs",
             )
-            if case == "fail":
-                require(
-                    any(item.find("failure") is not None for item in cases),
-                    "native evidence condition failed",
-                )
+        if case in {"pass", "fail"}:
+            verify_completed_test(records, active[0], case)
+            expected_sessions = {"controller": expected_exit}
+            if workers:
+                expected_sessions.update(gw0=0, gw1=0)
+            finished = [row for row in records if row["phase"] == "session_finished"]
+            require(
+                len(finished) == len(expected_sessions)
+                and {row["worker"]: row["exitstatus"] for row in finished}
+                == expected_sessions,
+                "session completion or exit differs",
+            )
         if case == "pass":
             require(
                 any(row.get("worker_count") == workers for row in records),
-                "native evidence condition failed",
+                "worker count differs",
             )
+            ready = [row for row in records if row["phase"] == "worker_ready"]
+            expected_ready = {"gw0", "gw1"} if workers else set()
             require(
-                any(row.get("outcome") == "passed" for row in records),
-                "native evidence condition failed",
+                len(ready) == workers
+                and {row["affected_worker"] for row in ready} == expected_ready
+                and all(row["worker"] == "controller" for row in ready),
+                "worker readiness differs",
             )
         if case == "worker-loss":
             losses = [row for row in records if row["phase"] == "worker_lost"]
-            require(len(losses) == 1, "native evidence condition failed")
             require(
-                any(row["worker"] == losses[0]["affected_worker"] for row in active),
-                "native evidence condition failed",
+                len(losses) == 1
+                and losses[0]["worker"] == "controller"
+                and active[0]["worker"] == losses[0]["affected_worker"],
+                "worker loss does not match active fixture",
             )
             started = {
                 row["affected_worker"]
@@ -176,7 +275,7 @@ def verify_case(case: str) -> None:
             }
             require(
                 {"gw0", "gw1"} < started and len(started) == 3,
-                "native evidence condition failed",
+                "replacement worker identity differs",
             )
         print(
             f"Production evidence passed: case={case} mode={mode} rows={len(records)}"
@@ -190,11 +289,13 @@ def verify_case(case: str) -> None:
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "freeze":
+    if len(sys.argv) == 1:
+        verify_case(os.environ.get("P11A_CASE", ""))
+    elif sys.argv[1:] == ["freeze"]:
         frozen_source()
-    elif sys.argv[1] == "checkpoint":
+    elif sys.argv[1:] == ["checkpoint"]:
         (HARNESS / "preflight-before.json").write_text(
             json.dumps(hashes(preflight_files()))
         )
     else:
-        verify_case(sys.argv[1])
+        raise RuntimeError("unknown verification command")

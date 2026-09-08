@@ -21,7 +21,7 @@
     },
     {
       "path": ".github/workflows/rebrand-matrix.yml",
-      "sha256": "d11a643c825ec4d36f8f5721348c275dd544a08accdcca01c8c168becb7d7482"
+      "sha256": "8506075afb19b99be2f798ad020d0cf8d54b6e09e61636662c996b9aa83c1565"
     },
     {
       "path": ".github/workflows/secret-scan.yml",
@@ -41,7 +41,7 @@
     },
     {
       "path": ".p11a-harness/verify.py",
-      "sha256": "4b9726f47eee545442a0416c7d05c7918acd3fa10b60609877a4290e4adb9125"
+      "sha256": "b2be6eef5b259a7ae7cf54d1d49246a2fdc55c775a96a42d84c7b80298c40b6f"
     },
     {
       "path": "pyproject.toml",
@@ -63,5 +63,6 @@
       "path": "uv.lock",
       "sha256": "93434d016b70d65438528108eb9845a28a3d6a61f0be5fc088e831a6687be2e2"
     }
-  ]
+  ],
+  "text_normalization": "crlf-to-lf"
 }
