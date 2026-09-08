@@ -1,8 +1,8 @@
 # P11A local implementation checkpoint
 
-The first CI implementation slice is committed and locally validated at
+The first CI implementation slice was committed and locally validated at
 `01fba91ee95cb40058d3e555c7cf7f669587a692`, tree
-`7fed5bf15f26a8ff29e1d7ea950dbc5b8f3b0aa2`. The worktree is clean. This is a
+`7fed5bf15f26a8ff29e1d7ea950dbc5b8f3b0aa2`. This is a
 local checkpoint for Milestone 3, not completion of P11A or a delivered speedup.
 
 ## Implemented scope
@@ -62,23 +62,65 @@ The session evidence directory retains these complete receipts:
 - `p11a-committed-matrix-receipt.json`, binding the four acceptance results to
   the commit and tree above.
 
-All eleven reviewed file hashes match the committed Git blobs and worktree bytes.
-No push, remote dispatch, performance experiment or merge occurred.
+All eleven reviewed file hashes matched the committed Git blobs and worktree
+bytes at that checkpoint. No P11A push, remote dispatch, performance experiment
+or merge occurred before the upload approval below.
+
+## Approved upload step
+
+The owner approved Decision Q4 on 2026-09-08 after reviewing the exact public
+GitHub destination, generated-file paths, visibility, payload limits and
+seven-day retention. The exact step is committed at
+`e7d7ea2e9843bcf7328808360ec4ac53edf9c617`, tree
+`46615c6fb07ed7ff0d411585acf56b36ba067a7b`, directly above the first slice.
+Only `.github/workflows/ci.yml` changed, with seventeen added lines.
+
+Root independently confirmed the inserted step equals the approved proposal
+byte for byte, and removing it restores the parent workflow exactly. The
+tested and committed workflow SHA-256 is
+`36848b9e5af06c124b5e060596f7f55f71a14f1805aba673b6e1fbd770c9f7e2`.
+
+Local macOS controls executed the upstream v7 `findFilesToUpload` function,
+bound to upstream commit `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`.
+Complete, interrupted-preflight and absent-result cases selected exactly the
+expected regular files. Unrelated files were excluded; a broad-directory
+inverse selected the unwanted files. These controls do not prove native
+Windows selection, actual upload, archive contents or expiry.
+
+Actionlint, locked yamllint, the existing native-Bun workflow contract, diff
+checks and commit hooks passed. Yamllint retained only the long artifact-name
+warning. The unchanged full suite was not repeated for this one-step addition.
+The exact receipt is `p11a-q4-local-receipt.json` in the session evidence
+directory, SHA-256
+`a2a3c0bb7376bac802bb4bdaa1dbf2be09e4a2578a5ed2d3b400152a738f5542`.
+
+The owner also asked whether uploads are temporary. The approved step recurs
+on successful and failed runs with no automatic stop date. Seven days is each
+archive's retention period. At P11A-T06, before P12, review measured upload
+duration, bytes, reliability and information unavailable from ordinary logs.
+Preserve comparison results, source/run identifiers and limitations before
+the archives expire. Record an explicit ongoing policy at that closeout.
+Ending routine successful-run archives while retaining useful failure evidence
+is currently a recommendation, not an implemented or approved policy change.
 
 ## Remaining gates
 
-The diagnostic-upload workflow step remains absent. Automatic approval review
-rejected the edit because it did not accept authorization for the exact future
-GitHub artifact destination and payload. The concrete proposal identifies
-generated pytest reports, bounded logs/progress and allowlisted runtime metadata
-in `smorinlabs/template-press`, retained for seven days. Root requested approval;
-the response remains pending. No alternate tool wrote the rejected step.
+The initial automatic rejection of the upload edit was resolved by the owner's
+specific Q4 approval. The exact production step is now locally committed;
+native upload and retention validation remain pending.
 
 Milestone 3 still requires native Windows/Linux diagnostic and timeout proof,
 actual GitHub job-condition and cancellation controls, scanner outcome checks,
 and artifact-retention validation. Accepted P11 must be integrated before the
 production timeout-margin check, performance experiments and final delivery.
-The separate P11 diagnostic approval is also pending.
+The separate P11 diagnostic was approved as Q3.A. After automatic review
+required literal destination/payload authorization, the owner explicitly
+authorized diagnostic commit `493a0fc3cc6fe7e8f74a483b35015018b576c6af` on
+`ci/p11-removal-isolated` in public `smorinlabs/template-press`. That cleared
+the tool gate, and the bounded Windows proof began in
+[run 34286961815](https://github.com/smorinlabs/template-press/actions/runs/34286961815).
+It is not a passing native result until its evidence is inspected. P11 still
+owns the isolated corrected-family gate before its full CI and merge.
 
 Milestone 4 will measure an optimization before claiming a benefit. Milestone 5
 will complete delivery and closeout. P12 remains paused behind P11 and P11A.

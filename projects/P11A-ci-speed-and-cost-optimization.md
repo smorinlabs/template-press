@@ -91,7 +91,17 @@ preserved the empty project scaffolding. The
 [implementation checkpoint](../docs/superpowers/reviews/2026-09-08-p11a-local-implementation.md)
 records exact evidence and limitations.
 
-The upload step awaits the specific approval requested after automatic review
-rejected that edit. Native provider controls, accepted P11 integration, controlled
-performance comparisons and delivery remain pending. P11A-T05 and P11A-T06 are
-still open; this checkpoint does not claim faster healthy CI or project closeout.
+The owner approved the exact seven-day diagnostic upload as Decision Q4 on
+2026-09-08. Its seventeen-line workflow step is committed locally at
+`e7d7ea2e9843bcf7328808360ec4ac53edf9c617`. Focused workflow checks and upstream
+artifact-file selection controls passed. Native provider controls, accepted P11
+integration, controlled performance comparisons and delivery remain pending.
+P11A-T05 and P11A-T06 are still open; this checkpoint does not claim faster
+healthy CI or project closeout.
+
+Uploads recur on successful and failed runs. Seven days expires each archive;
+it does not stop future collection. At P11A-T06, before P12, review observed
+upload duration, bytes, reliability and diagnostic value, and explicitly record
+the ongoing policy. The current recommendation is to end routine successful-run
+archives after P11A comparisons while retaining useful failure diagnostics.
+That policy change remains a recommendation; no automatic sunset is configured.
