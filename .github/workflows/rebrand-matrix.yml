@@ -1,6 +1,6 @@
 # Diagnostic branch only: never merge this workflow override.
 name: p11-removal-isolated
-run-name: P11 auto-worker and member-limit isolation at ${{ github.sha }}
+run-name: P11 removal families with preserved timeout output at ${{ github.sha }}
 
 on:
   workflow_dispatch:
@@ -14,8 +14,9 @@ jobs:
     timeout-minutes: 5
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
-        case: [smoke-auto-coverage, member-limit]
+        case: [dirs, controls, receipt, preflight, diagnostics]
     permissions:
       contents: read
     env:
@@ -49,6 +50,7 @@ jobs:
             Write-Host "$path=$hash"
           }
           $script = @'
+          import hashlib
           import os
           import subprocess
           import sys
@@ -56,14 +58,19 @@ jobs:
           kind = os.environ["P11_CASE"]
           base = [sys.executable, "-u", "-m", "pytest", "-s", "-vv", "-ra",
                   "-o", "faulthandler_timeout=30", "--durations=5"]
-          if kind == "smoke-auto-coverage":
-              command = base + ["-n", "auto", "--cov=template_press",
-                  "--cov-report=xml",
-                  "tests/rebrand/test_remove_dirs.py::test_freeze_exact_members"]
-          else:
-              command = base + ["-n", "0", "-k", "members",
-                  "tests/rebrand/test_remove_dir_receipt.py::"
-                  "test_history_count_and_text_limits"]
+          tests = {
+              "dirs": "test_remove_dirs.py",
+              "controls": "test_remove_dir_controls.py",
+              "receipt": "test_remove_dir_receipt.py",
+              "preflight": "test_remove_receipt_preflight.py",
+              "diagnostics": "test_verify_remove_diagnostics.py",
+          }
+          selected = "tests/rebrand/" + tests[kind]
+          digest = hashlib.sha256(Path(selected).read_bytes()).hexdigest()
+          print("TEST_SHA256:", selected, digest, flush=True)
+          subprocess.run(["git", "rev-parse", "HEAD:" + selected], check=True)
+          command = base + ["-n", "auto", "--cov=template_press",
+                            "--cov-report=xml", selected]
           path = Path("p11-diagnostic-pytest.log")
           print("COMMAND:", command, "PROCESS_TIMEOUT_SECONDS: 180", flush=True)
           with path.open("w", encoding="utf-8") as stream:
@@ -73,8 +80,11 @@ jobs:
                   result = proc.wait(timeout=180)
               except subprocess.TimeoutExpired:
                   print("PYTEST_PROCESS_TIMEOUT", flush=True)
-                  subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                                 check=False, timeout=20)
+                  try:
+                      subprocess.run(["taskkill", "/PID", str(proc.pid),
+                                      "/T", "/F"], check=False, timeout=20)
+                  except subprocess.TimeoutExpired:
+                      print("TASKKILL_TIMEOUT", flush=True)
                   result = 124
           print(path.read_text(encoding="utf-8", errors="replace"), flush=True)
           raise SystemExit(result)
