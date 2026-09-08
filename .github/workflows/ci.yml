@@ -171,6 +171,23 @@ jobs:
           -m "" -n auto --cov=template_press --cov-report=xml
           --durations=25 --durations-min=1 -o faulthandler_timeout=120
           --junitxml=ci-results/full.xml
+      - name: Upload test diagnostics
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-tests-${{ matrix.os }}-py${{ matrix.python-version }}-attempt${{ github.run_attempt }}
+          path: |
+            ci-results/preflight.xml
+            ci-results/full.xml
+            ci-results/preflight/*.log
+            ci-results/preflight/*.jsonl
+            ci-results/preflight/*.json
+            ci-results/full/*.log
+            ci-results/full/*.jsonl
+            ci-results/full/*.json
+          retention-days: 7
+          if-no-files-found: warn
       - name: Upload coverage to Codecov
         # Single matrix combo uploads (avoids 4x duplicate reports).
         # use_oidc: tokenless upload (public repo). Requires `id-token: write`.
