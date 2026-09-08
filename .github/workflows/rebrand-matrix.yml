@@ -1,6 +1,6 @@
 # Diagnostic branch only: never merge this workflow override.
 name: p11-removal-isolated
-run-name: P11 Windows runner smoke at ${{ github.sha }}
+run-name: P11 correction and parallel-runner isolation at ${{ github.sha }}
 
 on:
   workflow_dispatch:
@@ -8,18 +8,19 @@ on:
 permissions: {}
 
 jobs:
-  smoke:
-    name: smoke (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  focused:
+    name: focused (${{ matrix.case }})
+    runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
-        os: [blacksmith-4vcpu-windows-2025, windows-latest]
+        case: [review-serial, smoke-two-workers]
     permissions:
       contents: read
     env:
       PYTHONUNBUFFERED: "1"
+      P11_CASE: ${{ matrix.case }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -30,7 +31,7 @@ jobs:
           python-version: "3.13"
       - name: Sync locked dev environment
         run: uv sync --locked --group dev
-      - name: Print runner tools and run one frozen-member case
+      - name: Print tools and run isolated cases
         shell: pwsh
         run: |
           git --version
@@ -41,11 +42,18 @@ jobs:
             "import platform,sys; print(sys.version); print(platform.platform())"
           foreach ($path in @(
             "src/template_press/rebrand/remove.py",
-            "tests/rebrand/test_remove_dirs.py"
+            "tests/rebrand/test_remove_dirs.py",
+            "tests/rebrand/test_remove_dir_review.py"
           )) {
             $hash = (Get-FileHash -Algorithm SHA256 $path).Hash
             Write-Host "$path=$hash"
           }
-          uv run --no-sync pytest -n 0 -s -vv -ra `
-            -o faulthandler_timeout=30 `
-            tests/rebrand/test_remove_dirs.py::test_freeze_exact_members
+          if ($env:P11_CASE -eq "review-serial") {
+            uv run --no-sync pytest -n 0 -s -vv -ra `
+              -o faulthandler_timeout=30 --durations=17 `
+              tests/rebrand/test_remove_dir_review.py
+          } else {
+            uv run --no-sync pytest -n 2 -s -vv -ra `
+              -o faulthandler_timeout=30 `
+              tests/rebrand/test_remove_dirs.py::test_freeze_exact_members
+          }
