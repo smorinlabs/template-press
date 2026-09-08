@@ -30,8 +30,8 @@ No workflow, runner plan or test-coverage change is made by this capture.
 - [x] [P11A-T01] Profile completed CI runs, queue/setup/test timing, cumulative runner minutes and repeated or canceled work.
 - [x] [P11A-T02] Rank concrete optimizations by measured value, coverage risk, complexity and validation needs.
 - [x] [P11A-TS02] Define discriminating correctness controls and before/after benchmarks for the selected candidates.
-- [ ] [P11A-T03] Complete independent major plan review, including Muse requested at Ultra with a 100-step maximum and the approved Fable/Opus fallback policy; record actual provider capability.
-- [ ] [P11A-T04] Resolve any real coverage, platform or spending decisions from the concrete reviewed plan and record the selected scope.
+- [x] [P11A-T03] Complete independent major plan review, including Muse requested at Ultra with a 100-step maximum and the approved Fable/Opus fallback policy; record actual provider capability.
+- [x] [P11A-T04] Resolve any real coverage, platform or spending decisions from the concrete reviewed plan and record the selected scope.
 - [ ] [P11A-T05] Implement and validate selected optimizations in an isolated PR, or record an evidence-based decision to make no change.
 - [ ] [P11A-T06] Complete required CI/reviews and authorized delivery for selected work, record measured results and remaining costs, then resume P12 evaluation.
 
@@ -66,5 +66,16 @@ validate its correction there, then return to the full batch.
 
 The profile and concrete three-phase, five-milestone plan are recorded. Native
 Windows tests dominate the healthy-run sample; setup is already short. Independent
-major plan review is next. No optimization, benchmark or coverage change is
-claimed complete. P12 remains paused behind P11 and this follow-up.
+major plan review is complete. Muse used `xhigh` because requested Ultra was
+unavailable, with a 100-step maximum requested and actual steps unreported. Opus
+completed the approved Fable fallback. A final internal Epicero review approved
+revision 3 after checking the narrow corrections and independent cost evidence.
+The [review closeout](../docs/superpowers/reviews/2026-09-07-p11a-plan-review-resolution.md)
+records provider limitations and finding dispositions.
+
+Milestone 3 implementation is in progress: bounded CI execution, retained
+diagnostics and repairs to existing required checks. Platform coverage, runner
+plans and dependency versions remain within the reviewed contract. No speedup,
+native diagnostic validation or controlled performance comparison is claimed
+complete. Accepted P11 is required before performance experiments and delivery.
+P12 remains paused behind P11 and this follow-up.

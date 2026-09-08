@@ -1,9 +1,11 @@
 # P11A CI measurement and optimization plan
 
 Reduce avoidable CI waiting and runner consumption before the P12 value review.
-Measurement is complete; this implementation plan awaits independent review.
-No optimization or controlled performance comparison has run yet. Revision 3
-incorporates internal, Muse and Opus plan review findings.
+Measurement and independent plan review are complete. Milestone 3 implementation
+is in progress; no optimization or controlled performance comparison has passed
+validation yet. Revision 3 incorporates internal, Muse and Opus plan review
+findings. The [review closeout](../reviews/2026-09-07-p11a-plan-review-resolution.md)
+records actual provider effort and the final internal approval.
 
 **Project:** [P11A](../../../projects/P11A-ci-speed-and-cost-optimization.md).
 **Evidence:** [Measured baseline](../reviews/2026-09-07-p11a-ci-baseline.md).
@@ -141,7 +143,10 @@ Task: P11A-T05, first implementation slice. Use locked tools without adding
    output, an unexpectedly skipped selected job, failure and cancellation fail.
 7. Make required `actionlint` and `yamllint` fail when `lint-changes` fails,
    is cancelled or omits/invalidates its selectors. Preserve deliberate skips
-   after valid `false` selectors and retain the exact required context names.
+   of lint work after valid `false` selectors and retain the exact required
+   context names. GitHub string equality ignores case, so an always-run shell
+   validator must reject uppercase `TRUE`/`FALSE` before conditional tool steps.
+   For valid `false`, the named job may succeed with its expensive steps skipped.
 8. Map all required contexts to their workflows/events before editing. The
    current source already gives `commitlint (humans)` a merge-group context;
    its lint step deliberately skips because the PR commits were checked earlier.
