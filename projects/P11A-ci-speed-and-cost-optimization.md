@@ -102,8 +102,10 @@ healthy CI or project closeout.
 The disposable finite diagnostic harness at
 `80e86255263cefdf3e83c28b98cf4c2adc474eb5` passed independent source/local
 review after two harness corrections. Native Windows execution and archive
-inspection are the next gate. The diagnostic branch must never merge into
-production; it does not complete Milestone 3 or establish a speedup.
+inspection are the next gate. Automatic approval review blocked its first push
+as a separate source/branch publication; the combined P11/P11A authorization
+request is pending. No native run started. The diagnostic branch must never
+merge into production; it does not complete Milestone 3 or establish a speedup.
 
 Uploads recur on successful and failed runs. Seven days expires each archive;
 it does not stop future collection. At P11A-T06, before P12, review observed

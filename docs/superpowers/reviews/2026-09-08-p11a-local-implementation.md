@@ -138,6 +138,15 @@ The initial automatic rejection of the upload edit was resolved by the owner's
 specific Q4 approval. The exact production step is now locally committed;
 native upload and retention validation remain pending.
 
+Automatic approval review subsequently rejected the first push of the finite
+harness commit `80e86255263cefdf3e83c28b98cf4c2adc474eb5` to
+`ci/p11a-native-diagnostic` before transport began. It did not accept the earlier
+P11A and Q4 approvals as authorization to publish this separate source and branch.
+No P11A native workflow was dispatched. The exact rejection and passing outgoing
+secret scan are preserved in `p11a-first-native-push-rejection.json`. Root has
+requested combined P11/P11A publication authorization; no retry is authorized
+by elapsed time or by local validation alone.
+
 Milestone 3 still requires native Windows/Linux diagnostic and timeout proof,
 actual GitHub job-condition and cancellation controls, scanner outcome checks,
 and artifact-retention validation. Accepted P11 must be integrated before the
