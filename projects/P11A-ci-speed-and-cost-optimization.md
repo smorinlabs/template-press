@@ -7,7 +7,7 @@
 - **Depends on:** P11, merged and integrated locally before performance comparisons.
 - **Discussion:** [P11 delivery and current CI](https://github.com/smorinlabs/template-press/pull/123)
 - **Review:** [Measured CI baseline](../docs/superpowers/reviews/2026-09-07-p11a-ci-baseline.md)
-- **Report:** [Windows performance investigation](../docs/reports/2026-09-09-p11a-windows-performance.md)
+- **Report:** [Windows performance investigation](../docs/reports/2026-09-09-p11a-windows-performance.md); [native timeout diagnostics](../docs/reports/2026-09-09-p11a-timeout-diagnostics.md)
 
 - **Status:** `[~]` in progress — owner-requested follow-up between Group 3C/P11
   and the P12 value review. Performance investigation is complete without an
@@ -80,8 +80,9 @@ Milestone 3 implementation is in progress: bounded CI execution, retained
 diagnostics and repairs to existing required checks. Platform coverage, runner
 plans and dependency versions remain within the reviewed contract. The bounded
 performance comparisons below are complete, with no optimization adopted.
-Finite Windows diagnostics are validated at the checkpoint below; production
-acceptance and timeout evidence remain open. P11 is now merged; its accepted
+Finite Windows diagnostics and the later fourteen-run native timeout campaign
+are validated at the checkpoints below. Final production margins, acceptance
+and delivery remain open. P11 is now merged; its accepted
 corrections are integrated and validated locally before performance and delivery.
 P12 remains paused behind P11 and this follow-up.
 
@@ -185,9 +186,9 @@ The [performance report](../docs/reports/2026-09-09-p11a-windows-performance.md)
 records run links, outcomes, cost and limitations.
 
 Milestone 4's current investigation and no-adoption decision are complete.
-Milestone 3 remains open: scanner proof is complete at the checkpoint below,
-while combined finite/timeout validation remains under its unanswered
-publication approval. Milestone 5 still requires normal all-platform CI,
+Milestone 3 remains open for final production options and positive timing
+margins. Scanner and combined finite/timeout native proof are complete at the
+checkpoints below. Milestone 5 still requires normal all-platform CI,
 production PR review and authorized delivery. P11A-T05 and P11A-T06 remain open;
 P12 remains paused. Performance investigation did not close those gates.
 
@@ -214,10 +215,49 @@ not an actual merge-queue event or a performance gain.
 The temporary remote branch `ci/p11a-scanner-diagnostic` was removed after its
 source and run evidence were preserved.
 
-The scanner proof slice is complete. Approval for the separate combined
-finite/timeout payload `9bb9abd15e78866f4b26cf350f4cc2aacfb5a69f` remains
-unanswered, and its native proof and final production margins remain open.
-Milestone 3, Milestone 5, P11A-T05 and P11A-T06 remain open; P12 remains paused.
+The scanner proof slice is complete. The later finite/timeout checkpoint below
+records its separate approval and native results. Final production margins and
+delivery remain open.
+
+### Native timeout proof checkpoint — 2026-09-09
+
+The owner approved publication, execution, seven-day retention and temporary
+branch cleanup for `9bb9abd15e78866f4b26cf350f4cc2aacfb5a69f`. All fourteen native
+controls were admitted: four Ubuntu finite cases plus five Windows/Ubuntu
+pairs covering serial body, parallel body, collection, session and enclosing-job
+stalls. The campaign used 1,237 allocated runner-seconds: 588 Windows and 649
+Ubuntu. All fourteen archives survived and matched their catalog digests,
+approved paths and seven-day expiry; downloaded ZIPs totaled 48,664 bytes.
+This M3 diagnostic allocation is separate from the closed M4 performance budget.
+
+The ordinary step-stall jobs remained failed and retained their phase/process
+information. Collection and session journals explicitly recorded no test start;
+session stalls launched no workers despite requesting two. Windows interruptions
+retained final runtime exit 2 where recorded. Ubuntu could retain activity and
+body stacks without a final runtime exit, JUnit or controller completion.
+These partial records do not establish normally completed tests.
+
+Both enclosing-job controls remained cancelled with the provider's explicit
+three-minute-limit annotation. Actual job allocations were 227 Windows seconds
+and 238 Ubuntu seconds. Uploads began 42 and 54 seconds after their nominal
+180-second deadlines. The surviving archives prove observed recovery, not an
+exact wall-clock cap, positive upload margin or guaranteed future upload.
+
+The temporary remote `ci/p11a-timeout-diagnostic` branch was removed after
+source and run evidence were preserved; a subsequent ref lookup returned HTTP
+404. Local source and artifacts remain preserved, and provider expiry is
+unchanged. The [timeout report](../docs/reports/2026-09-09-p11a-timeout-diagnostics.md)
+records all run links, exact retention timestamps, costs and limitations.
+Independent Muse review of the completed native campaign returned SPEC PASS /
+QUALITY APPROVE with no required fixes. The actual model was `muse-spark-1.3`,
+using `xhigh` because requested `ultra` was unavailable under the closed gate.
+The maximum was 100 model steps; the actual count was not reported.
+
+Milestone 3 remains open for final production source/options and positive timing
+margins. Milestone 5, P11A-T05 and P11A-T06 remain open for required final-source
+validation, normal all-platform CI, review and authorized delivery. P12 remains
+paused. Native fixture proof supplies no healthy-CI speedup or product-suite
+validation.
 
 The approved P11A workflow specifies uploads on successful and failed runs;
 production delivery remains pending. Seven days expires each archive and does
