@@ -103,6 +103,35 @@ the archives expire. Record an explicit ongoing policy at that closeout.
 Ending routine successful-run archives while retaining useful failure evidence
 is currently a recommendation, not an implemented or approved policy change.
 
+## Finite native harness checkpoint
+
+The disposable diagnostic branch is frozen at
+`80e86255263cefdf3e83c28b98cf4c2adc474eb5`, tree
+`bcca8b2a3a7b02a57380796b9b22f8d0d7912e53`, above production commit
+`e7d7ea2e9843bcf7328808360ec4ac53edf9c617`. Its six-file harness delta must
+never merge into production. Production diagnostic helpers, dependencies and
+the approved upload step remain unchanged.
+
+Independent review found two harness defects before native dispatch. The
+evidence checker accepted contradictory results, and its raw source hashes
+rejected legitimate Windows line-ending conversion. The corrected checker
+rejects all eight poisoned controls while retaining both valid controls.
+Source checks permit only declared CRLF-to-LF conversion; generated diagnostic
+evidence retains byte-exact hashes and rejects newline-only mutations.
+
+Final local controls using the actual wrapper passed with child exits
+0/0/1/7/1 for serial pass, parallel pass, assertion failure, early exit and
+worker loss. These are macOS/Bash observations. Independent re-review returned
+SPEC PASS / QUALITY APPROVE for this finite payload. The source-bound receipt
+is `p11a-stage-a-native-payload-review-v2.md`, SHA-256
+`f39298fcdccfc314b282f36ee9f27f757a355fe1092a376c084d6af637aa6978`.
+
+The first native control is one Windows job with serial and parallel passing
+invocations. Its nominal job limit is eight minutes. Actual Windows outcomes,
+downloaded archive contents and expiry must pass inspection before the later
+finite cases. Linux follows the finite Windows controls. Hangs, timeouts,
+cancellation, production gates and performance remain separate validations.
+
 ## Remaining gates
 
 The initial automatic rejection of the upload edit was resolved by the owner's
@@ -117,10 +146,19 @@ The separate P11 diagnostic was approved as Q3.A. After automatic review
 required literal destination/payload authorization, the owner explicitly
 authorized diagnostic commit `493a0fc3cc6fe7e8f74a483b35015018b576c6af` on
 `ci/p11-removal-isolated` in public `smorinlabs/template-press`. That cleared
-the tool gate, and the bounded Windows proof began in
+the tool gate, and the bounded Windows proof passed in
 [run 34286961815](https://github.com/smorinlabs/template-press/actions/runs/34286961815).
-It is not a passing native result until its evidence is inspected. P11 still
-owns the isolated corrected-family gate before its full CI and merge.
+The small test identifier succeeded; the oversized identifier triggered the
+Windows environment-variable limit in pytest's setup helper. Root verified
+the downloaded JSON, archive digest and seven-day expiry. This does not
+establish why the earlier Windows job lost its logs or stalled.
+
+The corrected 44-test receipt-family diagnostic is prepared at
+`d8b9372debd31f0e95ae511ec0dfe29b117c4f73`. Automatic approval review rejected
+its push because the literal authorization named only the first diagnostic
+commit. Broader authorization for the remaining P11 branch updates has been
+requested; the rejected action has not been retried. P11 still owns that
+isolated corrected-family gate before its full CI and merge.
 
 Milestone 4 will measure an optimization before claiming a benefit. Milestone 5
 will complete delivery and closeout. P12 remains paused behind P11 and P11A.

@@ -99,6 +99,12 @@ integration, controlled performance comparisons and delivery remain pending.
 P11A-T05 and P11A-T06 are still open; this checkpoint does not claim faster
 healthy CI or project closeout.
 
+The disposable finite diagnostic harness at
+`80e86255263cefdf3e83c28b98cf4c2adc474eb5` passed independent source/local
+review after two harness corrections. Native Windows execution and archive
+inspection are the next gate. The diagnostic branch must never merge into
+production; it does not complete Milestone 3 or establish a speedup.
+
 Uploads recur on successful and failed runs. Seven days expires each archive;
 it does not stop future collection. At P11A-T06, before P12, review observed
 upload duration, bytes, reliability and diagnostic value, and explicitly record
