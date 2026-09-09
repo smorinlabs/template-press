@@ -32,8 +32,8 @@ file by hand — see Conventions.
 | P08 | `[x]` | [Declared removal and declared verify exemption](projects/P08-declared-removal-and-exemption.md) — [[remove]] for blueprint-only files (#80) + verify_exempt with reason on [[regenerate]] (#81); run 4 dogfood gaps |
 | P09 | `[x]` | [Declared in-place edit ([[edit]]) and command-phase snapshot gate](projects/P09-declared-in-place-edit.md) — new [[edit]] mechanism with required `expect` post-condition; snapshot gate for any declared command (E4, E11) |
 | P10 | `[x]` | [Declared pre-press clean ([[clean]] paths, press clean)](projects/P10-declared-pre-press-clean.md) — restricted `[[clean]] paths` declaration + standalone `press clean` subcommand (E10) |
-| P11 | `[~]` | [Directory removals ([[remove]] dir) and removal phase](projects/P11-directory-removals.md) — frozen plan-time expansion, per-directory clean check, gitlink/symlink refusal, receipt/verify parity (E5c) |
-| P11A | `[~]` | [CI speed and cost optimization](projects/P11A-ci-speed-and-cost-optimization.md) — measure and reduce CI latency and runner time before P12 |
+| P11 | `[x]` | [Directory removals ([[remove]] dir) and removal phase](projects/P11-directory-removals.md) — frozen plan-time expansion, per-directory clean check, gitlink/symlink refusal, receipt/verify parity (E5c) |
+| P11A | `[~]` | [CI speed and cost optimization](projects/P11A-ci-speed-and-cost-optimization.md) — performance investigation closed without adoption; diagnostic and delivery gates remain open before P12 |
 | P12 | `[~]` | [Origin guard relaxation, closure diagnostics, warnings and docs](projects/P12-origin-guard-and-diagnostics.md) — E1 origin guard, E2 closure diagnostics, E3/E5/E8/E9 warnings and docs |
 
 ## Conventions

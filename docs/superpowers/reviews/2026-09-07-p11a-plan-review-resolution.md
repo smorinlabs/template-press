@@ -1,9 +1,9 @@
-# P11A first plan review and corrections
+# P11A plan review, corrections and closeout
 
-The first plan review required corrections. Revision 2 records the changes
-below and still needs independent confirmation before implementation.
-The plan's scope remains CI diagnostics, existing-gate repairs and measured
-optimizations that preserve native behavioral coverage.
+Revision 3 passed the final internal closeout review. Milestone 3 implementation
+may proceed. The completed major reviews and the dispositions below preserve the
+scope: CI diagnostics, existing-gate repairs and measured optimizations with
+native behavioral coverage. Implementation and native validation remain pending.
 
 ## Review evidence
 
@@ -63,3 +63,36 @@ REQUIRED. The receipt records `claude-opus-5`, auxiliary Haiku, 19 turns and
 These are plan corrections. Native diagnostic controls, workflow repairs and
 performance comparisons remain pending. Ordinary required PR validation is
 recorded separately from the discretionary experiment budget.
+
+## Final independent closeout
+
+Revision 2 passed independent internal and Muse confirmation. The Muse receipt
+requested Ultra with a maximum of 100 steps; actual effort was `xhigh`, elapsed
+time was 125.09 seconds and actual step count was not exposed. Opus then returned
+the findings above. The revision 3 follow-up Opus invocation was rejected by
+automatic approval review before execution because authorization for exporting
+the exact updated package was not accepted. No revision 3 Opus review or export
+occurred. The narrow amendments received an independent internal Epicero review
+instead, consistent with the owner's instruction that smaller corrections do not
+require external review.
+
+That review returned **SPEC PASS / QUALITY APPROVE** against commit
+`8a8de788d857e2084c506a455a7b7984802a1718`, tree
+`33d8fdc3509cfa89d71d99c1ae4b349aa2825ce8`. It independently checked the two
+accepted plan corrections and the cost reconciliation that refuted `P11A-R2-03`.
+No substantive plan flaw remained. The complete report is retained as
+`p11a-plan-internal-closeout-v3.md` in the session evidence directory, SHA-256
+`7e9ba3a5581ba1012939c6f53ac54c9e54148a9aac0eccc5fb9d934ba13b04a4`.
+
+During implementation preparation, GitHub's documented case-insensitive string
+comparison exposed a detail in the fail-closed lint gate. An always-run shell
+validator will require exact lowercase `true` or `false`; valid `false` skips
+the expensive lint steps while the named check reports successful validation.
+Uppercase values must fail. This preserves meaningful required checks and the
+documentation-only fast path without changing branch protection or coverage.
+See [GitHub expression semantics](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions).
+
+P11A-T03 and P11A-T04 are complete. Milestone 3 may proceed independently; accepted
+P11 integration remains required before performance comparisons and delivery.
+No speedup, diagnostic proof or required validation pass follows from plan
+approval alone.
