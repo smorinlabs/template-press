@@ -22,7 +22,8 @@ Use runner minutes unless actual account pricing is available; do not invent
 monetary savings. Implementation scope follows the measured plan and its review.
 
 The owner requested this follow-up on 2026-09-07 before proceeding to P12.
-No workflow, runner plan or test-coverage change is made by this capture.
+The initial capture changed no workflow, runner plan or test coverage.
+Implementation follows the reviewed plan and checkpoints below.
 
 ### Tests & Tasks
 
@@ -77,7 +78,8 @@ Milestone 3 implementation is in progress: bounded CI execution, retained
 diagnostics and repairs to existing required checks. Platform coverage, runner
 plans and dependency versions remain within the reviewed contract. No speedup or controlled performance comparison is claimed complete.
 Finite Windows diagnostics are validated at the checkpoint below; production
-acceptance and timeout evidence remain open. Accepted P11 is required before performance experiments and delivery.
+acceptance and timeout evidence remain open. P11 is now merged; its accepted
+corrections are integrated and validated locally before performance and delivery.
 P12 remains paused behind P11 and this follow-up.
 
 ### Local implementation checkpoint
@@ -100,7 +102,7 @@ P11A-T05 and P11A-T06 are still open; this checkpoint does not claim faster
 healthy CI or project closeout.
 
 The owner approved continued public P11/P11A publication and bounded validation
-on 2026-09-08. The earlier automatic push rejection is resolved. All four finite
+on 2026-09-08. That cleared the initial diagnostic push rejection. All four finite
 Windows controls passed on disposable harness commit
 `80e86255263cefdf3e83c28b98cf4c2adc474eb5`, and root inspected the downloaded
 archives. Together they used 109 allocated job seconds and uploaded 16,358 ZIP
@@ -108,16 +110,46 @@ bytes. These are fixture measurements, not billing or healthy-CI savings.
 
 Both independent Muse source sections passed, using `xhigh` because Ultra was
 unavailable, with a 100-step maximum per request. Fable 5.1 completed its full
-source review in 16 turns and requested changes for interrupt handling and
-test-evidence weaknesses; those findings are being reproduced. The separate
-production-gate harness passed local independent review, and its first native
-control is running. The
+source review in 16 turns. Confirmed interrupt-output loss and weak stack
+assertions were corrected at `5cd95f34c78e807f2c735ecd324fa0423ea75c78`, with
+discriminating regression controls and independent review. The corrected full
+local pipeline passed with 2,125 tests and 24 skips. The proposed temporary-file
+isolation finding was refuted by an actual regression control; a latent lifecycle
+policy change was declined.
+
+All eight native production-gate controls passed their intended evidence checks.
+The two positive workflows succeeded, and six negative workflows remained
+unsuccessful, including real detector-job cancellation. Their 75 allocated jobs
+totaled 352 job seconds. These modeled PR events exercise the preserved gate
+logic; they do not establish scanner or native timeout behavior.
+
+Two further disposable payloads are committed and independently reviewed:
+scanner `b6f337da9aed01fe3d0c77be5233e21c2a5d49d4` and combined finite/timeout
+`9bb9abd15e78866f4b26cf350f4cc2aacfb5a69f`. Automatic approval review rejected
+the scanner push because it required authorization for the exact new commit and
+public branch. Both publications are held pending the combined exact-payload
+request. No new scanner or timeout run occurred. The
 [current validation checkpoint](../docs/superpowers/reviews/2026-09-09-p11-p11a-validation-checkpoint.md)
 separates completed controls from open acceptance gates. Disposable diagnostic
 branches must never merge into production. P11A-T05 and P11A-T06 remain open.
 
-Uploads recur on successful and failed runs. Seven days expires each archive;
-it does not stop future collection. At P11A-T06, before P12, review observed
+Corrected P11's Windows full suite passed 2,015 tests with 108 skips in 552.96
+pytest seconds; its job interval was 593 seconds. This supplies a current timing
+baseline. No controlled comparison or healthy-run improvement is claimed. The
+isolated family has insufficient observed worker imbalance to justify a
+scheduling experiment; fixture/press/verify timing needs attribution first.
+
+Local integration commit `845eedcaaf2b6009b06bb848d05022807b15ee1c` combines
+accepted P11 with corrected P11A. All 144 focused integration controls passed.
+The canonical pipeline passed with 2,175 tests and 24 skips, and committed
+R1/R2/R3 acceptance passed four cases with six deselections. The integration
+preserves all eight P11 correction paths and all nineteen P11A paths exactly.
+No disposable harness was imported. This combined source is not yet published
+or validated by the normal all-platform provider checks.
+
+The approved P11A workflow specifies uploads on successful and failed runs;
+production delivery remains pending. Seven days expires each archive and does
+not stop future collection. At P11A-T06, before P12, review observed
 upload duration, bytes, reliability and diagnostic value, and explicitly record
 the ongoing policy. The current recommendation is to end routine successful-run
 archives after P11A comparisons while retaining useful failure diagnostics.
