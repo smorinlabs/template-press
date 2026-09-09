@@ -1,65 +1,505 @@
-# R1/R2/R3 rebrand acceptance matrix (EMPIRICAL_BUGS.md, reborn as a
-# repeatable harness). Live: R1/R2 clone the real py-launch-blueprint from
-# GitHub; R3 presses a throwaway clone of this repo. Scheduled (network
-# dependency + real clones shouldn't gate every PR) plus workflow_dispatch
-# and a paths-filtered pull_request trigger for direct rebrand changes.
-# Locally: `just matrix` runs the identical script.
-
-name: rebrand-matrix
-
-on:
+# Disposable gate-only harness; never merge into production.
+name: P11A production gate diagnostic proof
+run-name: >-
+  ${{ format('P11A gates: {0} / model {1}', inputs.case, inputs.event_model) }}
+'on':
   workflow_dispatch:
-  schedule:
-    - cron: '0 6 * * 1'  # weekly, Monday 06:00 UTC
-  pull_request:
-    paths:
-      - src/template_press/rebrand/**
-      - tests/rebrand/**
-      - scripts/rebrand_matrix.sh
-      - scripts/regen-bun-lock.sh
-      - scripts/regen-bun-lock.ps1
-      - press/press-rules.toml
-
+    inputs:
+      case:
+        description: One controlled dependency outcome per invocation
+        required: true
+        type: choice
+        default: all-pass
+        options:
+          - all-pass
+          - valid-false
+          - missing-output
+          - uppercase-false
+          - selected-skipped
+          - detector-failure
+          - selected-tool-failure
+          - cancel-detectors
+      event_model:
+        description: Modeled main-gate event; actual event is workflow_dispatch
+        required: true
+        type: choice
+        default: pull_request
+        options:
+          - pull_request
+          - push
+          - merge_group
 permissions: {}
-
-concurrency:
-  group: rebrand-matrix-${{ github.ref }}
-  cancel-in-progress: true
-
+defaults:
+  run:
+    shell: bash
 jobs:
-  matrix:
-    name: ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: r1-r2-r3-posix
-            os: blacksmith-4vcpu-ubuntu-2404
-            command: scripts/rebrand_matrix.sh
-          - name: r3-windows
-            os: windows-latest
-            command: >-
-              uv run pytest
-              tests/rebrand/test_matrix.py::test_r3_self_press_native
-              -m live -q
-    runs-on: ${{ matrix.os }}
+  changes:
+    name: changes
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ format('p11a-gates-{0}-{1}-changes', github.run_id, github.run_attempt) }}
+      cancel-in-progress: false
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        timeout-minutes: 1
+        with:
+          fetch-depth: 0
+      - name: Verify immutable production and payload source
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: python3 .p11a-gates/check.py freeze
+      - name: Emit controlled detector outputs
+        id: detect
+        timeout-minutes: 2
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+          OUTPUT_KEYS: code
+        run: |
+          set -euo pipefail
+          case "$P11A_GATE_CASE" in
+            valid-false) value=false ;;
+            uppercase-false) value=FALSE ;;
+            missing-output) echo "Witness: deliberately omit detector outputs"; exit 0 ;;
+            all-pass|selected-skipped|detector-failure) value=true ;;
+            selected-tool-failure|cancel-detectors) value=true ;;
+            *) echo "unknown gate case" >&2; exit 2 ;;
+          esac
+          for key in $OUTPUT_KEYS; do
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_OUTPUT"
+          done
+          if [ "$P11A_GATE_CASE" = detector-failure ]; then
+            echo "Witness: detector fails after writing valid outputs" >&2
+            exit 1
+          fi
+          if [ "$P11A_GATE_CASE" = cancel-detectors ]; then
+            echo "Witness: waiting for job-scoped concurrency cancellation"
+            sleep 90
+            echo "Cancellation did not arrive; this is not cancellation proof" >&2
+            exit 1
+          fi
+  lint-changes:
+    name: lint-changes
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 2
+    permissions: {}
+    concurrency:
+      group: >-
+        ${{ format('p11a-gates-{0}-{1}-lint-changes', github.run_id, github.run_attempt) }}
+      cancel-in-progress: false
+    outputs:
+      workflows: ${{ steps.detect.outputs.workflows }}
+      yaml: ${{ steps.detect.outputs.yaml }}
+    steps:
+      - name: Emit controlled detector outputs
+        id: detect
+        timeout-minutes: 2
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+          OUTPUT_KEYS: workflows yaml
+        run: |
+          set -euo pipefail
+          case "$P11A_GATE_CASE" in
+            valid-false) value=false ;;
+            uppercase-false) value=FALSE ;;
+            missing-output) echo "Witness: deliberately omit detector outputs"; exit 0 ;;
+            all-pass|selected-skipped|detector-failure) value=true ;;
+            selected-tool-failure|cancel-detectors) value=true ;;
+            *) echo "unknown gate case" >&2; exit 2 ;;
+          esac
+          for key in $OUTPUT_KEYS; do
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_OUTPUT"
+          done
+          if [ "$P11A_GATE_CASE" = detector-failure ]; then
+            echo "Witness: detector fails after writing valid outputs" >&2
+            exit 1
+          fi
+          if [ "$P11A_GATE_CASE" = cancel-detectors ]; then
+            echo "Witness: waiting for job-scoped concurrency cancellation"
+            sleep 90
+            echo "Cancellation did not arrive; this is not cancellation proof" >&2
+            exit 1
+          fi
+    if: inputs.case != 'selected-skipped'
+  lint:
+    name: lint
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Run inert result witness
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: |
+          echo "Witness: inert successful dependency"
+  typecheck:
+    name: typecheck
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Run inert result witness
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: |
+          echo "Witness: inert successful dependency"
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+  test:
+    name: test (inert dependency)
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Run inert result witness
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: |
+          set -euo pipefail
+          if [ "$P11A_GATE_CASE" = selected-tool-failure ]; then
+            echo "Witness: selected test dependency fails" >&2
+            exit 1
+          fi
+          echo "Witness: inert successful selected test dependency"
+    needs:
+      - changes
+      - lint-changes
+    if: needs.changes.outputs.code == 'true'
+  build-smoke:
+    name: build-smoke
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Run inert result witness
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: |
+          echo "Witness: inert successful dependency"
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+  docs:
+    name: docs
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Run inert result witness
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: |
+          echo "Witness: inert successful dependency"
+  toml-format:
+    name: toml-format-check
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Run inert result witness
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: |
+          echo "Witness: inert successful dependency"
+  ci-ok:
+    name: ci-ok
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs:
+      - changes
+      - lint
+      - typecheck
+      - test
+      - build-smoke
+      - docs
+      - toml-format
+    if: always()
+    permissions: {}
+    steps:
+      - name: Check aggregate result
+        env:
+          EVENT_NAME: ${{ inputs.event_model }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CODE_CHANGED: ${{ needs.changes.outputs.code }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          DOCS_RESULT: ${{ needs.docs.result }}
+          TOML_RESULT: ${{ needs.toml-format.result }}
+          TYPECHECK_RESULT: ${{ needs.typecheck.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          BUILD_RESULT: ${{ needs.build-smoke.result }}
+        run: |
+          set -euo pipefail
+          if [ "$CHANGES_RESULT" != success ]; then
+            echo "FAIL: change detection did not succeed" >&2
+            exit 1
+          fi
+          case "$CODE_CHANGED" in
+            true) ;;
+            false)
+              if [ "$EVENT_NAME" != pull_request ]; then
+                echo "FAIL: only a docs-only PR may skip heavy jobs" >&2
+                exit 1
+              fi
+              ;;
+            *) echo "FAIL: missing or invalid code selector" >&2; exit 1 ;;
+          esac
+          for result in "$LINT_RESULT" "$DOCS_RESULT" "$TOML_RESULT"; do
+            if [ "$result" != success ]; then
+              echo "FAIL: an always-required job did not succeed" >&2
+              exit 1
+            fi
+          done
+          for result in "$TYPECHECK_RESULT" "$TEST_RESULT" "$BUILD_RESULT"; do
+            if [ "$result" = success ]; then
+              continue
+            fi
+            if [ "$CODE_CHANGED" != false ] || [ "$result" != skipped ]; then
+              echo "FAIL: a selected heavy job did not succeed" >&2
+              exit 1
+            fi
+          done
+          echo "PASS: required jobs succeeded; any skips belong to a docs-only PR"
+        timeout-minutes: 1
+      - name: Record actual dependencies and event model
+        if: always()
+        timeout-minutes: 1
+        env:
+          DEPENDENCIES: ${{ toJSON(needs) }}
+          ACTUAL_EVENT: ${{ github.event_name }}
+          MODELED_EVENT: ${{ inputs.event_model }}
+        run: |
+          printf 'Actual event: %s; modeled event: %s\n' "$ACTUAL_EVENT" "$MODELED_EVENT"
+          printf '%s\n' "$DEPENDENCIES"
+    timeout-minutes: 1
+  actionlint:
+    name: actionlint
+    needs: lint-changes
+    if: always()
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
-
+      - name: Validate lint selectors
+        id: validate
+        env:
+          DETECTION_RESULT: ${{ needs.lint-changes.result }}
+          WORKFLOWS_CHANGED: ${{ needs.lint-changes.outputs.workflows }}
+          YAML_CHANGED: ${{ needs.lint-changes.outputs.yaml }}
+        run: |
+          set -euo pipefail
+          if [ "$DETECTION_RESULT" != success ]; then
+            echo "FAIL: lint change detection did not succeed" >&2
+            exit 1
+          fi
+          for selector in "$WORKFLOWS_CHANGED" "$YAML_CHANGED"; do
+            case "$selector" in
+              true|false) ;;
+              *) echo "FAIL: missing or invalid lint selector" >&2; exit 1 ;;
+            esac
+          done
+          echo "run=$WORKFLOWS_CHANGED" >> "$GITHUB_OUTPUT"
+        timeout-minutes: 1
+      - name: Inert checkout witness 1
+        if: steps.validate.outputs.run == 'true'
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: |
+          echo "Witness: inert selected setup step"
+      - name: Run actionlint
+        if: steps.validate.outputs.run == 'true'
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: |
+          set -euo pipefail
+          echo "Witness: selected lint tool body executed"
+          if [ "$P11A_GATE_CASE" = selected-tool-failure ]; then
+            echo "Witness: selected lint tool exits 1" >&2
+            exit 1
+          fi
+    timeout-minutes: 1
+  yamllint:
+    name: yamllint
+    needs: lint-changes
+    if: always()
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: read
+    steps:
+      - name: Validate lint selectors
+        id: validate
+        env:
+          DETECTION_RESULT: ${{ needs.lint-changes.result }}
+          WORKFLOWS_CHANGED: ${{ needs.lint-changes.outputs.workflows }}
+          YAML_CHANGED: ${{ needs.lint-changes.outputs.yaml }}
+        run: |
+          set -euo pipefail
+          if [ "$DETECTION_RESULT" != success ]; then
+            echo "FAIL: lint change detection did not succeed" >&2
+            exit 1
+          fi
+          for selector in "$WORKFLOWS_CHANGED" "$YAML_CHANGED"; do
+            case "$selector" in
+              true|false) ;;
+              *) echo "FAIL: missing or invalid lint selector" >&2; exit 1 ;;
+            esac
+          done
+          echo "run=$YAML_CHANGED" >> "$GITHUB_OUTPUT"
+        timeout-minutes: 1
+      - name: Inert checkout witness 1
+        if: steps.validate.outputs.run == 'true'
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: |
+          echo "Witness: inert selected setup step"
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.0
-
-      # R3's self-press runs the declared `bun install` regeneration for
-      # bun.lock; without bun the press exits 2 at the plan gate.
-      - name: Install bun (pinned)
-        uses: oven-sh/setup-bun@v2.2.0
+        if: steps.validate.outputs.run == 'true'
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: |
+          echo "Witness: inert selected setup step"
+      - name: Sync locked dev tools
+        if: steps.validate.outputs.run == 'true'
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: |
+          echo "Witness: inert selected setup step"
+      - name: Run yamllint
+        if: steps.validate.outputs.run == 'true'
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: |
+          set -euo pipefail
+          echo "Witness: selected lint tool body executed"
+          if [ "$P11A_GATE_CASE" = selected-tool-failure ]; then
+            echo "Witness: selected lint tool exits 1" >&2
+            exit 1
+          fi
+    timeout-minutes: 1
+  arm-cancellation:
+    name: arm-cancellation
+    if: inputs.case == 'cancel-detectors'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      armed: ${{ steps.arm.outputs.armed }}
+    steps:
+      - uses: actions/checkout@v7
+        timeout-minutes: 1
         with:
-          bun-version: '1.3.14'
-
-      - name: Sync locked dev env
-        run: uv sync --locked --group dev
-
-      - name: Run native acceptance
-        run: ${{ matrix.command }}
+          fetch-depth: 0
+      - name: Observe both real detector wait steps
+        id: arm
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .p11a-gates/check.py arm
+  cancel-changes:
+    name: cancel-changes
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Run inert result witness
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: |
+          echo "Witness: successor acquired this job-only concurrency group"
+    needs: arm-cancellation
+    if: needs.arm-cancellation.outputs.armed == 'true'
+    concurrency:
+      group: >-
+        ${{ format('p11a-gates-{0}-{1}-changes', github.run_id, github.run_attempt) }}
+      cancel-in-progress: true
+  cancel-lint-changes:
+    name: cancel-lint-changes
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Run inert result witness
+        timeout-minutes: 1
+        env:
+          P11A_GATE_CASE: ${{ inputs.case }}
+          P11A_EVENT_MODEL: ${{ inputs.event_model }}
+        run: |
+          echo "Witness: successor acquired this job-only concurrency group"
+    needs: arm-cancellation
+    if: needs.arm-cancellation.outputs.armed == 'true'
+    concurrency:
+      group: >-
+        ${{ format('p11a-gates-{0}-{1}-lint-changes', github.run_id, github.run_attempt) }}
+      cancel-in-progress: true
+  cancellation-proof:
+    name: cancellation-proof
+    needs:
+      - changes
+      - lint-changes
+      - cancel-changes
+      - cancel-lint-changes
+      - ci-ok
+      - actionlint
+      - yamllint
+    if: always() && inputs.case == 'cancel-detectors'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Require provider cancellation and rejecting gates
+        timeout-minutes: 1
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          LINT_CHANGES: ${{ needs.lint-changes.result }}
+          CANCEL_CHANGES: ${{ needs.cancel-changes.result }}
+          CANCEL_LINT_CHANGES: ${{ needs.cancel-lint-changes.result }}
+          CI_OK: ${{ needs.ci-ok.result }}
+          ACTIONLINT: ${{ needs.actionlint.result }}
+          YAMLLINT: ${{ needs.yamllint.result }}
+        run: |
+          set -euo pipefail
+          printf 'Provider detector results: %s / %s\n' "$CHANGES" "$LINT_CHANGES"
+          test "$CHANGES" = cancelled
+          test "$LINT_CHANGES" = cancelled
+          test "$CANCEL_CHANGES" = success
+          test "$CANCEL_LINT_CHANGES" = success
+          test "$CI_OK" = failure
+          test "$ACTIONLINT" = failure
+          test "$YAMLLINT" = failure
+          echo "PASS: real job cancellation reached all rejecting production gates"

@@ -1,0 +1,26 @@
+{
+  "scope": "Local disposable production-gate harness only; never merge",
+  "source_commit": "e7d7ea2e9843bcf7328808360ec4ac53edf9c617",
+  "source_tree": "46615c6fb07ed7ff0d411585acf56b36ba067a7b",
+  "text_normalization": "crlf-to-lf",
+  "payload_paths": [
+    ".github/workflows/rebrand-matrix.yml",
+    ".p11a-gates/README.md",
+    ".p11a-gates/check.py",
+    ".p11a-gates/freeze.json",
+    ".p11a-gates/pytest.ini",
+    ".p11a-gates/test_payload.py"
+  ],
+  "source_files": {
+    ".github/workflows/ci.yml": "36848b9e5af06c124b5e060596f7f55f71a14f1805aba673b6e1fbd770c9f7e2",
+    ".github/workflows/lint.yml": "f19e1ca6eab41f0dd7204ebe44e6c1b42f39868fb4577aba6c7ed3cdf0654ba3",
+    ".github/workflows/rebrand-matrix.yml": "1a11f52f89f45fcff1cea9e6dff96307db4ae395c4d26cfd6f06d16ba7dab4a1",
+    ".p11a-gates/README.md": "6e0dfe426bfaf2777c428d215dcf4f066e2e2872aed004ab43ea2133917f520c",
+    ".p11a-gates/check.py": "5852781afacc3fc1c5573cf0c0f03b90b6099a5ce766f0a5fd954e7157e5b303",
+    ".p11a-gates/pytest.ini": "713f986ee48be06ad4bff2a700d39514a9f69e34b3547af52366c0a274e30e5b",
+    ".p11a-gates/test_payload.py": "512fa3789096b439169eb17ffa33ad3f7bbf0cc002b9dff1718ba6ba876a9e52",
+    "pyproject.toml": "04581a0046ccbf19d68573ede94acc4b89308c53a504f08c8635a938eba1ebb5",
+    "tests/meta/test_ci_gates.py": "b00447ae881f810f70a076c54c327fe89ce6d719a61cc250603c8a757a075b28",
+    "uv.lock": "93434d016b70d65438528108eb9845a28a3d6a61f0be5fc088e831a6687be2e2"
+  }
+}
