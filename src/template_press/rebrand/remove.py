@@ -34,7 +34,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from template_press.rebrand.identity import Identity
-from template_press.rebrand.inventory import capture_surface_snapshot
+from template_press.rebrand.inventory import SurfaceSnapshot, capture_surface_snapshot
 from template_press.rebrand.pathing import translate_path
 from template_press.rebrand.receipt import (
     REMOVE_HISTORY_MAX_BYTES,
@@ -70,6 +70,7 @@ def _directory_git_bytes(target: Path, *args: str) -> bytes:
     """Run one hardened, target-pinned Git query for directory preflight."""
     command = [
         "git",
+        "--no-optional-locks",
         "--literal-pathspecs",
         "-C",
         str(target),
@@ -185,6 +186,78 @@ def _same_existing_directory(left: Path, right: Path) -> bool:
         return False
 
 
+def _guard_directory_inputs(
+    target: Path,
+    current_dir: str,
+    member_paths: Collection[str],
+    snapshot: SurfaceSnapshot,
+) -> None:
+    """Reject roots and members that contain or alias captured Git inputs."""
+    root = target / current_dir
+    protected_inputs = (
+        *(
+            ("configured visibility input", item.path)
+            for item in snapshot.visibility_inputs
+        ),
+        *(("Git config input", item.path) for item in snapshot.git_config_inputs),
+        *(
+            ("declared Git config include", path)
+            for path in snapshot.git_config_include_paths
+        ),
+    )
+    resolved_root = root.resolve(strict=False)
+    root_stat = os.stat(root) if os.path.lexists(root) else None
+    for origin, input_path in protected_inputs:
+        if not os.path.lexists(input_path):
+            continue
+        resolved_input = input_path.resolve(strict=False)
+        under_root = resolved_input.is_relative_to(resolved_root)
+        if (
+            not under_root
+            and root_stat is not None
+            and root_stat.st_dev != 0
+            and root_stat.st_ino != 0
+        ):
+            for parent in resolved_input.parents:
+                try:
+                    parent_stat = os.stat(parent)
+                except OSError:
+                    continue
+                if (
+                    parent_stat.st_dev == root_stat.st_dev
+                    and parent_stat.st_ino == root_stat.st_ino
+                ):
+                    under_root = True
+                    break
+        if under_root:
+            raise SafetyError(
+                f"remove directory {current_dir!r}: {origin} {str(input_path)!r}"
+            )
+    for relative in member_paths:
+        member_path = target / relative
+        if os.path.lexists(member_path):
+            for origin, input_path in protected_inputs:
+                if not os.path.lexists(input_path):
+                    continue
+                try:
+                    member_stat = os.stat(member_path)
+                    input_stat = os.stat(input_path)
+                except OSError:
+                    continue
+                same_resolved_path = member_path.resolve(
+                    strict=False
+                ) == input_path.resolve(strict=False)
+                if same_resolved_path or (
+                    member_stat.st_dev == input_stat.st_dev
+                    and member_stat.st_ino == input_stat.st_ino
+                    and member_stat.st_dev != 0
+                    and member_stat.st_ino != 0
+                ):
+                    raise SafetyError(
+                        f"remove directory {current_dir!r}: {origin} {relative!r}"
+                    )
+
+
 def _freeze_directory(
     target: Path,
     declaration: RemoveDirRule,
@@ -215,6 +288,13 @@ def _freeze_directory(
                         f"{relative!r} is missing without validated prior "
                         "absence history"
                     )
+            problems = _directory_status_problems(
+                target, current_dir, frozenset(recorded), frozenset()
+            )
+            if problems:
+                omitted = len(problems) - min(len(problems), 20)
+                suffix = f"; {omitted} additional path(s) omitted" if omitted else ""
+                raise SafetyError("; ".join(problems[:20]) + suffix)
             retained = tuple(
                 RemovalMember(
                     file=member.file,
@@ -270,30 +350,6 @@ def _freeze_directory(
                     )
 
     snapshot = capture_surface_snapshot(target)
-    resolved_root = root.resolve(strict=False)
-    root_stat = os.stat(root)
-    for visibility in snapshot.visibility_inputs:
-        if not os.path.lexists(visibility.path):
-            continue
-        resolved_input = visibility.path.resolve(strict=False)
-        under_root = resolved_input.is_relative_to(resolved_root)
-        if not under_root and root_stat.st_dev != 0 and root_stat.st_ino != 0:
-            for parent in resolved_input.parents:
-                try:
-                    parent_stat = os.stat(parent)
-                except OSError:
-                    continue
-                if (
-                    parent_stat.st_dev == root_stat.st_dev
-                    and parent_stat.st_ino == root_stat.st_ino
-                ):
-                    under_root = True
-                    break
-        if under_root:
-            raise SafetyError(
-                f"remove directory {current_dir!r}: configured visibility "
-                f"input {str(visibility.path)!r}"
-            )
     prefix = current_dir + "/"
     root_parts = PurePosixPath(current_dir).parts
     for entry in snapshot.entries:
@@ -350,6 +406,7 @@ def _freeze_directory(
             f"remove directory {current_dir!r}: tracked member {missing!r} is "
             "missing without validated prior absence history"
         )
+    _guard_directory_inputs(target, current_dir, present | prior_missing, snapshot)
     problems = _directory_status_problems(
         target, current_dir, prior_missing, frozenset(present)
     )
@@ -413,29 +470,6 @@ def _freeze_directory(
                 f"{seen_audit[audit_alias]!r} and {member.file!r}"
             )
         seen_audit[audit_alias] = member.file
-        member_path = target / member.current_file
-        if os.path.lexists(member_path):
-            for visibility in snapshot.visibility_inputs:
-                if not os.path.lexists(visibility.path):
-                    continue
-                try:
-                    member_stat = os.stat(member_path)
-                    visibility_stat = os.stat(visibility.path)
-                except OSError:
-                    continue
-                same_resolved_path = member_path.resolve(
-                    strict=False
-                ) == visibility.path.resolve(strict=False)
-                if same_resolved_path or (
-                    member_stat.st_dev == visibility_stat.st_dev
-                    and member_stat.st_ino == visibility_stat.st_ino
-                    and member_stat.st_dev != 0
-                    and member_stat.st_ino != 0
-                ):
-                    raise SafetyError(
-                        f"remove directory {current_dir!r}: configured visibility "
-                        f"input {member.file!r}"
-                    )
     return DirectoryRemoval(
         dir=declaration.dir,
         current_dir=current_dir,
@@ -563,6 +597,12 @@ def plan_removals(
             )
             _guard_directory_history(target, prior)
         if mode == "verify" and prior is not None:
+            _guard_directory_inputs(
+                target,
+                prior.current_dir,
+                tuple(member.current_file for member in prior.members),
+                capture_surface_snapshot(target),
+            )
             directories.append(prior)
             continue
         current_dir = declaration.dir

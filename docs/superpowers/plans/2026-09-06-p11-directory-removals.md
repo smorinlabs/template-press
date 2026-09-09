@@ -88,18 +88,18 @@ valid directory declaration does not require a new executable.
 | Rules | `RemoveDirRule(dir: str, reason: str)`; `Rules.remove_dirs: tuple[RemoveDirRule, ...] = ()`, appended after `clean` for positional compatibility | Planner and static warnings |
 | Types | `RemovalMember(file, current_file, reason, source_dir=None, missing_ok=False)` | Planner, history parser and executor |
 | Types | `DirectoryRemoval(dir, current_dir, reason, members)`; `RemovalPlan(files=(), directories=(), retained_history=())` | All directory operations |
-| Receipt | `directory_history_from_receipt(text: str | None, source: Identity) -> tuple[DirectoryRemoval, ...]` | Planner |
-| Receipt | `receipt_present(target: Path) -> bool`; `read_receipt(target: Path, *, max_bytes: int | None = None) -> str | None` | Directory callers use `16 * 1024 * 1024`; file-only callers retain default |
-| Receipt | `selected_directory_history(text: str | None, source: Identity, *, directory_declared: bool) -> tuple[DirectoryRemoval, ...]` | Planner; preserves tolerant no-directory legacy routing |
-| Remove | `removal_receipt_text(target: Path, rules: Rules) -> str | None` | Main, guarded verify preflight and directory fallback |
-| Remove | `plan_removals(target: Path, rules: Rules, *, source: Identity, receipt_text: str | None = None, mode: Literal["press", "verify"] = "press", legacy_removed: Mapping[str, str] | None = None) -> RemovalPlan` | CLI and verify before mutation |
+| Receipt | `directory_history_from_receipt(text: str \| None, source: Identity) -> tuple[DirectoryRemoval, ...]` | Planner |
+| Receipt | `receipt_present(target: Path) -> bool`; `read_receipt(target: Path, *, max_bytes: int \| None = None) -> str \| None` | Directory callers use `16 * 1024 * 1024`; file-only callers retain default |
+| Receipt | `selected_directory_history(text: str \| None, source: Identity, *, directory_declared: bool) -> tuple[DirectoryRemoval, ...]` | Planner; preserves tolerant no-directory legacy routing |
+| Remove | `removal_receipt_text(target: Path, rules: Rules) -> str \| None` | Main, guarded verify preflight and directory fallback |
+| Remove | `plan_removals(target: Path, rules: Rules, *, source: Identity, receipt_text: str \| None = None, mode: Literal["press", "verify"] = "press", legacy_removed: Mapping[str, str] \| None = None) -> RemovalPlan` | CLI and verify before mutation |
 | Remove | `removal_rules_view(rules: Rules, plan: RemovalPlan) -> Rules` | Build-plan warnings and existing file-oriented gates |
 | Remove | `apply_removal_plan(target: Path, plan: RemovalPlan, renamed: Mapping[str, str]) -> list[str]` | Real press and sandbox |
 | Remove | `translate_removal_plan(plan: RemovalPlan, renamed: Mapping[str, str]) -> RemovalPlan` | Receipt construction only |
 | Remove | `render_frozen_remove_plan(plan: RemovalPlan) -> str` | CLI |
 | Remove | `frozen_remove_command_conflicts(rules: Rules, plan: RemovalPlan, renamed: Mapping[str, str]) -> list[str]` | CLI preflight |
 | Receipt | `write_receipt(..., *, remove_dirs: Sequence[DirectoryRemoval] = (), ...) -> Path` | Existing writer gets successful translated directory metadata |
-| CLI | `_press(..., *, removal_plan: RemovalPlan | None = None, ...) -> PressOutcome` | Normal entry and existing direct-test entry |
+| CLI | `_press(..., *, removal_plan: RemovalPlan \| None = None, ...) -> PressOutcome` | Normal entry and existing direct-test entry |
 
 `removal_rules_view` preserves all non-removal fields, turns frozen members into
 `RemoveRule(file=member.current_file, reason=member.reason)`, and sets directory
