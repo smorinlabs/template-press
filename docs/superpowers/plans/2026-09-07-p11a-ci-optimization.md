@@ -2,8 +2,11 @@
 
 Reduce avoidable CI waiting and runner consumption before the P12 value review.
 Measurement and independent plan review are complete. Milestone 3 implementation
-is in progress; no optimization or controlled performance comparison has passed
-validation yet. Revision 3 incorporates internal, Muse and Opus plan review
+and Milestone 5 delivery remain open. The bounded Milestone 4 performance
+investigation finished without an adopted optimization; its worker and fixture
+comparisons are recorded in the
+[performance report](../../reports/2026-09-09-p11a-windows-performance.md).
+Revision 3 incorporates internal, Muse and Opus plan review
 findings. The [review closeout](../reviews/2026-09-07-p11a-plan-review-resolution.md)
 records actual provider effort and the final internal approval.
 
@@ -192,6 +195,19 @@ Validate behavior rather than merely compare YAML text:
 
 Task: P11A-T05, performance slice, after the diagnostic gate passes.
 
+**2026-09-09 result:** the owner later authorized a bounded performance
+investigation while the remaining Milestone 3 scanner/timeout proofs were open.
+Those proofs still gate production delivery. The investigation is complete
+without adoption. Neither two nor eight workers improved the selected 50-test
+family over four. The fixture candidate improved the first 257-test pair by
+8.43%, then regressed 10.89% in reversed order. Both pairs passed evidence
+checks, but the negative second pair fails the every-positive rule below.
+No third run or further scheduler/shard experiment was justified. Total Windows
+allocation was 929 of 1,800 runner-seconds, with 871 unspent. The disposable
+remote benchmark branch was deleted; local evidence and rejected source remain
+preserved. This closes the current investigation, not Milestone 3's remaining
+scanner/timeout proofs or P11A-T05 as a whole.
+
 Use corrected P11 native timing before another full-suite probe. Identify a
 slow family/helper or worker imbalance. Measure one candidate against identical
 baseline source, tests and runner allocation.
@@ -273,3 +289,10 @@ A negative benchmark can close an investigation honestly. Diagnostic and timeout
 changes can ship without a healthy-run speedup. Do not claim normal CI is faster
 unless a full-suite comparison supports it. Complete the chosen delivery or
 record an evidence-based no-change decision before the P12 review.
+
+The 2026-09-09 performance result is a no-adoption decision for Milestone 4.
+Milestone 5 and P11A-T06 remain open for the intended CI patch's normal
+all-platform checks, PR review and authorized delivery. At P11A-T06, explicitly
+review the ongoing seven-day diagnostic upload policy using observed duration,
+bytes, reliability and value. Seven-day archive expiry is not an automatic end
+to future uploads. No upload-policy change or P12 work follows from this result.

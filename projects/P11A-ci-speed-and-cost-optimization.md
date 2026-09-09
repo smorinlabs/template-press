@@ -4,12 +4,14 @@
 
 - **Trunk:** [PROJECTS.md](../PROJECTS.md)
 - **Plan:** [CI measurement and optimization gates](../docs/superpowers/plans/2026-09-07-p11a-ci-optimization.md)
-- **Review:** [Measured CI baseline](../docs/superpowers/reviews/2026-09-07-p11a-ci-baseline.md)
-- **Depends on:** P11 for integration and delivery; profiling runs in parallel.
+- **Depends on:** P11, merged and integrated locally before performance comparisons.
 - **Discussion:** [P11 delivery and current CI](https://github.com/smorinlabs/template-press/pull/123)
+- **Review:** [Measured CI baseline](../docs/superpowers/reviews/2026-09-07-p11a-ci-baseline.md)
+- **Report:** [Windows performance investigation](../docs/reports/2026-09-09-p11a-windows-performance.md)
 
 - **Status:** `[~]` in progress — owner-requested follow-up between Group 3C/P11
-  and the P12 value review. Measurement proceeds in parallel with P11 closeout.
+  and the P12 value review. Performance investigation is complete without an
+  adopted optimization; diagnostic validation and delivery remain open.
   P11A is a deliberate owner-requested suffix; existing numeric IDs are unchanged.
 
 ### Scope
@@ -76,7 +78,8 @@ records provider limitations and finding dispositions.
 
 Milestone 3 implementation is in progress: bounded CI execution, retained
 diagnostics and repairs to existing required checks. Platform coverage, runner
-plans and dependency versions remain within the reviewed contract. No speedup or controlled performance comparison is claimed complete.
+plans and dependency versions remain within the reviewed contract. The bounded
+performance comparisons below are complete, with no optimization adopted.
 Finite Windows diagnostics are validated at the checkpoint below; production
 acceptance and timeout evidence remain open. P11 is now merged; its accepted
 corrections are integrated and validated locally before performance and delivery.
@@ -97,7 +100,8 @@ The owner approved the exact seven-day diagnostic upload as Decision Q4 on
 2026-09-08. Its seventeen-line workflow step is committed locally at
 `e7d7ea2e9843bcf7328808360ec4ac53edf9c617`. Focused workflow checks and upstream
 artifact-file selection controls passed. Native provider controls, accepted P11
-integration, controlled performance comparisons and delivery remain pending.
+integration and performance comparisons progressed at the checkpoints below;
+production delivery remains pending.
 P11A-T05 and P11A-T06 are still open; this checkpoint does not claim faster
 healthy CI or project closeout.
 
@@ -134,10 +138,9 @@ separates completed controls from open acceptance gates. Disposable diagnostic
 branches must never merge into production. P11A-T05 and P11A-T06 remain open.
 
 Corrected P11's Windows full suite passed 2,015 tests with 108 skips in 552.96
-pytest seconds; its job interval was 593 seconds. This supplies a current timing
-baseline. No controlled comparison or healthy-run improvement is claimed. The
-isolated family has insufficient observed worker imbalance to justify a
-scheduling experiment; fixture/press/verify timing needs attribution first.
+pytest seconds; its job interval was 593 seconds. This is a full-suite timing
+reference, not a directly comparable baseline for the selected-family pairs
+below. Those worker and fixture comparisons establish no improvement to adopt.
 
 Local integration commit `845eedcaaf2b6009b06bb848d05022807b15ee1c` combines
 accepted P11 with corrected P11A. All 144 focused integration controls passed.
@@ -146,6 +149,45 @@ R1/R2/R3 acceptance passed four cases with six deselections. The integration
 preserves all eight P11 correction paths and all nineteen P11A paths exactly.
 No disposable harness was imported. This combined source is not yet published
 or validated by the normal all-platform provider checks.
+
+### Performance investigation closeout
+
+The owner-authorized Windows investigation finished on 2026-09-09 without an
+adopted optimization. Four versus two workers took 63.939 versus 109.364 seconds
+for the same 50 tests; two workers were 71.04% slower. Four versus eight took
+66.355 versus 66.860 seconds; eight workers were 0.76% slower. Existing
+four-worker behavior remains unchanged.
+
+The fixture candidate passed 33 isolated Windows correctness cases, with one
+POSIX-only skip. Both timed pairs passed the same 257 tests with four workers.
+Original-first order measured 120.686 versus 110.508 seconds, an 8.43% candidate
+improvement. Reversed order measured 125.819 candidate seconds versus 113.459
+original seconds, making the candidate 10.89% slower. Both pairs passed the
+evidence checks. The negative second pair fails the every-positive adoption
+rule, so the candidate was rejected without a third run. The order-sensitive
+ranking does not establish a cache cause or whole-suite speedup.
+
+Independent balance and job-topology analysis did not justify additional
+scheduler or runner-shard experiments. Those variants remain untested and
+deferred. Muse returned SPEC PASS / QUALITY APPROVE for the benchmark design
+and implementation, using actual `xhigh` effort with a 100-step maximum and
+about 14 reported read/search steps. This was not an Ultra review or evidence
+of a performance gain.
+
+The five Windows allocations consumed 929 of the 1,800 runner-second budget;
+871 runner-seconds remain unspent. The disposable `ci/p11a-performance` remote
+branch was deleted, and a subsequent ref lookup returned HTTP 404. Local source,
+raw archives, the verified source bundle and seven staged files for an unshipped
+profiler remain preserved. The integration checkout is unchanged at `845eedc`;
+neither the rejected fixture change nor temporary benchmark was imported.
+The [performance report](../docs/reports/2026-09-09-p11a-windows-performance.md)
+records run links, outcomes, cost and limitations.
+
+Milestone 4's current investigation and no-adoption decision are complete.
+Milestone 3 scanner/timeout proofs remain source-ready but unresolved under the
+prior publication hold. Milestone 5 still requires normal all-platform CI,
+production PR review and authorized delivery. P11A-T05 and P11A-T06 remain open;
+P12 remains paused. Performance investigation did not close those gates.
 
 The approved P11A workflow specifies uploads on successful and failed runs;
 production delivery remains pending. Seven days expires each archive and does
