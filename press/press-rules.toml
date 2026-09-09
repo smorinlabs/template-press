@@ -138,28 +138,7 @@ reason = "template-press project history is engine history, not a fork's"
 # not a rewrite candidate, so it stays silent under the E5(a)
 # declared-removal coverage warning.
 
-# docs/research/ holds this engine's own design research, not anything a
-# pressed fork inherits.
+# Engine design research is template history; the project scaffold is retained.
 [[remove]]
-file = "docs/research/0001-skill-trigger-optimization.md"
-reason = "engine research notes"
-
-[[remove]]
-file = "docs/research/0002-dev-tooling-wishlist.md"
-reason = "engine research notes"
-
-[[remove]]
-file = "docs/research/0003-init-post-init-analysis.md"
-reason = "engine research notes"
-
-[[remove]]
-file = "docs/research/0004-py-launch-blueprint-conformance-gaps.md"
-reason = "engine research notes"
-
-[[remove]]
-file = "docs/research/0005-scaffolder-identity-variant-handling.md"
-reason = "engine research notes"
-
-[[remove]]
-file = "docs/research/README.md"
+dir = "docs/research"
 reason = "engine research notes"

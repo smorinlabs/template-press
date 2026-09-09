@@ -997,6 +997,7 @@ def removal_coverage_warnings(
         for rule in (*rules.remove, *rules.reset)
         if "/" in rule.file
     }
+    declared_dirs.update(rule.dir.split("/", 1)[0] for rule in rules.remove_dirs)
     warnings: list[str] = []
     for dirname in sorted(by_dir):
         if dirname in ("src", "tests", source.package_name):

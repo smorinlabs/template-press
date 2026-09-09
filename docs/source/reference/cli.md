@@ -426,6 +426,59 @@ file = "docs/maintenance-log.md"
 reason = "template maintenance history; forks must not inherit it"
 ```
 
+Use `dir` to remove the tracked files selected from a directory at planning
+time. Declare exactly one of `file` or `dir`, with a nonempty reason. Globs and
+per-directory exclusions are not supported.
+
+```toml
+[[remove]]
+dir = "research"
+reason = "template-only research notes"
+```
+
+The preview lists every selected file and the directory count, including zero
+files for an existing empty directory. Uncommitted or untracked work inside the
+directory refuses the press even with `--allow-dirty`. Symlinks, junctions and
+gitlinks refuse. A `.gitignore`, `.gitattributes`, `.gitmodules`, or configured
+Git visibility input anywhere under the directory also refuses. Active Git
+configuration files and present declared include paths are protected too, even
+when an include has no values or its branch condition is inactive. Move those
+inputs outside the directory before pressing. Ignored ordinary files are not
+added to the selection; they remain and can prevent the directory from becoming
+empty.
+
+Use each directory component's exact stored spelling. If Git records that root
+with a different spelling, reconcile the working tree and index before pressing.
+Filesystem aliases are refused; they cannot stand in for a complete selection.
+
+Removals run after rewriting and renaming, before declared commands. Only the
+selected members are deleted, at their successfully renamed locations. The
+selected directory and member ancestors are removed when empty. Unrelated empty
+child directories remain. A partial failure can leave changed files and writes
+no success receipt; use the reported Git recovery guidance.
+
+The receipt records each member's source path and its current location,
+including complete empty selections. `press verify` uses that recorded
+membership and keeps subsequently added files visible to its scan. Restored
+recorded files cannot be removed in the sandbox if they have become active Git
+visibility or configuration inputs. Without recorded history, `press verify` applies the same clean-directory check as a
+real press, so uncommitted work inside that directory refuses verification too.
+A later explicit real press can select newly committed members after its
+clean-directory checks. Missing directories require complete, verified history
+matching the current source identity. Staged content or mode changes to an
+already recorded absent member still refuse. Ambiguous old/current roots refuse. Older
+versions that do not understand `dir` or directory history cannot safely
+re-press this target.
+
+Directory removal receipts have a 16 MiB size limit. Before changing files, the
+press budgets the complete receipt, including all planned operations. This
+conservative check can refuse a receipt close to the limit when shorter counts
+or fewer executed renames would have produced a smaller final receipt.
+Directory-history paths and reasons each have a 4,096-byte UTF-8 limit. The
+press also budgets possible path growth if a later shortening rename is skipped.
+This can refuse a path near that limit even when completing every rename would
+have shortened it enough to fit.
+
 `reason` is required — a removal is a deliberate, documented decision.
 Targets must exist, be git-tracked, and be clean at plan time; a
 `[[remove]]` naming a missing file refuses the press (exit 2 — a stale

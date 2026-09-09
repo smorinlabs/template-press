@@ -22,8 +22,9 @@ from template_press.rebrand.cli import main
 from template_press.rebrand.config import SOURCE_CONFIG_REL
 from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.rules import load_selected_rules
+from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import DEST, posix_only, write_answers_file
+from .conftest import DEST, _git, posix_only, write_answers_file
 
 BLUEPRINT = "https://github.com/smorinlabs/py-launch-blueprint.git"
 SELF_ORIGIN = "https://github.com/smorinlabs/template-press.git"
@@ -60,6 +61,18 @@ def test_checked_in_bun_regeneration_is_native_and_single_writer(
     assert (REPO_ROOT / expected_helper).is_file()
 
 
+def test_native_directory_declaration():
+    from template_press.rebrand.rules import load_rules
+
+    rules = load_rules(REPO_ROOT)
+    assert [(r.dir, r.reason) for r in rules.remove_dirs] == [
+        ("docs/research", "engine research notes")
+    ]
+    assert not any(r.file.startswith("docs/research/") for r in rules.remove)
+    assert not any(r.file == "projects/.gitkeep" for r in rules.remove)
+    assert sum(r.file.startswith("projects/") for r in rules.remove) == 12
+
+
 def test_native_r3_workflow_covers_posix_and_windows() -> None:
     workflow = (REPO_ROOT / ".github/workflows/rebrand-matrix.yml").read_text(
         encoding="utf-8"
@@ -86,6 +99,16 @@ def test_general_ci_provisions_bun_for_native_r3() -> None:
 def test_r3_self_press_native(tmp_path: Path) -> None:
     """Execute the checked-in declaration selected by this native host."""
 
+    r3_package_name = "_".join(("r3", "matrix", "fixture"))
+    r3_dest = dataclasses.replace(
+        DEST,
+        package_name=r3_package_name,
+        repo_name=r3_package_name.replace("_", "-"),
+        app_name="_".join(("r3", "tool")),
+        author=" ".join(("R3", "Matrix", "Fixture")),
+        email="@".join(("r3-matrix", "fixture.invalid")),
+        owner="-".join(("r3", "matrix", "labs")),
+    )
     target = clone(str(REPO_ROOT), tmp_path / "self")
     subprocess.run(  # noqa: S603
         [  # noqa: S607
@@ -100,7 +123,7 @@ def test_r3_self_press_native(tmp_path: Path) -> None:
         check=True,
         capture_output=True,
     )
-    answers = write_answers_file(tmp_path, DEST)
+    answers = write_answers_file(tmp_path, r3_dest)
 
     code = main(
         [
@@ -122,13 +145,35 @@ def test_r3_self_press_native(tmp_path: Path) -> None:
     root_package = next(
         package
         for package in uv_lock["package"]
-        if package["name"] == "potato-launcher"
+        if package["name"] == r3_dest.repo_name
     )
     assert manifest["."] == "0.1.0"
     assert pyproject["project"]["version"] == "0.1.0"
     assert root_package["version"] == "0.1.0"
     raw_receipt = (target / RECEIPT_REL).read_text(encoding="utf-8")
     receipt = tomllib.loads(raw_receipt)
+    expected_research = {
+        "docs/research/0001-skill-trigger-optimization.md",
+        "docs/research/0002-dev-tooling-wishlist.md",
+        "docs/research/0003-init-post-init-analysis.md",
+        "docs/research/0004-py-launch-blueprint-conformance-gaps.md",
+        "docs/research/0005-scaffolder-identity-variant-handling.md",
+        "docs/research/README.md",
+    }
+    assert not (target / "docs/research").exists()
+    assert (target / "projects/.gitkeep").is_file()
+    (directory,) = receipt["press"]["remove_dir"]
+    assert directory["dir"] == "docs/research"
+    assert {row["file"] for row in directory["members"]} == expected_research
+    assert expected_research <= {row["file"] for row in receipt["press"]["remove"]}
+    _git(
+        target,
+        "remote",
+        "set-url",
+        "origin",
+        f"https://github.com/{r3_dest.owner}/{r3_dest.repo_name}.git",
+    )
+    assert verify_command(["--target", str(target)]) == 0
     # E10: this repo declares its own clean paths; the native press records
     # the declaration, unrendered, and `press clean --show` previews cleanly.
     assert receipt["press"]["clean"] == [{"paths": ["src/{package_name}", "tests"]}]
