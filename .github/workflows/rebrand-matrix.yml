@@ -1,6 +1,6 @@
 # Diagnostic branch only: never merge this workflow override.
 name: p11-removal-isolated
-run-name: P11 corrected Windows receipt family at ${{ github.sha }}
+run-name: P11 focused safety controls at ${{ github.sha }}
 
 on:
   workflow_dispatch:
@@ -8,8 +8,8 @@ on:
 permissions: {}
 
 jobs:
-  receipt:
-    name: corrected receipt family with coverage
+  safety:
+    name: corrected directory safety controls with coverage
     runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: 5
     permissions:
@@ -26,7 +26,7 @@ jobs:
           python-version: "3.13"
       - name: Sync locked dev environment
         run: uv sync --locked --group dev
-      - name: Verify source and bounded test labels
+      - name: Verify exact source and focused test collection
         shell: pwsh
         run: |
           git --version
@@ -42,11 +42,13 @@ jobs:
           import pytest
           expected = {
               "src/template_press/rebrand/remove.py":
-                  "2e4c73109f6df169daf8e340395445c611b2c9104938d65885fbd9072baffa53",
+                  "7a8379b67d94ae888172677045280677cbe7a963c6df3244296a7927225d070a",
+              "tests/rebrand/test_remove_dir_config_inputs.py":
+                  "4255a699410370722e3c4fe1cba72bc78c04011844508cebf2c22ea19e26bafe",
+              "tests/rebrand/test_remove_dir_history_inputs.py":
+                  "fef87241649c7c92c86f20fecf635796323485cb03776355a64a2c28ca7c4221",
               "tests/rebrand/test_remove_dir_review.py":
                   "73f969738408ec6e6f44de9a1bc6ea7235f34290a3bf800f69ad7759a25f322c",
-              "tests/rebrand/test_remove_dir_receipt.py":
-                  "5ddcb066716125c2f04cc6cac2f719fb5153648467b41e6d4af3677c8ef924fc",
           }
           for name, digest in expected.items():
               raw = Path(name).read_bytes()
@@ -57,19 +59,22 @@ jobs:
               def pytest_collection_finish(self, session):
                   self.items = list(session.items)
           plugin = Collected()
+          files = [name for name in expected if name.startswith("tests/")]
           code = pytest.main(["--collect-only", "-n", "0", "-p", "no:terminal",
-              "tests/rebrand/test_remove_dir_receipt.py"], plugins=[plugin])
+              *files], plugins=[plugin])
           assert code == 0
-          assert len(plugin.items) == 44
+          assert len(plugin.items) == 50
           maximum = max(len(item.nodeid) for item in plugin.items)
-          assert maximum == 133
+          assert maximum < 32767
           print(json.dumps({"python": sys.version, "platform": platform.platform(),
               "collected": len(plugin.items), "max_nodeid_chars": maximum}), flush=True)
           '@
           $script | uv run --no-sync python -
-      - name: Run only corrected receipt family with shipping worker and coverage settings
+      - name: Run focused safety tests with coverage
         run: >-
           uv run --no-sync pytest -m "" -n auto
           --cov=template_press --cov-report=xml
-          tests/rebrand/test_remove_dir_receipt.py
+          tests/rebrand/test_remove_dir_config_inputs.py
+          tests/rebrand/test_remove_dir_history_inputs.py
+          tests/rebrand/test_remove_dir_review.py
           -vv -ra --durations=10 -o faulthandler_timeout=30
