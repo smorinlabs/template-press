@@ -5,8 +5,11 @@ import importlib
 import io
 import json
 import os
+import re
+import signal
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -83,7 +86,13 @@ def test_delayed_body_retains_worker_test_and_stack(tmp_path, workers):
     else:
         assert active[0]["worker"].startswith("gw")
     retained = b"".join(path.read_bytes() for path in result_dir.glob("output-*.log"))
-    assert b"Timeout (" in retained and b"test_delayed_body" in retained
+    assert b"Timeout (" in retained
+    after_timeout = retained.split(b"Timeout (", 1)[1]
+    assert re.search(
+        rb'(?m)^  File "[^"\r\n]*[/\\]test_probe\.py", '
+        rb"line 3 in test_delayed_body\r?$",
+        after_timeout,
+    )
 
 
 @pytest.mark.slow
@@ -173,6 +182,89 @@ def test_runner_preserves_custom_pytest_exit_code(tmp_path):
     )
     assert completed.returncode == 7
     assert records
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group SIGINT control")
+@pytest.mark.parametrize("signal_target", ["child", "group"])
+def test_interrupt_drains_child_output_and_preserves_exit(tmp_path, signal_target):
+    source = tmp_path / "test_interrupt.py"
+    source.write_text(
+        "import os\nimport time\nfrom pathlib import Path\nimport pytest\n"
+        "def test_interrupt():\n"
+        "    try:\n"
+        "        ready = Path('child-ready.tmp')\n"
+        "        ready.write_text(str(os.getpid()))\n"
+        "        ready.replace('child-ready')\n"
+        "        time.sleep(20)\n"
+        "    except KeyboardInterrupt:\n"
+        "        time.sleep(0.5)\n"
+        "        print('CI_DELAYED_INTERRUPT_MARKER', flush=True)\n"
+        "        pytest.exit('controlled interrupt exit', returncode=7)\n"
+        "    raise AssertionError('signal never arrived')\n"
+    )
+    config = tmp_path / "pytest.ini"
+    config.write_text("[pytest]\n")
+    result_dir = tmp_path / "results"
+    command = [
+        sys.executable,
+        str(RUNNER),
+        str(result_dir),
+        "--",
+        "-c",
+        str(config),
+        str(source),
+        "-n",
+        "0",
+        "-s",
+    ]
+    env = dict(os.environ)
+    for key in (
+        "PYTEST_ADDOPTS",
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_WORKER_COUNT",
+        "PYTEST_XDIST_TESTRUNUID",
+    ):
+        env.pop(key, None)
+    with subprocess.Popen(  # noqa: S603 - test-owned source and process group.
+        command,
+        cwd=tmp_path,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    ) as process:
+        try:
+            ready = tmp_path / "child-ready"
+            deadline = time.monotonic() + 10
+            while not ready.exists():
+                assert process.poll() is None, "wrapper exited before child readiness"
+                assert time.monotonic() < deadline, "child readiness deadline expired"
+                time.sleep(0.02)
+            child_pid = int(ready.read_text())
+            assert os.getpgid(child_pid) == os.getpgid(process.pid) == process.pid
+            if signal_target == "group":
+                os.killpg(process.pid, signal.SIGINT)
+            else:
+                os.kill(child_pid, signal.SIGINT)
+            console, _ = process.communicate(timeout=10)
+        finally:
+            # This group was created exclusively for this test. Also reap its
+            # child if a broken wrapper exits before the delayed child write.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=3)
+    assert process.returncode == 7, console.decode(errors="replace")
+    index = json.loads((result_dir / "output-index.json").read_text())
+    retained = b"".join((result_dir / name).read_bytes() for name in index["parts"])
+    assert b"CI_DELAYED_INTERRUPT_MARKER" in retained
+    assert b"CI_DELAYED_INTERRUPT_MARKER" in console
+    metadata = json.loads((result_dir / "runtime.json").read_text())
+    assert metadata["returncode"] == 7
+    assert metadata["finished_at"] >= metadata["started_at"]
+    assert metadata.get("interrupted", False) is (signal_target == "group")
 
 
 @pytest.mark.slow

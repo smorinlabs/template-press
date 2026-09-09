@@ -92,10 +92,18 @@ def run(directory: Path, args: list[str]) -> int:
         ) as process:
             if process.stdout is None:
                 raise RuntimeError("pytest output pipe was not created")
-            while chunk := process.stdout.read(64 * 1024):
-                output.write(chunk)
-                console.write(chunk)
-            result = process.wait()
+            while True:
+                try:
+                    chunk = process.stdout.read(64 * 1024)
+                    if not chunk:
+                        result = process.wait()
+                        break
+                    output.write(chunk)
+                    console.write(chunk)
+                except KeyboardInterrupt:
+                    # Keep the pipe open for the child's interrupt diagnostics.
+                    # GitHub still owns termination if the child does not exit.
+                    metadata["interrupted"] = True
     finally:
         output.close()
         console.finish()
