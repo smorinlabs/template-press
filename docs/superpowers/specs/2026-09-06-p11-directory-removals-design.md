@@ -147,6 +147,11 @@ Expanded members receive the existing file-remove visibility-input protection:
 no `.gitignore`, `.gitattributes`, `.gitmodules`, or configured Git visibility
 input can be removed. Compare captured visibility inputs by exact resolved path
 and nonzero device/inode identity, following existing configured-input handling.
+Apply the same checks to active Git configuration sources and present declared
+include candidates from the captured snapshot. This includes empty and inactive
+conditional includes. Directory removals must not delete configuration that
+informed planning or that Git can activate later; missing or disjoint include
+paths remain allowed.
 
 Before platform selection, reject overlapping declarations when their platform
 sets intersect. A directory covers itself and descendants under conservative
@@ -180,6 +185,8 @@ For a fresh directory expansion:
    and history. Do not silently retarget history. If neither exists,
    reuse valid complete history and translate its locations through later ancestor
    renames; do not require already-successful deletions to become clean again.
+   A recorded pathname alone does not authorize staged blob or mode changes;
+   only the same ordinary deletion states accepted below qualify as history.
 3. Capture one Git surface snapshot; take sorted tracked files beneath the exact
    selected root. Each selected root component must match its stored filesystem
    spelling. Refuse alternate-spelling declarations and index paths that reach
@@ -192,7 +199,7 @@ For a fresh directory expansion:
    Refuse symlinks, Windows junctions, gitlinks, and other non-regular leaf kinds.
    Do not walk `.git` of an embedded repository; refuse that boundary. Use
    `Path.is_junction()` on supported platforms as well as `lstat()` checks.
-5. Run hardened, literal-pathspec `git status --porcelain=v1 -z
+5. Run hardened, literal-pathspec `git --no-optional-locks status --porcelain=v1 -z
    --untracked-files=all -- <root>`. Any entry, including `??`, refuses, except an
    exact missing recorded member with status ` D` or `D ` and no second rename
    path. Parse NUL records; never split filenames on whitespace. A rename/copy,
@@ -352,6 +359,8 @@ that directory to add members and does not run the fresh directory cleanliness
 check. Previously removed tracked files can therefore remain unstaged deletions.
 New tracked/untracked ordinary files remain in the sandbox and its scanner.
 Static unsafe root/member paths still refuse before a destructive sandbox action.
+Check those recorded roots and members against current captured Git visibility
+and configuration inputs as well, without expanding the recorded selection.
 
 Without history, verify freezes a fresh directory expansion against the real
 target using the same clean/safety rules as a fresh press. A missing root without

@@ -440,10 +440,12 @@ The preview lists every selected file and the directory count, including zero
 files for an existing empty directory. Uncommitted or untracked work inside the
 directory refuses the press even with `--allow-dirty`. Symlinks, junctions and
 gitlinks refuse. A `.gitignore`, `.gitattributes`, `.gitmodules`, or configured
-Git visibility input anywhere under the directory also refuses. Move that input
-out of the directory or declare the remaining files individually. Ignored
-ordinary files are not added to the selection; they remain and can prevent the
-directory from becoming empty.
+Git visibility input anywhere under the directory also refuses. Active Git
+configuration files and present declared include paths are protected too, even
+when an include has no values or its branch condition is inactive. Move those
+inputs outside the directory before pressing. Ignored ordinary files are not
+added to the selection; they remain and can prevent the directory from becoming
+empty.
 
 Use each directory component's exact stored spelling. If Git records that root
 with a different spelling, reconcile the working tree and index before pressing.
@@ -457,12 +459,14 @@ no success receipt; use the reported Git recovery guidance.
 
 The receipt records each member's source path and its current location,
 including complete empty selections. `press verify` uses that recorded
-membership and keeps subsequently added files visible to its scan. Without
-recorded history, `press verify` applies the same clean-directory check as a
+membership and keeps subsequently added files visible to its scan. Restored
+recorded files cannot be removed in the sandbox if they have become active Git
+visibility or configuration inputs. Without recorded history, `press verify` applies the same clean-directory check as a
 real press, so uncommitted work inside that directory refuses verification too.
 A later explicit real press can select newly committed members after its
 clean-directory checks. Missing directories require complete, verified history
-matching the current source identity. Ambiguous old/current roots refuse. Older
+matching the current source identity. Staged content or mode changes to an
+already recorded absent member still refuse. Ambiguous old/current roots refuse. Older
 versions that do not understand `dir` or directory history cannot safely
 re-press this target.
 
