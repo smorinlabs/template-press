@@ -75,9 +75,9 @@ records provider limitations and finding dispositions.
 
 Milestone 3 implementation is in progress: bounded CI execution, retained
 diagnostics and repairs to existing required checks. Platform coverage, runner
-plans and dependency versions remain within the reviewed contract. No speedup,
-native diagnostic validation or controlled performance comparison is claimed
-complete. Accepted P11 is required before performance experiments and delivery.
+plans and dependency versions remain within the reviewed contract. No speedup or controlled performance comparison is claimed complete.
+Finite Windows diagnostics are validated at the checkpoint below; production
+acceptance and timeout evidence remain open. Accepted P11 is required before performance experiments and delivery.
 P12 remains paused behind P11 and this follow-up.
 
 ### Local implementation checkpoint
@@ -99,13 +99,22 @@ integration, controlled performance comparisons and delivery remain pending.
 P11A-T05 and P11A-T06 are still open; this checkpoint does not claim faster
 healthy CI or project closeout.
 
-The disposable finite diagnostic harness at
-`80e86255263cefdf3e83c28b98cf4c2adc474eb5` passed independent source/local
-review after two harness corrections. Native Windows execution and archive
-inspection are the next gate. Automatic approval review blocked its first push
-as a separate source/branch publication; the combined P11/P11A authorization
-request is pending. No native run started. The diagnostic branch must never
-merge into production; it does not complete Milestone 3 or establish a speedup.
+The owner approved continued public P11/P11A publication and bounded validation
+on 2026-09-08. The earlier automatic push rejection is resolved. All four finite
+Windows controls passed on disposable harness commit
+`80e86255263cefdf3e83c28b98cf4c2adc474eb5`, and root inspected the downloaded
+archives. Together they used 109 allocated job seconds and uploaded 16,358 ZIP
+bytes. These are fixture measurements, not billing or healthy-CI savings.
+
+Both independent Muse source sections passed, using `xhigh` because Ultra was
+unavailable, with a 100-step maximum per request. Fable 5.1 completed its full
+source review in 16 turns and requested changes for interrupt handling and
+test-evidence weaknesses; those findings are being reproduced. The separate
+production-gate harness passed local independent review, and its first native
+control is running. The
+[current validation checkpoint](../docs/superpowers/reviews/2026-09-09-p11-p11a-validation-checkpoint.md)
+separates completed controls from open acceptance gates. Disposable diagnostic
+branches must never merge into production. P11A-T05 and P11A-T06 remain open.
 
 Uploads recur on successful and failed runs. Seven days expires each archive;
 it does not stop future collection. At P11A-T06, before P12, review observed

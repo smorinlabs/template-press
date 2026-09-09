@@ -27,6 +27,8 @@ test.
 
 - [ ] [P12-T-defer-10] Evaluate stronger concurrent-writer protection for `press clean`. P10 requires ignore/configuration inputs, the index, and selected paths to stay stable; its immediate file checks can refuse detected changes but do not make Git directory cleanup or exact unlink atomic. Assess whether binding deletion to a frozen selection or adding a stronger coordination protocol is worth the complexity, or close this follow-up with the stable-input contract documented. This is a P12 value decision after P10/P11 delivery, not a promised implementation. Tracked from [PR #122 concurrency review](https://github.com/smorinlabs/template-press/pull/122#discussion_r3946789616).
 
+- [ ] [P12-T-defer-11] Evaluate repeated filesystem identity checks during directory removal. The P11 review measured 7 Git-input `os.stat` calls for 2 selected members and 3 existing inputs, versus 595 calls for 27 members and 22 inputs. This demonstrates repeated work, not large-repository latency or CI savings. Consider capturing input identities once per validated snapshot only if representative timing shows useful value and path, hardlink and concurrent-change guards remain equivalent; otherwise close the follow-up with the measured limits. This is a value-evaluation candidate after P11/P11A, not an approved caching implementation. Tracked from [PR #123 identity-check review](https://github.com/smorinlabs/template-press/pull/123#discussion_r3964065441).
+
 **References**
 
 - **Trunk:** [PROJECTS.md](../PROJECTS.md)

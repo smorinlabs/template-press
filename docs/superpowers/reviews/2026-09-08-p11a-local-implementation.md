@@ -132,7 +132,12 @@ downloaded archive contents and expiry must pass inspection before the later
 finite cases. Linux follows the finite Windows controls. Hangs, timeouts,
 cancellation, production gates and performance remain separate validations.
 
-## Remaining gates
+## Historical publication hold
+
+The following hold records the earlier checkpoint. The owner's subsequent
+continuation approval resolved it. The
+[2026-09-09 validation checkpoint](2026-09-09-p11-p11a-validation-checkpoint.md)
+records native results and current remaining gates.
 
 The initial automatic rejection of the upload edit was resolved by the owner's
 specific Q4 approval. The exact production step is now locally committed;
