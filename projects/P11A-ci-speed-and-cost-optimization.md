@@ -129,11 +129,12 @@ logic; they do not establish scanner or native timeout behavior.
 
 Two further disposable payloads are committed and independently reviewed:
 scanner `b6f337da9aed01fe3d0c77be5233e21c2a5d49d4` and combined finite/timeout
-`9bb9abd15e78866f4b26cf350f4cc2aacfb5a69f`. Automatic approval review rejected
+`9bb9abd15e78866f4b26cf350f4cc2aacfb5a69f`. At that earlier checkpoint,
+automatic approval review rejected
 the scanner push because it required authorization for the exact new commit and
-public branch. Both publications are held pending the combined exact-payload
-request. No new scanner or timeout run occurred. The
-[current validation checkpoint](../docs/superpowers/reviews/2026-09-09-p11-p11a-validation-checkpoint.md)
+public branch. Both publications were held pending the combined exact-payload
+request; no new scanner or timeout run had occurred. The
+[dated validation checkpoint](../docs/superpowers/reviews/2026-09-09-p11-p11a-validation-checkpoint.md)
 separates completed controls from open acceptance gates. Disposable diagnostic
 branches must never merge into production. P11A-T05 and P11A-T06 remain open.
 
@@ -184,10 +185,39 @@ The [performance report](../docs/reports/2026-09-09-p11a-windows-performance.md)
 records run links, outcomes, cost and limitations.
 
 Milestone 4's current investigation and no-adoption decision are complete.
-Milestone 3 scanner/timeout proofs remain source-ready but unresolved under the
-prior publication hold. Milestone 5 still requires normal all-platform CI,
+Milestone 3 remains open: scanner proof is complete at the checkpoint below,
+while combined finite/timeout validation remains under its unanswered
+publication approval. Milestone 5 still requires normal all-platform CI,
 production PR review and authorized delivery. P11A-T05 and P11A-T06 remain open;
 P12 remains paused. Performance investigation did not close those gates.
+
+### Scanner proof checkpoint — 2026-09-09
+
+The owner explicitly approved the scanner publication. Both native Ubuntu
+controls were independently admitted on unchanged disposable source
+`b6f337da9aed01fe3d0c77be5233e21c2a5d49d4`:
+
+- [Clean scan 34362849542](https://github.com/smorinlabs/template-press/actions/runs/34362849542)
+  succeeded and used 12 allocated Ubuntu runner-seconds.
+- [Scanner failure 34363223859](https://github.com/smorinlabs/template-press/actions/runs/34363223859)
+  passed its negative-control evidence checks: the scanner rejected an unknown
+  long option with exit 1, and its step, job and workflow remained failed.
+  It used 10 allocated Ubuntu runner-seconds.
+
+Both runs checked the same two-parent revision with 449 commits of full history
+and used the same Docker image and scanner version, 3.97.1. They uploaded no
+artifacts. The total was 22 allocated Ubuntu runner-seconds, separate from the
+Windows performance budget. Their actual event was `workflow_dispatch`; the
+harness modeled the `merge_group` scan input. This is scanner behavior evidence,
+not an actual merge-queue event or a performance gain.
+
+The temporary remote branch `ci/p11a-scanner-diagnostic` was removed after its
+source and run evidence were preserved.
+
+The scanner proof slice is complete. Approval for the separate combined
+finite/timeout payload `9bb9abd15e78866f4b26cf350f4cc2aacfb5a69f` remains
+unanswered, and its native proof and final production margins remain open.
+Milestone 3, Milestone 5, P11A-T05 and P11A-T06 remain open; P12 remains paused.
 
 The approved P11A workflow specifies uploads on successful and failed runs;
 production delivery remains pending. Seven days expires each archive and does
