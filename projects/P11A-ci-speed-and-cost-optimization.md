@@ -1,0 +1,70 @@
+# P11A — CI speed and cost optimization
+
+**References**
+
+- **Trunk:** [PROJECTS.md](../PROJECTS.md)
+- **Plan:** [CI measurement and optimization gates](../docs/superpowers/plans/2026-09-07-p11a-ci-optimization.md)
+- **Review:** [Measured CI baseline](../docs/superpowers/reviews/2026-09-07-p11a-ci-baseline.md)
+- **Depends on:** P11 for integration and delivery; profiling runs in parallel.
+- **Discussion:** [P11 delivery and current CI](https://github.com/smorinlabs/template-press/pull/123)
+
+- **Status:** `[~]` in progress — owner-requested follow-up between Group 3C/P11
+  and the P12 value review. Measurement proceeds in parallel with P11 closeout.
+  P11A is a deliberate owner-requested suffix; existing numeric IDs are unchanged.
+
+### Scope
+
+Measure CI latency and cumulative runner time, identify the causes, and produce
+an independently reviewed optimization plan. Preserve required checks, meaningful
+cross-platform coverage, failure isolation and committed-source native acceptance.
+Distinguish queue delay, setup, test execution, duplicated work and stalled jobs.
+Use runner minutes unless actual account pricing is available; do not invent
+monetary savings. Implementation scope follows the measured plan and its review.
+
+The owner requested this follow-up on 2026-09-07 before proceeding to P12.
+No workflow, runner plan or test-coverage change is made by this capture.
+
+### Tests & Tasks
+
+- [x] [P11A-TS01] Preserve starting source/run IDs and existing passing controls; distinguish the stalled P11 Windows run from normal duration evidence.
+- [x] [P11A-T01] Profile completed CI runs, queue/setup/test timing, cumulative runner minutes and repeated or canceled work.
+- [x] [P11A-T02] Rank concrete optimizations by measured value, coverage risk, complexity and validation needs.
+- [x] [P11A-TS02] Define discriminating correctness controls and before/after benchmarks for the selected candidates.
+- [ ] [P11A-T03] Complete independent major plan review, including Muse requested at Ultra with a 100-step maximum and the approved Fable/Opus fallback policy; record actual provider capability.
+- [ ] [P11A-T04] Resolve any real coverage, platform or spending decisions from the concrete reviewed plan and record the selected scope.
+- [ ] [P11A-T05] Implement and validate selected optimizations in an isolated PR, or record an evidence-based decision to make no change.
+- [ ] [P11A-T06] Complete required CI/reviews and authorized delivery for selected work, record measured results and remaining costs, then resume P12 evaluation.
+
+### Starting evidence
+
+P10 shipping head `34d95817e0dd4044c9f1ed9544cb76b5b6beac7e` passed
+[full CI 34163591598](https://github.com/smorinlabs/template-press/actions/runs/34163591598).
+Its test results took 71.24 seconds on Linux, 116.58 seconds on macOS and
+379.59 seconds on Windows. Those are pytest durations, not whole-run latency
+or billable totals. Separate acceptance repeated native pressing in
+[34163591589](https://github.com/smorinlabs/template-press/actions/runs/34163591589).
+
+P11 head `6304a5d5c090d06272c744f9651e2520d53ce16d` passed Linux/macOS and
+[acceptance 34164445623](https://github.com/smorinlabs/template-press/actions/runs/34164445623).
+Its Windows coverage step in
+[34164445625](https://github.com/smorinlabs/template-press/actions/runs/34164445625)
+was cancelled after a 98m06s Windows job allocation. Windows logs were
+unavailable, so its cause remains unknown. It is not a passing performance
+baseline. P11 delivery owns that investigation and
+its correctness findings; P11A must not silently absorb or bypass those gates.
+
+### Decision boundaries
+
+Do not reduce required validation or cross-platform behavior coverage merely to
+make a timing graph shorter. Evaluate equivalent coverage and better scheduling
+first. Changes to paid runner plans or deliberate reductions in validation are
+owner decisions. Benchmark plausible scheduling/cache candidates before claiming
+savings. When Windows fails, run the isolated failed remote job or test family,
+validate its correction there, then return to the full batch.
+
+### Measurement closeout
+
+The profile and concrete three-phase, five-milestone plan are recorded. Native
+Windows tests dominate the healthy-run sample; setup is already short. Independent
+major plan review is next. No optimization, benchmark or coverage change is
+claimed complete. P12 remains paused behind P11 and this follow-up.
