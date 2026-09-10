@@ -9,6 +9,7 @@ reset and G2's bun.lock regeneration proven against the real repo (R1b).
 
 import dataclasses
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+import yaml
 
 from template_press import press_cli
 from template_press.rebrand.cli import main
@@ -70,7 +72,7 @@ def test_native_directory_declaration():
     ]
     assert not any(r.file.startswith("docs/research/") for r in rules.remove)
     assert not any(r.file == "projects/.gitkeep" for r in rules.remove)
-    assert sum(r.file.startswith("projects/") for r in rules.remove) == 12
+    assert sum(r.file.startswith("projects/") for r in rules.remove) == 13
 
 
 def test_native_r3_workflow_covers_posix_and_windows() -> None:
@@ -85,14 +87,27 @@ def test_native_r3_workflow_covers_posix_and_windows() -> None:
 
 
 def test_general_ci_provisions_bun_for_native_r3() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    _prefix, test_marker, after_test = workflow.partition("\n  test:\n")
-    test_job, next_marker, _suffix = after_test.partition("\n  build-smoke:\n")
-
-    assert test_marker and next_marker
-    assert 'run: uv run --no-sync pytest -m ""' in test_job
-    assert "uses: oven-sh/setup-bun@v2.2.0" in test_job
-    assert "bun-version: '1.3.14'" in test_job
+    workflow = yaml.load(
+        (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,  # noqa: S506 - only strings/containers, no constructors.
+    )
+    steps = workflow["jobs"]["test"]["steps"]
+    full = next(step for step in steps if step.get("name") == "Run tests with coverage")
+    command = shlex.split(full["run"])
+    assert command[:5] == [
+        "uv",
+        "run",
+        "--no-sync",
+        "python",
+        "scripts/ci_run_pytest.py",
+    ]
+    arguments = command[command.index("--") + 1 :]
+    assert arguments[arguments.index("-m") + 1] == ""
+    assert arguments[arguments.index("-n") + 1] == "auto"
+    assert "--cov=template_press" in arguments
+    assert "--cov-report=xml" in arguments
+    bun = next(step for step in steps if step.get("uses") == "oven-sh/setup-bun@v2.2.0")
+    assert bun["with"]["bun-version"] == "1.3.14"
 
 
 @pytest.mark.live
