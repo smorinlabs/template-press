@@ -1,10 +1,15 @@
 # P11A CI measurement and optimization plan
 
 Reduce avoidable CI waiting and runner consumption before the P12 value review.
-Measurement and independent plan review are complete. Milestone 3 implementation
-and Milestone 5 delivery remain open. The bounded Milestone 4 performance
-investigation finished without an adopted optimization; its worker and fixture
-comparisons are recorded in the
+Measurement, independent review and the bounded performance investigation are
+complete. The owner closed further optimization, declined Windows job splitting
+and authorized delivery in PR #124. The project records completion effective on
+that PR's merge after final checks and review, not before. The final upload
+policy keeps failure/cancellation archives and stops routine successful-job
+archives. Earlier checkpoints below are dated evidence; the
+[owner closeout](../../../projects/P11A-ci-speed-and-cost-optimization.md#owner-closeout-and-delivery-boundary)
+records the current decision and delivery boundary. No optimization was adopted;
+the worker and fixture comparisons are recorded in the
 [performance report](../../reports/2026-09-09-p11a-windows-performance.md).
 Revision 3 incorporates internal, Muse and Opus plan review
 findings. The [review closeout](../reviews/2026-09-07-p11a-plan-review-resolution.md)
@@ -132,12 +137,15 @@ Task: P11A-T05, first implementation slice. Use locked tools without adding
    itself stops responding. Do not add an arbitrary per-test failure deadline.
    Verify `job limit > setup + preflight limit + full-test limit + upload bound`
    with a positive measured margin. Step timeout must normally fire first.
-4. Upload available diagnostics on success and failure, with unique platform
-   names and 7-day retention. Each upload uses `if: always()` and an explicit
-   timeout so it can run after a failed test step without extending indefinitely.
-   Forced stops may prevent final JUnit output; retain active-test evidence
-   before the terminal limit. Prove preflight and full-suite artifacts cannot
-   overwrite each other.
+4. The owner-selected closeout policy uploads available diagnostics on failure
+   or cancellation, with unique platform names and 7-day retention. Each upload
+   uses `if: failure() || cancelled()` and the existing 2-minute limit. Successful
+   test jobs skip routine archive uploads; ordinary logs and bounded local
+   diagnostics remain. The earlier controlled campaign used `if: always()`
+   for both outcomes. Preserve that evidence and validate the final condition
+   before delivery. Forced stops may prevent final JUnit output or upload;
+   retain active-test evidence before the terminal limit. Preflight and full
+   artifacts must not overwrite each other.
 5. Preserve the owner's Windows sequence: isolate the failed remote job/family,
    reproduce it, validate the correction there, then run the full batch.
 6. Make `ci-ok` require successful `changes` with exactly `true` or `false`
@@ -205,8 +213,10 @@ checks, but the negative second pair fails the every-positive rule below.
 No third run or further scheduler/shard experiment was justified. Total Windows
 allocation was 929 of 1,800 runner-seconds, with 871 unspent. The disposable
 remote benchmark branch was deleted; local evidence and rejected source remain
-preserved. This closes the current investigation, not Milestone 3's remaining
-scanner/timeout proofs or P11A-T05 as a whole.
+preserved. At that checkpoint the investigation closed while Milestone 3's
+scanner/timeout proofs and P11A-T05 remained open. Those native proofs and the
+later production execution/margins are now admitted. The owner subsequently
+closed further optimization and expressly declined Windows job splitting.
 
 Use corrected P11 native timing before another full-suite probe. Identify a
 slow family/helper or worker imbalance. Measure one candidate against identical
@@ -290,9 +300,17 @@ changes can ship without a healthy-run speedup. Do not claim normal CI is faster
 unless a full-suite comparison supports it. Complete the chosen delivery or
 record an evidence-based no-change decision before the P12 review.
 
-The 2026-09-09 performance result is a no-adoption decision for Milestone 4.
-Milestone 5 and P11A-T06 remain open for the intended CI patch's normal
-all-platform checks, PR review and authorized delivery. At P11A-T06, explicitly
-review the ongoing seven-day diagnostic upload policy using observed duration,
-bytes, reliability and value. Seven-day archive expiry is not an automatic end
-to future uploads. No upload-policy change or P12 work follows from this result.
+Milestone 4 closed without adoption. The T06 upload-policy review used observed
+duration, bytes, reliability and diagnostic value. The owner then selected
+failure/cancellation uploads, superseding the earlier recommendation to retain
+successful-run archives. The final condition keeps the approved paths, names,
+retention and bound; its final-source checks and review remain prerequisites
+to merge. Seven-day expiry is not an automatic end to future failure uploads.
+
+PR #124 carries the final tracking state, effective on its authorized merge.
+Before merge, M5 delivery and T06 remain pending; after merge, the checked T05
+and T06 entries record the delivered diagnostics/gate repairs and no-adoption
+result. Existing CI and Fable evidence at `f71d3dd` is labeled as the source
+before the final upload-condition correction. Use the PR's final commit/check
+and merge records for that correction. P12 resumes with value evaluation only
+after P11A delivery, without an implied implementation decision.

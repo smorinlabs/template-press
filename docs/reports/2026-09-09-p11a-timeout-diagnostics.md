@@ -6,7 +6,10 @@ provider timeout enforcement and useful retained diagnostics, with explicit
 limits on final output and cancellation timing. Independent Muse review returned
 SPEC PASS / QUALITY APPROVE with no required fixes. These controls do not measure healthy
 full-suite performance or complete Milestone 3 or Milestone 5 for
-[P11A](../../projects/P11A-ci-speed-and-cost-optimization.md).
+[P11A](../../projects/P11A-ci-speed-and-cost-optimization.md). The later
+[owner closeout](../../projects/P11A-ci-speed-and-cost-optimization.md#owner-closeout-and-delivery-boundary)
+records production acceptance and the final failure/cancellation upload policy;
+project completion takes effect on PR #124's merge after final checks and review.
 
 ## Source and tested behavior
 
@@ -202,6 +205,8 @@ The subsequent ref lookup returned HTTP 404. Local branches and worktrees,
 source and downloaded archives remain preserved. Removing the branch did not
 remove provider artifacts or change their scheduled expiry.
 
+### Historical checkpoint before production CI
+
 Milestone 3 remains open for final integrated production source/options and
 positive timing margins. The earlier corrected-P11 Windows job began preflight
 15 seconds after allocation; combining that one setup observation with intended
@@ -225,3 +230,21 @@ review observed runtime, bytes, reliability and diagnostic value before deciding
 the ongoing policy. Ending routine successful-run archives remains a proposal.
 The Windows performance investigation remains closed without adoption; these
 diagnostic results establish no healthy-run speedup.
+
+### Later production acceptance and owner disposition
+
+The earlier open-gate and policy statements above are historical. Production
+CI and committed-source acceptance subsequently passed at `f71d3dd`, with
+positive production margins of 169 Linux, 171 macOS and 166 Windows seconds.
+Fable approved that frozen source with no blocking defect. These product runs
+and their source binding are recorded in the linked owner closeout; they are
+separate from this short native fixture campaign.
+
+The owner then closed optimization, declined Windows job splitting and selected
+`failure() || cancelled()` uploads for the final PR #124 revision. The existing
+paths, names, two-minute bound and seven-day retention remain. Routine
+successful-job archives stop; local bounded diagnostics and ordinary logs
+remain. Final-policy checks and review precede authorized merge. T05/T06
+completion takes effect on that merge, after which P12's value evaluation may
+resume. The campaign's partial-output, provider-overrun and non-guaranteed
+upload limitations remain; no healthy-run speedup is claimed.

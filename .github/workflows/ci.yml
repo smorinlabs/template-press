@@ -172,7 +172,7 @@ jobs:
           --durations=25 --durations-min=1 -o faulthandler_timeout=120
           --junitxml=ci-results/full.xml
       - name: Upload test diagnostics
-        if: always()
+        if: failure() || cancelled()
         timeout-minutes: 2
         uses: actions/upload-artifact@v7
         with:

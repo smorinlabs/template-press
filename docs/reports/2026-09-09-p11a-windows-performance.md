@@ -3,10 +3,11 @@
 Keep the existing four-worker behavior and original test fixtures. The bounded
 worker screens found no useful improvement, and the fixture candidate failed
 confirmation. No production speedup or billing-dollar saving is established.
-This closes the current performance investigation for
-[P11A](../../projects/P11A-ci-speed-and-cost-optimization.md); diagnostic and
-delivery gates in the [plan](../superpowers/plans/2026-09-07-p11a-ci-optimization.md)
-remain open.
+This records the completed performance investigation for
+[P11A](../../projects/P11A-ci-speed-and-cost-optimization.md). The later
+[owner closeout](../../projects/P11A-ci-speed-and-cost-optimization.md#owner-closeout-and-delivery-boundary)
+ends further optimization, declines Windows job splitting and makes delivery
+completion effective on PR #124's merge after final checks and review.
 
 Each comparison ran on native Windows with four logical CPUs and coverage.
 Durations below measure the test invocation, including startup and completion,
@@ -89,6 +90,8 @@ archives and the verified source bundle remain available. Seven staged files
 for an unshipped full-suite profiler were preserved without publication.
 Uploaded artifacts keep their seven-day expiry.
 
+## Historical delivery checkpoint before later native validation
+
 The integration checkout remains unchanged at
 `845eedcaaf2b6009b06bb848d05022807b15ee1c`, with original fixtures and no disposable
 benchmark. The rejected candidate was never integrated, so no production revert
@@ -100,3 +103,14 @@ patch's normal all-platform CI, PR review and authorized delivery. P11A-T05 and
 P11A-T06 remain open. The ongoing success/failure diagnostic upload policy must
 be reviewed at P11A-T06; seven-day retention does not stop future uploads.
 P12 remains paused, and this investigation changes no P12 scope or status.
+
+### Later owner disposition
+
+The checkpoint above is superseded by the linked owner closeout. Scanner and
+native timeout proof, production margins, all-platform CI and the frozen-source
+Fable review subsequently passed. Windows job splitting remains untested and
+is expressly declined, not an active deferred optimization. No performance
+candidate was adopted. The owner authorized failure/cancellation-only archives
+and delivery in PR #124; final-policy checks precede merge. This dated report's
+measurements and rejected-candidate evidence remain unchanged. P12 may resume
+its value evaluation after P11A's authorized delivery completes.

@@ -9,10 +9,61 @@
 - **Review:** [Measured CI baseline](../docs/superpowers/reviews/2026-09-07-p11a-ci-baseline.md)
 - **Report:** [Windows performance investigation](../docs/reports/2026-09-09-p11a-windows-performance.md); [native timeout diagnostics](../docs/reports/2026-09-09-p11a-timeout-diagnostics.md)
 
-- **Status:** `[~]` in progress — owner-requested follow-up between Group 3C/P11
-  and the P12 value review. Performance investigation is complete without an
-  adopted optimization; diagnostic validation and delivery remain open.
-  P11A is a deliberate owner-requested suffix; existing numeric IDs are unchanged.
+- **Status:** `[x]` effective when [PR #124](https://github.com/smorinlabs/template-press/pull/124)
+  merges after its final required checks and review. The owner closed the
+  optimization phase, declined Windows job splitting and authorized delivery.
+  This PR carries the completed main-branch record; while it is unmerged,
+  delivery and P11A-T06 are still pending. P11A is a deliberate suffix;
+  existing numeric IDs are unchanged.
+
+### Owner closeout and delivery boundary
+
+This section supersedes the earlier checkpoint statements about publication,
+production margins, pending reviews and upload-policy proposals. Those dated
+records below remain historical evidence. The completion markers in this file
+and PROJECTS.md take effect on PR #124's merge, not its preparation or approval.
+
+M3 diagnostics and gate behavior were validated, and M4 ended with no adopted
+performance change. Original fixtures, coverage, the existing job graph and
+`-n auto` remain. Neither worker-count screen improved the 50-test family; the
+reversed fixture pair failed the every-positive rule. The five Windows
+experiments consumed 929 of 1,800 runner-seconds. No further optimization run is
+planned. Windows job splitting was not tested and is declined by the owner,
+rather than deferred as an active P11A candidate.
+
+At source `f71d3ddd3edc55c9d54b610103575834f153e437`,
+[production CI 34412702217](https://github.com/smorinlabs/template-press/actions/runs/34412702217)
+passed all eight required contexts and all three full suites: Linux 2,156
+passed / 59 skipped, macOS 2,191 / 24, and Windows 2,105 / 110. Measured setup
+left 169, 171 and 166 seconds of reserve under the configured job/step/upload
+limits. [Native acceptance 34412702233](https://github.com/smorinlabs/template-press/actions/runs/34412702233)
+passed the four POSIX cases and Windows self-press. These runs checked a
+synthetic merge with the identical production tree. They are validation
+results, not a controlled whole-suite speedup.
+
+Fable's final review of that frozen source returned SPEC PASS / QUALITY APPROVE
+with no blocking defect. The provider reported 72 turns, Fable 5.1 and a small
+Haiku usage entry. High effort was requested; no separate actual-effort field
+was exposed. The optional dependency/comment/setup changes were declined with
+evidence. This review preceded the final upload-condition correction; it is
+not claimed as a review of that later edit.
+
+The owner selected `if: failure() || cancelled()` for diagnostic uploads.
+Successful test jobs stop uploading routine diagnostic archives. Failure and
+cancellation keep the same narrow paths, unique names, two-minute upload bound
+and seven-day retention. Ordinary logs, timing, bounded local diagnostics and
+coverage remain. The preceding successful matrix uploaded 1,211,389 ZIP bytes
+in four summed step seconds; this is historical upload cost, not an estimate
+of total collector overhead or guaranteed savings. Seven days expires each
+archive and does not end future failure diagnostics. Earlier `always()`
+approval, measurements and frozen review packets remain preserved.
+
+PR #124's final revision must pass the required checks and review for this
+policy correction before merge. Its final commit, check runs and merge record
+are the delivery evidence; the earlier `f71d3dd` results are not substituted
+for them. M5, T05 and T06 close when that authorized delivery completes. P12's
+value evaluation may then resume; no P12 implementation is authorized by this
+closeout.
 
 ### Scope
 
@@ -35,8 +86,8 @@ Implementation follows the reviewed plan and checkpoints below.
 - [x] [P11A-TS02] Define discriminating correctness controls and before/after benchmarks for the selected candidates.
 - [x] [P11A-T03] Complete independent major plan review, including Muse requested at Ultra with a 100-step maximum and the approved Fable/Opus fallback policy; record actual provider capability.
 - [x] [P11A-T04] Resolve any real coverage, platform or spending decisions from the concrete reviewed plan and record the selected scope.
-- [ ] [P11A-T05] Implement and validate selected optimizations in an isolated PR, or record an evidence-based decision to make no change.
-- [ ] [P11A-T06] Complete required CI/reviews and authorized delivery for selected work, record measured results and remaining costs, then resume P12 evaluation.
+- [x] [P11A-T05] Implement and validate selected optimizations in an isolated PR, or record an evidence-based decision to make no change.
+- [x] [P11A-T06] Complete required CI/reviews and authorized delivery for selected work, record measured results and remaining costs, then resume P12 evaluation.
 
 ### Starting evidence
 
@@ -76,17 +127,14 @@ revision 3 after checking the narrow corrections and independent cost evidence.
 The [review closeout](../docs/superpowers/reviews/2026-09-07-p11a-plan-review-resolution.md)
 records provider limitations and finding dispositions.
 
-Milestone 3 implementation is in progress: bounded CI execution, retained
-diagnostics and repairs to existing required checks. Platform coverage, runner
+Milestone 3's bounded execution, diagnostics and required-check repairs passed
+native controls and normal production validation. Platform coverage, runner
 plans and dependency versions remain within the reviewed contract. The bounded
-performance comparisons below are complete, with no optimization adopted.
-Finite Windows diagnostics and the later fourteen-run native timeout campaign
-are validated at the checkpoints below. Final production margins, acceptance
-and delivery remain open. P11 is now merged; its accepted
-corrections are integrated and validated locally before performance and delivery.
-P12 remains paused behind P11 and this follow-up.
+performance comparisons ended without adoption. P11 is merged and integrated.
+The owner closeout above records the final upload-policy correction and its
+delivery boundary; P12 remains paused until that delivery completes.
 
-### Local implementation checkpoint
+### Historical local implementation checkpoints
 
 Milestone 3's first local slice is committed at
 `01fba91ee95cb40058d3e555c7cf7f669587a692`. It adds bounded diagnostics, execution
@@ -169,9 +217,11 @@ evidence checks. The negative second pair fails the every-positive adoption
 rule, so the candidate was rejected without a third run. The order-sensitive
 ranking does not establish a cache cause or whole-suite speedup.
 
-Independent balance and job-topology analysis did not justify additional
-scheduler or runner-shard experiments. Those variants remain untested and
-deferred. Muse returned SPEC PASS / QUALITY APPROVE for the benchmark design
+Independent balance and job-topology analysis did not lead to additional
+scheduler or runner-shard experiments. A later audit identified a possible
+two-runner Windows comparison, which the owner explicitly declined. These
+variants remain untested; no additional P11A experiment is pending.
+Muse returned SPEC PASS / QUALITY APPROVE for the benchmark design
 and implementation, using actual `xhigh` effort with a 100-step maximum and
 about 14 reported read/search steps. This was not an Ultra review or evidence
 of a performance gain.
@@ -185,12 +235,11 @@ neither the rejected fixture change nor temporary benchmark was imported.
 The [performance report](../docs/reports/2026-09-09-p11a-windows-performance.md)
 records run links, outcomes, cost and limitations.
 
-Milestone 4's current investigation and no-adoption decision are complete.
-Milestone 3 remains open for final production options and positive timing
-margins. Scanner and combined finite/timeout native proof are complete at the
-checkpoints below. Milestone 5 still requires normal all-platform CI,
-production PR review and authorized delivery. P11A-T05 and P11A-T06 remain open;
-P12 remains paused. Performance investigation did not close those gates.
+Milestone 4's investigation and no-adoption decision are complete. Scanner and
+finite/timeout proofs, production margins and source review subsequently passed.
+The final upload-policy correction and authorized delivery follow the owner
+closeout above. T05/T06 completion takes effect on that delivery; closing the
+performance investigation alone did not satisfy those delivery gates.
 
 ### Scanner proof checkpoint — 2026-09-09
 
