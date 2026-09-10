@@ -69,6 +69,14 @@ Tests: parser refusals (excluded file; missing `expect`; `verify_exempt`/`scan` 
 - Globs rejected.
 Tests: (a) warning appears for an undeclared template-history directory and not for a declared one; (b) counts; (c) a `[[replace]]` rename that moves a file into a `dir` expansion between plan and apply → unlinked set equals the dry-run set exactly, receipt names each path; untracked operator file inside the dir → refuse; mid-removal `SafetyError` → no receipt; (d) R3 green.
 
+**Accepted advisory limitation (2026-09-10):** the owner declined
+[P12-T-defer-3](../../../projects/P12-origin-guard-and-diagnostics.md#closed-follow-ups).
+A tracked symlink whose name stays fixed can correctly retarget without counting
+toward the E5(a) removal-coverage warning. This explicitly accepts a narrow gap
+in the broad wording above; it does not assert that the warning covers this case
+or change symlink safety. The project record states why the correction was
+declined and when to reconsider it.
+
 ### E8 — verify vs an untracked symlink
 Verify was correct (the symlink was not ignored: `node_modules/` matches directories only). Engine: on any finding for an untracked entry, run `git check-ignore --no-index -v -- <path>` and `-- <path>/`; when the first is "not ignored" and the second names a pattern, append a note: the pattern matches directories only, `git add -A` would commit this entry, remedies (ignore without trailing slash; remove the link; `verify_ignore`). Read-only; pass/fail unchanged. Docs: `cli.md` "The ignore set" note; `press-target` troubleshooting: `bun install --frozen-lockfile` in worktrees. Test: untracked symlink matching a dir-only pattern **is** enumerated, copied to the sandbox, and yields `Finding(where="symlink", field="app_name")` with the note. Log #15 → operator error / docs gap.
 

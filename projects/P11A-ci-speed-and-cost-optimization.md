@@ -132,7 +132,9 @@ native controls and normal production validation. Platform coverage, runner
 plans and dependency versions remain within the reviewed contract. The bounded
 performance comparisons ended without adoption. P11 is merged and integrated.
 The owner closeout above records the final upload-policy correction and its
-delivery boundary; P12 remains paused until that delivery completes.
+delivery boundary. PR #124 has since merged, and P12's reassessment is complete.
+[P12's project record](P12-origin-guard-and-diagnostics.md#closed-follow-ups)
+documents the four merged corrections and six owner-declined follow-ups.
 
 ### Historical local implementation checkpoints
 

@@ -34,7 +34,7 @@ file by hand — see Conventions.
 | P10 | `[x]` | [Declared pre-press clean ([[clean]] paths, press clean)](projects/P10-declared-pre-press-clean.md) — restricted `[[clean]] paths` declaration + standalone `press clean` subcommand (E10) |
 | P11 | `[x]` | [Directory removals ([[remove]] dir) and removal phase](projects/P11-directory-removals.md) — frozen plan-time expansion, per-directory clean check, gitlink/symlink refusal, receipt/verify parity (E5c) |
 | P11A | `[x]` | [CI speed and cost optimization](projects/P11A-ci-speed-and-cost-optimization.md) — closeout effective on PR #124 merge; diagnostics and gate repairs, no performance adoption, Windows job splitting declined |
-| P12 | `[~]` | [Origin guard relaxation, closure diagnostics, warnings and docs](projects/P12-origin-guard-and-diagnostics.md) — E1 origin guard, E2 closure diagnostics, E3/E5/E8/E9 warnings and docs |
+| P12 | `[x]` | [Origin guard relaxation, closure diagnostics, warnings and docs](projects/P12-origin-guard-and-diagnostics.md) — base and four corrections merged; six follow-ups declined by owner on 2026-09-10 with limitations recorded |
 
 ## Conventions
 

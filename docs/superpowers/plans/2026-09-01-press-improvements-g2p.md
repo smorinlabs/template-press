@@ -10,6 +10,12 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-01-press-improvements-g2p-design.md` (decisions D-E1…E11; review constraints; parked blueprint items). Adversarial reviews under `docs/superpowers/specs/reviews-2026-09-01/`.
 
+**P12 closeout, 2026-09-10:** groups 1 and 2 were delivered in PRs #109 and #111.
+Four follow-up corrections merged in PR #125; the owner declined implementation
+of the other six recommendations. [P12's project record](../../../projects/P12-origin-guard-and-diagnostics.md)
+contains every disposition and accepted limitation. The unchecked original
+group-1 and group-2 steps below are historical planning detail, not open work.
+
 ## Global Constraints
 
 - Branch `fork/press-improve-g2p` in worktree `~/c/template-press-pr90-fork-press-improve-g2p`; each PR group gets its own branch from `origin/main` via `git worktree add`; merge with a merge commit (`gh pr merge --merge`); never push to `main`.
@@ -661,9 +667,11 @@ remaining whole-`projects` removal task.
   also closed with [PR #124](https://github.com/smorinlabs/template-press/pull/124),
   merge `7ac8c1744485081d973ac6b910f13de3fb459d83`. Its automatic main-branch CI
   passed. This records delivery; it does not claim a full project audit ran.
-- [ ] [P12](../../../projects/P12-origin-guard-and-diagnostics.md) remains open
-  for the owner-requested evaluation of ten follow-ups. Its two base parts are
-  merged. Do not mark P12 complete from Group 3 delivery.
+- [x] [P12](../../../projects/P12-origin-guard-and-diagnostics.md) is complete:
+  its base parts and four follow-up corrections are merged. On 2026-09-10 the
+  owner declined the six remaining recommendations with their limitations and
+  conditions for reopening recorded. The follow-up evaluation and all eleven
+  dispositions, including the already-complete P12-T-defer-6, are resolved.
 - [ ] Package publication is separate: release-please manages its release PR;
   merging implementation PRs does not publish their behavior to package users.
 - [ ] Separate downstream follow-up, outside P12 and the current Template Press
