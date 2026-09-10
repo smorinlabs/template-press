@@ -1,83 +1,56 @@
-# Dependabot config (ITM-061 uv + ITM-062 actions + ITM-043 npm).
-# Per ADR-08: grouped updates, 5-day cooldown, template-shaped group names.
-# Schedule day: Monday (decided round 13).
-#
-# commit-message: shared by all ecosystems. Grouped updates already auto-prefix
-# `chore(deps):` (so they pass commitlint), but ungrouped updates default to
-# `Bump foo from x to y` which fails @commitlint/config-conventional. Setting
-# `prefix: chore` + `include: scope` makes EVERY dependabot commit conform —
-# `chore(deps): bump foo...` for prod deps, `chore(deps-dev): bump foo...` for
-# dev deps. Single source of truth; no commitlint-side exemptions needed.
+# One Monday PR for version updates across Python, GitHub Actions, and Bun.
+# Each ecosystem keeps a five-day cooldown and a separate security-update group.
+# Wildcards include documentation dependencies and newly added packages.
 
 version: 2
+
+multi-ecosystem-groups:
+  all-dependencies:
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    # Commit formatting belongs at group level for multi-ecosystem updates.
+    commit-message:
+      prefix: "chore"
+      prefix-development: "chore"
+      include: "scope"
+
 updates:
-  # ITM-061 - Python (uv) ecosystem. Native uv support (dependabot-core
-  # #10478) updates pyproject.toml AND regenerates uv.lock together, so
-  # `uv sync --locked` in CI stays green. The old "pip" ecosystem only
-  # touched pyproject.toml and left uv.lock stale, failing every dep PR.
+  # Native uv support updates pyproject.toml and uv.lock together.
   - package-ecosystem: "uv"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
+    patterns: ["*"]
+    multi-ecosystem-group: "all-dependencies"
     cooldown:
       default-days: 5
-    open-pull-requests-limit: 5
     labels: ["dependencies", "python"]
-    commit-message:
-      prefix: "chore"
-      prefix-development: "chore"
-      include: "scope"
+    # Security fixes use their own PRs instead of waiting for the weekly batch.
     groups:
-      runtime:
-        patterns: ["click", "pydantic", "structlog", "tomli-w", "requests", "rich"]
-      dev-tools:
-        patterns: ["cogapp", "twine", "pip-audit"]
-      lint-and-format:
-        # WL-001: hook/CI tools now version-locked in uv.lock — updates land
-        # here as grouped, reviewable PRs.
-        patterns:
-          - "ruff"
-          - "ty"
-          - "types-*"
-          - "bandit"
-          - "codespell"
-          - "yamllint"
-          - "editorconfig-checker"
-      test:
-        patterns: ["pytest*", "syrupy"]
-
-  # ITM-062 - GitHub Actions ecosystem.
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    cooldown:
-      default-days: 5
-    open-pull-requests-limit: 5
-    labels: ["dependencies", "github-actions"]
-    commit-message:
-      prefix: "chore"
-      include: "scope"
-    groups:
-      github-actions:
+      security-updates:
+        applies-to: "security-updates"
         patterns: ["*"]
 
-  # ITM-043 - npm (Bun) ecosystem; commitlint deps only for now.
-  - package-ecosystem: "npm"
+  - package-ecosystem: "github-actions"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
+    patterns: ["*"]
+    multi-ecosystem-group: "all-dependencies"
     cooldown:
       default-days: 5
-    open-pull-requests-limit: 5
-    labels: ["dependencies", "npm"]
-    commit-message:
-      prefix: "chore"
-      prefix-development: "chore"
-      include: "scope"
+    labels: ["dependencies", "github-actions"]
     groups:
-      commitlint:
-        patterns: ["@commitlint/*"]
+      security-updates:
+        applies-to: "security-updates"
+        patterns: ["*"]
+
+  # Native Bun support updates package.json and the text-based bun.lock.
+  - package-ecosystem: "bun"
+    directory: "/"
+    patterns: ["*"]
+    multi-ecosystem-group: "all-dependencies"
+    cooldown:
+      default-days: 5
+    labels: ["dependencies", "npm"]
+    groups:
+      security-updates:
+        applies-to: "security-updates"
+        patterns: ["*"]
