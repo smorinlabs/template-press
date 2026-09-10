@@ -131,7 +131,7 @@ jobs:
         if: steps.validate.outputs.run == 'true'
       - name: Install uv
         if: steps.validate.outputs.run == 'true'
-        uses: astral-sh/setup-uv@v10.0.0
+        uses: astral-sh/setup-uv@v10.0.1
       - name: Sync locked dev tools
         if: steps.validate.outputs.run == 'true'
         # WL-001: locked via uv.lock, matching the pre-commit hook exactly.
@@ -148,7 +148,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.0
+        uses: astral-sh/setup-uv@v10.0.1
       - name: Sync locked dev tools
         # WL-001: locked via uv.lock, matching the pre-push hook exactly.
         run: uv sync --locked --only-group dev
@@ -165,7 +165,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.0
+        uses: astral-sh/setup-uv@v10.0.1
       - name: Sync locked dev tools
         # WL-001: locked via uv.lock, matching the pre-commit hook exactly.
         run: uv sync --locked --only-group dev
@@ -181,7 +181,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.0
+        uses: astral-sh/setup-uv@v10.0.1
       - name: Sync locked dev tools
         # WL-001: locked via uv.lock, matching the pre-commit hook exactly.
         run: uv sync --locked --only-group dev
