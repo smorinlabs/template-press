@@ -1,10 +1,38 @@
 # P12 — Origin guard relaxation, closure diagnostics, warnings and docs
 
-- **Status:** `[~]` in progress — PR #109 is part 1.
+**References**
+- **Trunk:** [PROJECTS.md](../PROJECTS.md)
+- **Design:** [2026-09-01 press-improvements-g2p design spec](../docs/superpowers/specs/2026-09-01-press-improvements-g2p-design.md)
+  §E1, §E2, §E3, §E5(a)(b)(d), §E8, §E9
+- **Review:** [E1-review.md](../docs/superpowers/specs/reviews-2026-09-01/E1-review.md)
+- **Review:** [E1-options-review.md](../docs/superpowers/specs/reviews-2026-09-01/E1-options-review.md)
+- **Review:** [E2-review.md](../docs/superpowers/specs/reviews-2026-09-01/E2-review.md)
+- **Review:** [E2-codex-review.txt](../docs/superpowers/specs/reviews-2026-09-01/E2-codex-review.txt)
+- **Review:** [E3-review.md](../docs/superpowers/specs/reviews-2026-09-01/E3-review.md)
+- **Review:** [E8-review.md](../docs/superpowers/specs/reviews-2026-09-01/E8-review.md)
+- **Review:** [2026-09-10 follow-up value evaluation](../docs/superpowers/reviews/2026-09-10-p12-value-evaluation.md)
+
+- **Status:** `[~]` in progress. Base parts 1 and 2 were delivered in
+  [PR #109](https://github.com/smorinlabs/template-press/pull/109) and
+  [PR #111](https://github.com/smorinlabs/template-press/pull/111). Ten follow-ups
+  remain open; P12-T-defer-6 is already complete.
 
 The owner inserted [P11A — CI speed and cost optimization](P11A-ci-speed-and-cost-optimization.md)
-before the remaining P12 value review on 2026-09-07. P11A profiling runs in
-parallel with P11 closeout; P12 follow-up decisions resume after that work.
+before this value review. P09, P10, P11 and P11A are now merged. P11A closed in
+[PR #124](https://github.com/smorinlabs/template-press/pull/124), and its merged
+source `7ac8c1744485081d973ac6b910f13de3fb459d83` passed main-branch CI.
+
+On 2026-09-10, the owner requested a critical evaluation of the ten open items:
+confirm the actual behavior and likelihood, distinguish bugs from optional
+improvements, compare the value with the complexity, and identify any departure
+from accepted requirements. This evaluation is not implementation approval or a
+new decision to close an item. The task entries below preserve the original
+claims until that evaluation and the owner's dispositions are recorded.
+
+The evaluation recommends fixing P12-T-defer-2 and P12-T-defer-7, narrowing
+P12-T-defer-4 and P12-T-defer-5, and closing the other six without implementation.
+Those recommendations remain unapproved. This project and its closeout are
+limited to Template Press; downstream feedback-log work is not a P12 dependency.
 
 E1 origin==destination acceptance + `--accept-origin-mismatch`; E2
 aggregated closure refusal with remedy argv and `--diagnostics-json`;
@@ -28,15 +56,3 @@ test.
 - [ ] [P12-T-defer-10] Evaluate stronger concurrent-writer protection for `press clean`. P10 requires ignore/configuration inputs, the index, and selected paths to stay stable; its immediate file checks can refuse detected changes but do not make Git directory cleanup or exact unlink atomic. Assess whether binding deletion to a frozen selection or adding a stronger coordination protocol is worth the complexity, or close this follow-up with the stable-input contract documented. This is a P12 value decision after P10/P11 delivery, not a promised implementation. Tracked from [PR #122 concurrency review](https://github.com/smorinlabs/template-press/pull/122#discussion_r3946789616).
 
 - [ ] [P12-T-defer-11] Evaluate repeated filesystem identity checks during directory removal. The P11 review measured 7 Git-input `os.stat` calls for 2 selected members and 3 existing inputs, versus 595 calls for 27 members and 22 inputs. This demonstrates repeated work, not large-repository latency or CI savings. Consider capturing input identities once per validated snapshot only if representative timing shows useful value and path, hardlink and concurrent-change guards remain equivalent; otherwise close the follow-up with the measured limits. This is a value-evaluation candidate after P11/P11A, not an approved caching implementation. Tracked from [PR #123 identity-check review](https://github.com/smorinlabs/template-press/pull/123#discussion_r3964065441).
-
-**References**
-
-- **Trunk:** [PROJECTS.md](../PROJECTS.md)
-- **Design:** [2026-09-01 press-improvements-g2p design spec](../docs/superpowers/specs/2026-09-01-press-improvements-g2p-design.md)
-  §E1, §E2, §E3, §E5(a)(b)(d), §E8, §E9
-- **Review:** [E1-review.md](../docs/superpowers/specs/reviews-2026-09-01/E1-review.md)
-- **Review:** [E1-options-review.md](../docs/superpowers/specs/reviews-2026-09-01/E1-options-review.md)
-- **Review:** [E2-review.md](../docs/superpowers/specs/reviews-2026-09-01/E2-review.md)
-- **Review:** [E2-codex-review.txt](../docs/superpowers/specs/reviews-2026-09-01/E2-codex-review.txt)
-- **Review:** [E3-review.md](../docs/superpowers/specs/reviews-2026-09-01/E3-review.md)
-- **Review:** [E8-review.md](../docs/superpowers/specs/reviews-2026-09-01/E8-review.md)
