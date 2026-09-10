@@ -17,6 +17,13 @@ mismatch; a completed run is verified leak-free before a receipt is written.
 1. Preconditions: target is a git repo with a clean tree, and
    `press check-tools --target <TARGET>` exits 0 — every declared
    `[[regenerate]]` command (plus `git`) resolves before anything runs.
+   - If `press check-tools --target <TARGET>` printed a `git — … (cleans …)`
+     row, a `[[clean]]` rule is active on this platform: preview it before
+     the dry run with `press clean --target <TARGET> --show`, confirm the
+     listing holds nothing to keep, then run `press clean --target <TARGET>`.
+     Skip this when no such row appears (no rule, or a rule scoped to another
+     platform; `press clean` would exit 2 with `no [[clean]] rules declared`).
+     The dry run's closure refusal names `press clean` if it is needed.
 2. Preview (never skip): if the target ships a
    `press/press-answers.example.toml` template, copy it first and fill in
    the destination identity:

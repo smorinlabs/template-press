@@ -7,8 +7,11 @@ answered. Its presence also guards re-runs (require --force).
 
 from __future__ import annotations
 
+import os
+import stat
+import sys
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,9 +19,25 @@ from pathlib import Path
 from template_press.rebrand.config import toml_string
 from template_press.rebrand.engine import ApplyReport
 from template_press.rebrand.identity import Identity, ValidationError
-from template_press.rebrand.safety import write_control
+from template_press.rebrand.pathing import ROOT_CONTROL
+from template_press.rebrand.removal_types import DirectoryRemoval, RemovalMember
+from template_press.rebrand.rules import (
+    _control_alias_key,
+    _declared_rel_path,
+    _reject_reserved,
+)
+from template_press.rebrand.safety import (
+    SafetyError,
+    assert_ancestors_real,
+    assert_under_root,
+    write_control,
+)
 
 RECEIPT_REL = Path("press") / "press-receipt.toml"
+REMOVE_HISTORY_MAX_BYTES = 16 * 1024 * 1024
+REMOVE_HISTORY_MAX_DIRS = 1024
+REMOVE_HISTORY_MAX_MEMBERS = 100000
+REMOVE_HISTORY_MAX_TEXT_BYTES = 4096
 
 
 @dataclass(frozen=True)
@@ -45,13 +64,64 @@ class OriginDecision:
     mismatch_accepted: tuple[tuple[str, str], ...] = ()
 
 
-def read_receipt(target: Path) -> str | None:
+def receipt_present(target: Path) -> bool:
+    """Match legacy presence checks without reading any receipt contents."""
+    return (target / RECEIPT_REL).is_file()
+
+
+def _read_bounded_receipt(target: Path, max_bytes: int) -> bytes | None:
+    """Bound allocation with static no-follow guards and checked leaf identity."""
+    if type(max_bytes) is not int or max_bytes < 0:
+        raise ValidationError("receipt max_bytes must be a nonnegative integer")
     path = target / RECEIPT_REL
-    if not path.is_file():
+    assert_under_root(path, target)
+    assert_ancestors_real(path, target)
+    if path.parent.is_junction():
+        raise SafetyError("directory receipt parent is a junction")
+    if not os.path.lexists(path):
         return None
+    before = path.lstat()
+    if path.is_junction() or not stat.S_ISREG(before.st_mode):
+        raise SafetyError("directory receipt must be a regular file (no-follow check)")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    descriptor = os.open(path, flags)
     try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(before, opened):
+            raise SafetyError("directory receipt changed before reading")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            data = handle.read(max_bytes + 1)
+        assert_under_root(path, target)
+        assert_ancestors_real(path, target)
+        if path.parent.is_junction():
+            raise SafetyError("directory receipt parent is a junction")
+        after = path.lstat()
+        if not stat.S_ISREG(after.st_mode) or not os.path.samestat(opened, after):
+            raise SafetyError("directory receipt changed while reading")
+    finally:
+        os.close(descriptor)
+    if len(data) > max_bytes:
+        raise ValidationError(f"directory receipt byte limit {max_bytes} exceeded")
+    return data
+
+
+def read_receipt(target: Path, *, max_bytes: int | None = None) -> str | None:
+    path = target / RECEIPT_REL
+    try:
+        if max_bytes is not None:
+            data = _read_bounded_receipt(target, max_bytes)
+            return None if data is None else data.decode("utf-8")
+        if not path.is_file():
+            return None
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
+        if max_bytes is not None:
+            raise ValidationError("directory receipt is not valid UTF-8") from exc
         raise ValidationError(
             f"{RECEIPT_REL}: receipt is not valid UTF-8 ({path}): {exc}"
         ) from exc
@@ -93,8 +163,234 @@ def write_receipt(
     *,
     platform: str | None = None,
     origin: OriginDecision | None = None,
+    clean: Sequence[Sequence[str]] = (),
+    remove_dirs: Sequence[DirectoryRemoval] = (),
 ) -> Path:
-    stamp = datetime.now(UTC).isoformat(timespec="seconds")
+    text = _render_receipt(
+        source,
+        dest,
+        report,
+        regenerations,
+        resets,
+        removals,
+        exempt,
+        edits,
+        stamp=_receipt_stamp(),
+        platform=platform,
+        origin=origin,
+        clean=clean,
+        remove_dirs=remove_dirs,
+    )
+    return write_control(target, RECEIPT_REL, text)
+
+
+def _receipt_stamp() -> str:
+    """UTC with seconds precision always has the same 25-byte ISO representation."""
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def preflight_receipt(
+    source: Identity,
+    dest: Identity,
+    regenerations: Sequence[tuple[str, Sequence[str]]] = (),
+    resets: Sequence[str] = (),
+    removals: Sequence[tuple[str, str]] = (),
+    exempt: Sequence[tuple[str, str]] = (),
+    edits: Sequence[tuple[str, Sequence[str], str]] = (),
+    *,
+    platform: str | None = None,
+    origin: OriginDecision | None = None,
+    clean: Sequence[Sequence[str]] = (),
+    remove_dirs: Sequence[DirectoryRemoval] = (),
+    renames: Mapping[str, str] | None = None,
+) -> int | None:
+    """Bound complete output before writes; file-only receipts remain uncapped.
+
+    Supply all planned successful phase rows and SOURCE-current directory
+    coordinates. Actual phase rows are subsets of those plans. Each count is
+    len(an ApplyReport list), bounded by sys.maxsize without allocating a list.
+    Rendering that maximum decimal width may conservatively refuse near the
+    cap even when the final smaller counts would fit. Every other output byte
+    uses the writer's renderer, including its fixed-width UTC timestamp.
+
+    Renames may execute only partly. Budget possible growth from the original
+    current paths, not just their fully projected (possibly shorter) endpoints.
+    The per-field UTF-8 bound likewise includes intermediate growth, so it
+    may refuse near 4096 bytes even when every final shortened path fits.
+    """
+    if not remove_dirs:
+        return None
+    text = _render_receipt(
+        source,
+        dest,
+        None,
+        regenerations,
+        resets,
+        removals,
+        exempt,
+        edits,
+        stamp=_receipt_stamp(),
+        platform=platform,
+        origin=origin,
+        clean=clean,
+        remove_dirs=remove_dirs,
+    )
+    rename_map = renames or {}
+    _validate_current_path_text_limits(remove_dirs, rename_map)
+    size = len(text.encode("utf-8")) + _current_path_growth(remove_dirs, rename_map)
+    if size > REMOVE_HISTORY_MAX_BYTES:
+        raise ValidationError(
+            f"directory receipt byte limit {REMOVE_HISTORY_MAX_BYTES} exceeded"
+        )
+    return size
+
+
+def _validate_current_path_text_limits(
+    directories: Sequence[DirectoryRemoval], renames: Mapping[str, str]
+) -> None:
+    """Bound raw UTF-8 widths for any subset of the frozen prefix moves.
+
+    Compiled renames preserve component count. At each fixed component index,
+    every prefix substitution follows an old-value -> new-value edge. The
+    maximum reachable width at each index, plus separators, bounds any finite
+    translation. Ignoring parent context and combining independent maxima is
+    conservative: even a successful growth-then-shortening plan may refuse
+    near the field cap. Unrelated sibling values do not multiply the bound.
+
+    Arbitrary depth-changing mappings use a coarser fallback: translate_path
+    can succeed after at most len(renames) substitutions, each adding at most
+    the largest positive raw prefix delta. Production compiled plans do not
+    take this fallback; many unrelated entries may overcharge such callers.
+    """
+    largest_delta = max(
+        (
+            len(new.encode("utf-8")) - len(old.encode("utf-8"))
+            for old, new in renames.items()
+        ),
+        default=0,
+    )
+    if largest_delta <= 0:
+        # No subset can grow a path when every whole-prefix delta is nonpositive.
+        return
+    depth_preserving = all(
+        old.count("/") == new.count("/") for old, new in renames.items()
+    )
+    edges: dict[tuple[int, str], set[str]] = {}
+    if depth_preserving:
+        for old, new in renames.items():
+            for index, (before, after) in enumerate(
+                zip(old.split("/"), new.split("/"), strict=True)
+            ):
+                if before != after:
+                    edges.setdefault((index, before), set()).add(after)
+    widths: dict[tuple[int, str], int] = {}
+
+    def component_width(index: int, initial: str) -> int:
+        key = (index, initial)
+        if key not in widths:
+            pending = [initial]
+            seen: set[str] = set()
+            maximum = 0
+            while pending:
+                value = pending.pop()
+                if value in seen:
+                    continue
+                seen.add(value)
+                maximum = max(maximum, len(value.encode("utf-8")))
+                pending.extend(edges.get((index, value), ()))
+            # Publish only complete results, including every value in a cycle.
+            widths[key] = maximum
+        return widths[key]
+
+    for directory in directories:
+        for path in (
+            directory.current_dir,
+            *(member.current_file for member in directory.members),
+        ):
+            parts = path.split("/")
+            if not any(
+                "/".join(parts[:i]) in renames for i in range(1, len(parts) + 1)
+            ):
+                # Without a first matching prefix no executed subset can move it.
+                continue
+            if depth_preserving:
+                size = (
+                    len(parts)
+                    - 1
+                    + sum(
+                        component_width(index, value)
+                        for index, value in enumerate(parts)
+                    )
+                )
+            else:
+                size = len(path.encode("utf-8")) + len(renames) * largest_delta
+            if size > REMOVE_HISTORY_MAX_TEXT_BYTES:
+                raise ValidationError(
+                    f"directory text byte limit {REMOVE_HISTORY_MAX_TEXT_BYTES} "
+                    "exceeded by conservative rename-growth preflight bound"
+                )
+
+
+def _current_path_growth(
+    directories: Sequence[DirectoryRemoval], renames: Mapping[str, str]
+) -> int:
+    """Bound only the two directory-history fields translated by the writer.
+
+    translate_path must finish within len(renames) substitutions to succeed;
+    the next loop iteration observes convergence. Any executed subset has no
+    more entries. Each substitution adds at most the largest positive encoded
+    prefix delta, so their product bounds growth even when shortening steps
+    are skipped. TOML quoting/UTF-8 use the same field serializer as output.
+
+    A path matching no initial old prefix cannot take a first substitution,
+    so unrelated renames add nothing to it. A matching path may be overcharged
+    when many other renames are unrelated; no reachability search is needed.
+    """
+    largest_delta = max(
+        (
+            len(toml_string(new).encode("utf-8"))
+            - len(toml_string(old).encode("utf-8"))
+            for old, new in renames.items()
+        ),
+        default=0,
+    )
+    if largest_delta <= 0:
+        return 0
+    paths = (
+        path
+        for directory in directories
+        for path in (
+            directory.current_dir,
+            *(member.current_file for member in directory.members),
+        )
+    )
+    affected = 0
+    for path in paths:
+        parts = path.split("/")
+        if any("/".join(parts[:i]) in renames for i in range(1, len(parts) + 1)):
+            affected += 1
+    return affected * len(renames) * largest_delta
+
+
+def _render_receipt(
+    source: Identity,
+    dest: Identity,
+    report: ApplyReport | None,
+    regenerations: Sequence[tuple[str, Sequence[str]]] = (),
+    resets: Sequence[str] = (),
+    removals: Sequence[tuple[str, str]] = (),
+    exempt: Sequence[tuple[str, str]] = (),
+    edits: Sequence[tuple[str, Sequence[str], str]] = (),
+    *,
+    stamp: str,
+    platform: str | None = None,
+    origin: OriginDecision | None = None,
+    clean: Sequence[Sequence[str]] = (),
+    remove_dirs: Sequence[DirectoryRemoval] = (),
+) -> str:
+    """Render once for preflight and output; report=None budgets list widths."""
+    if remove_dirs:
+        validate_directory_history(remove_dirs, removals)
     # Each key is written only when that relaxation actually fired (E1): a
     # receipt without them means the guard relaxed nothing — origin agreed
     # with the source-config, or had no discoverable value (no remote, or a
@@ -124,6 +420,7 @@ def write_receipt(
         "# verified. Delete it (or use --force) to press again.",
         "[press]",
         "verified = true",
+        *(["remove_dirs_version = 1"] if remove_dirs else []),
         *([f"platform = {toml_string(platform)}"] if platform is not None else []),
         f'completed_at = "{stamp}"',
         *origin_lines,
@@ -133,13 +430,18 @@ def write_receipt(
         *_identity_table("to", dest),
         "",
         "[press.counts]",
-        f"replaced = {len(report.replaced)}",
-        f"renamed = {len(report.renamed)}",
-        f"reset = {len(report.reset)}",
-        f"removed = {len(report.removed)}",
-        f"edited = {len(report.edited)}",
-        f"regenerated = {len(report.regenerated)}",
-        f"skipped = {len(report.skipped)}",
+        *(
+            f"{name} = {sys.maxsize if report is None else len(getattr(report, name))}"
+            for name in (
+                "replaced",
+                "renamed",
+                "reset",
+                "removed",
+                "edited",
+                "regenerated",
+                "skipped",
+            )
+        ),
     ]
     # Edits precede regenerations here for the same reason they precede them
     # in the plan and in execution: the receipt reads in phase order (E4).
@@ -179,6 +481,16 @@ def write_receipt(
             f"file = {toml_string(file)}",
             f"reason = {toml_string(reason)}",
         ]
+    lines += _directory_lines(remove_dirs)
+    # Declared clean paths (E10). `press clean` is a standalone verb that
+    # never writes a receipt, so this row records the DECLARATION an
+    # operator should run before re-pressing — never that cleaning ran.
+    for paths in clean:
+        lines += [
+            "",
+            "[[press.clean]]",
+            "paths = [" + ", ".join(toml_string(p) for p in paths) + "]",
+        ]
     # Machine-readable coverage record (P04 D3): every file the ordinary
     # doctor/verify inventories skip, with the mechanism that covered it —
     # the gap stays visible and deliberate, never an unchecked free pass.
@@ -189,7 +501,12 @@ def write_receipt(
             f"file = {toml_string(file)}",
             f"reason = {toml_string(reason)}",
         ]
-    return write_control(target, RECEIPT_REL, "\n".join(lines) + "\n")
+    text = "\n".join(lines) + "\n"
+    if remove_dirs and len(text.encode("utf-8")) > REMOVE_HISTORY_MAX_BYTES:
+        raise ValidationError(
+            f"directory receipt byte limit {REMOVE_HISTORY_MAX_BYTES} exceeded"
+        )
+    return text
 
 
 def _press_table(text: str | None) -> dict[str, object]:
@@ -301,3 +618,315 @@ def removed_files_from_receipt(text: str | None) -> dict[str, str]:
         for e in entries
         if isinstance(e, dict) and isinstance(e.get("file"), str)
     }
+
+
+def _history_text(value: object, context: str) -> str:
+    """Check one bounded printable schema string before path/error processing."""
+    if not isinstance(value, str) or not value or not value.strip():
+        raise ValidationError(f"directory {context} must be a nonempty string")
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise ValidationError(f"directory {context} is not valid UTF-8") from exc
+    if size > REMOVE_HISTORY_MAX_TEXT_BYTES:
+        raise ValidationError("directory text byte limit 4096 exceeded")
+    if any(not char.isprintable() for char in value):
+        raise ValidationError(f"directory {context} must be printable")
+    return value
+
+
+def _history_path(value: object, context: str, *, directory: bool = False) -> str:
+    text = _history_text(value, context)
+    try:
+        canonical = _declared_rel_path(f"directory {context}", text)
+        if canonical != text:
+            raise ValidationError("directory paths must use canonical POSIX spelling")
+        _reject_reserved("directory history", text)
+    except ValidationError as exc:
+        raise ValidationError(
+            f"directory {context} is not a safe canonical path"
+        ) from exc
+    alias = _control_alias_key(text)
+    if any(part in {"", ".git"} for part in alias.split("/")):
+        raise ValidationError(f"directory {context} contains an unsafe alias")
+    if directory:
+        if any(char in text for char in "*?["):
+            raise ValidationError(
+                f"directory {context} must not contain glob characters"
+            )
+        if any(
+            control == alias or control.startswith(alias + "/")
+            for control in ROOT_CONTROL
+        ):
+            raise ValidationError(f"directory {context} contains a press control path")
+    elif alias.rsplit("/", 1)[-1] in {".gitignore", ".gitattributes", ".gitmodules"}:
+        raise ValidationError(f"directory {context} names a Git visibility input")
+    return text
+
+
+def _directory_lines(directories: Sequence[DirectoryRemoval]) -> list[str]:
+    lines: list[str] = []
+    used_bytes = 0
+    for directory in directories:
+        header = [
+            "",
+            "[[press.remove_dir]]",
+            f"dir = {toml_string(directory.dir)}",
+            f"current_dir = {toml_string(directory.current_dir)}",
+            f"reason = {toml_string(directory.reason)}",
+            "complete = true",
+        ]
+        used_bytes += sum(len(line.encode("utf-8")) + 1 for line in header)
+        used_bytes += len("members = []\n")
+        rendered_members: list[str] = []
+        for member in directory.members:
+            if member.source_dir is None:
+                raise ValidationError("directory member requires source_dir")
+            rendered = (
+                "{ file = "
+                + toml_string(member.file)
+                + ", source_dir = "
+                + toml_string(member.source_dir)
+                + ", current_file = "
+                + toml_string(member.current_file)
+                + " }"
+            )
+            used_bytes += len(rendered.encode("utf-8")) + (2 if rendered_members else 0)
+            if used_bytes > REMOVE_HISTORY_MAX_BYTES:
+                raise ValidationError(
+                    f"directory receipt byte limit {REMOVE_HISTORY_MAX_BYTES} exceeded"
+                )
+            rendered_members.append(rendered)
+        if used_bytes > REMOVE_HISTORY_MAX_BYTES:
+            raise ValidationError(
+                f"directory receipt byte limit {REMOVE_HISTORY_MAX_BYTES} exceeded"
+            )
+        lines += [*header, "members = [" + ", ".join(rendered_members) + "]"]
+    return lines
+
+
+def _reject_root_overlaps(roots: Sequence[str]) -> None:
+    """Reject overlapping canonical aliases without comparing every member pair."""
+    keys = sorted(_control_alias_key(root) for root in roots)
+    seen: set[str] = set()
+    for key in keys:
+        parts = key.split("/")
+        if key in seen or any(
+            "/".join(parts[:i]) in seen for i in range(1, len(parts))
+        ):
+            raise ValidationError("directory roots overlap or have duplicate aliases")
+        seen.add(key)
+
+
+def validate_directory_history(
+    directories: Sequence[DirectoryRemoval],
+    removals: Sequence[tuple[str, str]],
+) -> None:
+    """Validate frozen/output history and its raw flat rows before mutation.
+
+    File-only callers retain legacy behavior. For directory callers this checks
+    the schema and serialized history limits shared by reader and writer; the
+    complete-output preflight and writer also bound all other receipt fields.
+    """
+    if len(directories) > REMOVE_HISTORY_MAX_DIRS:
+        raise ValidationError("directory row limit 1024 exceeded")
+    if sum(len(row.members) for row in directories) > REMOVE_HISTORY_MAX_MEMBERS:
+        raise ValidationError("directory member limit 100000 exceeded")
+    flat: dict[str, str] = {}
+    flat_aliases: set[str] = set()
+    for file, reason in removals:
+        file = _history_path(file, "flat file")
+        reason = _history_text(reason, "flat reason")
+        alias = _control_alias_key(file)
+        if alias in flat_aliases:
+            raise ValidationError(
+                "directory receipt has duplicate or alias flat removal rows"
+            )
+        flat_aliases.add(alias)
+        flat[file] = reason
+    audit_aliases: set[str] = set()
+    current_aliases: set[str] = set()
+    for row in directories:
+        _history_path(row.dir, "dir", directory=True)
+        root = _history_path(row.current_dir, "current_dir", directory=True)
+        reason = _history_text(row.reason, "reason")
+        for member in row.members:
+            file = _history_path(member.file, "member file")
+            current = _history_path(member.current_file, "member current_file")
+            source_dir = _history_path(
+                member.source_dir, "member source_dir", directory=True
+            )
+            if not file.startswith(source_dir + "/"):
+                raise ValidationError("directory member file is outside source_dir")
+            if not current.startswith(root + "/"):
+                raise ValidationError(
+                    "directory member current_file is outside current_dir"
+                )
+            audit_alias = _control_alias_key(file)
+            current_alias = _control_alias_key(current)
+            if audit_alias in audit_aliases or current_alias in current_aliases:
+                raise ValidationError("directory members have duplicate or alias paths")
+            audit_aliases.add(audit_alias)
+            current_aliases.add(current_alias)
+            if member.reason != reason or flat.get(file) != reason:
+                raise ValidationError(
+                    "directory member requires one matching flat removal reason"
+                )
+    _reject_root_overlaps([row.dir for row in directories])
+    _reject_root_overlaps([row.current_dir for row in directories])
+    # Original/current coordinate overlap across distinct rows is ambiguous,
+    # while a row's own old/current root may legitimately coincide or nest.
+    roots_by_alias: dict[str, set[int]] = {}
+    for index, row in enumerate(directories):
+        for root in (row.dir, row.current_dir):
+            roots_by_alias.setdefault(_control_alias_key(root), set()).add(index)
+    for root, owners in roots_by_alias.items():
+        parts = root.split("/")
+        if len(owners) > 1 or any(
+            roots_by_alias.get("/".join(parts[:i]), set()) - owners
+            for i in range(1, len(parts))
+        ):
+            raise ValidationError(
+                "directory original/current roots overlap across rows"
+            )
+    # Count exact history output incrementally, bounding intermediate rendering.
+    used_bytes = len("[press]\nverified = true\nremove_dirs_version = 1\n")
+    used_bytes += sum(
+        len(line.encode("utf-8")) + 1 for line in _directory_lines(directories)
+    )
+    for file, reason in removals:
+        rendered = f"\n[[press.remove]]\nfile = {toml_string(file)}\nreason = {toml_string(reason)}\n"
+        used_bytes += len(rendered.encode("utf-8"))
+        if used_bytes > REMOVE_HISTORY_MAX_BYTES:
+            raise ValidationError(
+                f"directory receipt byte limit {REMOVE_HISTORY_MAX_BYTES} exceeded"
+            )
+    if used_bytes > REMOVE_HISTORY_MAX_BYTES:
+        raise ValidationError(
+            f"directory receipt byte limit {REMOVE_HISTORY_MAX_BYTES} exceeded"
+        )
+
+
+def directory_history_from_receipt(
+    text: str | None, source: Identity
+) -> tuple[DirectoryRemoval, ...]:
+    """Read complete identity-bound directory history, refusing ambiguous input."""
+    if text is None:
+        return ()
+    try:
+        size = len(text.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise ValidationError("directory receipt is not valid UTF-8") from exc
+    if size > REMOVE_HISTORY_MAX_BYTES:
+        raise ValidationError(
+            f"directory receipt byte limit {REMOVE_HISTORY_MAX_BYTES} exceeded"
+        )
+    try:
+        parsed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        detail = ascii(str(exc))[:REMOVE_HISTORY_MAX_TEXT_BYTES]
+        raise ValidationError(f"directory receipt TOML is invalid: {detail}") from exc
+    table = parsed.get("press", {})
+    if not isinstance(table, dict):
+        return ()
+    if "remove_dir" not in table and "remove_dirs_version" not in table:
+        return ()
+    version = table.get("remove_dirs_version")
+    if type(version) is not int or version != 1:
+        raise ValidationError("directory receipt requires remove_dirs_version = 1")
+    if table.get("verified") is not True:
+        raise ValidationError("directory receipt is not a verified press")
+    if table.get("to") != source.as_dict_prompted():
+        raise ValidationError(
+            "directory receipt [press.to] does not match press-source.toml"
+        )
+    entries = table.get("remove_dir")
+    if not isinstance(entries, list):
+        raise ValidationError("directory receipt remove_dir must be an array of tables")
+    if len(entries) > REMOVE_HISTORY_MAX_DIRS:
+        raise ValidationError("directory row limit 1024 exceeded")
+    rows: list[DirectoryRemoval] = []
+    member_count = 0
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {
+            "dir",
+            "current_dir",
+            "reason",
+            "complete",
+            "members",
+        }:
+            raise ValidationError("directory receipt row has missing or unknown keys")
+        if entry["complete"] is not True:
+            raise ValidationError("directory receipt row must be complete")
+        members = entry["members"]
+        if not isinstance(members, list):
+            raise ValidationError("directory receipt members must be an array")
+        member_count += len(members)
+        if member_count > REMOVE_HISTORY_MAX_MEMBERS:
+            raise ValidationError("directory member limit 100000 exceeded")
+        reason = _history_text(entry["reason"], "reason")
+        parsed_members: list[RemovalMember] = []
+        for member in members:
+            if not isinstance(member, dict) or set(member) != {
+                "file",
+                "source_dir",
+                "current_file",
+            }:
+                raise ValidationError(
+                    "directory receipt member has missing or unknown keys"
+                )
+            parsed_members.append(
+                RemovalMember(
+                    file=_history_path(member["file"], "member file"),
+                    current_file=_history_path(
+                        member["current_file"], "member current_file"
+                    ),
+                    source_dir=_history_path(
+                        member["source_dir"], "member source_dir", directory=True
+                    ),
+                    reason=reason,
+                    missing_ok=True,
+                )
+            )
+        rows.append(
+            DirectoryRemoval(
+                dir=_history_path(entry["dir"], "dir", directory=True),
+                current_dir=_history_path(
+                    entry["current_dir"], "current_dir", directory=True
+                ),
+                reason=reason,
+                members=tuple(parsed_members),
+            )
+        )
+    flat_entries = table.get("remove", [])
+    if not isinstance(flat_entries, list):
+        raise ValidationError("directory receipt flat remove must be an array")
+    flat: list[tuple[str, str]] = []
+    for entry in flat_entries:
+        if not isinstance(entry, dict) or set(entry) != {"file", "reason"}:
+            raise ValidationError(
+                "directory receipt flat row has missing or unknown keys"
+            )
+        flat.append(
+            (
+                _history_path(entry["file"], "flat file"),
+                _history_text(entry["reason"], "flat reason"),
+            )
+        )
+    validate_directory_history(rows, flat)
+    return tuple(rows)
+
+
+def selected_directory_history(
+    text: str | None,
+    source: Identity,
+    *,
+    directory_declared: bool,
+) -> tuple[DirectoryRemoval, ...]:
+    """Preserve tolerant legacy discovery, then strictly validate recognized history."""
+    if directory_declared:
+        return directory_history_from_receipt(text, source)
+    table = _press_table(text)
+    if "remove_dir" not in table and "remove_dirs_version" not in table:
+        return ()
+    return directory_history_from_receipt(text, source)

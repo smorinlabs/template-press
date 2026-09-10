@@ -14,6 +14,7 @@ import shlex
 import subprocess  # nosec B404 — invokes git/uv on user-supplied targets
 import sys
 import tomllib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,7 +42,8 @@ from template_press.rebrand.receipt import (
     RECEIPT_REL,
     OriginDecision,
     invalidate_receipt,
-    read_receipt,
+    preflight_receipt,
+    receipt_present,
     removed_files_from_receipt,
     write_receipt,
 )
@@ -64,11 +66,20 @@ from template_press.rebrand.regen import (
     validate_control_files,
     validate_visibility_state,
 )
+from template_press.rebrand.removal_types import DirectoryRemoval, RemovalPlan
 from template_press.rebrand.remove import (
+    apply_removal_plan,
     apply_removals,
+    frozen_remove_command_conflicts,
+    plan_removals,
     preflight_remove_targets,
-    remove_command_conflicts,
-    render_remove_plan,
+    removal_receipt_metadata,
+    removal_receipt_text,
+    removal_rules_view,
+    render_frozen_remove_plan,
+    translate_removal_plan,
+    validate_removal_conflicts,
+    validate_removal_plan,
 )
 from template_press.rebrand.reset import (
     apply_resets,
@@ -80,6 +91,7 @@ from template_press.rebrand.rules import (
     ReplaceRule,
     ResetRule,
     Rules,
+    SelectedRules,
     load_selected_rules,
 )
 from template_press.rebrand.safety import (
@@ -96,17 +108,15 @@ from template_press.rebrand.substitutions import (
     validate_reset_visibility,
 )
 
+_EXISTING_RECEIPT_PROBLEM = (
+    "target already has a press receipt (press/press-receipt.toml); "
+    "re-press with --force"
+)
+
 
 def _fail(msg: str) -> int:
     print(f"error: {msg}", file=sys.stderr)
     return 2
-
-
-def _shell_join(argv: list[str]) -> str:
-    """Render `argv` as a copy-pasteable shell command for this platform."""
-    if sys.platform == "win32":
-        return subprocess.list2cmdline(argv)
-    return shlex.join(argv)
 
 
 def _partial_rewrite_restore_hint(target: Path) -> str:
@@ -116,9 +126,20 @@ def _partial_rewrite_restore_hint(target: Path) -> str:
     `RenameClosureUnauthorized` branch, which prints its own aggregated
     findings + remedy first and then appends this same hint.
     """
-    checkout = _shell_join(["git", "-C", str(target), "checkout", "--", "."])
-    clean = _shell_join(["git", "-C", str(target), "clean", "-fd"])
-    return f"target may be PARTIALLY rewritten; restore with `{checkout} && {clean}`"
+    checkout = ["git", "-C", str(target), "checkout", "--", "."]
+    clean = ["git", "-C", str(target), "clean", "-fd"]
+    if sys.platform == "win32":
+        return (
+            "target may be PARTIALLY rewritten; recovery arguments "
+            "(JSON arrays, not shell commands): "
+            f"checkout argv: {json.dumps(checkout, ensure_ascii=True)}; "
+            "then, only if checkout succeeds, "
+            f"cleanup argv: {json.dumps(clean, ensure_ascii=True)}"
+        )
+    return (
+        "target may be PARTIALLY rewritten; restore with "
+        f"`{shlex.join(checkout)} && {shlex.join(clean)}`"
+    )
 
 
 def _report_control_restore_problems(problems: list[str]) -> None:
@@ -145,7 +166,7 @@ def _empty_dir_paths(exc: RenameClosureUnauthorized) -> list[str]:
     ``rmdir_paths`` renders this return value as-is (a machine consumer
     joins it with its own known target root), while the prose remedy
     (`_print_closure_refusal_prose`) renders each path through `target /
-    path` so the printed `rmdir` command works from any caller cwd.
+    path` so the printed `rmdir` arguments work from any caller cwd.
     """
     return sorted(path for kind, path in exc.findings if kind == "empty-dir")
 
@@ -162,8 +183,13 @@ def _print_closure_refusal_prose(
     """
     preview, remove = exc.remedy_argv(target)
     print(str(exc))
-    print(f"preview: {_shell_join(preview)}")
-    print(f"remove:  {_shell_join(remove)}")
+    if sys.platform == "win32":
+        print("recovery arguments (JSON arrays, not shell commands):")
+        print(f"preview argv: {json.dumps(preview, ensure_ascii=True)}")
+        print(f"remove argv: {json.dumps(remove, ensure_ascii=True)}")
+    else:
+        print(f"preview: {shlex.join(preview)}")
+        print(f"remove:  {shlex.join(remove)}")
     print(
         "(destructive, and broader than the paths listed — run only if "
         "the preview shows nothing you keep)"
@@ -176,14 +202,26 @@ def _print_closure_refusal_prose(
             leaf = target / path
             if sys.platform == "win32":
                 argv = ["rmdir", str(leaf)]
+                print(f"rmdir argv: {json.dumps(argv, ensure_ascii=True)}")
+                print(
+                    "  # then rmdir each newly-empty parent up to "
+                    f"{json.dumps(str(prefix_abs), ensure_ascii=True)}"
+                )
             else:
                 argv = ["rmdir", "--", str(leaf)]
-            print(_shell_join(argv))
-            print(f"  # then rmdir each newly-empty parent up to {prefix_abs}")
+                print(shlex.join(argv))
+                print(f"  # then rmdir each newly-empty parent up to {prefix_abs}")
         if len(empty_dirs) > cap:
             print(f"  … ({len(empty_dirs) - cap} more)")
-    if getattr(rules, "clean", ()):
-        print(f"declared clean rules exist — run: press clean --target {target}")
+    if rules.clean:
+        argv = ["press", "clean", "--target", str(target)]
+        if sys.platform == "win32":
+            print(
+                "declared clean rules exist — use first, argv: "
+                f"{json.dumps(argv, ensure_ascii=True)}"
+            )
+        else:
+            print(f"declared clean rules exist — run: {shlex.join(argv)}")
 
 
 def _report_closure_refusal(
@@ -220,11 +258,8 @@ def check_preconditions(target: Path, force: bool, allow_dirty: bool) -> str | N
         return f"target does not exist or is not a directory: {target}"
     if not (target / ".git").exists():
         return f"target is not a git repository: {target}"
-    if read_receipt(target) is not None and not force:
-        return (
-            "target already has a press receipt (press/press-receipt.toml); "
-            "re-press with --force"
-        )
+    if receipt_present(target) and not force:
+        return _EXISTING_RECEIPT_PROBLEM
     if not allow_dirty:
         # A working-tree read on an untrusted target: hardening args
         # neutralize fsmonitor/hooksPath/ext-transport, but a repo-local
@@ -419,6 +454,104 @@ def display_name_problem(source: Identity, dest: Identity) -> str | None:
     return None
 
 
+def _load_rules_and_removal_receipt(target: Path) -> tuple[SelectedRules, str | None]:
+    """Capture one platform selection and read its correctly bounded receipt."""
+    selected = load_selected_rules(target)
+    return selected, removal_receipt_text(target, selected.rules)
+
+
+@dataclass(frozen=True)
+class _ReceiptPhases:
+    edits: tuple[tuple[str, Sequence[str], str], ...]
+    regenerations: tuple[tuple[str, Sequence[str]], ...]
+    resets: tuple[str, ...]
+    exempt: tuple[tuple[str, str], ...]
+
+
+def _receipt_phases(
+    edit_plans: Sequence[EditPlan],
+    regen_plans: Sequence[RegenerationPlan],
+    resets: Sequence[str],
+    regenerated: Sequence[str],
+) -> _ReceiptPhases:
+    """Build identical planned/final rows from source-coordinate phase records."""
+    return _ReceiptPhases(
+        # A failed edit withholds the receipt, so every planned edit is included.
+        edits=tuple(
+            (
+                plan.rule.file,
+                (plan.executable, *plan.rule.command[1:]),
+                plan.rule.expect,
+            )
+            for plan in edit_plans
+        ),
+        regenerations=tuple(
+            (plan.rule.file, (plan.executable, *plan.rule.command[1:]))
+            for plan in regen_plans
+            if plan.rule.file in regenerated
+        ),
+        resets=tuple(resets),
+        exempt=(
+            # Keep declared verify_exempt reasons verbatim (issue #81).
+            *(
+                (
+                    rel,
+                    next(
+                        (
+                            plan.rule.reason
+                            for plan in regen_plans
+                            if plan.rule.file == rel and plan.rule.verify_exempt
+                        ),
+                        "regenerated by declared command; validated by the "
+                        "press's post-command scan (hermetic verify skips it)",
+                    ),
+                )
+                for rel in regenerated
+            ),
+            *(
+                (rel, "reset to the declared stub (scanned at plan time)")
+                for rel in resets
+            ),
+        ),
+    )
+
+
+def _preflight_directory_receipt(
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    removal_plan: RemovalPlan,
+    previously_removed: Mapping[str, str],
+    renames: Mapping[str, str],
+    edit_plans: Sequence[EditPlan],
+    regen_plans: Sequence[RegenerationPlan],
+    resets: Sequence[str],
+    platform: str | None,
+    origin: OriginDecision | None,
+) -> None:
+    """Budget every potential successful row before the first target write."""
+    if not (removal_plan.directories or removal_plan.retained_history):
+        return
+    removals, directories = removal_receipt_metadata(removal_plan, previously_removed)
+    phases = _receipt_phases(
+        edit_plans, regen_plans, resets, [plan.rule.file for plan in regen_plans]
+    )
+    preflight_receipt(
+        source,
+        dest,
+        regenerations=phases.regenerations,
+        resets=phases.resets,
+        removals=removals,
+        exempt=phases.exempt,
+        edits=phases.edits,
+        platform=platform,
+        origin=origin,
+        clean=[rule.paths for rule in rules.clean],
+        remove_dirs=directories,
+        renames=renames,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="press rebrand", description=__doc__)
     parser.add_argument("--target", type=Path, required=True)
@@ -464,6 +597,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         problem = check_preconditions(target, args.force, args.allow_dirty)
         if problem is not None:
+            if problem == _EXISTING_RECEIPT_PROBLEM:
+                # Preserve legacy decoding diagnostics on this refusal only.
+                # Selected directory rules still require the bounded reader.
+                _load_rules_and_removal_receipt(target)
             return _fail(problem)
 
         # The answers file is read BEFORE the guard so the guard can ask
@@ -503,7 +640,7 @@ def main(argv: list[str] | None = None) -> int:
             message = (
                 "source and destination identities are identical — nothing to press"
             )
-            if read_receipt(target) is None:
+            if not receipt_present(target):
                 # A press that rewrote press-source.toml but died before its
                 # receipt landed leaves exactly this state: the target already
                 # declares the DESTINATION while nothing records a completed
@@ -519,9 +656,23 @@ def main(argv: list[str] | None = None) -> int:
         # Pipeline stability, ambiguity, and termination are validated together
         # by build_plan before any write.  Keeping the target rules here ensures
         # the adapter preserves each field's effective substring posture.
-        selected = load_selected_rules(target)
+        selected, receipt_text = _load_rules_and_removal_receipt(target)
         rules = selected.rules
-        plan = build_plan(target, source, dest, rules)
+        prior_removed = removed_files_from_receipt(receipt_text)
+        removal_plan = plan_removals(
+            target,
+            rules,
+            source=source,
+            receipt_text=receipt_text,
+            legacy_removed=prior_removed,
+        )
+        removal_receipt_metadata(removal_plan, prior_removed)
+        effective_rules = removal_rules_view(rules, removal_plan)
+        plan = build_plan(target, source, dest, effective_rules)
+        validate_removal_conflicts(rules, removal_plan, plan.renames)
+        removal_receipt_metadata(
+            translate_removal_plan(removal_plan, plan.renames), prior_removed
+        )
         rename_preflight = preflight_rename_noreplace(
             target,
             plan.table.rename_plan if plan.table is not None else plan.renames,
@@ -561,7 +712,7 @@ def main(argv: list[str] | None = None) -> int:
         # env, stub scans, and the translated reset-path identity scan — all
         # before any write, under the exit-2-nothing-written contract
         # (dry-run included).
-        gate_problems = preflight_excluded_files(target, rules)
+        gate_problems = preflight_excluded_files(target, effective_rules)
         # Edit problems are collected BEFORE regeneration problems so a
         # refusal listing both reads in the order the phases actually run
         # (E4): every edit precedes every regeneration. Edits are planned
@@ -588,11 +739,12 @@ def main(argv: list[str] | None = None) -> int:
             table=plan.table,
         )
         gate_problems += reset_problems
-        prior_removed = removed_files_from_receipt(read_receipt(target))
         gate_problems += preflight_remove_targets(
             target, rules, previously_removed=frozenset(prior_removed)
         )
-        gate_problems += remove_command_conflicts(rules, plan.renames)
+        gate_problems += frozen_remove_command_conflicts(
+            rules, removal_plan, plan.renames
+        )
         if plan.table is not None:
             try:
                 validate_reset_visibility(
@@ -614,6 +766,19 @@ def main(argv: list[str] | None = None) -> int:
             for problem in gate_problems:
                 print(f"  {problem}", file=sys.stderr)
             return 2
+        _preflight_directory_receipt(
+            source,
+            dest,
+            rules,
+            removal_plan,
+            prior_removed,
+            plan.renames,
+            edit_plans,
+            regen_plans,
+            [preview.rule.file for preview in reset_previews],
+            selected.platform,
+            origin,
+        )
         # Announced only now: every plan-time gate (including the closure
         # refusal that owns stdout under --diagnostics-json) is behind us,
         # so a notice or warning can no longer precede a refusal on the same
@@ -632,8 +797,8 @@ def main(argv: list[str] | None = None) -> int:
             print(render_regenerate_plan(regen_plans))
         if reset_previews:
             print(render_reset_plan(reset_previews, verbose=args.verbose))
-        if rules.remove:
-            print(render_remove_plan(rules))
+        if removal_plan.members or removal_plan.directories:
+            print(render_frozen_remove_plan(removal_plan))
         for warning in plan.removal_warnings:
             print(warning)
         for warning in plan.prefix_warnings:
@@ -682,6 +847,7 @@ def main(argv: list[str] | None = None) -> int:
         [(preview.rule, preview.stub_text) for preview in reset_previews],
         edit_plans=edit_plans,
         previously_removed=prior_removed,
+        removal_plan=removal_plan,
         platform=selected.platform,
         rename_preflight=rename_preflight,
         allow_unsafe_rename=args.force,
@@ -716,6 +882,7 @@ def _press(
     *,
     edit_plans: list[EditPlan] | None = None,
     previously_removed: dict[str, str] | None = None,
+    removal_plan: RemovalPlan | None = None,
     platform: str | None = None,
     rename_preflight: RenamePreflight | None = None,
     allow_unsafe_rename: bool = False,
@@ -723,17 +890,63 @@ def _press(
     table: SubstitutionTable | None = None,
     origin: OriginDecision | None = None,
 ) -> PressOutcome:
+    legacy_removed_was_supplied = previously_removed is not None
     if previously_removed is None:
         previously_removed = {}
     if edit_plans is None:
         edit_plans = []
     try:
+        if removal_plan is None and rules.remove_dirs:
+            receipt_text = removal_receipt_text(target, rules)
+            removal_plan = plan_removals(
+                target,
+                rules,
+                source=source,
+                receipt_text=receipt_text,
+                legacy_removed=(
+                    previously_removed if legacy_removed_was_supplied else {}
+                ),
+            )
+        if removal_plan is not None:
+            removal_receipt_metadata(removal_plan, previously_removed)
+        effective_rules = (
+            removal_rules_view(rules, removal_plan)
+            if removal_plan is not None
+            else rules
+        )
         if table is None:
-            fallback_plan = build_plan(target, source, dest, rules)
+            fallback_plan = build_plan(target, source, dest, effective_rules)
             rendered_rules = fallback_plan.rendered_rules
             table = fallback_plan.table
         elif rendered_rules is None:
             rendered_rules = declared_rule_triples(table)
+        if removal_plan is not None:
+            validate_removal_plan(removal_plan)
+            if table is None:
+                raise SafetyError(
+                    "substitution table is unavailable at removal preflight"
+                )
+            projected = table.rename_plan.as_mapping()
+            validate_removal_conflicts(rules, removal_plan, projected)
+            removal_receipt_metadata(
+                translate_removal_plan(removal_plan, projected), previously_removed
+            )
+            conflicts = frozen_remove_command_conflicts(rules, removal_plan, projected)
+            if conflicts:
+                raise SafetyError("; ".join(conflicts))
+            _preflight_directory_receipt(
+                source,
+                dest,
+                rules,
+                removal_plan,
+                previously_removed,
+                projected,
+                edit_plans,
+                regen_plans,
+                [rule.file for rule, _stub in resets],
+                platform,
+                origin,
+            )
     except (
         ValidationError,
         OSError,
@@ -773,11 +986,15 @@ def _press(
         # Declared removals run right after the rewrite/rename passes, at
         # their post-rename locations (P08 T2) — before any declared command
         # so a regeneration never observes a doomed file.
-        removed_rels = apply_removals(
-            target,
-            rules,
-            dict(report.renamed),
-            previously_removed=frozenset(previously_removed),
+        removed_rels = (
+            apply_removal_plan(target, removal_plan, dict(report.renamed))
+            if removal_plan is not None
+            else apply_removals(
+                target,
+                rules,
+                dict(report.renamed),
+                previously_removed=frozenset(previously_removed),
+            )
         )
         report.removed.extend(removed_rels)
         # Declared commands run against the FINAL tree: declared paths are
@@ -959,31 +1176,9 @@ def _press(
         # source-config write ABOVE. Ordered this way, an OSError there leaves
         # no receipt and the press can be re-run without --force. Nothing
         # between the two writes reads the receipt.
-        receipt_path = write_receipt(
-            target,
-            source,
-            dest,
-            report,
-            platform=platform,
-            origin=origin,
-            edits=[
-                # Every PLANNED edit, unconditionally: a failed edit withholds
-                # the receipt entirely, so reaching this write means each one
-                # ran and held its post-condition.
-                (
-                    plan.rule.file,
-                    (plan.executable, *plan.rule.command[1:]),
-                    plan.rule.expect,
-                )
-                for plan in edit_plans
-            ],
-            regenerations=[
-                (plan.rule.file, (plan.executable, *plan.rule.command[1:]))
-                for plan in regen_plans
-                if plan.rule.file in report.regenerated
-            ],
-            resets=report.reset,
-            removals=[
+        all_directories: tuple[DirectoryRemoval, ...] = ()
+        if removal_plan is None:
+            removals = [
                 # Recorded in DECLARED (source) coordinates, matching
                 # [[press.regenerate]] — that is the coordinate every later
                 # consumer (re-press preflight, verify tri-state) compares
@@ -994,8 +1189,7 @@ def _press(
                 for rule in rules.remove
                 if translate_path(rule.file, dict(report.renamed)) in report.removed
                 or rule.file in previously_removed
-            ]
-            + [
+            ] + [
                 # Prior records with no active declaration on THIS platform
                 # (or whose declaration was retired) carry forward with
                 # their recorded reasons: a cross-platform re-press must
@@ -1003,32 +1197,29 @@ def _press(
                 (file, reason)
                 for file, reason in previously_removed.items()
                 if file not in {rule.file for rule in rules.remove}
-            ],
-            exempt=[
-                # A declared verify_exempt reason travels VERBATIM into the
-                # receipt's exempt record (issue #81); the generic mechanism
-                # note covers the rest.
-                *(
-                    (
-                        rel,
-                        next(
-                            (
-                                plan.rule.reason
-                                for plan in regen_plans
-                                if plan.rule.file == rel and plan.rule.verify_exempt
-                            ),
-                            "regenerated by declared command; validated by the "
-                            "press's post-command scan (hermetic verify skips "
-                            "it)",
-                        ),
-                    )
-                    for rel in report.regenerated
-                ),
-                *(
-                    (rel, "reset to the declared stub (scanned at plan time)")
-                    for rel in report.reset
-                ),
-            ],
+            ]
+        else:
+            translated = translate_removal_plan(removal_plan, dict(report.renamed))
+            removals, all_directories = removal_receipt_metadata(
+                translated, previously_removed, removed=report.removed
+            )
+        phases = _receipt_phases(
+            edit_plans, regen_plans, report.reset, report.regenerated
+        )
+        receipt_path = write_receipt(
+            target,
+            source,
+            dest,
+            report,
+            platform=platform,
+            origin=origin,
+            clean=[rule.paths for rule in rules.clean],
+            edits=phases.edits,
+            regenerations=phases.regenerations,
+            resets=phases.resets,
+            removals=removals,
+            remove_dirs=all_directories,
+            exempt=phases.exempt,
         )
         # The receipt is the durable completion boundary. Interruptions during
         # the success-reporting prints below must not advise rolling back a

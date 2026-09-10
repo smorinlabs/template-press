@@ -19,6 +19,15 @@ file = "pyproject.toml"
 command = ["uv", "version", "0.1.0", "--frozen"]
 expect = 'version = "0.1.0"'
 
+# Stale build caches under the package directory (`__pycache__`, `.pytest_cache`
+# trees) are ignored, so they are invisible to the surface inventory and would
+# trip the rename-closure refusal (E2) when the package directory is renamed.
+# Declaring them lets `press clean --target <clone>` remove exactly those
+# before a press; the active-input preflight and git clean -X preserve the
+# complete surface snapshot.
+[[clean]]
+paths = ["src/{package_name}", "tests"]
+
 [[regenerate]]
 file = "uv.lock"
 command = ["uv", "lock"]
@@ -123,34 +132,17 @@ reason = "template-press project history is engine history, not a fork's"
 file = "projects/P12-origin-guard-and-diagnostics.md"
 reason = "template-press project history is engine history, not a fork's"
 
+[[remove]]
+file = "projects/P11A-ci-speed-and-cost-optimization.md"
+reason = "template-press project history is engine history, not a fork's"
+
 # projects/.gitkeep is deliberately kept (not removed): the PROJECTS.md
 # stub above refers readers to per-project files "under `projects/`", so a
 # pressed fork keeps an empty projects/ directory to hold them. .gitkeep is
 # not a rewrite candidate, so it stays silent under the E5(a)
 # declared-removal coverage warning.
 
-# docs/research/ holds this engine's own design research, not anything a
-# pressed fork inherits.
+# Engine design research is template history; the project scaffold is retained.
 [[remove]]
-file = "docs/research/0001-skill-trigger-optimization.md"
-reason = "engine research notes"
-
-[[remove]]
-file = "docs/research/0002-dev-tooling-wishlist.md"
-reason = "engine research notes"
-
-[[remove]]
-file = "docs/research/0003-init-post-init-analysis.md"
-reason = "engine research notes"
-
-[[remove]]
-file = "docs/research/0004-py-launch-blueprint-conformance-gaps.md"
-reason = "engine research notes"
-
-[[remove]]
-file = "docs/research/0005-scaffolder-identity-variant-handling.md"
-reason = "engine research notes"
-
-[[remove]]
-file = "docs/research/README.md"
+dir = "docs/research"
 reason = "engine research notes"
