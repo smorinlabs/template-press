@@ -1,0 +1,130 @@
+# Temporary experiment. The production CI workflow is unchanged.
+name: Windows vCPU benchmark
+run-name: Windows runner comparison - three samples per size
+
+on:
+  push:
+    branches: [ci/windows-vcpu-benchmark-20260910]
+    paths: [.github/workflows/windows-vcpu-benchmark.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: sample ${{ matrix.sample }} / ${{ matrix.vcpu }} vCPU
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sample: 1
+            vcpu: 4
+            runner: blacksmith-4vcpu-windows-2025
+          - sample: 1
+            vcpu: 2
+            runner: blacksmith-2vcpu-windows-2025
+          - sample: 2
+            vcpu: 2
+            runner: blacksmith-2vcpu-windows-2025
+          - sample: 2
+            vcpu: 4
+            runner: blacksmith-4vcpu-windows-2025
+          - sample: 3
+            vcpu: 4
+            runner: blacksmith-4vcpu-windows-2025
+          - sample: 3
+            vcpu: 2
+            runner: blacksmith-2vcpu-windows-2025
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # All jobs run the same unmodified main source, including native R3.
+          ref: b07d60f290af821806597e9f12523119aadd8493
+      - name: Record runner and source
+        timeout-minutes: 2
+        env:
+          REQUESTED_VCPU: ${{ matrix.vcpu }}
+          REQUESTED_RUNNER: ${{ matrix.runner }}
+          SAMPLE: ${{ matrix.sample }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ci-results | Out-Null
+          $computer = Get-CimInstance Win32_ComputerSystem
+          $processor = Get-CimInstance Win32_Processor
+          $blueprintUrl = 'https://github.com/smorinlabs/py-launch-blueprint.git'
+          $blueprint = git ls-remote $blueprintUrl HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot record blueprint revision' }
+          $data = [ordered]@{
+            requested_runner = $env:REQUESTED_RUNNER
+            requested_vcpu = [int]$env:REQUESTED_VCPU
+            sample = [int]$env:SAMPLE
+            actual_vcpu = [Environment]::ProcessorCount
+            logical_processors = $computer.NumberOfLogicalProcessors
+            memory_bytes = $computer.TotalPhysicalMemory
+            processor_name = $processor.Name
+            os_build = (Get-CimInstance Win32_OperatingSystem).BuildNumber
+            image_os = $env:ImageOS
+            image_version = $env:ImageVersion
+            runner_name = $env:RUNNER_NAME
+            source_revision = (git rev-parse HEAD)
+            lock_sha256 = (Get-FileHash uv.lock -Algorithm SHA256).Hash
+            blueprint_before = $blueprint
+            production_test_timeout_seconds = 900
+          }
+          $data | ConvertTo-Json | Tee-Object ci-results/runner.json
+          if ($data.actual_vcpu -ne $data.requested_vcpu) {
+            throw 'Runner allocation differs from requested size; exclude this sample'
+          }
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
+        with:
+          python-version: '3.13'
+      - name: Install bun (pinned for native R3)
+        uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: '1.3.14'
+      - name: Sync dev env
+        run: uv sync --locked --group dev
+      - name: Run edit visibility regressions first
+        timeout-minutes: 5
+        run: >-
+          uv run --no-sync python scripts/ci_run_pytest.py ci-results/preflight --
+          -q tests/rebrand/test_edit_execute.py
+          -k "configured_ignore_edit or external_ignore_input or zero_inodes"
+          --durations=25 --durations-min=1 -o faulthandler_timeout=120
+          --junitxml=ci-results/preflight.xml
+      - name: Run tests with coverage
+        # Same command as production CI. More time permits measuring a slowdown.
+        timeout-minutes: 30
+        run: >-
+          uv run --no-sync python scripts/ci_run_pytest.py ci-results/full --
+          -m "" -n auto --cov=template_press --cov-report=xml
+          --durations=25 --durations-min=1 -o faulthandler_timeout=120
+          --junitxml=ci-results/full.xml
+      - name: Verify external source stayed fixed
+        if: always()
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $before = Get-Content ci-results/runner.json | ConvertFrom-Json
+          $blueprintUrl = 'https://github.com/smorinlabs/py-launch-blueprint.git'
+          $after = git ls-remote $blueprintUrl HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot verify blueprint revision' }
+          $after | Set-Content ci-results/blueprint-after.txt
+          if ($before.blueprint_before -ne $after) {
+            throw 'External source changed during the experiment; exclude this sample'
+          }
+      - name: Upload benchmark evidence
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.vcpu }}c-${{ matrix.sample }}-${{ github.run_attempt }}
+          path: |
+            ci-results/
+            coverage.xml
+          retention-days: 14
+          if-no-files-found: error
