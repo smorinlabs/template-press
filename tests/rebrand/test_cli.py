@@ -519,7 +519,7 @@ def test_retry_after_a_receiptless_press_names_the_restore_path(
     err = capsys.readouterr().err
     assert "nothing to press" in err
     assert "an interrupted press may have left this state" in err
-    assert "checkout" in err and "clean -fd" in err
+    assert cli_module._partial_rewrite_restore_hint(src_target) in err
 
 
 def test_force_does_not_bypass_the_identical_identity_guard(
