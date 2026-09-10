@@ -7,9 +7,9 @@
 # actionlint and yamllint keep their old path-filtered behavior via the
 # `lint-changes` job (a workflow-level `paths:` filter can't be applied
 # per-job): on pull requests they are skipped unless matching files
-# changed. A skipped job satisfies a required status check — strictly
-# better than the old design, where a docs-only PR never reported the
-# context at all (which would hang a PR if the check were required).
+# changed. Each required context first validates its selectors, then skips
+# expensive steps on a valid false result. Missing or malformed selectors
+# must fail; GitHub expression equality alone ignores case.
 # Push events to main run everything (no base to diff against).
 
 name: lint
@@ -66,13 +66,34 @@ jobs:
   actionlint:
     name: actionlint
     needs: lint-changes
-    if: needs.lint-changes.outputs.workflows == 'true'
+    if: always()
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
     steps:
+      - name: Validate lint selectors
+        id: validate
+        env:
+          DETECTION_RESULT: ${{ needs.lint-changes.result }}
+          WORKFLOWS_CHANGED: ${{ needs.lint-changes.outputs.workflows }}
+          YAML_CHANGED: ${{ needs.lint-changes.outputs.yaml }}
+        run: |
+          set -euo pipefail
+          if [ "$DETECTION_RESULT" != success ]; then
+            echo "FAIL: lint change detection did not succeed" >&2
+            exit 1
+          fi
+          for selector in "$WORKFLOWS_CHANGED" "$YAML_CHANGED"; do
+            case "$selector" in
+              true|false) ;;
+              *) echo "FAIL: missing or invalid lint selector" >&2; exit 1 ;;
+            esac
+          done
+          echo "run=$WORKFLOWS_CHANGED" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
+        if: steps.validate.outputs.run == 'true'
       - name: Run actionlint
+        if: steps.validate.outputs.run == 'true'
         # ITM-029 round-3 decision: enable shellcheck (GitHub-hosted runners
         # ship shellcheck; no install needed).
         uses: rhysd/actionlint@v1.7.12
@@ -82,18 +103,41 @@ jobs:
   yamllint:
     name: yamllint
     needs: lint-changes
-    if: needs.lint-changes.outputs.yaml == 'true'
+    if: always()
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
     steps:
+      - name: Validate lint selectors
+        id: validate
+        env:
+          DETECTION_RESULT: ${{ needs.lint-changes.result }}
+          WORKFLOWS_CHANGED: ${{ needs.lint-changes.outputs.workflows }}
+          YAML_CHANGED: ${{ needs.lint-changes.outputs.yaml }}
+        run: |
+          set -euo pipefail
+          if [ "$DETECTION_RESULT" != success ]; then
+            echo "FAIL: lint change detection did not succeed" >&2
+            exit 1
+          fi
+          for selector in "$WORKFLOWS_CHANGED" "$YAML_CHANGED"; do
+            case "$selector" in
+              true|false) ;;
+              *) echo "FAIL: missing or invalid lint selector" >&2; exit 1 ;;
+            esac
+          done
+          echo "run=$YAML_CHANGED" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
+        if: steps.validate.outputs.run == 'true'
       - name: Install uv
+        if: steps.validate.outputs.run == 'true'
         uses: astral-sh/setup-uv@v10.0.0
       - name: Sync locked dev tools
+        if: steps.validate.outputs.run == 'true'
         # WL-001: locked via uv.lock, matching the pre-commit hook exactly.
         run: uv sync --locked --only-group dev
       - name: Run yamllint
+        if: steps.validate.outputs.run == 'true'
         run: uv run --no-sync yamllint -c .yamllint .
 
   bandit:

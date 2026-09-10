@@ -235,20 +235,43 @@ confirming the preview shows nothing worth keeping. When the target declares
 `[[clean]]` rules, the refusal also names `press clean` as the fix to run
 first. Pass `--diagnostics-json` to get the same information as one JSON
 object on stdout instead of prose (schema `{"schema", "code", "source_prefix",
-"findings", "total", "truncated", "phase", "preview_argv", "remove_argv"}`) —
+"findings", "total", "truncated", "phase", "preview_argv", "remove_argv",
+"rmdir_paths"}`) —
 the exit code is unchanged. The prose form, like the JSON, is printed to
 stdout — unlike every other exit-`2` refusal, it does not go to stderr
 with the `error:` prefix that `_fail` puts there, so a check that greps
 stderr for `error:` will not see it. The removal-coverage and prefix-only
 warnings documented below print to stdout as well.
 
+`rmdir_paths` is a sorted array of paths from the `empty-dir` findings, or
+an empty array when there are none. Each path is relative to the target
+repository passed through `--target`, not the caller's working directory.
+For example, `"rmdir_paths": ["src/demo_widget/empty"]` identifies an empty
+directory beneath that target. The array includes every such path even when
+`truncated` is `true`; the cap applies only to the prose rendering. These
+paths describe the refusal snapshot. They are not an instruction to delete
+directories without checking their current contents.
+
+On Windows, recovery guidance prints labeled JSON argument arrays, such as
+`preview argv:` and `remove argv:`, instead of shell command strings. Each
+array contains the command name followed by its literal arguments; it is not
+a command to paste into a shell. A command can be a shell built-in, such as
+Windows `rmdir`, so an array does not promise a standalone executable. This
+also applies to empty-directory,
+declared-clean and partial-rewrite restoration guidance. POSIX guidance
+continues to use shell-quoted commands. This presentation difference does not
+change the `preview_argv` or `remove_argv` arrays in `--diagnostics-json`.
+
 If the target tree changes between planning and apply — e.g. a new ignored
 file appears under a prefix being renamed — the same check runs again as an
 apply-time revalidation immediately before the first mutation. It prints the
 same aggregated findings and remedy argv, but never as JSON (the plan has
 already printed to stdout by then), and it exits `1` under the partial-
-rewrite contract (target may be partially rewritten; restore with
-`git -C <target> checkout . && git clean -fd`), not `2`.
+rewrite contract, not `2`. The target may be partially rewritten. Restoration
+guidance describes `git checkout -- .` followed by `git clean -fd`, both scoped
+to the target with `-C`; cleanup follows only if checkout succeeds. Windows
+prints the two argument arrays with that condition explicitly stated; POSIX
+joins the shell-quoted commands with `&&`.
 
 ### The ignore set
 
@@ -425,6 +448,59 @@ the press, after the rewrite/rename passes, at its post-rename location:
 file = "docs/maintenance-log.md"
 reason = "template maintenance history; forks must not inherit it"
 ```
+
+Use `dir` to remove the tracked files selected from a directory at planning
+time. Declare exactly one of `file` or `dir`, with a nonempty reason. Globs and
+per-directory exclusions are not supported.
+
+```toml
+[[remove]]
+dir = "research"
+reason = "template-only research notes"
+```
+
+The preview lists every selected file and the directory count, including zero
+files for an existing empty directory. Uncommitted or untracked work inside the
+directory refuses the press even with `--allow-dirty`. Symlinks, junctions and
+gitlinks refuse. A `.gitignore`, `.gitattributes`, `.gitmodules`, or configured
+Git visibility input anywhere under the directory also refuses. Active Git
+configuration files and present declared include paths are protected too, even
+when an include has no values or its branch condition is inactive. Move those
+inputs outside the directory before pressing. Ignored ordinary files are not
+added to the selection; they remain and can prevent the directory from becoming
+empty.
+
+Use each directory component's exact stored spelling. If Git records that root
+with a different spelling, reconcile the working tree and index before pressing.
+Filesystem aliases are refused; they cannot stand in for a complete selection.
+
+Removals run after rewriting and renaming, before declared commands. Only the
+selected members are deleted, at their successfully renamed locations. The
+selected directory and member ancestors are removed when empty. Unrelated empty
+child directories remain. A partial failure can leave changed files and writes
+no success receipt; use the reported Git recovery guidance.
+
+The receipt records each member's source path and its current location,
+including complete empty selections. `press verify` uses that recorded
+membership and keeps subsequently added files visible to its scan. Restored
+recorded files cannot be removed in the sandbox if they have become active Git
+visibility or configuration inputs. Without recorded history, `press verify` applies the same clean-directory check as a
+real press, so uncommitted work inside that directory refuses verification too.
+A later explicit real press can select newly committed members after its
+clean-directory checks. Missing directories require complete, verified history
+matching the current source identity. Staged content or mode changes to an
+already recorded absent member still refuse. Ambiguous old/current roots refuse. Older
+versions that do not understand `dir` or directory history cannot safely
+re-press this target.
+
+Directory removal receipts have a 16 MiB size limit. Before changing files, the
+press budgets the complete receipt, including all planned operations. This
+conservative check can refuse a receipt close to the limit when shorter counts
+or fewer executed renames would have produced a smaller final receipt.
+Directory-history paths and reasons each have a 4,096-byte UTF-8 limit. The
+press also budgets possible path growth if a later shortening rename is skipped.
+This can refuse a path near that limit even when completing every rename would
+have shortened it enough to fit.
 
 `reason` is required — a removal is a deliberate, documented decision.
 Targets must exist, be git-tracked, and be clean at plan time; a
@@ -666,3 +742,155 @@ bun — missing (declared to regenerate bun.lock)
 | `0` | Every tool resolved. |
 | `1` | At least one tool is missing. |
 | `2` | Configuration or usage error. |
+
+## `press clean`
+
+Removes ignored, untracked entries selected by a target's
+`press/press-rules.toml`. This clears stale build output that would otherwise
+trip the rename-closure refusal. `press clean` is a standalone verb because
+`press rebrand` dry-run and apply must observe the same tree. It never runs as
+a rebrand phase and writes no receipt.
+
+```toml
+[[clean]]
+paths = ["build/one.txt", "src/{package_name}/__pycache__"]
+# optional: platforms = ["darwin", "linux"]
+```
+
+Placeholders render from the SOURCE identity in `press/press-source.toml`
+(the rules file is never rewritten). Each path names one literal regular file
+or directory. Glob characters have no pattern meaning. Paths must be relative
+and contained. Unknown placeholders and control characters are refused at
+configuration load, and every rendered path is validated again at run time.
+
+### Selection behavior
+
+The type of the rendered path determines how `press clean` removes it.
+
+| Selected path | Eligible content | Removal mechanism | Scope |
+|---|---|---|---|
+| Regular file | The selected file when Git reports it ignored and untracked | `press clean` unlinks that exact directory entry | The parent directory and every sibling remain intact. |
+| Directory | Ignored, untracked entries at or below the directory | One hardened `git clean -fdX` command; `-ndX` under `--show` | The explicitly selected directory authorizes cleanup below it. |
+| Missing path, tracked file, or nonignored file | Nothing | Silent no-op | No file action or empty Git command is produced. |
+
+Regular-file classification uses the target repository's current index and
+ignore rules. `press clean` sends canonical root-relative filenames to
+`git check-ignore -z --stdin`, which treats each NUL-delimited name literally.
+It pins the repository-configured `core.excludesFile` or the null device, so it
+does not load Git's implicit default user ignore file. A regular file is never
+passed to `git clean`.
+
+Directory selection stays delegated to Git. `--literal-pathspecs` makes each
+directory argument literal, while `-X` limits removal to ignored entries. If a
+selected directory has an ignored proper ancestor, `press clean` refuses:
+Git can widen cleanup to that ancestor and remove unselected siblings. Select
+the ancestor itself only when that broader directory scope is intended.
+Duplicate paths and declarations covered by an explicitly selected directory
+are collapsed before execution. `press clean` never invokes Git with an empty
+path list and never uses `-x`, which would include nonignored files.
+
+Only exact regular files and real directories are supported for untracked leaf
+cleanup. A tracked leaf is a no-op. An untracked symlink or other special-file
+leaf is refused, and a declared junction leaf is always refused before type
+routing. Every declared path is checked through a finite, no-follow ancestor
+walk. Symlink or junction ancestors, non-directory ancestors, unexpected
+metadata errors, and nested repository boundaries are refused before cleanup.
+Git keeps its own nested-repository protection when it cleans an explicitly
+selected directory. No additional protection is promised for bare-repository
+metadata nested deeper inside an explicitly selected directory.
+
+### Output
+
+The following examples abbreviate the Git hardening flags with an ellipsis.
+Real `preview:` and `run:` lines contain the complete argument vector. Exact
+file lines apply Python's safe string representation to the canonical
+root-relative POSIX string, never to a `Path` object. Each path therefore
+occupies one terminal-safe line.
+
+```console
+$ press clean --target ../my-repo --show
+would remove file: 'build/one.txt'
+preview: /usr/bin/git -C /abs/my-repo --work-tree=/abs/my-repo -c core.fsmonitor= … --literal-pathspecs clean -ndX -- src/demo_widget/__pycache__
+Would remove src/demo_widget/__pycache__/
+$ press clean --target ../my-repo
+removed file: 'build/one.txt'
+run: /usr/bin/git -C /abs/my-repo --work-tree=/abs/my-repo -c core.fsmonitor= … --literal-pathspecs clean -fdX -- src/demo_widget/__pycache__
+Removing src/demo_widget/__pycache__/
+```
+
+`would remove file:` is a preview description; no shell removal command runs.
+`removed file:` appears only after the exact unlink succeeds. A batch with no
+eligible exact file and no selected directory prints nothing to stdout and
+exits `0`. Directory commands retain the truthful `preview:` or `run:` line
+and Git's own stdout and stderr. The echoed Git argument vector includes every
+hardening option, but the process also uses a scrubbed environment. Treat the
+line as a record of the Git process, not as an equivalent command to paste into
+an ambient shell. `--show` describes the current tree. A later apply can differ
+or refuse when a selected path, Git input, ignore rule, or index entry changes.
+Preview is not a guarantee of later execution.
+
+### Safety preconditions
+
+Before either preview or apply, `press clean` captures the same complete
+surface snapshot used by the rebrand engine. It checks the original rendered
+declaration scope before collapsing duplicate or covered paths. Cleanup refuses
+when that scope could remove either of these input groups:
+
+- an active Git visibility or repository-configuration input, or any present
+  declared Git configuration include candidate, that is absent from the
+  protected tracked-plus-nonignored surface; or
+- a present press-owned control file, such as `press/press-source.toml`, that
+  is absent from that protected surface.
+
+Tracked and nonignored inputs remain protected. Disjoint inputs remain outside
+the cleanup scope. Inactive `.gitignore` files below an ignored parent retain
+their normal Git behavior.
+
+The configured excludes path remains subject to a stricter rule. Relative and
+absolute configured forms are normalized after SOURCE placeholders render. A
+configured `core.excludesFile` equal to or below a selected path refuses even
+when the configured file is missing. Existing alternate-case aliases also
+refuse. An absent setting, the null device, and a disjoint missing path remain
+valid.
+
+All initial checks finish before any action or command line is printed. Apply
+then revalidates each frozen exact file, its real parent chain, the current Git
+index, and its ignore eligibility immediately before unlinking it. A changed
+type or identity, or a file that became tracked or nonignored, is preserved and
+causes cleanup to stop. A revalidation failure refuses that frozen action and
+stops subsequent cleanup. Revalidation never adds a new action.
+
+On Windows, an exact unlink that fails with `PermissionError` is retried once
+only when a fresh no-follow check proves the same file has the read-only
+attribute. `press clean` revalidates the file before clearing that attribute
+and again before retrying. If the retry fails, the file may remain with its
+read-only attribute cleared.
+
+Keep the selected paths, ignore files, repository configuration, and index
+stable throughout cleanup. The immediate checks reduce the mutation window,
+but they do not make classification and unlink atomic. `press clean` provides
+no rollback and writes no success receipt.
+
+### Exit status
+
+| Code | Meaning |
+|------|---------|
+| `0` | Every eligible action succeeded, preview succeeded, or nothing was eligible. |
+| `1` | An exact unlink was attempted and failed; a Git cleanup or preview process started and returned nonzero; or a later refusal or launch failure occurred after cleanup began. Subsequent actions stop, and earlier cleanup may have completed. |
+| `2` | A preflight or first pre-action check refused, or the initial cleanup process could not start, with no exact unlink attempted and no Git clean process started. Read-only Git queries may already have run. |
+
+Supported targets have an ordinary `.git` directory or a linked-worktree
+gitfile whose selected Git directory has a regular `gitdir` backlink to this
+target and a regular `commondir` file placing that directory directly under
+the common repository's `worktrees/` registry. Gitfiles pointing at foreign
+metadata, submodule roots, and standalone separate-Git-directory layouts
+without that registration are refused with exit `2`. Use an ordinary clone for
+those layouts. Read-only metadata queries may run before this refusal, but no
+cleanup runs.
+
+A successful `press rebrand` records the declaration in the receipt as
+`[[press.clean]] paths = [...]` (as declared, unrendered) so a later operator
+knows to run `press clean` before re-pressing; the row never means that a
+clean ran. `press check-tools` lists one `git — … (cleans …)` row per active
+rule. `press verify` ignores the declaration by construction: its sandbox
+receives inventoried entries only.

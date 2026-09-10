@@ -14,6 +14,7 @@ import tomllib
 import unicodedata
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import cast
 
 from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
@@ -137,6 +138,14 @@ class RemoveRule:
 
 
 @dataclass(frozen=True)
+class RemoveDirRule:
+    """One declared directory removal: expand tracked members at plan time."""
+
+    dir: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class EditRule:
     """One declared in-place edit: run ``command`` against ``file`` AFTER the
     replace pass has rewritten it (E4).
@@ -164,7 +173,7 @@ class EditRule:
 class _RemoveDeclaration:
     """One parsed removal plus its environment-independent selector."""
 
-    rule: RemoveRule
+    rule: RemoveRule | RemoveDirRule
     platforms: frozenset[str]
 
 
@@ -173,6 +182,25 @@ class _EditDeclaration:
     """One parsed edit plus its environment-independent selector."""
 
     rule: EditRule
+    platforms: frozenset[str]
+
+
+@dataclass(frozen=True)
+class CleanRule:
+    """One declared pre-press clean (E10, restricted v1).
+
+    Paths are stored as declared in SOURCE coordinates; rendering happens at
+    clean-command run time.
+    """
+
+    paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _CleanDeclaration:
+    """One parsed clean rule plus its environment-independent selector."""
+
+    rule: CleanRule
     platforms: frozenset[str]
 
 
@@ -232,6 +260,10 @@ class Rules:
     # on purpose: Rules is constructed positionally in places, and an
     # insertion higher up rebinds every later argument silently.
     edit: tuple[EditRule, ...] = ()
+    # Declared pre-press clean paths (E10), appended for positional safety.
+    clean: tuple[CleanRule, ...] = ()
+    # Declared directory removals (P11), appended after clean for positional safety.
+    remove_dirs: tuple[RemoveDirRule, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -251,6 +283,7 @@ class _ParsedRules:
     reset: tuple[_ResetDeclaration, ...] = ()
     remove: tuple[_RemoveDeclaration, ...] = ()
     edit: tuple[_EditDeclaration, ...] = ()
+    clean: tuple[_CleanDeclaration, ...] = ()
 
 
 DEFAULT_RULES = Rules(
@@ -297,14 +330,15 @@ _RULES_KEYS = frozenset(
 
 # The exact set of ROOT-level tables press-rules.toml legitimately carries —
 # every table some loader in this codebase actually reads from the file:
-# [rules], [[replace]], [[regenerate]], [[reset]], [[remove]], and [[edit]]
+# [rules], [[replace]], [[regenerate]], [[reset]], [[remove]], [[edit]], and
+# [[clean]]
 # here, [verify] in verify_cli.py's _load_verify_config (same file). An
 # unknown root key (e.g. a `[[replace]]` typo like `[[replcae]]`) must fail
 # loud instead of silently loading as zero rules.
 _ROOT_KEYS = frozenset(
-    {"rules", "replace", "verify", "regenerate", "reset", "remove", "edit"}
+    {"rules", "replace", "verify", "regenerate", "reset", "remove", "edit", "clean"}
 )
-_REMOVE_KEYS = frozenset({"file", "reason", "platforms"})
+_REMOVE_KEYS = frozenset({"file", "dir", "reason", "platforms"})
 
 _REGENERATE_KEYS = frozenset(
     {"file", "command", "env", "platforms", "scan", "verify_exempt", "reason"}
@@ -315,6 +349,7 @@ _RESET_KEYS = frozenset({"file", "stub", "stub_file", "platforms"})
 # based exemption, so both keys are unknown here rather than merely ignored.
 # The separate path-component `verify_ignore` policy remains unchanged.
 _EDIT_KEYS = frozenset({"file", "command", "expect", "env", "platforms"})
+_CLEAN_KEYS = frozenset({"paths", "platforms"})
 
 
 def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
@@ -715,30 +750,62 @@ def _parse_remove(entry: object) -> _RemoveDeclaration:
         raise ValidationError(
             f"{RULES_REL}: [[remove]] unknown key(s): {', '.join(sorted(unknown))}"
         )
-    file = _declared_rel_path("[[remove]] file", entry.get("file"))
-    _reject_reserved("[[remove]]", file)
-    if file.rsplit("/", 1)[-1] in {".gitignore", ".gitattributes", ".gitmodules"}:
+    has_file = "file" in entry
+    has_dir = "dir" in entry
+    if has_file == has_dir:
         raise ValidationError(
-            f"{RULES_REL}: [[remove]] {file!r}: Git visibility inputs cannot "
+            f"{RULES_REL}: [[remove]] requires exactly one of file or dir"
+        )
+    path_key = "dir" if has_dir else "file"
+    path = _declared_rel_path(f"[[remove]] {path_key}", entry.get(path_key))
+    if has_dir and any(char in path for char in "*?["):
+        raise ValidationError(
+            f"{RULES_REL}: [[remove]] dir {path!r} must not contain glob characters"
+        )
+    _reject_reserved("[[remove]]", path)
+    if has_dir:
+        from template_press.rebrand.pathing import ROOT_CONTROL
+
+        path_key = _control_alias_key(path)
+        if any(
+            control_key == path_key or control_key.startswith(path_key + "/")
+            for control_key in (_control_alias_key(control) for control in ROOT_CONTROL)
+        ):
+            raise ValidationError(
+                f"{RULES_REL}: [[remove]] dir {path!r} may not target or contain "
+                "press-owned control paths"
+            )
+    if has_file and path.rsplit("/", 1)[-1] in {
+        ".gitignore",
+        ".gitattributes",
+        ".gitmodules",
+    }:
+        raise ValidationError(
+            f"{RULES_REL}: [[remove]] {path!r}: Git visibility inputs cannot "
             f"be removed by declaration — deleting one changes Git's surface "
             f"after the rewrite plan was validated against it"
         )
     reason = entry.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         raise ValidationError(
-            f"{RULES_REL}: [[remove]] {file!r}: reason is required and must "
+            f"{RULES_REL}: [[remove]] {path!r}: reason is required and must "
             f"be a non-empty string — a removal is a deliberate, documented "
             f"decision, never a silent deletion"
         )
     if any(not ch.isprintable() for ch in reason):
         raise ValidationError(
-            f"{RULES_REL}: [[remove]] {file!r}: reason must not contain "
+            f"{RULES_REL}: [[remove]] {path!r}: reason must not contain "
             f"control or non-printable characters — it is interpolated into "
             f"the rendered plan"
         )
+    rule: RemoveRule | RemoveDirRule = (
+        RemoveDirRule(dir=path, reason=reason)
+        if has_dir
+        else RemoveRule(file=path, reason=reason)
+    )
     return _RemoveDeclaration(
-        rule=RemoveRule(file=file, reason=reason),
-        platforms=_parse_platforms(entry, "[[remove]]", file),
+        rule=rule,
+        platforms=_parse_platforms(entry, "[[remove]]", path),
     )
 
 
@@ -798,6 +865,51 @@ def _parse_edit(entry: object) -> _EditDeclaration:
     return _EditDeclaration(
         rule=EditRule(file=file, command=command, expect=expect, env=env),
         platforms=_parse_platforms(entry, "[[edit]]", file),
+    )
+
+
+def _parse_clean(entry: object) -> _CleanDeclaration:
+    """Parse one ``[[clean]]`` declaration (E10)."""
+    if not isinstance(entry, dict):
+        raise ValidationError(f"{RULES_REL}: [[clean]] entry must be a table")
+    unknown = set(entry) - _CLEAN_KEYS
+    if unknown:
+        raise ValidationError(
+            f"{RULES_REL}: [[clean]] unknown key(s): {', '.join(sorted(unknown))}"
+        )
+    raw_paths = entry.get("paths")
+    if (
+        not isinstance(raw_paths, list)
+        or not raw_paths
+        or any(not isinstance(path, str) for path in raw_paths)
+    ):
+        raise ValidationError(
+            f"{RULES_REL}: [[clean]] paths must be a non-empty list of strings"
+        )
+    paths: list[str] = []
+    for raw in raw_paths:
+        path = _declared_rel_path("[[clean]] paths", raw)
+        for token in re.findall(r"\{[^{}]*\}", path):
+            inner = token[1:-1]
+            if not re.fullmatch(r"[a-z_]+", inner) or inner not in ALLOWED_PLACEHOLDERS:
+                raise ValidationError(
+                    f"{RULES_REL}: [[clean]] path {path!r} references an invalid "
+                    f"or unknown placeholder {token!r}"
+                )
+        stripped = re.sub(r"\{[^{}]*\}", "", path)
+        if "{" in stripped or "}" in stripped:
+            raise ValidationError(
+                f"{RULES_REL}: [[clean]] path {path!r} has an unbalanced or "
+                f"nested brace"
+            )
+        if path in paths:
+            raise ValidationError(
+                f"{RULES_REL}: [[clean]] paths contains duplicate value {path!r}"
+            )
+        paths.append(path)
+    return _CleanDeclaration(
+        rule=CleanRule(paths=tuple(paths)),
+        platforms=_parse_platforms(entry, "[[clean]]", ", ".join(paths)),
     )
 
 
@@ -1005,9 +1117,19 @@ def _validate_writer_overlaps(
                     f"{_filesystem_alias_note(regenerate_file, reset_file)}"
                 )
 
+    file_removes = tuple(
+        declaration
+        for declaration in remove
+        if isinstance(declaration.rule, RemoveRule)
+    )
+    dir_removes = tuple(
+        declaration
+        for declaration in remove
+        if isinstance(declaration.rule, RemoveDirRule)
+    )
     seen_remove: dict[str, list[tuple[str, frozenset[str]]]] = {}
-    for declaration in remove:
-        file = declaration.rule.file
+    for declaration in file_removes:
+        file = cast(RemoveRule, declaration.rule).file
         key = _control_alias_key(file)
         for earlier_file, earlier in seen_remove.get(key, []):
             overlap = earlier & declaration.platforms
@@ -1018,8 +1140,8 @@ def _validate_writer_overlaps(
                     f"{_filesystem_alias_note(file, earlier_file)}"
                 )
         seen_remove.setdefault(key, []).append((file, declaration.platforms))
-    for remove_declaration in remove:
-        remove_file = remove_declaration.rule.file
+    for remove_declaration in file_removes:
+        remove_file = cast(RemoveRule, remove_declaration.rule).file
         for reset_declaration in reset:
             stub_file = reset_declaration.rule.stub_file
             if stub_file is None or _control_alias_key(stub_file) != _control_alias_key(
@@ -1050,6 +1172,69 @@ def _validate_writer_overlaps(
                         f"removed file cannot also be rebuilt or reset"
                         f"{_filesystem_alias_note(remove_file, other_file)}"
                     )
+
+    def _path_at_or_below(path: str, root: str) -> bool:
+        path_key = _control_alias_key(path)
+        root_key = _control_alias_key(root)
+        return path_key == root_key or path_key.startswith(root_key + "/")
+
+    for index, directory in enumerate(dir_removes):
+        directory_path = cast(RemoveDirRule, directory.rule).dir
+        from template_press.rebrand.pathing import ROOT_CONTROL
+
+        if _control_alias_key(directory_path) in {
+            _control_alias_key(path) for path in ROOT_CONTROL
+        }:
+            raise ValidationError(
+                f"{RULES_REL}: [[remove]] dir {directory_path!r} targets a "
+                "press-owned control path"
+            )
+        for other in dir_removes[index + 1 :]:
+            other_dir = cast(RemoveDirRule, other.rule).dir
+            overlap = directory.platforms & other.platforms
+            if overlap and (
+                _path_at_or_below(directory_path, other_dir)
+                or _path_at_or_below(other_dir, directory_path)
+            ):
+                raise ValidationError(
+                    f"{RULES_REL}: [[remove]] dir {directory_path!r} has "
+                    f"overlap at {other_dir!r} on {sorted(overlap)!r}"
+                )
+        for other in file_removes:
+            other_file = cast(RemoveRule, other.rule).file
+            overlap = directory.platforms & other.platforms
+            if overlap and _path_at_or_below(other_file, directory_path):
+                raise ValidationError(
+                    f"{RULES_REL}: [[remove]] dir {directory_path!r} has "
+                    f"overlap at {other_file!r} on {sorted(overlap)!r}"
+                )
+        for other_kind, others in (
+            ("[[regenerate]]", regenerate),
+            ("[[reset]]", reset),
+            ("[[edit]]", edit),
+        ):
+            for other in others:
+                other_path = other.rule.file
+                overlap = directory.platforms & other.platforms
+                if overlap and (
+                    _path_at_or_below(other_path, directory_path)
+                    or _path_at_or_below(directory_path, other_path)
+                ):
+                    raise ValidationError(
+                        f"{RULES_REL}: [[remove]] dir {directory_path!r} has "
+                        f"{other_kind} overlap at {other_path!r} on "
+                        f"{sorted(overlap)!r}"
+                    )
+        for reset_declaration in reset:
+            stub_file = reset_declaration.rule.stub_file
+            if stub_file is None:
+                continue
+            overlap = directory.platforms & reset_declaration.platforms
+            if overlap and _path_at_or_below(stub_file, directory_path):
+                raise ValidationError(
+                    f"{RULES_REL}: [[remove]] dir {directory_path!r} has "
+                    f"stub_file overlap at {stub_file!r} on {sorted(overlap)!r}"
+                )
 
     # Keyed by filesystem-alias identity, not by declared string: `meta.toml`
     # and `META.TOML.` can be one file on case-insensitive macOS or Windows,
@@ -1089,7 +1274,11 @@ def _validate_writer_overlaps(
             ("[[remove]]", remove),
         ):
             for other in others:
-                other_file = other.rule.file
+                if other_kind == "[[remove]]" and not isinstance(
+                    other.rule, RemoveRule
+                ):
+                    continue
+                other_file = cast(RemoveRule, other.rule).file
                 if _control_alias_key(other_file) != key:
                     continue
                 overlap = other.platforms & edit_declaration.platforms
@@ -1152,6 +1341,11 @@ def _parse_rules(target: Path) -> _ParsedRules:
     raw_edit = data.get("edit", [])
     if not isinstance(raw_edit, list) or any(not isinstance(e, dict) for e in raw_edit):
         raise ValidationError(f"{RULES_REL}: [[edit]] must be an array of tables")
+    raw_clean = data.get("clean", [])
+    if not isinstance(raw_clean, list) or any(
+        not isinstance(e, dict) for e in raw_clean
+    ):
+        raise ValidationError(f"{RULES_REL}: [[clean]] must be an array of tables")
     substring_fields = frozenset(_str_list(table, "substring_rewrite_fields", []))
     bad_substring = substring_fields - ALLOWED_PLACEHOLDERS
     if bad_substring:
@@ -1190,6 +1384,7 @@ def _parse_rules(target: Path) -> _ParsedRules:
     reset = tuple(_parse_reset(e) for e in raw_reset)
     remove = tuple(_parse_remove(e) for e in raw_remove)
     edit = tuple(_parse_edit(e) for e in raw_edit)
+    clean = tuple(_parse_clean(e) for e in raw_clean)
     _validate_writer_overlaps(regenerate, reset, remove, edit)
     _validate_exclude_membership(regenerate, reset, edit, exclude_files, exclude_dirs)
     return _ParsedRules(
@@ -1207,6 +1402,7 @@ def _parse_rules(target: Path) -> _ParsedRules:
         reset=reset,
         remove=remove,
         edit=edit,
+        clean=clean,
     )
 
 
@@ -1222,6 +1418,23 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
         declaration.rule
         for declaration in parsed.edit
         if platform in declaration.platforms
+    )
+    active_clean = tuple(
+        declaration.rule
+        for declaration in parsed.clean
+        if platform in declaration.platforms
+    )
+    active_remove = tuple(
+        declaration.rule
+        for declaration in parsed.remove
+        if platform in declaration.platforms
+        and isinstance(declaration.rule, RemoveRule)
+    )
+    active_remove_dirs = tuple(
+        declaration.rule
+        for declaration in parsed.remove
+        if platform in declaration.platforms
+        and isinstance(declaration.rule, RemoveDirRule)
     )
     # Exact strings, deliberately: config load already refused every pairing
     # whose exclusion entry or discarding writer was spelled differently from
@@ -1252,12 +1465,10 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
             for declaration in parsed.reset
             if platform in declaration.platforms
         ),
-        remove=tuple(
-            declaration.rule
-            for declaration in parsed.remove
-            if platform in declaration.platforms
-        ),
+        remove=active_remove,
         edit=active_edits,
+        clean=active_clean,
+        remove_dirs=active_remove_dirs,
     )
     return SelectedRules(platform=platform, rules=rules)
 

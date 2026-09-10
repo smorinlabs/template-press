@@ -62,12 +62,13 @@ class GitConfigInput:
 
 @dataclass(frozen=True)
 class SurfaceSnapshot:
-    """Sorted target entries plus the Git inputs that selected them."""
+    """Sorted entries, active Git inputs, and declared include candidates."""
 
     entries: tuple[SurfaceEntry, ...]
     visibility_inputs: tuple[VisibilityInput, ...]
     git_config_inputs: tuple[GitConfigInput, ...] = ()
     git_config_effective_sha256: str = ""
+    git_config_include_paths: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -128,6 +129,7 @@ class _ConfigSourceState:
     condition_inputs: tuple[_NodeStamp, ...]
     index_inputs: tuple[_NodeStamp, ...]
     shared_indexes: tuple[_SharedIndexStamp, ...]
+    include_paths: tuple[Path, ...]
 
 
 def _run_git(
@@ -533,6 +535,8 @@ def _core_excludes_path(target: Path) -> Path | None:
     if not text:
         return None
     path = Path(text)
+    if path == Path(os.devnull):
+        return None
     return path if path.is_absolute() else target / path
 
 
@@ -637,10 +641,11 @@ def _config_source_paths(
             origin_aliases[reported] = include
             if key == "include.path":
                 unconditional_includes.add(include)
-    # Existing active conditional includes appear as file origins. A missing
-    # conditional target cannot be distinguished from an inactive one without
-    # reimplementing Git's condition language, so its parent directory is the
-    # portable change token; inactive existing targets remain irrelevant.
+    # Active conditional includes with values appear as file origins. Git
+    # cannot distinguish an empty active target from an inactive or missing
+    # conditional target here, so its parent remains the change token. The
+    # declared candidates are exposed separately for conservative cleanup;
+    # they do not become active config sources for other consumers.
     all_sources = origins | unconditional_includes
     return (
         tuple(sorted(all_sources, key=lambda path: path.as_posix())),
@@ -759,6 +764,7 @@ def _config_source_state(target: Path) -> _ConfigSourceState:
         tuple(_node_stamp(path) for path in sorted(condition_paths)),
         tuple(_node_stamp(path) for path in sorted(index_paths)),
         tuple(_shared_index_stamp(path) for path in sorted(shared_paths)),
+        includes,
     )
 
 
@@ -985,6 +991,7 @@ def _capture_candidate(
         visibility_after.inputs,
         config_inputs,
         config_after.effective_sha256,
+        config_after.include_paths,
     )
 
 

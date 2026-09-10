@@ -922,22 +922,17 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
 def _rename_covered_paths(steps: Collection[RenameStep]) -> set[str]:
     """Every SOURCE-coordinate leaf path a planned rename moves.
 
-    ``RenameStep.old_prefix`` is only a source coordinate for a step's OWN
-    pass; a later fixed-point pass (spec E5a round 2 fix) computes
-    ``old_prefix`` from the CURRENT path left by earlier passes — an
-    intermediate coordinate a tracked (pre-rename) path would never match.
-    ``RenameStep.source_entries`` is the field the rename planner itself
-    keeps in true SOURCE coordinates across every pass (it is threaded
-    through ``current_by_source`` keyed by the original path, never the
-    intermediate one — see ``compile_substitution_table``'s rename-plan
-    loop), so reading it directly here is correct for a chained rename
-    regardless of how many passes resolved it, with no prefix arithmetic
-    needed.
+    ``source_entries`` and the captured ``closure`` keep original paths
+    across rename passes, unlike an intermediate ``old_prefix``. The
+    closure also includes excluded descendants physically carried by a
+    directory move. Retain source entries for plans without a captured
+    closure; the caller intersects this union with the tracked snapshot.
     """
 
     covered: set[str] = set()
     for step in steps:
         covered.update(step.source_entries)
+        covered.update(path for path, kind in step.closure if kind != "directory")
     return covered
 
 
@@ -997,6 +992,7 @@ def removal_coverage_warnings(
         for rule in (*rules.remove, *rules.reset)
         if "/" in rule.file
     }
+    declared_dirs.update(rule.dir.split("/", 1)[0] for rule in rules.remove_dirs)
     warnings: list[str] = []
     for dirname in sorted(by_dir):
         if dirname in ("src", "tests", source.package_name):

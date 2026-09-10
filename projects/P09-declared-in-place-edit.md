@@ -1,6 +1,10 @@
 # P09 — Declared in-place edit (`[[edit]]`) and command-phase snapshot gate
 
-- **Status:** `[ ]` scoped, not started
+- **Status:** `[x]` completed
+- **Closeout:** [PR #116](https://github.com/smorinlabs/template-press/pull/116)
+  merged on 2026-09-05 at `f8b74a4554c7227d056c11a360f3cb614185341c`.
+  The declared edit mechanism and command-phase snapshot gate are included in
+  the Group 3B baseline. Tracking reconciled against the merged PR on 2026-09-06.
 
 A declared `[[edit]]` table: the file is rewritten by the replace pass, then
 edited in place by a declared command with a required `expect`
