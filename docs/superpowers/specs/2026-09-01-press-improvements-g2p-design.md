@@ -28,6 +28,17 @@ Engine change, diagnostics only; the refusal stays.
 - Rejected: carry, delete, `--clean-ignored`, default-authorized globs, skip ignored nodes, non-refusing dry-run.
 Tests (Codex list, 8): aggregation of two ignored leaves + one empty dir (count, cap, kinds, legacy substring); gitlink still wins; each structural refusal immediate; `test_substitution_safety.py:107` preserved; dry-run and apply exit 2 with the same structured code and no writes; hostile filename round-trip; `git clean -X` integration; focused suite + `just check` + `just matrix`.
 
+**P12 presentation amendment (2026-09-10):** the owner selected the four
+corrections in the P12 value evaluation, including structured Windows remedy
+presentation. Windows prose uses labeled JSON argument arrays for preview,
+removal, empty-directory, declared-clean and partial-restoration guidance.
+They describe the command and literal arguments, not pasteable shell commands
+or a promise that a shell built-in is a standalone executable.
+Partial restoration states that cleanup follows only if checkout succeeds.
+POSIX keeps shell-quoted commands. The structured refusal schema and its argv
+values, preview-first warning, refusal behavior and cleanup scope are unchanged.
+The CLI reference also documents the already emitted `rmdir_paths` array.
+
 ### E10 — `[[clean]]` (new mechanism, restricted v1)
 - Declaration: `[[clean]] paths = ["src/{package_name}", "tests"]` (+ optional `platforms`); placeholders render from the **source** identity because `press/press-rules.toml` is never rewritten (ROOT_CONTROL). Reject unknown placeholders and control characters.
 - The engine itself runs `git --literal-pathspecs -C <target> clean -fdX -- <paths>`; no arbitrary argv in v1 (arbitrary argv is a separate future increment requiring surface-snapshot equality + `git status --porcelain -z` + hidden-bit sweep via `validate_visibility_state`, `regen.py:760`).

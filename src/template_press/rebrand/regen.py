@@ -753,6 +753,8 @@ def preflight_excluded_files(target: Path, rules: Rules) -> list[str]:
     """
     regenerated = {r.file for r in rules.regenerate}
     reset_files = {r.file for r in rules.reset}
+    # Directory callers supply a removal_rules_view with frozen current paths.
+    # This gate never expands directory declarations or changes the inventory.
     removed_files = {r.file for r in rules.remove}
     problems: list[str] = []
     for rel in sorted(tracked_paths(target)):

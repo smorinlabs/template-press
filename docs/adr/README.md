@@ -36,6 +36,7 @@ Start from [`template.md`](template.md).
 | [0015](0015-one-logging-pipeline-two-profiles.md) | One logging pipeline, two front-end profiles (CLI vs web policy) | Accepted |
 | [0016](0016-app-short-name-placeholder.md) | App short name is an obvious placeholder (`acmeapp`), not a brand | Accepted |
 | [0017](0017-declared-in-place-edit.md) | Declared in-place edits run before regenerations | Accepted |
+| [0018](0018-declared-pre-press-clean.md) | Declared pre-press clean is a standalone verb over `git clean -X` | Accepted |
 
 ## Note on historical decisions
 
