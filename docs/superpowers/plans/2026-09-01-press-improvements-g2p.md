@@ -490,6 +490,11 @@ def test_accept_origin_mismatch_never_covers_pyproject_fields(
 
 ## PR group 3a — `[[edit]]` (P09, includes E11)
 
+> **Delivered; reconciled 2026-09-10.** [PR #116](https://github.com/smorinlabs/template-press/pull/116)
+> merged on September 5. [P09](../../../projects/P09-declared-in-place-edit.md)
+> is the completed delivery record. Tasks 12–15 below preserve the original
+> plan; their unchecked historical steps are not remaining implementation work.
+
 ### Task 12: `[[edit]]` rules parsing
 
 **Files:** `src/template_press/rebrand/rules.py` (`EditRule`, `_EditDeclaration`, `_parse_edit`, `_ROOT_KEYS`, `_validate_writer_overlaps`), `tests/rebrand/test_edit_rules.py` (new)
@@ -575,6 +580,17 @@ def test_edit_rule_refusals(src_target, body, needle):
 
 ## PR group 3b — `[[clean]]` (P10)
 
+> **Delivered; reconciled 2026-09-10.** [PR #122](https://github.com/smorinlabs/template-press/pull/122)
+> merged on September 7. [P10](../../../projects/P10-declared-pre-press-clean.md)
+> records completed delivery, including individual-file and directory cleanup.
+> The later plan below remains authoritative over Tasks 16–18.
+
+> **Superseded (2026-09-05 planning gate).** Tasks 16–18 below are kept for
+> history. The implementation-ready plan, reconciled against merged `main`
+> at `bddbae3`, is `docs/superpowers/plans/2026-09-05-p10-declared-pre-press-clean.md`;
+> the reconciliation and review record is
+> `docs/superpowers/specs/reviews-2026-09-05/P10-planning-gate.md`.
+
 ### Task 16: `[[clean]]` rules parsing
 
 **Files:** `rules.py` (`CleanRule(paths: tuple[str, ...])`, `_parse_clean`, `_ROOT_KEYS`), `tests/rebrand/test_clean_rules.py`
@@ -603,6 +619,14 @@ def test_edit_rule_refusals(src_target, body, needle):
 
 ## PR group 3c — `[[remove]] dir` (P11)
 
+> **Superseded and delivered; reconciled 2026-09-10.** The
+> [September 6 P11 plan](2026-09-06-p11-directory-removals.md) replaced Tasks
+> 19–22 below. [PR #123](https://github.com/smorinlabs/template-press/pull/123)
+> merged on September 9; [P11-T07](../../../projects/P11-directory-removals.md)
+> records completed native validation, review and delivery. The final contract
+> retains project scaffolding. The old whole-`projects` removal proposal is
+> historical and must not be implemented as an unfinished task.
+
 ### Task 19: Phase decision note + adversarial review
 
 **Files:** `docs/superpowers/specs/2026-09-01-remove-dir-phase.md`
@@ -621,11 +645,29 @@ def test_edit_rule_refusals(src_target, body, needle):
 
 - [ ] **Step 1: Failing tests:** the required test — a `[[replace]]` rename moves a file into the dir's expansion between plan and apply → unlinked set equals the dry-run set exactly; receipt names each path; mid-removal `SafetyError` → no receipt; emptied directory gone; `press verify` on the pressed target green. **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS; `just matrix` green. **Step 5:** Commit: `feat(remove): apply directory removals with receipt and verify parity`
 
-### Task 22: PR3c close — replace this repo's per-file `[[remove]]` rows (Task 4) with `dir = "projects"` / `dir = "docs/research"`; `just matrix`; docs `cli.md` `[[remove]] dir`; PR `feat: directory removals ([[remove]] dir) (P11)`; merge.
+### Task 22: Historical native-rule migration proposal — superseded
+
+The original proposal removed both `projects` and `docs/research` as whole
+folders. The later P11 plan instead preserves project scaffolding and migrates
+the native research cleanup. Its completed delivery is PR #123; there is no
+remaining whole-`projects` removal task.
 
 ---
 
 ## Final
 
-- [ ] `project-audit` skill: P09–P12 rows flipped to `[x]`; changelog entries via release-please on merge.
-- [ ] Append to the fork's improvement log (`~/c/gmail2pdf/docs/blueprint-feedback-log.md`) a status line per entry #4, #5, #7, #10, #15 pointing at the shipped PRs; reclassify #15 per spec E8.
+- [x] Group 3 delivery: P09, P10 and P11 are merged and their project records
+  are complete. [P11A](../../../projects/P11A-ci-speed-and-cost-optimization.md)
+  also closed with [PR #124](https://github.com/smorinlabs/template-press/pull/124),
+  merge `7ac8c1744485081d973ac6b910f13de3fb459d83`. Its automatic main-branch CI
+  passed. This records delivery; it does not claim a full project audit ran.
+- [ ] [P12](../../../projects/P12-origin-guard-and-diagnostics.md) remains open
+  for the owner-requested evaluation of ten follow-ups. Its two base parts are
+  merged. Do not mark P12 complete from Group 3 delivery.
+- [ ] Package publication is separate: release-please manages its release PR;
+  merging implementation PRs does not publish their behavior to package users.
+- [ ] Separate downstream follow-up, outside P12 and the current Template Press
+  reconciliation: append delivery references for entries #4, #5, #7, #10 and #15
+  in the fork's feedback log (`~/c/gmail2pdf/docs/blueprint-feedback-log.md`);
+  reclassify #15 per spec E8. This historical cross-repository task is not a
+  prerequisite for evaluating or closing Template Press P12.

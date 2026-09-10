@@ -8,6 +8,7 @@ wheels/
 .ropeproject
 .coverage
 coverage.xml
+ci-results/
 htmlcov/
 docs/build/
 .DS_Store
