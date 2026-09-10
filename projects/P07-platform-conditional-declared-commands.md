@@ -1,6 +1,9 @@
 # P07 — Platform-conditional declared commands
 
-- **Status:** `[~]` in progress
+- **Status:** `[~]` in progress, reconciled 2026-09-10. Implementation and
+  `P07-T06` validation completed in merged PR #79. Only `P07-T07`, disposition
+  of two outstanding review comments, remains open; no native validation is
+  missing.
 
 Platform-scoped rules; only matching platform triggers
 
@@ -22,6 +25,9 @@ Platform-scoped rules; only matching platform triggers
   `[[reset]]` rules and cross-mechanism overlap validation
 
 ### Decisions
+
+These decisions record the original P07 delivery scope. Later removal, edit
+and clean projects extended platform selection under their own contracts.
 
 - **D1 — Per-entry platform selector:** Add an optional `platforms` key to
   each `[[regenerate]]` and `[[reset]]` declaration. Omitting `platforms`
@@ -192,12 +198,50 @@ platforms = ["darwin", "linux", "win32"]
       `Operating System :: OS Independent` package classifier with
       `Operating System :: MacOS`, `Operating System :: POSIX :: Linux`, and
       `Operating System :: Microsoft :: Windows`.
-- [ ] [P07-T06] Run the focused rule, preflight, CLI, check-tools, verify,
+- [x] [P07-T06] Run the focused rule, preflight, CLI, check-tools, verify,
       receipt, and native-acceptance suites; run `just check` and `just matrix`;
       verify the Linux/macOS/Windows CI matrix and native Windows/POSIX R3
       self-press; perform an adversarial review against D1-D8 and the P04-P06
       safety contracts; fix reproduced in-scope defects; then rerun every
       affected gate before merge.
+- [ ] [P07-T07] Disposition the two outstanding PR #79 review comments.
+      The `_parse_platforms` mapping annotation improvement still applies;
+      implement it with focused validation or explicitly decline it with a
+      rationale, then reply and resolve the thread. Refute the incorrect
+      macOS-classifier claim with the official PyPI list and resolve that
+      thread. The evidence and recommendations below do not claim either
+      GitHub thread has been resolved.
+
+### Delivery and validation evidence
+
+Rechecked on 2026-09-10. [PR #79](https://github.com/smorinlabs/template-press/pull/79)
+merged on 2026-08-17 at `bd520857daa967ad36780030a101418011e294c8`.
+Its final head was `be7e0a704237e26865237f4ace169071d9ecb19b`, and the merge
+is an ancestor of the current source. These are historical delivery results,
+not a new full implementation test run for this tracking change.
+
+| Gate | Evidence at the delivered revision |
+| --- | --- |
+| Focused suites | The execution record reports 167 rule/preflight, 120 CLI/check-tools/verifier, and 90 receipt/action tests passed. Earlier selector implementation coverage passed 143 tests. |
+| Full local pipeline | `just check` passed after the final CI correction: 975 passed, 4 deselected, followed by passing Ruff, ty, YAML, spelling and EditorConfig. The result appears in the execution log and PR body. |
+| Local live acceptance | Final `just matrix`: 4 passed, 5 deselected. The harness exercised committed source. |
+| Cross-platform CI | [Run 31990554477](https://github.com/smorinlabs/template-press/actions/runs/31990554477), event `pull_request`, head `be7e0a7`, passed all six Linux/macOS/Windows Python 3.12/3.13 jobs. Those Python versions describe that historical run. |
+| Native acceptance | [Run 31990554494](https://github.com/smorinlabs/template-press/actions/runs/31990554494), same event/head, passed `r1-r2-r3-posix` and `r3-windows`. |
+| Adversarial review and repair | The D1–D8/P04–P06 audit found missing Bun provisioning in the general CI matrix. A workflow-contract test first failed, then commit `be7e0a7` installed pinned Bun. The full local pipeline and live matrix passed again; the audit reported no second reproduced defect. |
+
+The final native and CI results satisfy the part of T06 that was still pending
+when the draft PR opened. The separate review comments below were not closed
+during that delivery and are now tracked explicitly as T07.
+
+### Outstanding review disposition
+
+Both GitHub threads were still unresolved when checked on 2026-09-10. Their
+existence is distinct from the completed implementation tests.
+
+| Thread | Current assessment | Recommendation |
+| --- | --- | --- |
+| [3793637868](https://github.com/smorinlabs/template-press/pull/79#discussion_r3793637868), mapping annotation | Confirmed maintainability follow-up: `rules._parse_platforms(entry: dict, ...)` still leaves mapping key/value types unspecified. Posted nine seconds before merge. No runtime defect was demonstrated. | Prefer a narrow annotation correction consistent with `AGENTS.md` strict typing, followed by focused rule tests and type checking. This tracking pass does not implement it or record an owner decline. |
+| [3793638692](https://github.com/smorinlabs/template-press/pull/79#discussion_r3793638692), macOS classifier | Refuted: `Operating System :: MacOS` appears in the [official PyPI classifier list](https://pypi.org/classifiers/). The current metadata uses that valid value. Posted twelve seconds after merge. | Reply with the official source and resolve; no classifier change is needed. This pass records the assessment without changing the historical PR thread. |
 
 ### Notes
 
