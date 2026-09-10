@@ -1,5 +1,91 @@
 # Changelog
 
+## [4.1.0](https://github.com/smorinlabs/template-press/compare/v4.0.1...v4.1.0) (2026-09-10)
+
+
+### Features
+
+* add press clean with declared cleanup paths ([3f8c9fa](https://github.com/smorinlabs/template-press/commit/3f8c9fa8adc34aad8dc7dc7c776660070ad93c43))
+* **clean:** render declared clean paths and build the git clean argv ([e7adde3](https://github.com/smorinlabs/template-press/commit/e7adde3dd9bfa259e324fc1c07dafc3d467444f1))
+* **clean:** report clean rules in check-tools and record them in the receipt ([d3d05c7](https://github.com/smorinlabs/template-press/commit/d3d05c7db667a3cb93c6de11bcf9294579097c33))
+* **cli:** press clean — declared, git clean -X based pre-press cleanup ([756f0c3](https://github.com/smorinlabs/template-press/commit/756f0c36f3a8c9379bd4a9a9bb657d1b2d016b2e))
+* **cli:** remedy argv and --diagnostics-json for closure refusals ([0c43f88](https://github.com/smorinlabs/template-press/commit/0c43f886d6913ad7b77291c0a3361cb81af4ebd3))
+* closure diagnostics, removal coverage warnings, verify hints (P12 part 1) ([93ea576](https://github.com/smorinlabs/template-press/commit/93ea576dc123600daf05f2851bd8d6085ac22baf))
+* declared in-place edit mechanism ([[edit]]) (P09) ([f8b74a4](https://github.com/smorinlabs/template-press/commit/f8b74a4554c7227d056c11a360f3cb614185341c))
+* **edit:** execute declared in-place edits before regenerations; gate snapshots on any command ([8af957c](https://github.com/smorinlabs/template-press/commit/8af957c85fd936fd5150de900996e54a93532c25))
+* **edit:** pin self-press version mirrors ([0ae5c9d](https://github.com/smorinlabs/template-press/commit/0ae5c9d5b860bf8479f8030c912dcf2cad272ce6))
+* **guard:** --accept-origin-mismatch with per-field warning and receipt row ([05a74d5](https://github.com/smorinlabs/template-press/commit/05a74d50eb4db0f82be2f97ca4827e9e3861e035))
+* **guard:** accept an origin that already names the destination ([da770c6](https://github.com/smorinlabs/template-press/commit/da770c61dcde4df220a1e7580cebc487c50bf2be))
+* **guard:** origin relaxation (P12 part 2) ([421f073](https://github.com/smorinlabs/template-press/commit/421f073834ba5c8dd375c17d04869d3679e28fd5))
+* **plan:** render and preflight [[edit]] commands ([a34730c](https://github.com/smorinlabs/template-press/commit/a34730cb2cbd84e6096484338d19597c65782433))
+* **plan:** warn on rewritten directories with no declared removal; show removal counts ([a417b47](https://github.com/smorinlabs/template-press/commit/a417b479642b4114f225eaf90caf59949cd38a77))
+* **plan:** warn when a source value occurs only as a prefix of a longer token ([e90b3bf](https://github.com/smorinlabs/template-press/commit/e90b3bf16d6ae1ef62a1a2b7f1984f62e28aca3f))
+* **remove:** add frozen directory removal plans and history ([6079a22](https://github.com/smorinlabs/template-press/commit/6079a22b3fb3069b965ee1061765bc67a95349b4))
+* **remove:** execute frozen members and record complete history ([f4d68e6](https://github.com/smorinlabs/template-press/commit/f4d68e603e003f65e4b121fbff58464968564921))
+* **remove:** freeze declared directory members and safety checks ([db0a692](https://github.com/smorinlabs/template-press/commit/db0a69260ff213d3e428ae50d121c42b01c7d68b))
+* **remove:** integrate directory history with press and verify ([175a28a](https://github.com/smorinlabs/template-press/commit/175a28a7d97e4f1d17a3bf361393eb92a5927abf))
+* **remove:** migrate native research cleanup to directory rules ([23baaba](https://github.com/smorinlabs/template-press/commit/23baaba406ce88508fec3121fc602d95dcd2a5c4))
+* **rules:** parse [[clean]] path declarations ([6cb9e7f](https://github.com/smorinlabs/template-press/commit/6cb9e7f12d034f4c8a0f920995db938171fd8cb1))
+* **rules:** parse [[edit]] declarations ([0502dec](https://github.com/smorinlabs/template-press/commit/0502dec8bd91a5f655be7c21a5224680424c1599))
+* **verify:** explain dir-only ignore near-misses on untracked findings ([cf3acdd](https://github.com/smorinlabs/template-press/commit/cf3acddfba4750303d0cf667410556b8c150c76d))
+
+
+### Bug Fixes
+
+* absolute rmdir remedy; skip substring-mode fields in prefix warning; p12 in progress ([eda8b02](https://github.com/smorinlabs/template-press/commit/eda8b02c8b1cd913e18195c9d96e6e8475b4ee9c))
+* address bot review on [#109](https://github.com/smorinlabs/template-press/issues/109) — prefix counts, tracked tally, rmdir remedy, scoped restore hint ([6fdcf85](https://github.com/smorinlabs/template-press/commit/6fdcf85bfdda75be90ca6aa27ea333d2a9821bee))
+* **ci:** retain pytest output after interrupts ([5cd95f3](https://github.com/smorinlabs/template-press/commit/5cd95f34c78e807f2c735ecd324fa0423ea75c78))
+* **clean:** escape command displays without changing arguments ([7893b6a](https://github.com/smorinlabs/template-press/commit/7893b6a28bc67560c9b6866f597b0bdc2547e47b))
+* **clean:** handle git metadata encodings without altering paths ([b7ce4af](https://github.com/smorinlabs/template-press/commit/b7ce4aff0c39cea4804cefb5ba7b2c60da918d16))
+* **clean:** preserve declared scope with exact file cleanup ([34d9581](https://github.com/smorinlabs/template-press/commit/34d95817e0dd4044c9f1ed9544cb76b5b6beac7e))
+* **clean:** verify windows directory entries by identity ([8d6a6a3](https://github.com/smorinlabs/template-press/commit/8d6a6a301c74d75a50de2325aec12674a5b5012d))
+* **cli:** keep partial-rewrite guidance on apply-time closure refusals; pin truncation completeness ([2ef456e](https://github.com/smorinlabs/template-press/commit/2ef456e4fa2faa1796b15ba51e4905dc439c1688))
+* **cli:** surface closure remedies on apply-time revalidation; scope docs and add coverage ([248a5d4](https://github.com/smorinlabs/template-press/commit/248a5d44dd5f1b08d9fe3be9bf14771a6ae3db81))
+* **edit:** make command recovery fail-safe ([47e602c](https://github.com/smorinlabs/template-press/commit/47e602ca8b45162af5c7f1e94681759d04a93f18))
+* **edit:** report invalid utf8 without exemption claim ([c937699](https://github.com/smorinlabs/template-press/commit/c93769980cff2fab8498422598358d8aed056617))
+* **edit:** restore control files after exceptional command failures ([b786f95](https://github.com/smorinlabs/template-press/commit/b786f95c311f3f987c9c11d06a5737ab2d83a470))
+* final-review wave — docs build, posix-only filename tests, wording, rules stub ([81e6b47](https://github.com/smorinlabs/template-press/commit/81e6b478afd366dca5f7c66000f13856f2728b12))
+* **guard:** announce origin relaxation only past the plan-time gates ([6418eb8](https://github.com/smorinlabs/template-press/commit/6418eb8721154d107f6f736029adac0a1c587735))
+* **guard:** render the discovered origin value with repr; correct absent-key wording and help order ([7cdf09f](https://github.com/smorinlabs/template-press/commit/7cdf09fd65d451493b0fce6abecd6122a248a9d8))
+* **p12:** correct recovery guidance and warning coverage ([9b26581](https://github.com/smorinlabs/template-press/commit/9b265813a4ce36da6ae3e170e914949b480a4eab))
+* **p12:** correct recovery guidance and warning coverage ([86e0885](https://github.com/smorinlabs/template-press/commit/86e088544cae26b93bff4ff919fbc7d2836a6d6b))
+* **plan:** count path-only rewrites, reuse the plan snapshot, key package dir on source identity ([1bd5037](https://github.com/smorinlabs/template-press/commit/1bd50373de9226bd17882ebb48de82c977432048))
+* **plan:** prefix warning ignores extension-style continuations; covers display forms ([9a09597](https://github.com/smorinlabs/template-press/commit/9a0959794de4a04e1c9711c8379b034ae2704136))
+* **plan:** source-coordinate rename candidacy; discriminating package-dir tests ([7a70512](https://github.com/smorinlabs/template-press/commit/7a705125bf13b3ef7ce18e6b1cc2cc3c25b67c14))
+* platform-aware and ancestor-aware rmdir remedy; label common-dir excludes ([bb1f326](https://github.com/smorinlabs/template-press/commit/bb1f326b94a91e51b5e95a806f372a4ed2597344))
+* **rebrand:** address ci and review findings ([8f4c739](https://github.com/smorinlabs/template-press/commit/8f4c73956905c110ca936fd9c7798e5a2407e3c1))
+* **rebrand:** avoid rollback advice after completion ([a894dc1](https://github.com/smorinlabs/template-press/commit/a894dc17d710a25406bf783fdc30ff6742d2480a))
+* **rebrand:** bound interruption recovery guidance ([f8ab220](https://github.com/smorinlabs/template-press/commit/f8ab220419a7347938350d7471111b9ba7def6fe))
+* **rebrand:** close declared edit review gaps ([4f641ab](https://github.com/smorinlabs/template-press/commit/4f641ab91167be46dcf8344a9e978e8f4643f43a))
+* **rebrand:** guide recovery for all interruptions ([bb5d765](https://github.com/smorinlabs/template-press/commit/bb5d765f2cec28feaa787242ad40a8c909bf3bd4))
+* **rebrand:** name the restore path when a receiptless press is retried ([1568dfe](https://github.com/smorinlabs/template-press/commit/1568dfe641f19a601bd81d973e68bee98d91bf67))
+* **rebrand:** refuse edits to configured ignore inputs ([ea4b047](https://github.com/smorinlabs/template-press/commit/ea4b0478ca7b246f40f99a1e311f4d0dc6aee49b))
+* **rebrand:** refuse unsafe edit declarations before mutation ([7b4731b](https://github.com/smorinlabs/template-press/commit/7b4731b03e536a4a31a9f43290944a2f576623cb))
+* **remove:** guard directory history and visibility inputs ([80be8e3](https://github.com/smorinlabs/template-press/commit/80be8e356da235eaa30d4fa4cbf98e8542e7b4c0))
+* **remove:** isolate native acceptance identity ([9acedc9](https://github.com/smorinlabs/template-press/commit/9acedc9bb692581a598d07655b954721aa4892ea))
+* **remove:** preflight complete directory receipt limits ([e53e533](https://github.com/smorinlabs/template-press/commit/e53e5333cffef7522b885bd559013811cda88a8b))
+* **remove:** preserve git inputs and historical safety gates ([b2737a0](https://github.com/smorinlabs/template-press/commit/b2737a0cf77bd300a4a66d7fac7c52b1b837ca9d))
+* **rules:** describe component matching precisely ([2eb6631](https://github.com/smorinlabs/template-press/commit/2eb66311220ae06b30ca11172f68bee5986e484f))
+* **rules:** keep alias checks fail-closed ([abc3475](https://github.com/smorinlabs/template-press/commit/abc347557483418d8699fc8117631ebcbf0df7a7))
+* **rules:** normalize edit target identity ([718e283](https://github.com/smorinlabs/template-press/commit/718e283206f8e5fb9b4e8810649806033bd2cc3d))
+* **rules:** normalize unicode edit aliases ([42d7070](https://github.com/smorinlabs/template-press/commit/42d70705a36bd5e5b05f8c3350c53581950f77ef))
+* **rules:** preserve edit platform and constructor semantics ([c4462e5](https://github.com/smorinlabs/template-press/commit/c4462e56a259821537d3e9561df15e32378bef22))
+* **substitutions:** report every uninventoried path in one closure refusal ([a7ed748](https://github.com/smorinlabs/template-press/commit/a7ed74813c264869c601276cd5c6a5425f3183fc))
+* **verify:** bind the receipt by exact identity key set; report binding failures under --json too ([027cd76](https://github.com/smorinlabs/template-press/commit/027cd761ef1416b567448b910a4f409094b1c989))
+* **verify:** honor an origin receipt only when it is verified and bound to this target ([d2153f8](https://github.com/smorinlabs/template-press/commit/d2153f82510b71e9c40914ede9e158e984be2dbb))
+* **verify:** honor the exact origin values an --accept-origin-mismatch press recorded ([e0772a6](https://github.com/smorinlabs/template-press/commit/e0772a68e9f1d98d703fe90617157115db08749d))
+* **verify:** honor the origin values an --accept-origin-mismatch press recorded ([a2418f0](https://github.com/smorinlabs/template-press/commit/a2418f0a3df34082d8a6a4afef2d082b87a7914b))
+* **verify:** literal pathspecs, pinned excludes, and note-only-when-present for ignore hints ([2bf9e2d](https://github.com/smorinlabs/template-press/commit/2bf9e2dbf87dd3181e477f0181cbdcc5a956fdf3))
+
+
+### Performance Improvements
+
+* **ci:** run the test matrix in parallel with pytest-xdist ([e5a2f37](https://github.com/smorinlabs/template-press/commit/e5a2f373c65f7409519fca3ef9f53ec2ed40f207))
+* **ci:** run the test matrix in parallel with pytest-xdist ([93674e8](https://github.com/smorinlabs/template-press/commit/93674e8c907b054fc9c121307d8ce750af93e230))
+* **rebrand:** batch git rev-parse queries in the config stamp ([bddbae3](https://github.com/smorinlabs/template-press/commit/bddbae3c32a4a8a1c9e6bff62789f7b68156027c))
+* **rebrand:** batch git rev-parse queries in the config stamp ([b396c20](https://github.com/smorinlabs/template-press/commit/b396c200f8ab31650fe0d5750208d9c1c4c43cdc))
+* **rebrand:** keep newline-bearing git paths intact in the batched stamp ([47a9563](https://github.com/smorinlabs/template-press/commit/47a9563f157fdaa6f34ea11b5ac12056aa85ffc0))
+
 ## [4.0.1](https://github.com/smorinlabs/template-press/compare/v4.0.0...v4.0.1) (2026-08-18)
 
 
