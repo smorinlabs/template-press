@@ -19,8 +19,10 @@ ty, Git, existing just/lefthook checks.
 merged at `6079a22b3fb3069b965ee1061765bc67a95349b4` on September 9.
 [P11-T07](../../../projects/P11-directory-removals.md) records completed native
 CI, final review and authorized delivery. P11A subsequently closed in
-[PR #124](https://github.com/smorinlabs/template-press/pull/124); P12 now receives
-its follow-up value evaluation. Reconciled 2026-09-10.
+[PR #124](https://github.com/smorinlabs/template-press/pull/124).
+[P12](../../../projects/P12-origin-guard-and-diagnostics.md) is also complete:
+its four corrections merged in PR #125 and the owner declined the other six
+follow-up recommendations. Reconciled 2026-09-10.
 
 **Historical planning baseline:** implementation was authorized after independent
 major review. Owner
@@ -2095,8 +2097,8 @@ The corrected major plan review and the owner's two-part acceptance amendment
 were followed by implementation, native acceptance, current-head CI and review
 closure. P11-T07 and PR #123 record the completed delivery. The six-task plan and
 local checkpoint below remain historical evidence; they do not leave another
-P11 validation or merge gate open. P12 follow-up evaluation occurs after the
-completed P10, P11 and P11A deliveries.
+P11 validation or merge gate open. P12's subsequent value evaluation and all
+follow-up dispositions are complete in its project record.
 
 
 ## Historical final implementation review corrections
@@ -2140,7 +2142,8 @@ They did not add P12 implementation; subsequent P11-T07 evidence closed delivery
   are not exempted.
 - File-only verify restores the existing missing-removal configuration-drift
   diagnostic and remedy. Its exit and JSON-stream behavior remain unchanged;
-  P12's proposed operational JSON envelope is a separate decision.
+  the owner subsequently declined P12's proposed operational JSON envelope
+  in P12-T-defer-9 on 2026-09-10.
 
 Each production correction requires a meaningful failing regression followed by
 its passing counterpart. Final acceptance uses the combined corrected tree,

@@ -44,8 +44,10 @@ corrections below precede the original Task 6 delivery gate.
 
 Git inputs, index state, and selected paths must stay stable during cleanup.
 Immediate per-file checks detect some changes but do not make deletion atomic.
-Stronger concurrent-writer protection is a separate value evaluation in
-[P12-T-defer-10](P12-origin-guard-and-diagnostics.md).
+The owner declined stronger concurrent-writer protection on 2026-09-10 after
+the [P12-T-defer-10 evaluation](P12-origin-guard-and-diagnostics.md#closed-follow-ups).
+That closure accepts the documented race and retains the stable-input
+prerequisite and every existing guard.
 
 
 ### Corrected implementation validation
@@ -80,6 +82,7 @@ Windows (1,728 passed, 104 skipped). The separate
 [acceptance run](https://github.com/smorinlabs/template-press/actions/runs/34163591589)
 passed all four POSIX cases and native Windows R3. All ten review threads were
 resolved with evidence before the normal merge. The two final concurrent-writer
-findings were reproduced in disposable fixtures and remain the already approved
-P12-T-defer-10 value evaluation. No stronger coordination mechanism is promised
+findings were reproduced in disposable fixtures and assigned to the
+P12-T-defer-10 value evaluation. The owner subsequently declined implementation
+on 2026-09-10, as recorded above. No stronger coordination mechanism is promised
 by this closeout. No release or tag is included in P10 delivery.

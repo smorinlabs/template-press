@@ -140,7 +140,8 @@ review threads were resolved. The optional current-head Codex review was still
 running at merge, completed five seconds later, and produced no additional
 finding in the post-merge inventory. No diagnostic workflow was merged.
 
-Repeated input-identity stat calls remain a value-evaluation candidate under
-`P12-T-defer-11`, not unfinished P11 correctness work. P11A still needs its own
-native diagnostic validation, optimization assessment and delivery. P12 remains
-paused until that follow-up closes.
+Repeated input-identity stat calls were assigned to `P12-T-defer-11` for value
+evaluation after P11 delivery. P11A subsequently closed in PR #124. On 2026-09-10,
+the owner declined caching after reviewing the measured native cost and accepted
+the synthetic scaling limitation. [P12's closed follow-ups](P12-origin-guard-and-diagnostics.md#closed-follow-ups)
+record that decision and its conditions for reopening. P12 is complete.

@@ -1,15 +1,27 @@
 # P12 follow-ups: validity, value and requirements review
 
-**Subsequent owner decision:** "Solve all four." Implementation of
-P12-T-defer-2, P12-T-defer-4, P12-T-defer-5 and P12-T-defer-7 is now approved.
-The review below preserves the evidence and recommendations at the evaluation
-snapshot; it is not a description of the later implementation's status.
-The other six recommended closures remain separate dispositions.
+**Final owner dispositions (2026-09-10):** the earlier "Solve all four" decision
+approved P12-T-defer-2, P12-T-defer-4, P12-T-defer-5 and P12-T-defer-7.
+Those corrections merged in
+[PR #125](https://github.com/smorinlabs/template-press/pull/125) at
+`9b265813a4ce36da6ae3e170e914949b480a4eab`.
+The owner then instructed: "Yes close the 6 recommended to close and document the pass on those".
+P12-T-defer-1, P12-T-defer-3, P12-T-defer-8, P12-T-defer-9, P12-T-defer-10 and
+P12-T-defer-11 are closed without implementation. Their accepted limitations
+and conditions for reopening are recorded in
+[P12's closed follow-ups](../../../projects/P12-origin-guard-and-diagnostics.md#closed-follow-ups).
+P12 is complete; these closures do not claim the limitations were fixed.
 
-**Recommendation: implement four narrowly scoped corrections and close six
-follow-ups without implementation.** These are recommendations, not approved
-dispositions. All ten original open task entries remain open. No P12 product
-change was made during this review.
+## Historical evaluation
+
+The review below preserves the evidence and recommendations at its evaluation
+snapshot. Its proposed work and review status describe that earlier assessment.
+The owner decisions above and the project record give the current disposition.
+
+**Recommendation at evaluation time: implement four narrowly scoped corrections
+and close six follow-ups without implementation.** At that point, these were
+recommendations, not approved dispositions, and all ten original open task entries
+remained open. No P12 product change was made during the evaluation itself.
 
 P12 is the origin-guard, diagnostics, warnings and documentation project. Its
 base implementation shipped in PRs [#109](https://github.com/smorinlabs/template-press/pull/109)
@@ -456,6 +468,8 @@ were isolated scratch repositories; no real consumer target was rebranded.
   is pending. The prepared invocation requests Ultra and a 100-step maximum;
   no actual model effort, step count or external verdict is claimed.
 
-The next owner decision is whether to select this four-item scope and accept
-the six recorded limitations. Until those dispositions are made, P12 stays in
-progress and its ten task checkboxes remain unchanged.
+**Evaluation-time next action:** obtain owner decisions on the four-item scope
+and the six recorded limitations. Those decisions have since been made, as
+recorded at the top of this document and in P12's closed follow-ups. The original
+probe and review evidence above is retained without claiming a new test run or
+an external review verdict.

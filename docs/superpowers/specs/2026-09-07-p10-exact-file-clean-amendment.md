@@ -103,9 +103,11 @@ Live tracked-name revalidation reads the complete cached index once per
 selected exact file. Its work grows with both the selected-file count and the
 index-entry count. Correct case-alias protection takes priority over an
 unreviewed name prefilter in this amendment. Stronger concurrent-writer
-protection is a later design question tracked as
+protection was deferred for value evaluation in
 [`P12-T-defer-10`](../../../projects/P12-origin-guard-and-diagnostics.md), the
-P12 task for evaluating a stronger concurrent-writer guarantee.
+P12 task for evaluating a stronger concurrent-writer guarantee. On 2026-09-10,
+the owner declined implementation and accepted the documented race. The
+stable-input prerequisite and existing guards above remain in force.
 
 ## Validation still required
 
