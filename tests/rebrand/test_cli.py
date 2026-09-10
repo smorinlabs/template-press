@@ -4,7 +4,8 @@ import os
 import shlex
 import subprocess
 import sys
-from pathlib import Path
+from dataclasses import replace
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -2324,14 +2325,239 @@ def test_closure_refusal_prints_remedy_and_exits_2(src_target, tmp_path, capsys)
     out = capsys.readouterr().out
     assert code == 2
     assert "absent from the authorized surface" in out
-    assert (
-        "clean -ndX -- src/demo_widget" in out
-        and "clean -fdX -- src/demo_widget" in out
-    )
+    if sys.platform == "win32":
+        assert _recovery_json_value(out, "preview argv: ") == [
+            "git",
+            "--literal-pathspecs",
+            "-C",
+            str(src_target),
+            "clean",
+            "-ndX",
+            "--",
+            "src/demo_widget",
+        ]
+        assert _recovery_json_value(out, "remove argv: ")[-3:] == [
+            "-fdX",
+            "--",
+            "src/demo_widget",
+        ]
+    else:
+        assert (
+            "clean -ndX -- src/demo_widget" in out
+            and "clean -fdX -- src/demo_widget" in out
+        )
     assert "--literal-pathspecs" in out
     assert "broader than" in out  # destructive label
     assert "(dry run" not in out  # never the success terminator
     assert not (src_target / RECEIPT_REL).exists()
+
+
+def _recovery_json_value(output, prefix):
+    line = next(line for line in output.splitlines() if line.startswith(prefix))
+    return json.loads(line.removeprefix(prefix))
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["ordinary", "two words", "A&B^C", "%TEMP%!NAME!", 'quote"\ttab\n\x1b[31m'],
+    ids=["ordinary", "spaces", "operators", "expansion", "control-rendering"],
+)
+def test_windows_closure_recovery_guidance_preserves_arguments(
+    name, monkeypatch, capsys
+):
+    """Rendering only: invalid filename characters need no Windows filesystem."""
+    from template_press.rebrand import cli as cli_module
+    from template_press.rebrand.rules import DEFAULT_RULES, CleanRule
+    from template_press.rebrand.safety import RenameClosureUnauthorized
+
+    target = PureWindowsPath("C:/work") / name
+    prefix = "src/demo_widget"
+    empty = f"{prefix}/empty"
+    exc = RenameClosureUnauthorized(prefix, (("empty-dir", empty),), "plan")
+    rules = replace(DEFAULT_RULES, clean=(CleanRule(paths=(prefix,)),))
+    with monkeypatch.context() as platform_patch:
+        platform_patch.setattr(cli_module.sys, "platform", "win32")
+        code = cli_module._report_closure_refusal(exc, target, rules, False)
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "JSON arrays, not shell commands" in out
+    preview = _recovery_json_value(out, "preview argv: ")
+    remove = _recovery_json_value(out, "remove argv: ")
+    assert preview == [
+        "git",
+        "--literal-pathspecs",
+        "-C",
+        str(target),
+        "clean",
+        "-ndX",
+        "--",
+        prefix,
+    ]
+    assert remove == [
+        "git",
+        "--literal-pathspecs",
+        "-C",
+        str(target),
+        "clean",
+        "-fdX",
+        "--",
+        prefix,
+    ]
+    assert out.index("preview argv:") < out.index("remove argv:")
+    assert "destructive, and broader than the paths listed" in out
+    assert "run only if the preview shows nothing you keep" in out
+    assert _recovery_json_value(out, "rmdir argv: ") == [
+        "rmdir",
+        str(target / empty),
+    ]
+    assert _recovery_json_value(
+        out, "  # then rmdir each newly-empty parent up to "
+    ) == str(target / prefix)
+    assert _recovery_json_value(
+        out, "declared clean rules exist — use first, argv: "
+    ) == ["press", "clean", "--target", str(target)]
+    assert "\t" not in out and "\x1b" not in out
+    assert len(out.splitlines()) == 9  # no injected line from target/parent text
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["ordinary", "two words", "A&B^C", "%TEMP%!NAME!", 'quote"\ttab\n\x1b[31m'],
+    ids=["ordinary", "spaces", "operators", "expansion", "control-rendering"],
+)
+def test_windows_partial_recovery_guidance_preserves_success_condition(
+    name, monkeypatch
+):
+    from template_press.rebrand import cli as cli_module
+
+    target = PureWindowsPath("C:/work") / name
+    with monkeypatch.context() as platform_patch:
+        platform_patch.setattr(cli_module.sys, "platform", "win32")
+        hint = _partial_rewrite_restore_hint(target)
+
+    assert "PARTIALLY rewritten" in hint
+    assert "JSON arrays, not shell commands" in hint
+    checkout_text, cleanup_text = hint.split(
+        "; then, only if checkout succeeds, cleanup argv: "
+    )
+    checkout = json.loads(checkout_text.split("checkout argv: ", 1)[1])
+    cleanup = json.loads(cleanup_text)
+    assert checkout == ["git", "-C", str(target), "checkout", "--", "."]
+    assert cleanup == ["git", "-C", str(target), "clean", "-fd"]
+    assert " && " not in hint
+    assert "\n" not in hint and "\t" not in hint and "\x1b" not in hint
+
+
+@pytest.mark.parametrize("name", ["ordinary", "space & caret^ %value% ! quote'"])
+def test_posix_recovery_guidance_keeps_shell_commands(name, monkeypatch, capsys):
+    from template_press.rebrand import cli as cli_module
+    from template_press.rebrand.rules import DEFAULT_RULES, CleanRule
+    from template_press.rebrand.safety import RenameClosureUnauthorized
+
+    target = PurePosixPath("/work") / name
+    prefix = "src/demo_widget"
+    empty = f"{prefix}/empty"
+    exc = RenameClosureUnauthorized(prefix, (("empty-dir", empty),), "plan")
+    rules = replace(DEFAULT_RULES, clean=(CleanRule(paths=(prefix,)),))
+    with monkeypatch.context() as platform_patch:
+        platform_patch.setattr(cli_module.sys, "platform", "darwin")
+        assert cli_module._report_closure_refusal(exc, target, rules, False) == 2
+        hint = _partial_rewrite_restore_hint(target)
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert "JSON arrays" not in out and "argv:" not in hint
+    for label, flag in (("preview: ", "-ndX"), ("remove:  ", "-fdX")):
+        command = next(
+            line.removeprefix(label) for line in lines if line.startswith(label)
+        )
+        assert shlex.split(command) == [
+            "git",
+            "--literal-pathspecs",
+            "-C",
+            str(target),
+            "clean",
+            flag,
+            "--",
+            prefix,
+        ]
+    assert shlex.split(next(line for line in lines if line.startswith("rmdir "))) == [
+        "rmdir",
+        "--",
+        str(target / empty),
+    ]
+    clean_line = next(line for line in lines if line.startswith("declared clean"))
+    assert shlex.split(clean_line.split(" — run: ", 1)[1]) == [
+        "press",
+        "clean",
+        "--target",
+        str(target),
+    ]
+    recovery = hint.removeprefix("target may be PARTIALLY rewritten; restore with `")
+    assert recovery.endswith("`")
+    assert shlex.split(recovery[:-1]) == [
+        "git",
+        "-C",
+        str(target),
+        "checkout",
+        "--",
+        ".",
+        "&&",
+        "git",
+        "-C",
+        str(target),
+        "clean",
+        "-fd",
+    ]
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_recovery_guidance_leaves_structured_refusal_argv_unchanged(
+    platform, monkeypatch, capsys
+):
+    from template_press.rebrand import cli as cli_module
+    from template_press.rebrand.rules import DEFAULT_RULES
+    from template_press.rebrand.safety import RenameClosureUnauthorized
+
+    target = PureWindowsPath("C:/work/space &^ %TEMP%!NAME!\n\x1b[31m")
+    prefix = "src/demo_widget"
+    empty = f'{prefix}/empty\nquote"'
+    exc = RenameClosureUnauthorized(prefix, (("empty-dir", empty),), "plan")
+    with monkeypatch.context() as platform_patch:
+        platform_patch.setattr(cli_module.sys, "platform", platform)
+        assert cli_module._report_closure_refusal(exc, target, DEFAULT_RULES, True) == 2
+    out = capsys.readouterr().out
+    assert len(out.splitlines()) == 1
+    assert json.loads(out) == {
+        "schema": 1,
+        "code": "rename_closure_unauthorized",
+        "source_prefix": prefix,
+        "findings": [{"kind": "empty-dir", "path": empty}],
+        "total": 1,
+        "truncated": False,
+        "phase": "plan",
+        "preview_argv": [
+            "git",
+            "--literal-pathspecs",
+            "-C",
+            str(target),
+            "clean",
+            "-ndX",
+            "--",
+            prefix,
+        ],
+        "remove_argv": [
+            "git",
+            "--literal-pathspecs",
+            "-C",
+            str(target),
+            "clean",
+            "-fdX",
+            "--",
+            prefix,
+        ],
+        "rmdir_paths": [empty],
+    }
 
 
 @posix_only
@@ -2488,7 +2714,12 @@ def test_closure_refusal_names_press_clean_when_rules_declare_it(
     code = main(["--target", str(src_target), "--config", str(answers), "--dry-run"])
     out = capsys.readouterr().out
     assert code == 2
-    assert "declared clean rules exist — run: press clean --target" in out
+    if sys.platform == "win32":
+        assert _recovery_json_value(
+            out, "declared clean rules exist — use first, argv: "
+        ) == ["press", "clean", "--target", str(src_target)]
+    else:
+        assert "declared clean rules exist — run: press clean --target" in out
 
 
 def test_closure_refusal_omits_press_clean_hint_when_no_rules_declared(
@@ -2532,10 +2763,22 @@ def test_closure_refusal_on_apply_time_revalidation_exits_1_with_remedy(
     out, err = captured.out, captured.err
     assert code == 1
     assert "absent from the authorized surface" in out
-    assert (
-        "clean -ndX -- src/demo_widget" in out
-        and "clean -fdX -- src/demo_widget" in out
-    )
+    if sys.platform == "win32":
+        assert _recovery_json_value(out, "preview argv: ")[-3:] == [
+            "-ndX",
+            "--",
+            "src/demo_widget",
+        ]
+        assert _recovery_json_value(out, "remove argv: ")[-3:] == [
+            "-fdX",
+            "--",
+            "src/demo_widget",
+        ]
+    else:
+        assert (
+            "clean -ndX -- src/demo_widget" in out
+            and "clean -fdX -- src/demo_widget" in out
+        )
     assert "phase='apply'" in out
     assert _partial_rewrite_restore_hint(src_target) in err
     assert not (src_target / RECEIPT_REL).exists()

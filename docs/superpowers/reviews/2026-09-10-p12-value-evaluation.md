@@ -1,5 +1,11 @@
 # P12 follow-ups: validity, value and requirements review
 
+**Subsequent owner decision:** "Solve all four." Implementation of
+P12-T-defer-2, P12-T-defer-4, P12-T-defer-5 and P12-T-defer-7 is now approved.
+The review below preserves the evidence and recommendations at the evaluation
+snapshot; it is not a description of the later implementation's status.
+The other six recommended closures remain separate dispositions.
+
 **Recommendation: implement four narrowly scoped corrections and close six
 follow-ups without implementation.** These are recommendations, not approved
 dispositions. All ten original open task entries remain open. No P12 product

@@ -31,8 +31,10 @@ claims until that evaluation and the owner's dispositions are recorded.
 
 The evaluation recommends fixing P12-T-defer-2 and P12-T-defer-7, narrowing
 P12-T-defer-4 and P12-T-defer-5, and closing the other six without implementation.
-Those recommendations remain unapproved. This project and its closeout are
-limited to Template Press; downstream feedback-log work is not a P12 dependency.
+The owner then instructed: "Solve all four." The four corrections are approved
+and implementation is in progress. The other six recommended closures have not
+been recorded as owner decisions. This project and its closeout are limited to
+Template Press; downstream feedback-log work is not a P12 dependency.
 
 E1 origin==destination acceptance + `--accept-origin-mismatch`; E2
 aggregated closure refusal with remedy argv and `--diagnostics-json`;

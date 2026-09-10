@@ -235,20 +235,43 @@ confirming the preview shows nothing worth keeping. When the target declares
 `[[clean]]` rules, the refusal also names `press clean` as the fix to run
 first. Pass `--diagnostics-json` to get the same information as one JSON
 object on stdout instead of prose (schema `{"schema", "code", "source_prefix",
-"findings", "total", "truncated", "phase", "preview_argv", "remove_argv"}`) —
+"findings", "total", "truncated", "phase", "preview_argv", "remove_argv",
+"rmdir_paths"}`) —
 the exit code is unchanged. The prose form, like the JSON, is printed to
 stdout — unlike every other exit-`2` refusal, it does not go to stderr
 with the `error:` prefix that `_fail` puts there, so a check that greps
 stderr for `error:` will not see it. The removal-coverage and prefix-only
 warnings documented below print to stdout as well.
 
+`rmdir_paths` is a sorted array of paths from the `empty-dir` findings, or
+an empty array when there are none. Each path is relative to the target
+repository passed through `--target`, not the caller's working directory.
+For example, `"rmdir_paths": ["src/demo_widget/empty"]` identifies an empty
+directory beneath that target. The array includes every such path even when
+`truncated` is `true`; the cap applies only to the prose rendering. These
+paths describe the refusal snapshot. They are not an instruction to delete
+directories without checking their current contents.
+
+On Windows, recovery guidance prints labeled JSON argument arrays, such as
+`preview argv:` and `remove argv:`, instead of shell command strings. Each
+array contains the command name followed by its literal arguments; it is not
+a command to paste into a shell. A command can be a shell built-in, such as
+Windows `rmdir`, so an array does not promise a standalone executable. This
+also applies to empty-directory,
+declared-clean and partial-rewrite restoration guidance. POSIX guidance
+continues to use shell-quoted commands. This presentation difference does not
+change the `preview_argv` or `remove_argv` arrays in `--diagnostics-json`.
+
 If the target tree changes between planning and apply — e.g. a new ignored
 file appears under a prefix being renamed — the same check runs again as an
 apply-time revalidation immediately before the first mutation. It prints the
 same aggregated findings and remedy argv, but never as JSON (the plan has
 already printed to stdout by then), and it exits `1` under the partial-
-rewrite contract (target may be partially rewritten; restore with
-`git -C <target> checkout . && git clean -fd`), not `2`.
+rewrite contract, not `2`. The target may be partially rewritten. Restoration
+guidance describes `git checkout -- .` followed by `git clean -fd`, both scoped
+to the target with `-C`; cleanup follows only if checkout succeeds. Windows
+prints the two argument arrays with that condition explicitly stated; POSIX
+joins the shell-quoted commands with `&&`.
 
 ### The ignore set
 

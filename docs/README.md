@@ -7,7 +7,11 @@ Sphinx site (`docs/source/`). Three buckets, by intent:
 |---|---|---|
 | [`adr/`](adr/) | **Architecture Decision Records** — one significant decision each, with context + consequences. | Yes (a decision) |
 | [`design/`](design/) | **Design / requirements specs** — proposals and conventions to implement. | Yes (a plan) |
-| [`research/`](research/) | **Research** — investigations, comparisons, findings. | No (exploration) |
+| `research/` (source history) | **Research** — investigations, comparisons, findings. | No (exploration) |
+
+The native self-press rules remove historical research from the resulting
+copy. Research document titles and filenames identify that material in the
+original repository's history without requiring `research/` to remain present.
 
 Rules of thumb:
 

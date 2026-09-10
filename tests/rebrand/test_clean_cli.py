@@ -5,6 +5,7 @@ standalone verb, and its integrations (E2 hint, check-tools, receipt, verify).
 from __future__ import annotations
 
 import ast
+import json
 import os
 import shlex
 import shutil
@@ -1203,10 +1204,20 @@ class TestClosureRefusalHint:
         )
         out = capsys.readouterr().out
         assert "absent from the authorized surface" in out
-        assert (
-            f"declared clean rules exist — run: press clean --target {src_target}"
-            in out
+        line = next(
+            line
+            for line in out.splitlines()
+            if line.startswith("declared clean rules exist")
         )
+        if sys.platform == "win32":
+            prefix = "declared clean rules exist — use first, argv: "
+            assert line.startswith(prefix)
+            argv = json.loads(line.removeprefix(prefix))
+        else:
+            prefix = "declared clean rules exist — run: "
+            assert line.startswith(prefix)
+            argv = shlex.split(line.removeprefix(prefix))
+        assert argv == ["press", "clean", "--target", str(src_target)]
 
     def test_silent_when_not_declared(self, src_target: Path, tmp_path: Path, capsys):
         write_source_config(src_target)
