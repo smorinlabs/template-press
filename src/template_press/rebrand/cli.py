@@ -119,13 +119,6 @@ def _fail(msg: str) -> int:
     return 2
 
 
-def _shell_join(argv: list[str]) -> str:
-    """Render `argv` as a copy-pasteable shell command for this platform."""
-    if sys.platform == "win32":
-        return subprocess.list2cmdline(argv)
-    return shlex.join(argv)
-
-
 def _partial_rewrite_restore_hint(target: Path) -> str:
     """Shared restoration guidance for a mid-mutation `_press()` failure.
 
@@ -133,9 +126,20 @@ def _partial_rewrite_restore_hint(target: Path) -> str:
     `RenameClosureUnauthorized` branch, which prints its own aggregated
     findings + remedy first and then appends this same hint.
     """
-    checkout = _shell_join(["git", "-C", str(target), "checkout", "--", "."])
-    clean = _shell_join(["git", "-C", str(target), "clean", "-fd"])
-    return f"target may be PARTIALLY rewritten; restore with `{checkout} && {clean}`"
+    checkout = ["git", "-C", str(target), "checkout", "--", "."]
+    clean = ["git", "-C", str(target), "clean", "-fd"]
+    if sys.platform == "win32":
+        return (
+            "target may be PARTIALLY rewritten; recovery arguments "
+            "(JSON arrays, not shell commands): "
+            f"checkout argv: {json.dumps(checkout, ensure_ascii=True)}; "
+            "then, only if checkout succeeds, "
+            f"cleanup argv: {json.dumps(clean, ensure_ascii=True)}"
+        )
+    return (
+        "target may be PARTIALLY rewritten; restore with "
+        f"`{shlex.join(checkout)} && {shlex.join(clean)}`"
+    )
 
 
 def _report_control_restore_problems(problems: list[str]) -> None:
@@ -162,7 +166,7 @@ def _empty_dir_paths(exc: RenameClosureUnauthorized) -> list[str]:
     ``rmdir_paths`` renders this return value as-is (a machine consumer
     joins it with its own known target root), while the prose remedy
     (`_print_closure_refusal_prose`) renders each path through `target /
-    path` so the printed `rmdir` command works from any caller cwd.
+    path` so the printed `rmdir` arguments work from any caller cwd.
     """
     return sorted(path for kind, path in exc.findings if kind == "empty-dir")
 
@@ -179,8 +183,13 @@ def _print_closure_refusal_prose(
     """
     preview, remove = exc.remedy_argv(target)
     print(str(exc))
-    print(f"preview: {_shell_join(preview)}")
-    print(f"remove:  {_shell_join(remove)}")
+    if sys.platform == "win32":
+        print("recovery arguments (JSON arrays, not shell commands):")
+        print(f"preview argv: {json.dumps(preview, ensure_ascii=True)}")
+        print(f"remove argv: {json.dumps(remove, ensure_ascii=True)}")
+    else:
+        print(f"preview: {shlex.join(preview)}")
+        print(f"remove:  {shlex.join(remove)}")
     print(
         "(destructive, and broader than the paths listed — run only if "
         "the preview shows nothing you keep)"
@@ -193,14 +202,26 @@ def _print_closure_refusal_prose(
             leaf = target / path
             if sys.platform == "win32":
                 argv = ["rmdir", str(leaf)]
+                print(f"rmdir argv: {json.dumps(argv, ensure_ascii=True)}")
+                print(
+                    "  # then rmdir each newly-empty parent up to "
+                    f"{json.dumps(str(prefix_abs), ensure_ascii=True)}"
+                )
             else:
                 argv = ["rmdir", "--", str(leaf)]
-            print(_shell_join(argv))
-            print(f"  # then rmdir each newly-empty parent up to {prefix_abs}")
+                print(shlex.join(argv))
+                print(f"  # then rmdir each newly-empty parent up to {prefix_abs}")
         if len(empty_dirs) > cap:
             print(f"  … ({len(empty_dirs) - cap} more)")
     if rules.clean:
-        print(f"declared clean rules exist — run: press clean --target {target}")
+        argv = ["press", "clean", "--target", str(target)]
+        if sys.platform == "win32":
+            print(
+                "declared clean rules exist — use first, argv: "
+                f"{json.dumps(argv, ensure_ascii=True)}"
+            )
+        else:
+            print(f"declared clean rules exist — run: {shlex.join(argv)}")
 
 
 def _report_closure_refusal(

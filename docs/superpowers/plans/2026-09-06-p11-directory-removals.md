@@ -15,7 +15,15 @@ ty, Git, existing just/lefthook checks.
 
 **Spec:** `docs/superpowers/specs/2026-09-06-p11-directory-removals-design.md`.
 
-**Status:** implementation authorized after independent major review. Owner
+**Status:** delivered in [PR #123](https://github.com/smorinlabs/template-press/pull/123),
+merged at `6079a22b3fb3069b965ee1061765bc67a95349b4` on September 9.
+[P11-T07](../../../projects/P11-directory-removals.md) records completed native
+CI, final review and authorized delivery. P11A subsequently closed in
+[PR #124](https://github.com/smorinlabs/template-press/pull/124); P12 now receives
+its follow-up value evaluation. Reconciled 2026-09-10.
+
+**Historical planning baseline:** implementation was authorized after independent
+major review. Owner
 adoption is recorded exactly: “Yes, approve the recommendation for decision
 2.” The proposed acceptance clarification is now the accepted two-part
 amendment. Baseline is
@@ -2083,19 +2091,19 @@ just matrix
 
 ## Acceptance and delivery status
 
-The corrected major plan review passed, and the owner adopted the two-part
-acceptance amendment as recorded above. Implementation proceeds through these
-six tasks under the existing PR creation and merge authorization. Technical
-review approval does not substitute for the required tests, committed-head
-acceptance, or current PR checks and review-thread resolution. P12 remains an
-evaluation step after P10 and P11 delivery.
+The corrected major plan review and the owner's two-part acceptance amendment
+were followed by implementation, native acceptance, current-head CI and review
+closure. P11-T07 and PR #123 record the completed delivery. The six-task plan and
+local checkpoint below remain historical evidence; they do not leave another
+P11 validation or merge gate open. P12 follow-up evaluation occurs after the
+completed P10, P11 and P11A deliveries.
 
 
-## Final implementation review corrections
+## Historical final implementation review corrections
 
-The whole-branch review found gaps in the implementation after the six task
-commits. These corrections enforce the accepted contract before final acceptance
-and delivery. They do not add P12 implementation or close any delivery gate.
+The whole-branch review found gaps after the six task commits. The following
+corrections enforced the accepted contract before final acceptance and delivery.
+They did not add P12 implementation; subsequent P11-T07 evidence closed delivery.
 
 - Fresh present members use their current physical audit path and source root.
   Absent members keep their earlier audit coordinates. Prior flat audit rows
@@ -2141,7 +2149,7 @@ Partial failure after an unexpected execution-time change remains a documented
 possibility; the receipt budget does not promise atomic execution or rollback.
 
 
-## Local acceptance closeout
+## Historical local acceptance checkpoint
 
 Implementation commit `e53e5333cffef7522b885bd559013811cda88a8b` contains the
 final reviewed corrections and the native research declaration. Its exact tree
@@ -2150,6 +2158,8 @@ and 24 skips, plus root formatting of all 188 Python files. The committed-head
 R1/R2/R3 matrix passed four cases with six deselections. Independent internal
 and Muse correction reviews approved that tree. Muse requested Ultra and a
 100-step maximum; the provider reported `xhigh`, with no measured step count.
-All six implementation tasks are locally accepted. Native Windows CI and
-current-head PR checks, review closure and merge remain delivery requirements
-tracked by P11-T07.
+At that checkpoint all six implementation tasks were locally accepted; native
+Windows CI, current-head PR checks, review closure and merge were still pending.
+P11-T07 subsequently completed those requirements and PR #123 merged. The local
+checkpoint is preserved as evidence of that earlier tree, not substituted for
+the final delivery evidence.

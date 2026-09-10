@@ -7,9 +7,15 @@
   mechanism (`src/template_press/rebrand/identity.py`, `engine.py`,
   `rules.py`, `doctor.py`)
 - **Informed by:**
-  [research 0005](../research/0005-scaffolder-identity-variant-handling.md),
-  [research 0004 §5](../research/0004-py-launch-blueprint-conformance-gaps.md),
+  historical research 0005, *Scaffolder Identity-Variant Handling — Research
+  for the C/D/E Gap Fixes* (`0005-scaffolder-identity-variant-handling.md`);
+  historical research 0004 §5, *py-launch-blueprint Conformance Gaps —
+  `press verify` Dogfood Findings* (`0004-py-launch-blueprint-conformance-gaps.md`);
   [design 0009](0009-substitution-table.md)
+
+The research filenames identify documents under `docs/research/` in the
+original source history. Native self-press removes that directory; this
+retained decision record does not require those files to remain present.
 
 ## Decisions
 

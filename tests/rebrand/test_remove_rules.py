@@ -22,6 +22,7 @@ import pytest
 
 from template_press.rebrand.cli import main
 from template_press.rebrand.config import SOURCE_CONFIG_REL, render_source_config
+from template_press.rebrand.engine import apply, build_plan
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.regen import preflight_excluded_files
@@ -744,6 +745,87 @@ class TestRemovalCoverageWarning:
             "warning: 2 tracked files under legacy_demo_widget_notes/ "
             "will be rewritten" in out
         )
+
+    @pytest.mark.parametrize(
+        ("included_rel", "excluded_rel", "excluded_dir", "moved_subdir"),
+        [
+            ("a.md", "held.md", None, ""),
+            ("a.md", "private/held.md", "private", ""),
+            ("demo_widget/a.md", "demo_widget/held.md", None, "potato_launcher"),
+        ],
+        ids=("excluded-file", "excluded-directory", "chained-renames"),
+    )
+    def test_plan_counts_excluded_leaves_carried_by_directory_rename(
+        self, src_target: Path, included_rel, excluded_rel, excluded_dir, moved_subdir
+    ):
+        history_name = "legacy_demo_widget_notes"
+        history = src_target / history_name
+        for rel in (included_rel, excluded_rel):
+            path = history / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"preserved history\n")
+        excluded_source = f"{history_name}/{excluded_rel}"
+        rules = dataclasses.replace(
+            DEFAULT_RULES,
+            exclude_files=DEFAULT_RULES.exclude_files
+            | (frozenset() if excluded_dir else frozenset({excluded_source})),
+            exclude_dirs=DEFAULT_RULES.exclude_dirs
+            | (frozenset({excluded_dir}) if excluded_dir else frozenset()),
+        )
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "history with excluded leaf")
+
+        plan = build_plan(src_target, SOURCE, DEST, rules)
+        assert plan.table is not None
+        history_steps = [
+            step
+            for step in plan.table.rename_plan.steps
+            if any(path.startswith(f"{history_name}/") for path in step.source_entries)
+        ]
+        assert len(history_steps) == (2 if moved_subdir else 1)
+        for step in history_steps:
+            assert excluded_source not in step.source_entries
+            assert (excluded_source, "file") in step.closure
+        if moved_subdir:
+            assert history_steps[1].old_prefix == (
+                "legacy_potato_launcher_notes/demo_widget"
+            )
+
+        report = apply(src_target, SOURCE, DEST, rules, table=plan.table)
+        moved = src_target / "legacy_potato_launcher_notes"
+        assert not history.exists()
+        for rel in (included_rel, excluded_rel):
+            destination = (
+                Path(moved_subdir) / Path(rel).name if moved_subdir else Path(rel)
+            )
+            assert (moved / destination).read_bytes() == b"preserved history\n"
+        assert not any(path.startswith(f"{history_name}/") for path in report.replaced)
+        assert plan.removal_warnings == [
+            "warning: 2 tracked files under legacy_demo_widget_notes/ will "
+            "be rewritten to the new identity and no rule removes or "
+            "resets them — declare [[remove]] or [rules] verify_ignore "
+            "if this is template history"
+        ]
+
+    def test_excluded_leaf_outside_rename_still_prevents_warning(
+        self, src_target: Path
+    ):
+        history = src_target / "history"
+        history.mkdir()
+        (history / "a.md").write_text("demo_widget\n", encoding="utf-8")
+        (history / "held.md").write_bytes(b"preserved history\n")
+        rules = dataclasses.replace(
+            DEFAULT_RULES,
+            exclude_files=DEFAULT_RULES.exclude_files | frozenset({"history/held.md"}),
+        )
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "partly rewritten history")
+
+        plan = build_plan(src_target, SOURCE, DEST, rules)
+        assert plan.removal_warnings == []
+        apply(src_target, SOURCE, DEST, rules, table=plan.table)
+        assert (history / "a.md").read_text(encoding="utf-8") == "potato_launcher\n"
+        assert (history / "held.md").read_bytes() == b"preserved history\n"
 
     def test_no_warning_on_flat_layout_package_directory(
         self, flat_target: Path, tmp_path: Path, capsys
