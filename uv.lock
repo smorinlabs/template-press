@@ -1297,7 +1297,7 @@ wheels = [
 
 [[package]]
 name = "template-press"
-version = "4.0.1"
+version = "4.1.0"
 source = { editable = "." }
 
 [package.dev-dependencies]
