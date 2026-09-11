@@ -1,9 +1,9 @@
 # P03 — External-target rebrand press (clean-core rebuild)
 
-- **Status:** `[~]` in progress, reconciled 2026-09-10. M0–M5 and their
-  recorded hardening work are complete. The three M4d follow-ups and M6
-  provision implementation remain open. The M6 prerequisite, issue #42,
-  is complete through P06; it no longer blocks planning M6.
+- **Status:** `[~]` in progress. M0–M5 and their recorded hardening work are
+  complete. This change closes M4d on merge; M6 provision implementation
+  remains open. The M6 prerequisite, issue #42, is complete through P06 and
+  no longer blocks planning M6.
 
 Rebuild as standalone press: rebrand → provision, verify-then-mark
 
@@ -33,8 +33,10 @@ Rebuild as standalone press: rebrand → provision, verify-then-mark
       to exact root control artifacts through `engine.ROOT_CONTROL`;
       `engine.CONTROL_MARKERS` now serves the advisory warning only. Ordinary
       content under `press/` remains subject to rewrite and leak scanning.
-- [ ] [P03-M4d] Resolve the three M4c follow-ups listed below. Current probes
-      confirm their behavior; no implementation or owner decline is recorded.
+- [x] [P03-M4d] Clarify preview/apply warnings for existing `press/`
+      directories and derive the advice from the plan's validated inventory.
+      Retain directory reuse; the owner declined a new consent/refusal policy.
+      This closeout takes effect when the implementation change merges.
 - [x] [P03-M5] Self-publish (2026-07-17): v3.0.0 + v3.1.0 live on PyPI AND
       TestPyPI via OIDC Trusted Publishing (both publishers configured +
       verified end-to-end); release-please bootstrapped (manifest 3.1.0),
@@ -60,17 +62,36 @@ Rebuild as standalone press: rebrand → provision, verify-then-mark
       satisfied; provision/status remain reserved commands that exit 2.
       Scope the successor design before implementation.
 
-### Remaining M4d follow-ups
+<a id="remaining-m4d-follow-ups"></a>
 
-Checked on 2026-09-10 against product source from PR #125, unchanged by the
-P12 documentation closeout. The three numbered entries remain parts of
-`P03-M4d`, not three newly selected implementation tasks.
+### M4d follow-up closeout
 
-| Part | Current evidence | Remaining decision or work |
+The owner approved this scope on 2026-09-10 after the value evaluation.
+The implementation is carried by `feature/p03-p07-followups`; completion
+takes effect on its PR's merge. The three parts are one bounded change.
+
+| Part | Disposition | Value and preserved contract |
 | --- | --- | --- |
-| M4d (1): discovery-preview warning | A committed target with ordinary `press/notes.md` and no source config prints the stray-directory warning during `--accept-discovery --dry-run`, then says it would create `press/press-source.toml`. Exit 0; all product files remain unchanged. | Decide whether the warning should account for the planned control artifact. Any fix must preserve a read-only dry run and the deferred write after all exit-2 gates; writing the config before preview is not acceptable. |
-| M4d (2): existing root control location | Applying to the same target succeeds and writes the source config and receipt into its existing `press/` directory. The ordinary note remains present. The generic stray-directory warning does not explicitly describe this control-location reuse. | Decide whether explicit consent, a specific warning or refusal is needed before reusing an unrelated root `press/` directory. No such policy change is approved here. |
-| M4d (3): repeated inventory capture | `build_plan()` and `stray_press_dirs()` each capture a separate surface snapshot. The focused probe observed three `git ls-files` calls per capture, six across the pair. | Reassess the value of sharing a validated snapshot. The old "one git ls-files" proposal predates P06's stability checks; preserve repeated capture checks and ignore/configuration validation. No runtime benefit was measured. |
+| M4d (1): discovery-preview warning | Implemented: an unmarked root `press/` now receives a specific metadata-reuse warning. Preview says "would"; apply says "will". | Explains the intended directory reuse. Dry run remains read-only, and source-config writes remain after every exit-2 gate. |
+| M4d (2): existing root control location | Implemented the reuse notice with part 1. Owner declined an additional consent prompt, flag or refusal. | Ordinary files remain present and follow normal rewrite/leak-scanning rules. A new blocking policy would add friction without a demonstrated safety benefit. Existing control-file validation and containment guards remain. |
+| M4d (3): repeated inventory capture | Implemented: `build_plan()` supplies its validated snapshot to `stray_press_dirs()` and stores the advice on `Plan`. The CLI renders that advice. | Removes an additional inventory capture. Each new plan still captures fresh state, and all repeated capture, Git configuration and ignore-policy stability checks remain. |
+
+Five regression cases cover read-only preview, successful apply with ordinary
+file rewriting, nested-directory warnings, control-marker classification,
+one capture for planning/advice, and refreshed advice on a later plan.
+The affected [CLI reference](../docs/source/reference/cli.md#existing-press-directories)
+documents the operator-facing behavior.
+
+The local before/after benchmark used a committed seven-file target with
+ordinary `press/notes.md`, Python 3.13.14, and five complete discovery dry runs
+after one warm-up. Median time decreased from 1.543497 seconds to 1.030054
+seconds. Inventory Git calls decreased from 93 to 62, including `ls-files`
+calls from 9 to 6. These are measurements of that fixture on this Mac;
+results on other targets and platforms are not established by this probe.
+
+The older "one git ls-files" proposal is rejected: multiple reads inside
+each capture are intentional stability checks. The change shares the
+validated result within one plan and introduces no persistent cache.
 
 ### Tracking reconciliation evidence
 
@@ -80,11 +101,11 @@ P12 documentation closeout. The three numbered entries remain parts of
   this does not implement M6.
 - Direct calls to `template_press.press_cli.main(["provision"])` and
   `main(["status"])` both return 2 with the "coming in M6" message.
-- The M4d probes used disposable committed fixtures, captured dry-run output
+- The initial M4d probes used disposable committed fixtures, captured dry-run output
   and before/after file bytes, observed the real Git calls, then applied to
   the fixture. They made no changes to repository product source.
-- The project remains `[~]` because M4d and M6 are open. This reconciliation
-  selects no further implementation and declines none of those tasks.
+- The initial reconciliation left M4d and M6 open. The subsequent approved
+  M4d closeout above leaves the project `[~]` for M6 alone after merge.
 
 ### Open questions
 

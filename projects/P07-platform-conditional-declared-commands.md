@@ -1,9 +1,9 @@
 # P07 — Platform-conditional declared commands
 
-- **Status:** `[~]` in progress, reconciled 2026-09-10. Implementation and
-  `P07-T06` validation completed in merged PR #79. Only `P07-T07`, disposition
-  of two outstanding review comments, remains open; no native validation is
-  missing.
+- **Status:** `[~]` in progress. Implementation and `P07-T06` validation
+  completed in merged PR #79. The owner approved the `P07-T07` typing
+  improvement and review dispositions on 2026-09-10. The macOS thread is
+  resolved; delivery and resolution of the typing improvement remain pending.
 
 Platform-scoped rules; only matching platform triggers
 
@@ -205,12 +205,11 @@ platforms = ["darwin", "linux", "win32"]
       safety contracts; fix reproduced in-scope defects; then rerun every
       affected gate before merge.
 - [ ] [P07-T07] Disposition the two outstanding PR #79 review comments.
-      The `_parse_platforms` mapping annotation improvement still applies;
-      implement it with focused validation or explicitly decline it with a
-      rationale, then reply and resolve the thread. Refute the incorrect
-      macOS-classifier claim with the official PyPI list and resolve that
-      thread. The evidence and recommendations below do not claim either
-      GitHub thread has been resolved.
+      The owner approved a narrow `_parse_platforms` annotation correction;
+      the implementation uses `Mapping[str, object]` without changing runtime
+      validation. Deliver it, then reply and resolve the typing thread.
+      The incorrect macOS-classifier claim has received an evidence reply
+      and its thread is resolved. Keep the valid classifier unchanged.
 
 ### Delivery and validation evidence
 
@@ -233,15 +232,16 @@ The final native and CI results satisfy the part of T06 that was still pending
 when the draft PR opened. The separate review comments below were not closed
 during that delivery and are now tracked explicitly as T07.
 
-### Outstanding review disposition
+### Review follow-up closeout
 
-Both GitHub threads were still unresolved when checked on 2026-09-10. Their
-existence is distinct from the completed implementation tests.
+The initial 2026-09-10 reconciliation found both threads unresolved. The
+owner subsequently approved the typing improvement and closure of both
+review items. These dispositions are separate from the historical T06 gates.
 
-| Thread | Current assessment | Recommendation |
+| Thread | Assessment and value | Disposition |
 | --- | --- | --- |
-| [3793637868](https://github.com/smorinlabs/template-press/pull/79#discussion_r3793637868), mapping annotation | Confirmed maintainability follow-up: `rules._parse_platforms(entry: dict, ...)` still leaves mapping key/value types unspecified. Posted nine seconds before merge. No runtime defect was demonstrated. | Prefer a narrow annotation correction consistent with `AGENTS.md` strict typing, followed by focused rule tests and type checking. This tracking pass does not implement it or record an owner decline. |
-| [3793638692](https://github.com/smorinlabs/template-press/pull/79#discussion_r3793638692), macOS classifier | Refuted: `Operating System :: MacOS` appears in the [official PyPI classifier list](https://pypi.org/classifiers/). The current metadata uses that valid value. Posted twelve seconds after merge. | Reply with the official source and resolve; no classifier change is needed. This pass records the assessment without changing the historical PR thread. |
+| [3793637868](https://github.com/smorinlabs/template-press/pull/79#discussion_r3793637868), mapping annotation | Confirmed maintainability improvement. `Mapping[str, object]` states that the parser reads string keys and validates values of initially unknown type. It supports stricter static checking without changing runtime behavior. | Implemented on `feature/p03-p07-followups`; focused platform-rule tests and locked source type checking passed. Delivery, evidence reply and thread resolution are pending. |
+| [3793638692](https://github.com/smorinlabs/template-press/pull/79#discussion_r3793638692), macOS classifier | Refuted: `Operating System :: MacOS` appears in the [official PyPI classifier list](https://pypi.org/classifiers/) and remains the package's valid value. No metadata correction is warranted. | [Evidence reply 3984555125](https://github.com/smorinlabs/template-press/pull/79#discussion_r3984555125) posted; GraphQL confirmed thread `PRRT_kwDOS6BR086Zrvtr` resolved. No package metadata changed. |
 
 ### Notes
 

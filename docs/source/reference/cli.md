@@ -28,6 +28,21 @@ In a development checkout, run it through uv: `uv run press rebrand …`
 | `--force` | Override a safety guard. It permits re-pressing a target that already has a receipt and, when atomic no-replacement rename is unavailable, permits a warned non-atomic fallback. The fallback checks the destination immediately before each move, but a destination created in the remaining race window may be overwritten. |
 | `--allow-dirty` | Allow a target whose working tree is not clean. |
 
+### Existing `press/` directories
+
+Template Press stores its configuration and receipts in the target's root
+`press/` directory. The marker files are `press-source.toml` for source
+identity, `press-rules.toml` for target rules, and `press-receipt.toml` for
+the rebrand result. If that directory already contains ordinary files but
+none of these markers, a warning on stderr explains that the directory will
+also hold the tool's metadata. A dry run says it **would** do so and creates
+no files. Directory reuse requires no additional prompt or flag.
+
+Ordinary files such as `press/notes.md` remain subject to the normal rewriting
+and leak-scanning rules. The directory is retained; it does not become exempt
+as a whole. Unmarked nested directories such as `docs/press/` still receive
+the separate ordinary-content warning and remain eligible for renaming.
+
 ### Exit codes
 
 The exit code is the contract — scripts and CI can branch on it:

@@ -12,6 +12,7 @@ import re
 import sys
 import tomllib
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
@@ -556,7 +557,9 @@ def _reject_reserved(kind: str, file: str) -> None:
         )
 
 
-def _parse_platforms(entry: dict, kind: str, file: str) -> frozenset[str]:
+def _parse_platforms(
+    entry: Mapping[str, object], kind: str, file: str
+) -> frozenset[str]:
     """Validate one optional selector without consulting the host environment."""
 
     if "platforms" not in entry:
