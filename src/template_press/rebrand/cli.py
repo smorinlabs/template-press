@@ -31,7 +31,6 @@ from template_press.rebrand.engine import (
     apply,
     build_plan,
     preflight_rename_noreplace,
-    stray_press_dirs,
     translate_path,
 )
 from template_press.rebrand.identity import (
@@ -803,7 +802,18 @@ def main(argv: list[str] | None = None) -> int:
             print(warning)
         for warning in plan.prefix_warnings:
             print(warning)
-        strays = stray_press_dirs(target)
+        if "press" in plan.stray_press_dirs:
+            action = "would" if args.dry_run else "will"
+            print(
+                f"warning: existing press/ {action} also hold Template Press "
+                "configuration and receipts. Other files follow the normal "
+                "rewrite and leak-scan rules. Git-ignored untracked files "
+                "are excluded.",
+                file=sys.stderr,
+            )
+        strays = [
+            directory for directory in plan.stray_press_dirs if directory != "press"
+        ]
         if strays:
             print(
                 "warning: these press/ director(ies) are NOT this tool's "
