@@ -1,0 +1,455 @@
+{
+  "samples": [
+    {
+      "job": "sample 1 / 2 vCPU",
+      "job_id": 103083525686,
+      "job_url": "https://github.com/smorinlabs/template-press/actions/runs/34541041291/job/103083525686",
+      "conclusion": "success",
+      "sample": 1,
+      "vcpu": 2,
+      "runner": {
+        "requested_runner": "blacksmith-2vcpu-windows-2025",
+        "requested_vcpu": 2,
+        "sample": 1,
+        "actual_vcpu": 2,
+        "logical_processors": 2,
+        "memory_bytes": 7512043520,
+        "processor_name": "AMD EPYC 4565P 16-Core Processor               ",
+        "os_build": "26100",
+        "image_os": "windows25",
+        "image_version": "20250901215242",
+        "runner_name": "blacksmith-01m26sezccbvf5dtp5xy8cnh8q-2vcpu",
+        "source_revision": "b07d60f290af821806597e9f12523119aadd8493",
+        "lock_sha256": "E408479DCEBA2D22498B04952C2B264EE9D1037FBD8936DF694B5E1CDC1EBA7A",
+        "blueprint_before": "c1216c6089f768ae0a3f3a465460d2d384f5fa44\tHEAD",
+        "production_test_timeout_seconds": 900
+      },
+      "runtime_python": "3.13.7 (tags/v3.13.7:bcee1c3, Aug 14 2025, 14:15:11) [MSC v.1944 64 bit (AMD64)]",
+      "runtime_tools": {
+        "uv": {
+          "returncode": 0,
+          "output": "uv 0.12.13 (0ebbd9274 2026-09-10 x86_64-pc-windows-msvc)"
+        },
+        "git": {
+          "returncode": 0,
+          "output": "git version 2.51.0.windows.1"
+        },
+        "bun": {
+          "returncode": 0,
+          "output": "1.3.14"
+        }
+      },
+      "worker_counts": [
+        2
+      ],
+      "test_counts": {
+        "tests": 2233,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 110
+      },
+      "test_identity_sha256": "38c16173d530496a9e99a147206224fec058b6491f2caca664fff0168854214c",
+      "coverage_line_rate": 0.92,
+      "coverage_branch_rate": 0.0,
+      "step_seconds": {
+        "Run actions/checkout@v7": 15.0,
+        "Install uv": 6.0,
+        "Install bun (pinned for native R3)": 2.0,
+        "Sync dev env": 4.0,
+        "Run edit visibility regressions first": 49.0,
+        "Run tests with coverage": 1311.0
+      },
+      "full_suite_seconds": 1311.0,
+      "pytest_wrapper_seconds": 1309.8421807289124,
+      "matched_workload_seconds": 1387.0,
+      "total_job_seconds": 1415.0,
+      "exceeds_production_test_timeout": true
+    },
+    {
+      "job": "sample 1 / 4 vCPU",
+      "job_id": 103083525771,
+      "job_url": "https://github.com/smorinlabs/template-press/actions/runs/34541041291/job/103083525771",
+      "conclusion": "success",
+      "sample": 1,
+      "vcpu": 4,
+      "runner": {
+        "requested_runner": "blacksmith-4vcpu-windows-2025",
+        "requested_vcpu": 4,
+        "sample": 1,
+        "actual_vcpu": 4,
+        "logical_processors": 4,
+        "memory_bytes": 15028211712,
+        "processor_name": "AMD EPYC 4565P 16-Core Processor               ",
+        "os_build": "26100",
+        "image_os": "windows25",
+        "image_version": "20250901215242",
+        "runner_name": "blacksmith-01m26s6c2jx93719znyqyqa1vj-4vcpu",
+        "source_revision": "b07d60f290af821806597e9f12523119aadd8493",
+        "lock_sha256": "E408479DCEBA2D22498B04952C2B264EE9D1037FBD8936DF694B5E1CDC1EBA7A",
+        "blueprint_before": "c1216c6089f768ae0a3f3a465460d2d384f5fa44\tHEAD",
+        "production_test_timeout_seconds": 900
+      },
+      "runtime_python": "3.13.7 (tags/v3.13.7:bcee1c3, Aug 14 2025, 14:15:11) [MSC v.1944 64 bit (AMD64)]",
+      "runtime_tools": {
+        "uv": {
+          "returncode": 0,
+          "output": "uv 0.12.13 (0ebbd9274 2026-09-10 x86_64-pc-windows-msvc)"
+        },
+        "git": {
+          "returncode": 0,
+          "output": "git version 2.51.0.windows.1"
+        },
+        "bun": {
+          "returncode": 0,
+          "output": "1.3.14"
+        }
+      },
+      "worker_counts": [
+        4
+      ],
+      "test_counts": {
+        "tests": 2233,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 110
+      },
+      "test_identity_sha256": "38c16173d530496a9e99a147206224fec058b6491f2caca664fff0168854214c",
+      "coverage_line_rate": 0.92,
+      "coverage_branch_rate": 0.0,
+      "step_seconds": {
+        "Run actions/checkout@v7": 3.0,
+        "Install uv": 1.0,
+        "Install bun (pinned for native R3)": 1.0,
+        "Sync dev env": 3.0,
+        "Run edit visibility regressions first": 26.0,
+        "Run tests with coverage": 758.0
+      },
+      "full_suite_seconds": 758.0,
+      "pytest_wrapper_seconds": 757.6859714984894,
+      "matched_workload_seconds": 792.0,
+      "total_job_seconds": 806.0,
+      "exceeds_production_test_timeout": false
+    },
+    {
+      "job": "sample 2 / 2 vCPU",
+      "job_id": 103083525622,
+      "job_url": "https://github.com/smorinlabs/template-press/actions/runs/34541041291/job/103083525622",
+      "conclusion": "success",
+      "sample": 2,
+      "vcpu": 2,
+      "runner": {
+        "requested_runner": "blacksmith-2vcpu-windows-2025",
+        "requested_vcpu": 2,
+        "sample": 2,
+        "actual_vcpu": 2,
+        "logical_processors": 2,
+        "memory_bytes": 7512043520,
+        "processor_name": "AMD EPYC 4565P 16-Core Processor               ",
+        "os_build": "26100",
+        "image_os": "windows25",
+        "image_version": "20250901215242",
+        "runner_name": "blacksmith-01m26sez8j9xes0cx2wrnzwzwv-2vcpu",
+        "source_revision": "b07d60f290af821806597e9f12523119aadd8493",
+        "lock_sha256": "E408479DCEBA2D22498B04952C2B264EE9D1037FBD8936DF694B5E1CDC1EBA7A",
+        "blueprint_before": "c1216c6089f768ae0a3f3a465460d2d384f5fa44\tHEAD",
+        "production_test_timeout_seconds": 900
+      },
+      "runtime_python": "3.13.7 (tags/v3.13.7:bcee1c3, Aug 14 2025, 14:15:11) [MSC v.1944 64 bit (AMD64)]",
+      "runtime_tools": {
+        "uv": {
+          "returncode": 0,
+          "output": "uv 0.12.13 (0ebbd9274 2026-09-10 x86_64-pc-windows-msvc)"
+        },
+        "git": {
+          "returncode": 0,
+          "output": "git version 2.51.0.windows.1"
+        },
+        "bun": {
+          "returncode": 0,
+          "output": "1.3.14"
+        }
+      },
+      "worker_counts": [
+        2
+      ],
+      "test_counts": {
+        "tests": 2233,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 110
+      },
+      "test_identity_sha256": "38c16173d530496a9e99a147206224fec058b6491f2caca664fff0168854214c",
+      "coverage_line_rate": 0.92,
+      "coverage_branch_rate": 0.0,
+      "step_seconds": {
+        "Run actions/checkout@v7": 5.0,
+        "Install uv": 1.0,
+        "Install bun (pinned for native R3)": 2.0,
+        "Sync dev env": 4.0,
+        "Run edit visibility regressions first": 42.0,
+        "Run tests with coverage": 1379.0
+      },
+      "full_suite_seconds": 1379.0,
+      "pytest_wrapper_seconds": 1377.6788878440857,
+      "matched_workload_seconds": 1433.0,
+      "total_job_seconds": 1454.0,
+      "exceeds_production_test_timeout": true
+    },
+    {
+      "job": "sample 2 / 4 vCPU",
+      "job_id": 103083525605,
+      "job_url": "https://github.com/smorinlabs/template-press/actions/runs/34541041291/job/103083525605",
+      "conclusion": "success",
+      "sample": 2,
+      "vcpu": 4,
+      "runner": {
+        "requested_runner": "blacksmith-4vcpu-windows-2025",
+        "requested_vcpu": 4,
+        "sample": 2,
+        "actual_vcpu": 4,
+        "logical_processors": 4,
+        "memory_bytes": 15028236288,
+        "processor_name": "AMD EPYC 4565P 16-Core Processor               ",
+        "os_build": "26100",
+        "image_os": "windows25",
+        "image_version": "20250901215242",
+        "runner_name": "blacksmith-01m26s7em90g3hp7qp8ppve8t1-4vcpu",
+        "source_revision": "b07d60f290af821806597e9f12523119aadd8493",
+        "lock_sha256": "E408479DCEBA2D22498B04952C2B264EE9D1037FBD8936DF694B5E1CDC1EBA7A",
+        "blueprint_before": "c1216c6089f768ae0a3f3a465460d2d384f5fa44\tHEAD",
+        "production_test_timeout_seconds": 900
+      },
+      "runtime_python": "3.13.7 (tags/v3.13.7:bcee1c3, Aug 14 2025, 14:15:11) [MSC v.1944 64 bit (AMD64)]",
+      "runtime_tools": {
+        "uv": {
+          "returncode": 0,
+          "output": "uv 0.12.13 (0ebbd9274 2026-09-10 x86_64-pc-windows-msvc)"
+        },
+        "git": {
+          "returncode": 0,
+          "output": "git version 2.51.0.windows.1"
+        },
+        "bun": {
+          "returncode": 0,
+          "output": "1.3.14"
+        }
+      },
+      "worker_counts": [
+        4
+      ],
+      "test_counts": {
+        "tests": 2233,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 110
+      },
+      "test_identity_sha256": "38c16173d530496a9e99a147206224fec058b6491f2caca664fff0168854214c",
+      "coverage_line_rate": 0.92,
+      "coverage_branch_rate": 0.0,
+      "step_seconds": {
+        "Run actions/checkout@v7": 3.0,
+        "Install uv": 1.0,
+        "Install bun (pinned for native R3)": 2.0,
+        "Sync dev env": 3.0,
+        "Run edit visibility regressions first": 28.0,
+        "Run tests with coverage": 820.0
+      },
+      "full_suite_seconds": 820.0,
+      "pytest_wrapper_seconds": 819.6071841716766,
+      "matched_workload_seconds": 857.0,
+      "total_job_seconds": 874.0,
+      "exceeds_production_test_timeout": false
+    },
+    {
+      "job": "sample 3 / 2 vCPU",
+      "job_id": 103083525453,
+      "job_url": "https://github.com/smorinlabs/template-press/actions/runs/34541041291/job/103083525453",
+      "conclusion": "success",
+      "sample": 3,
+      "vcpu": 2,
+      "runner": {
+        "requested_runner": "blacksmith-2vcpu-windows-2025",
+        "requested_vcpu": 2,
+        "sample": 3,
+        "actual_vcpu": 2,
+        "logical_processors": 2,
+        "memory_bytes": 7512043520,
+        "processor_name": "AMD EPYC 4565P 16-Core Processor               ",
+        "os_build": "26100",
+        "image_os": "windows25",
+        "image_version": "20250901215242",
+        "runner_name": "blacksmith-01m26sezd0b00y1gkrtwnnjshk-2vcpu",
+        "source_revision": "b07d60f290af821806597e9f12523119aadd8493",
+        "lock_sha256": "E408479DCEBA2D22498B04952C2B264EE9D1037FBD8936DF694B5E1CDC1EBA7A",
+        "blueprint_before": "c1216c6089f768ae0a3f3a465460d2d384f5fa44\tHEAD",
+        "production_test_timeout_seconds": 900
+      },
+      "runtime_python": "3.13.7 (tags/v3.13.7:bcee1c3, Aug 14 2025, 14:15:11) [MSC v.1944 64 bit (AMD64)]",
+      "runtime_tools": {
+        "uv": {
+          "returncode": 0,
+          "output": "uv 0.12.13 (0ebbd9274 2026-09-10 x86_64-pc-windows-msvc)"
+        },
+        "git": {
+          "returncode": 0,
+          "output": "git version 2.51.0.windows.1"
+        },
+        "bun": {
+          "returncode": 0,
+          "output": "1.3.14"
+        }
+      },
+      "worker_counts": [
+        2
+      ],
+      "test_counts": {
+        "tests": 2233,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 110
+      },
+      "test_identity_sha256": "38c16173d530496a9e99a147206224fec058b6491f2caca664fff0168854214c",
+      "coverage_line_rate": 0.92,
+      "coverage_branch_rate": 0.0,
+      "step_seconds": {
+        "Run actions/checkout@v7": 5.0,
+        "Install uv": 1.0,
+        "Install bun (pinned for native R3)": 1.0,
+        "Sync dev env": 4.0,
+        "Run edit visibility regressions first": 36.0,
+        "Run tests with coverage": 1425.0
+      },
+      "full_suite_seconds": 1425.0,
+      "pytest_wrapper_seconds": 1424.4624137878418,
+      "matched_workload_seconds": 1472.0,
+      "total_job_seconds": 1495.0,
+      "exceeds_production_test_timeout": true
+    },
+    {
+      "job": "sample 3 / 4 vCPU",
+      "job_id": 103083525749,
+      "job_url": "https://github.com/smorinlabs/template-press/actions/runs/34541041291/job/103083525749",
+      "conclusion": "success",
+      "sample": 3,
+      "vcpu": 4,
+      "runner": {
+        "requested_runner": "blacksmith-4vcpu-windows-2025",
+        "requested_vcpu": 4,
+        "sample": 3,
+        "actual_vcpu": 4,
+        "logical_processors": 4,
+        "memory_bytes": 15028211712,
+        "processor_name": "Intel(R) Core(TM) i9-14900K",
+        "os_build": "26100",
+        "image_os": "windows25",
+        "image_version": "20250901215242",
+        "runner_name": "blacksmith-01m26sezcxcjb2yy8fc0nbvvf5-4vcpu",
+        "source_revision": "b07d60f290af821806597e9f12523119aadd8493",
+        "lock_sha256": "E408479DCEBA2D22498B04952C2B264EE9D1037FBD8936DF694B5E1CDC1EBA7A",
+        "blueprint_before": "c1216c6089f768ae0a3f3a465460d2d384f5fa44\tHEAD",
+        "production_test_timeout_seconds": 900
+      },
+      "runtime_python": "3.13.7 (tags/v3.13.7:bcee1c3, Aug 14 2025, 14:15:11) [MSC v.1944 64 bit (AMD64)]",
+      "runtime_tools": {
+        "uv": {
+          "returncode": 0,
+          "output": "uv 0.12.13 (0ebbd9274 2026-09-10 x86_64-pc-windows-msvc)"
+        },
+        "git": {
+          "returncode": 0,
+          "output": "git version 2.51.0.windows.1"
+        },
+        "bun": {
+          "returncode": 0,
+          "output": "1.3.14"
+        }
+      },
+      "worker_counts": [
+        4
+      ],
+      "test_counts": {
+        "tests": 2233,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 110
+      },
+      "test_identity_sha256": "38c16173d530496a9e99a147206224fec058b6491f2caca664fff0168854214c",
+      "coverage_line_rate": 0.92,
+      "coverage_branch_rate": 0.0,
+      "step_seconds": {
+        "Run actions/checkout@v7": 4.0,
+        "Install uv": 0.0,
+        "Install bun (pinned for native R3)": 2.0,
+        "Sync dev env": 3.0,
+        "Run edit visibility regressions first": 26.0,
+        "Run tests with coverage": 857.0
+      },
+      "full_suite_seconds": 857.0,
+      "pytest_wrapper_seconds": 856.6146175861359,
+      "matched_workload_seconds": 892.0,
+      "total_job_seconds": 919.0,
+      "exceeds_production_test_timeout": false
+    }
+  ],
+  "same_test_identities": true,
+  "same_test_counts": true,
+  "groups": {
+    "4": {
+      "samples": 3,
+      "metrics": {
+        "full_suite_seconds": {
+          "median": 820.0,
+          "min": 758.0,
+          "max": 857.0
+        },
+        "matched_workload_seconds": {
+          "median": 857.0,
+          "min": 792.0,
+          "max": 892.0
+        },
+        "total_job_seconds": {
+          "median": 874.0,
+          "min": 806.0,
+          "max": 919.0
+        }
+      }
+    },
+    "2": {
+      "samples": 3,
+      "metrics": {
+        "full_suite_seconds": {
+          "median": 1379.0,
+          "min": 1311.0,
+          "max": 1425.0
+        },
+        "matched_workload_seconds": {
+          "median": 1433.0,
+          "min": 1387.0,
+          "max": 1472.0
+        },
+        "total_job_seconds": {
+          "median": 1454.0,
+          "min": 1415.0,
+          "max": 1495.0
+        }
+      }
+    }
+  },
+  "comparison": {
+    "full_suite_seconds": {
+      "additional_seconds": 559.0,
+      "slowdown_percent": 68.17073170731706,
+      "estimated_cost_savings_percent": 15.914634146341466
+    },
+    "matched_workload_seconds": {
+      "additional_seconds": 576.0,
+      "slowdown_percent": 67.21120186697782,
+      "estimated_cost_savings_percent": 16.394399066511088
+    },
+    "total_job_seconds": {
+      "additional_seconds": 580.0,
+      "slowdown_percent": 66.36155606407324,
+      "estimated_cost_savings_percent": 16.819221967963383
+    }
+  }
+}

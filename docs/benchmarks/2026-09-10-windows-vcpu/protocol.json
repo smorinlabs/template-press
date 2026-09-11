@@ -1,0 +1,41 @@
+{
+  "repository": "smorinlabs/template-press",
+  "source_revision": "b07d60f290af821806597e9f12523119aadd8493",
+  "experiment_branch": "ci/windows-vcpu-benchmark-20260910",
+  "sample_design": "Three independent fresh jobs per runner size, launched in one matrix run",
+  "runner_labels": [
+    "blacksmith-4vcpu-windows-2025",
+    "blacksmith-2vcpu-windows-2025"
+  ],
+  "primary_metric": "GitHub Actions duration of Run tests with coverage, in seconds",
+  "secondary_metrics": [
+    "Matched checkout, tool installation, dependency sync, preflight and full-suite step durations",
+    "Full job duration including benchmark instrumentation and artifact upload",
+    "Test identities, outcomes, coverage, actual CPU counts and worker counts",
+    "Whether full-suite duration exceeds production's 900-second timeout"
+  ],
+  "controls": [
+    "All checkouts use the same unmodified production source revision",
+    "Setup action versions and three workload commands match production CI",
+    "Preserve pytest -n auto so worker count reflects the proposed runner change",
+    "Record requested and actual CPU counts, memory, image and tool versions",
+    "Use the production cache configuration and record cache outcomes from job logs",
+    "Check external blueprint HEAD before and after every sample; reject changed refs",
+    "Compare test identities and outcomes before interpreting timings"
+  ],
+  "experiment_full_suite_timeout_seconds": 1800,
+  "experiment_job_timeout_seconds": 2400,
+  "production_full_suite_timeout_seconds": 900,
+  "production_job_timeout_seconds": 1500,
+  "cost_model": {
+    "two_cpu_usd_per_minute": 0.008,
+    "four_cpu_usd_per_minute": 0.016,
+    "two_cpu_relative_cost": "0.5 * two_cpu_duration / four_cpu_duration",
+    "qualification": "Published-rate estimate before free credits, discounts and billing rounding",
+    "sources": [
+      "https://www.blacksmith.sh/pricing",
+      "https://docs.blacksmith.sh/blacksmith-runners/overview"
+    ]
+  },
+  "decision_scope": "Report measurements and a recommendation; retain production CI runner until the user decides"
+}
