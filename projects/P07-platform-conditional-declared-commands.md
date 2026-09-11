@@ -1,9 +1,10 @@
 # P07 — Platform-conditional declared commands
 
-- **Status:** `[~]` in progress. Implementation and `P07-T06` validation
-  completed in merged PR #79. The owner approved the `P07-T07` typing
-  improvement and review dispositions on 2026-09-10. The macOS thread is
-  resolved; delivery and resolution of the typing improvement remain pending.
+- **Status:** `[x]` complete upon merge of
+  [PR #131](https://github.com/smorinlabs/template-press/pull/131).
+  Implementation and `P07-T06` validation completed in merged PR #79.
+  Both `P07-T07` review threads are now resolved with evidence; PR #131
+  delivers the approved typing improvement. No P07 owner decisions remain.
 
 Platform-scoped rules; only matching platform triggers
 
@@ -204,12 +205,13 @@ platforms = ["darwin", "linux", "win32"]
       self-press; perform an adversarial review against D1-D8 and the P04-P06
       safety contracts; fix reproduced in-scope defects; then rerun every
       affected gate before merge.
-- [ ] [P07-T07] Disposition the two outstanding PR #79 review comments.
+- [x] [P07-T07] Disposition the two outstanding PR #79 review comments.
       The owner approved a narrow `_parse_platforms` annotation correction;
       the implementation uses `Mapping[str, object]` without changing runtime
-      validation. Deliver it, then reply and resolve the typing thread.
-      The incorrect macOS-classifier claim has received an evidence reply
-      and its thread is resolved. Keep the valid classifier unchanged.
+      validation. The fix is pushed in PR #131 and the typing thread is
+      resolved with validation evidence. The incorrect macOS-classifier claim
+      is refuted and resolved. The valid classifier remains unchanged.
+      Project completion takes effect when PR #131 merges.
 
 ### Delivery and validation evidence
 
@@ -240,8 +242,16 @@ review items. These dispositions are separate from the historical T06 gates.
 
 | Thread | Assessment and value | Disposition |
 | --- | --- | --- |
-| [3793637868](https://github.com/smorinlabs/template-press/pull/79#discussion_r3793637868), mapping annotation | Confirmed maintainability improvement. `Mapping[str, object]` states that the parser reads string keys and validates values of initially unknown type. It supports stricter static checking without changing runtime behavior. | Implemented on `feature/p03-p07-followups`; focused platform-rule tests and locked source type checking passed. Delivery, evidence reply and thread resolution are pending. |
+| [3793637868](https://github.com/smorinlabs/template-press/pull/79#discussion_r3793637868), mapping annotation | Confirmed maintainability improvement. `Mapping[str, object]` states that the parser reads string keys and validates values of initially unknown type. It supports stricter static checking without changing runtime behavior. | Implemented in [ee30a76](https://github.com/smorinlabs/template-press/commit/ee30a763d26ec81a95dccbe6b42ee516dcc6966c), delivered through PR #131. [Evidence reply 3985249221](https://github.com/smorinlabs/template-press/pull/79#discussion_r3985249221) names the fix and validation; thread `PRRT_kwDOS6BR086ZrvkY` is resolved. |
 | [3793638692](https://github.com/smorinlabs/template-press/pull/79#discussion_r3793638692), macOS classifier | Refuted: `Operating System :: MacOS` appears in the [official PyPI classifier list](https://pypi.org/classifiers/) and remains the package's valid value. No metadata correction is warranted. | [Evidence reply 3984555125](https://github.com/smorinlabs/template-press/pull/79#discussion_r3984555125) posted; GraphQL confirmed thread `PRRT_kwDOS6BR086Zrvtr` resolved. No package metadata changed. |
+
+The final paginated GraphQL check on 2026-09-10 confirmed both named threads
+resolved and no unresolved threads on PR #79. The new typing change passed
+the platform-rule suite and locked source type checking. The complete local
+`just check` reported 2,198 passed and 24 skipped, with all remaining checks
+passing. The committed-source `just matrix` passed all four live cases.
+PR #131's review and CI are separate delivery gates; this record does not
+claim that PR has merged.
 
 ### Notes
 

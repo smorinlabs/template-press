@@ -1,7 +1,7 @@
 # P03 — External-target rebrand press (clean-core rebuild)
 
 - **Status:** `[~]` in progress. M0–M5 and their recorded hardening work are
-  complete. This change closes M4d on merge; M6 provision implementation
+  complete. PR #131 closes M4d on merge; M6 provision implementation
   remains open. The M6 prerequisite, issue #42, is complete through P06 and
   no longer blocks planning M6.
 
@@ -67,8 +67,10 @@ Rebuild as standalone press: rebrand → provision, verify-then-mark
 ### M4d follow-up closeout
 
 The owner approved this scope on 2026-09-10 after the value evaluation.
-The implementation is carried by `feature/p03-p07-followups`; completion
-takes effect on its PR's merge. The three parts are one bounded change.
+The implementation is carried by
+[PR #131](https://github.com/smorinlabs/template-press/pull/131), branch
+`feature/p03-p07-followups`, starting with commit `ee30a76`. Completion takes
+effect on that PR's merge. The three parts are one bounded change.
 
 | Part | Disposition | Value and preserved contract |
 | --- | --- | --- |
@@ -81,6 +83,11 @@ file rewriting, nested-directory warnings, control-marker classification,
 one capture for planning/advice, and refreshed advice on a later plan.
 The affected [CLI reference](../docs/source/reference/cli.md#existing-press-directories)
 documents the operator-facing behavior.
+
+The complete local `just check` passed: 2,198 tests passed and 24 skipped,
+followed by passing lint, type checking, YAML, spelling and EditorConfig.
+All four committed-source live acceptance cases passed with `just matrix`.
+PR review and CI remain separate delivery gates.
 
 The local before/after benchmark used a committed seven-file target with
 ordinary `press/notes.md`, Python 3.13.14, and five complete discovery dry runs
