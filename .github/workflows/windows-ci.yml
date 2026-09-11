@@ -1,0 +1,60 @@
+# Full Windows test suite, including native R3 acceptance, on manual request.
+# Keep test commands and tool versions aligned with the test job in ci.yml.
+
+name: Windows CI (manual)
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: windows-ci-manual-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-windows:
+    name: Windows test suite (py3.13)
+    runs-on: blacksmith-4vcpu-windows-2025
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: "3.13"
+      - name: Install bun (pinned for native R3)
+        uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: '1.3.14'
+      - name: Sync dev env
+        run: uv sync --locked --group dev
+      - name: Run edit visibility regressions first
+        timeout-minutes: 5
+        run: >-
+          uv run --no-sync python scripts/ci_run_pytest.py ci-results/preflight --
+          -q tests/rebrand/test_edit_execute.py
+          -k "configured_ignore_edit or external_ignore_input or zero_inodes"
+          --durations=25 --durations-min=1 -o faulthandler_timeout=120
+          --junitxml=ci-results/preflight.xml
+      - name: Run tests with coverage
+        # Clear the default marker filter so slow/live tests, including R3, run.
+        timeout-minutes: 15
+        run: >-
+          uv run --no-sync python scripts/ci_run_pytest.py ci-results/full --
+          -m "" -n auto --cov=template_press --cov-report=xml
+          --durations=25 --durations-min=1 -o faulthandler_timeout=120
+          --junitxml=ci-results/full.xml
+      - name: Upload test diagnostics and coverage
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-ci-py3.13-attempt${{ github.run_attempt }}
+          path: |
+            ci-results/
+            coverage.xml
+          retention-days: 7
+          if-no-files-found: warn
