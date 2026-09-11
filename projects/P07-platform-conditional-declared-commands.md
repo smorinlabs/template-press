@@ -248,7 +248,7 @@ review items. These dispositions are separate from the historical T06 gates.
 The final paginated GraphQL check on 2026-09-10 confirmed both named threads
 resolved and no unresolved threads on PR #79. The new typing change passed
 the platform-rule suite and locked source type checking. The complete local
-`just check` reported 2,198 passed and 24 skipped, with all remaining checks
+`just check` reported 2,203 passed and 24 skipped, with all remaining checks
 passing. The committed-source `just matrix` passed all four live cases.
 PR #131's review and CI are separate delivery gates; this record does not
 claim that PR has merged.

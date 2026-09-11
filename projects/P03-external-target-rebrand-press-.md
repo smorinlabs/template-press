@@ -74,27 +74,40 @@ effect on that PR's merge. The three parts are one bounded change.
 
 | Part | Disposition | Value and preserved contract |
 | --- | --- | --- |
-| M4d (1): discovery-preview warning | Implemented: an unmarked root `press/` now receives a specific metadata-reuse warning. Preview says "would"; apply says "will". | Explains the intended directory reuse. Dry run remains read-only, and source-config writes remain after every exit-2 gate. |
+| M4d (1): discovery-preview warning | Implemented: an unmarked physical root `press/` receives a metadata-reuse warning, including an empty directory or one containing only ignored files. Preview says "would"; apply says "will". | Explains the intended directory reuse. Dry run remains read-only, and source-config writes remain after every exit-2 gate. |
 | M4d (2): existing root control location | Implemented the reuse notice with part 1. Owner declined an additional consent prompt, flag or refusal. | Ordinary files remain present and follow normal rewrite/leak-scanning rules. A new blocking policy would add friction without a demonstrated safety benefit. Existing control-file validation and containment guards remain. |
-| M4d (3): repeated inventory capture | Implemented: `build_plan()` supplies its validated snapshot to `stray_press_dirs()` and stores the advice on `Plan`. The CLI renders that advice. | Removes an additional inventory capture. Each new plan still captures fresh state, and all repeated capture, Git configuration and ignore-policy stability checks remain. |
+| M4d (3): repeated inventory capture | Implemented: `build_plan()` supplies its validated snapshot to `stray_press_dirs()` and stores the advice on `Plan`. Physical root and marker probes also account for directories and control files outside Git's inventory. The CLI renders the advice. | Removes an additional inventory capture. Each new plan still captures fresh state, and all repeated capture, Git configuration and ignore-policy stability checks remain. |
 
-Five regression cases cover read-only preview, successful apply with ordinary
+Ten regression cases cover read-only preview, successful apply with ordinary
 file rewriting, nested-directory warnings, control-marker classification,
-one capture for planning/advice, and refreshed advice on a later plan.
+one capture for planning/advice, and refreshed advice on a later plan. They
+include empty and ignored-only root directories in both modes, unchanged
+ignored content, and recognition of an ignored control marker.
 The affected [CLI reference](../docs/source/reference/cli.md#existing-press-directories)
 documents the operator-facing behavior.
 
-The complete local `just check` passed: 2,198 tests passed and 24 skipped,
+The complete local `just check` passed: 2,203 tests passed and 24 skipped,
 followed by passing lint, type checking, YAML, spelling and EditorConfig.
 All four committed-source live acceptance cases passed with `just matrix`.
 PR review and CI remain separate delivery gates.
 
-The local before/after benchmark used a committed seven-file target with
-ordinary `press/notes.md`, Python 3.13.14, and five complete discovery dry runs
+The initial implementation's before/after benchmark used a committed
+seven-file target with ordinary `press/notes.md`, Python 3.13.14, and five
+complete discovery dry runs
 after one warm-up. Median time decreased from 1.543497 seconds to 1.030054
 seconds. Inventory Git calls decreased from 93 to 62, including `ls-files`
 calls from 9 to 6. These are measurements of that fixture on this Mac;
 results on other targets and platforms are not established by this probe.
+
+PR #131 review reproduced the missing notice for an ignored-only root and
+added the physical-root probe and explicit ignored-file wording in commit
+`7785ab2`. Marker
+classification still uses filesystem probes because valid control files may
+be absent from Git's inventory. Deriving markers only from inventoried
+regular files would misclassify an existing ignored marker. The snapshot-only
+proposal was declined to preserve that behavior; making warning metadata
+atomic under concurrent changes is not part of this delivery. These advisory
+probes do not authorize writes or exempt ordinary files from scanning.
 
 The older "one git ls-files" proposal is rejected: multiple reads inside
 each capture are intentional stability checks. The change shares the
