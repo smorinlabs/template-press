@@ -75,23 +75,36 @@ def test_native_directory_declaration():
     assert sum(r.file.startswith("projects/") for r in rules.remove) == 13
 
 
-def test_native_r3_workflow_covers_posix_and_windows() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/rebrand-matrix.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert "blacksmith-4vcpu-ubuntu-2404" in workflow
-    assert "windows-latest" in workflow
-    assert "test_r3_self_press_native" in workflow
-    assert "scripts/regen-bun-lock.ps1" in workflow
-
-
-def test_general_ci_provisions_bun_for_native_r3() -> None:
+def test_native_r3_workflows_cover_posix_and_manual_windows() -> None:
     workflow = yaml.load(
-        (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
+        (REPO_ROOT / ".github/workflows/rebrand-matrix.yml").read_text(
+            encoding="utf-8"
+        ),
         Loader=yaml.BaseLoader,  # noqa: S506 - only strings/containers, no constructors.
     )
-    steps = workflow["jobs"]["test"]["steps"]
+
+    entries = workflow["jobs"]["matrix"]["strategy"]["matrix"]["include"]
+    assert any(entry["os"] == "blacksmith-4vcpu-ubuntu-2404" for entry in entries)
+    assert "scripts/regen-bun-lock.ps1" in workflow["on"]["pull_request"]["paths"]
+
+    manual = yaml.load(
+        (REPO_ROOT / ".github/workflows/windows-ci.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,  # noqa: S506 - only strings/containers, no constructors.
+    )
+    assert set(manual["on"]) == {"workflow_dispatch"}
+    assert manual["jobs"]["test-windows"]["runs-on"] == "blacksmith-4vcpu-windows-2025"
+
+
+@pytest.mark.parametrize(
+    ("workflow_name", "job_name"),
+    [("ci.yml", "test"), ("windows-ci.yml", "test-windows")],
+)
+def test_ci_provisions_bun_for_native_r3(workflow_name: str, job_name: str) -> None:
+    workflow = yaml.load(
+        (REPO_ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,  # noqa: S506 - only strings/containers, no constructors.
+    )
+    steps = workflow["jobs"][job_name]["steps"]
     full = next(step for step in steps if step.get("name") == "Run tests with coverage")
     command = shlex.split(full["run"])
     assert command[:5] == [
