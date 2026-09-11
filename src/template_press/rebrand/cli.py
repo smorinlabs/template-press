@@ -806,8 +806,9 @@ def main(argv: list[str] | None = None) -> int:
             action = "would" if args.dry_run else "will"
             print(
                 f"warning: existing press/ {action} also hold Template Press "
-                "configuration and receipts; its other files remain subject "
-                "to rewriting and leak scanning",
+                "configuration and receipts. Other files follow the normal "
+                "rewrite and leak-scan rules. Git-ignored untracked files "
+                "are excluded.",
                 file=sys.stderr,
             )
         strays = [

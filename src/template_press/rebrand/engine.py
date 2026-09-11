@@ -152,7 +152,7 @@ class Plan:
     # press/press-source.toml after the template was renamed upstream.
     # Populated by build_plan from the same content scan as `items`.
     prefix_warnings: list[str] = field(default_factory=list)
-    # Advisory directory classification from this plan's validated inventory.
+    # Advice uses the plan inventory plus physical root/marker probes.
     # Rendering it must not capture the target surface a second time.
     stray_press_dirs: list[str] = field(default_factory=list)
 
@@ -207,15 +207,17 @@ def _press_dirs(files: list[Path]) -> set[str]:
     return dirs
 
 
-def _control_press_dirs(target: Path, files: list[Path]) -> frozenset[str]:
+def _control_press_dirs(target: Path, directories: Collection[str]) -> frozenset[str]:
     """press/ directories with control markers, for advisory classification.
 
     This set does not exempt directories from rewriting or leak scanning.
     Only the exact root artifacts in ROOT_CONTROL receive that exemption.
+    Markers may be Git-ignored and absent from the inventory, so preserve
+    the filesystem probes used only for this advisory classification.
     """
     return frozenset(
         d
-        for d in _press_dirs(files)
+        for d in directories
         if any((target / d / m).is_file() for m in CONTROL_MARKERS)
     )
 
@@ -225,16 +227,18 @@ def stray_press_dirs(
 ) -> list[str]:
     """press/ dirs that are NOT the control dir (no control marker).
 
-    They are treated as ordinary content — rewritten AND leak-scanned — so
-    surviving source tokens under them cannot yield a false 'verified'. The
-    CLI warns about them so a human can confirm the rewrite was intended.
+    Their files follow the normal rewrite and scan selection rules. The
+    physical root directory also needs a reuse notice when empty or holding
+    only ignored files; those files remain outside the selected surface.
     A plan supplies its validated snapshot; standalone callers capture fresh
     state, including all surface and visibility stability checks.
     """
     if snapshot is None:
         snapshot = capture_surface_snapshot(target)
-    files = list(listed_paths(snapshot))
-    return sorted(_press_dirs(files) - _control_press_dirs(target, files))
+    directories = _press_dirs(list(listed_paths(snapshot)))
+    if (target / "press").is_dir():
+        directories.add("press")
+    return sorted(directories - _control_press_dirs(target, directories))
 
 
 def _content_candidate_entries(target: Path, rules: Rules) -> tuple[SurfaceEntry, ...]:
