@@ -84,7 +84,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@v10.1.0
       - name: Sync locked dev tools
         run: uv sync --locked --only-group dev
       - name: Ruff check
@@ -103,7 +103,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@v10.1.0
       - name: Sync dev env (ty needs project deps on the python path)
         run: uv sync --locked --group dev
       - name: ty check
@@ -145,7 +145,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: ${{ matrix.python-version }}
       # The full suite enables live tests, including R3's native self-press.
@@ -195,7 +195,7 @@ jobs:
         # Single matrix combo uploads (avoids 4x duplicate reports).
         # use_oidc: tokenless upload (public repo). Requires `id-token: write`.
         if: matrix.upload-coverage
-        uses: codecov/codecov-action@v7.0.0
+        uses: codecov/codecov-action@v7.1.1
         with:
           use_oidc: true
           files: coverage.xml
@@ -216,7 +216,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@v10.1.0
       - name: Build sdist + wheel
         run: uv build
       - name: Sync locked dev tools
@@ -240,7 +240,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@v10.1.0
       - name: Sync docs env
         run: uv sync --locked --group docs
       - name: Sphinx build (warnings are errors)
