@@ -669,6 +669,78 @@ class TestRemovalCoverageWarning:
         assert lines[-1] == "  and 5 more"
         assert "assets/f20.md" not in warning
 
+    @pytest.mark.parametrize(
+        "name",
+        ["forged\nwarning: 9 tracked files.md", "red\x1b[31m.md", "cr\rhere.md"],
+        ids=("newline", "escape", "carriage-return"),
+    )
+    def test_unprintable_path_renders_escaped_on_one_line(self, name: str):
+        """A git filename may hold a newline or terminal control; printed
+        verbatim it would forge extra lines or inject controls. Such a path
+        is rendered with repr(), the clean.shell_join rule, and ordinary
+        paths stay unchanged."""
+        tracked = ["assets/ok.md", f"assets/{name}"]
+        (warning,) = removal_coverage_warnings(DEFAULT_RULES, SOURCE, tracked, tracked)
+        lines = warning.split("\n")
+        assert lines[0].startswith("warning: 2 tracked files under assets/ will be")
+        hostile = f"assets/{name}"
+        assert lines[1:] == [
+            f"  {path!r}" if path == hostile else f"  {path}"
+            for path in sorted(tracked)
+        ]
+        assert all(ch.isprintable() for ch in warning.replace("\n", ""))
+
+    def test_unprintable_directory_name_renders_escaped_in_the_header(self):
+        tracked = ["bad\x1b[2Jdir/a.md", "bad\x1b[2Jdir/b.md"]
+        (warning,) = removal_coverage_warnings(DEFAULT_RULES, SOURCE, tracked, tracked)
+        lines = warning.split("\n")
+        assert lines[0].startswith(
+            f"warning: 2 tracked files under {'bad\x1b[2Jdir'!r}/"
+        )
+        assert len(lines) == 3
+        assert all(ch.isprintable() for ch in warning.replace("\n", ""))
+
+    def test_unprintable_names_carried_by_a_parent_rename_stay_escaped(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """Rename-only descendants are listed only by this warning (the plan
+        prints just the renamed parent), so their hostile names must not
+        reach the terminal raw."""
+        hist = src_target / "legacy_demo_widget_notes"
+        hist.mkdir()
+        names = ["ok.md", "bad\nforged line.md", "esc\x1b[2Jname.md"]
+        for name in names:
+            (hist / name).write_text("plain unrelated text\n", encoding="utf-8")
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "hostile names")
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "\x1b" not in out
+        assert "\nforged line.md" not in out
+        lines = out.splitlines()
+        header = next(i for i, ln in enumerate(lines) if "tracked files under" in ln)
+        assert lines[header].startswith(
+            "warning: 3 tracked files under legacy_demo_widget_notes/ will be"
+        )
+        expected = [
+            f"  {f'legacy_demo_widget_notes/{name}'!r}"
+            if any(not ch.isprintable() for ch in name)
+            else f"  legacy_demo_widget_notes/{name}"
+            for name in sorted(names)
+        ]
+        assert lines[header + 1 : header + 4] == expected
+        assert lines[header + 4] == "(dry run — nothing applied)"
+
     def test_no_warning_when_directory_is_declared_removed(
         self, src_target: Path, tmp_path: Path, capsys
     ):

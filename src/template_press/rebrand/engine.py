@@ -955,6 +955,19 @@ def _rename_covered_paths(steps: Collection[RenameStep]) -> set[str]:
 _COVERAGE_WARNING_PATH_CAP = 20
 
 
+def _printable_or_repr(value: str) -> str:
+    """Render a tracked path for the terminal without letting it forge lines.
+
+    A git filename may hold a newline or a terminal escape, and the inventory
+    preserves it. Same rule as ``clean.shell_join``: a value with any
+    character ``str.isprintable`` rejects is shown as its ``repr``, so it
+    stays on one line with no raw control character; every other value is
+    returned unchanged.
+    """
+
+    return repr(value) if any(not char.isprintable() for char in value) else value
+
+
 def removal_coverage_warnings(
     rules: Rules,
     source: Identity,
@@ -1027,12 +1040,16 @@ def removal_coverage_warnings(
         files = sorted(by_dir[dirname])
         if all(f in rewrite_set for f in files):
             lines = [
-                f"warning: {len(files)} tracked files under {dirname}/ will "
+                f"warning: {len(files)} tracked files under "
+                f"{_printable_or_repr(dirname)}/ will "
                 "be rewritten to the new identity and no rule removes or "
                 "resets them — declare [[remove]] or [rules] verify_ignore "
                 "if this is template history"
             ]
-            lines.extend(f"  {path}" for path in files[:_COVERAGE_WARNING_PATH_CAP])
+            lines.extend(
+                f"  {_printable_or_repr(path)}"
+                for path in files[:_COVERAGE_WARNING_PATH_CAP]
+            )
             if len(files) > _COVERAGE_WARNING_PATH_CAP:
                 lines.append(f"  and {len(files) - _COVERAGE_WARNING_PATH_CAP} more")
             warnings.append("\n".join(lines))
