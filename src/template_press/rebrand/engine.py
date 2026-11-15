@@ -950,6 +950,24 @@ def _rename_covered_paths(steps: Collection[RenameStep]) -> set[str]:
     return covered
 
 
+# Most affected paths one coverage warning lists before it summarizes the
+# rest as "and N more" (the same bound the other capped listings use).
+_COVERAGE_WARNING_PATH_CAP = 20
+
+
+def _printable_or_repr(value: str) -> str:
+    """Render a tracked path for the terminal without letting it forge lines.
+
+    A git filename may hold a newline or a terminal escape, and the inventory
+    preserves it. Same rule as ``clean.shell_join``: a value with any
+    character ``str.isprintable`` rejects is shown as its ``repr``, so it
+    stays on one line with no raw control character; every other value is
+    returned unchanged.
+    """
+
+    return repr(value) if any(not char.isprintable() for char in value) else value
+
+
 def removal_coverage_warnings(
     rules: Rules,
     source: Identity,
@@ -964,8 +982,12 @@ def removal_coverage_warnings(
     Depth 1 only for v1 (POSIX rel path's first component) — deeper
     directories are out of scope until a real need for them shows up.
     Grouping by TOP-LEVEL directory, not by every directory level, keeps
-    the signal coarse and cheap to reason about: one line per top-level
-    dir, not a warning per nested history folder.
+    the signal coarse and cheap to reason about: one warning per top-level
+    dir, not a warning per nested history folder. Each warning is its
+    header line followed by the affected paths, sorted, one per indented
+    line, so the operator can decide per file without a separate search;
+    past ``_COVERAGE_WARNING_PATH_CAP`` paths the rest collapse into a final
+    ``and N more`` line.
 
     A directory triggers the warning only when EVERY one of its tracked
     files is a rewrite candidate — ``rewrite_paths`` is the union of (a)
@@ -1015,14 +1037,22 @@ def removal_coverage_warnings(
             continue
         if dirname in rules.verify_ignore:
             continue
-        files = by_dir[dirname]
+        files = sorted(by_dir[dirname])
         if all(f in rewrite_set for f in files):
-            warnings.append(
-                f"warning: {len(files)} tracked files under {dirname}/ will "
+            lines = [
+                f"warning: {len(files)} tracked files under "
+                f"{_printable_or_repr(dirname)}/ will "
                 "be rewritten to the new identity and no rule removes or "
                 "resets them — declare [[remove]] or [rules] verify_ignore "
                 "if this is template history"
+            ]
+            lines.extend(
+                f"  {_printable_or_repr(path)}"
+                for path in files[:_COVERAGE_WARNING_PATH_CAP]
             )
+            if len(files) > _COVERAGE_WARNING_PATH_CAP:
+                lines.append(f"  and {len(files) - _COVERAGE_WARNING_PATH_CAP} more")
+            warnings.append("\n".join(lines))
     return warnings
 
 

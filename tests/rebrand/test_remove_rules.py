@@ -22,7 +22,11 @@ import pytest
 
 from template_press.rebrand.cli import main
 from template_press.rebrand.config import SOURCE_CONFIG_REL, render_source_config
-from template_press.rebrand.engine import apply, build_plan
+from template_press.rebrand.engine import (
+    apply,
+    build_plan,
+    removal_coverage_warnings,
+)
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.regen import preflight_excluded_files
@@ -41,7 +45,7 @@ from template_press.rebrand.rules import (
 )
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import DEST, SOURCE, _git, write_answers_file
+from .conftest import DEST, SOURCE, _git, posix_only, write_answers_file
 from .test_cli import write_answers, write_source_config
 from .test_verify_cli import _commit, make_pressable
 
@@ -602,6 +606,144 @@ class TestRemovalCoverageWarning:
         assert "warning: 2 tracked files under projects/ will be rewritten" in out
         assert "declare [[remove]] or [rules] verify_ignore" in out
 
+    def test_warning_names_the_affected_paths_sorted(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """Issue #150: the warning must list the files it refers to (sorted,
+        nested paths included) so the operator can decide per file without a
+        separate search."""
+        assets = src_target / "assets"
+        (assets / "sub").mkdir(parents=True)
+        (assets / "z-banner.md").write_text("demo_widget\n", encoding="utf-8")
+        (assets / "a-logo.md").write_text("demo_widget\n", encoding="utf-8")
+        (assets / "sub" / "m.md").write_text("demo_widget\n", encoding="utf-8")
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "assets")
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        lines = out.splitlines()
+        header = next(i for i, ln in enumerate(lines) if "tracked files under" in ln)
+        assert lines[header].startswith(
+            "warning: 3 tracked files under assets/ will be rewritten"
+        )
+        assert lines[header].endswith("if this is template history")
+        assert lines[header + 1 : header + 4] == [
+            "  assets/a-logo.md",
+            "  assets/sub/m.md",
+            "  assets/z-banner.md",
+        ]
+
+    def test_warning_path_list_is_sorted_whatever_the_input_order(self):
+        tracked = ["assets/z.md", "assets/a.md", "assets/m.md"]
+        (warning,) = removal_coverage_warnings(DEFAULT_RULES, SOURCE, tracked, tracked)
+        assert warning.splitlines()[1:] == [
+            "  assets/a.md",
+            "  assets/m.md",
+            "  assets/z.md",
+        ]
+
+    def test_warning_path_list_at_the_cap_is_not_truncated(self):
+        tracked = [f"assets/f{i:02d}.md" for i in range(20)]
+        (warning,) = removal_coverage_warnings(DEFAULT_RULES, SOURCE, tracked, tracked)
+        lines = warning.splitlines()
+        assert lines[0].startswith("warning: 20 tracked files under assets/")
+        assert lines[1:] == [f"  {path}" for path in sorted(tracked)]
+
+    def test_long_warning_path_list_is_bounded_with_a_remainder_count(self):
+        tracked = [f"assets/f{i:02d}.md" for i in reversed(range(25))]
+        (warning,) = removal_coverage_warnings(DEFAULT_RULES, SOURCE, tracked, tracked)
+        lines = warning.splitlines()
+        assert lines[0].startswith("warning: 25 tracked files under assets/")
+        assert "declare [[remove]] or [rules] verify_ignore" in lines[0]
+        assert lines[1:-1] == [f"  assets/f{i:02d}.md" for i in range(20)]
+        assert lines[-1] == "  and 5 more"
+        assert "assets/f20.md" not in warning
+
+    @pytest.mark.parametrize(
+        "name",
+        ["forged\nwarning: 9 tracked files.md", "red\x1b[31m.md", "cr\rhere.md"],
+        ids=("newline", "escape", "carriage-return"),
+    )
+    def test_unprintable_path_renders_escaped_on_one_line(self, name: str):
+        """A git filename may hold a newline or terminal control; printed
+        verbatim it would forge extra lines or inject controls. Such a path
+        is rendered with repr(), the clean.shell_join rule, and ordinary
+        paths stay unchanged."""
+        tracked = ["assets/ok.md", f"assets/{name}"]
+        (warning,) = removal_coverage_warnings(DEFAULT_RULES, SOURCE, tracked, tracked)
+        lines = warning.split("\n")
+        assert lines[0].startswith("warning: 2 tracked files under assets/ will be")
+        hostile = f"assets/{name}"
+        assert lines[1:] == [
+            f"  {path!r}" if path == hostile else f"  {path}"
+            for path in sorted(tracked)
+        ]
+        assert all(ch.isprintable() for ch in warning.replace("\n", ""))
+
+    def test_unprintable_directory_name_renders_escaped_in_the_header(self):
+        tracked = ["bad\x1b[2Jdir/a.md", "bad\x1b[2Jdir/b.md"]
+        (warning,) = removal_coverage_warnings(DEFAULT_RULES, SOURCE, tracked, tracked)
+        lines = warning.split("\n")
+        assert lines[0].startswith(
+            f"warning: 2 tracked files under {'bad\x1b[2Jdir'!r}/"
+        )
+        assert len(lines) == 3
+        assert all(ch.isprintable() for ch in warning.replace("\n", ""))
+
+    # Windows forbids newline and ESC in filenames, so this test cannot build
+    # its fixture there; the string-only escaping tests above still run.
+    @posix_only
+    def test_unprintable_names_carried_by_a_parent_rename_stay_escaped(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """Rename-only descendants are listed only by this warning (the plan
+        prints just the renamed parent), so their hostile names must not
+        reach the terminal raw."""
+        hist = src_target / "legacy_demo_widget_notes"
+        hist.mkdir()
+        names = ["ok.md", "bad\nforged line.md", "esc\x1b[2Jname.md"]
+        for name in names:
+            (hist / name).write_text("plain unrelated text\n", encoding="utf-8")
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "hostile names")
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "\x1b" not in out
+        assert "\nforged line.md" not in out
+        lines = out.splitlines()
+        header = next(i for i, ln in enumerate(lines) if "tracked files under" in ln)
+        assert lines[header].startswith(
+            "warning: 3 tracked files under legacy_demo_widget_notes/ will be"
+        )
+        expected = [
+            f"  {f'legacy_demo_widget_notes/{name}'!r}"
+            if any(not ch.isprintable() for ch in name)
+            else f"  legacy_demo_widget_notes/{name}"
+            for name in sorted(names)
+        ]
+        assert lines[header + 1 : header + 4] == expected
+        assert lines[header + 4] == "(dry run — nothing applied)"
+
     def test_no_warning_when_directory_is_declared_removed(
         self, src_target: Path, tmp_path: Path, capsys
     ):
@@ -804,7 +946,11 @@ class TestRemovalCoverageWarning:
             "warning: 2 tracked files under legacy_demo_widget_notes/ will "
             "be rewritten to the new identity and no rule removes or "
             "resets them — declare [[remove]] or [rules] verify_ignore "
-            "if this is template history"
+            "if this is template history\n"
+            + "\n".join(
+                f"  {path}"
+                for path in sorted((f"{history_name}/{included_rel}", excluded_source))
+            )
         ]
 
     def test_excluded_leaf_outside_rename_still_prevents_warning(
