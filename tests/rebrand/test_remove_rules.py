@@ -45,7 +45,7 @@ from template_press.rebrand.rules import (
 )
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import DEST, SOURCE, _git, write_answers_file
+from .conftest import DEST, SOURCE, _git, posix_only, write_answers_file
 from .test_cli import write_answers, write_source_config
 from .test_verify_cli import _commit, make_pressable
 
@@ -700,6 +700,9 @@ class TestRemovalCoverageWarning:
         assert len(lines) == 3
         assert all(ch.isprintable() for ch in warning.replace("\n", ""))
 
+    # Windows forbids newline and ESC in filenames, so this test cannot build
+    # its fixture there; the string-only escaping tests above still run.
+    @posix_only
     def test_unprintable_names_carried_by_a_parent_rename_stay_escaped(
         self, src_target: Path, tmp_path: Path, capsys
     ):
