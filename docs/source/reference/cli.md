@@ -550,7 +550,21 @@ anything under it. When that happens, the plan prints a non-fatal
 identity and no rule removes or resets them — declare [[remove]] or
 [rules] verify_ignore if this is template history` line — on both
 `--dry-run` and a real apply, after the plan, with the exit code
-unchanged. The directories `src/`, `tests/`, and the top-level directory
+unchanged. The warning line is followed by the affected paths, sorted, one
+per indented line, so each file can be judged without a separate search:
+
+```text
+warning: 3 tracked files under assets/ will be rewritten to the new identity and no rule removes or resets them — declare [[remove]] or [rules] verify_ignore if this is template history
+  assets/logo-dark.svg
+  assets/logo-light.svg
+  assets/sub/banner.svg
+```
+
+At most 20 paths are listed; a longer set ends with an `  and N more` line
+giving the number left out (the `N tracked files` count in the warning line
+is always the full total).
+
+The directories `src/`, `tests/`, and the top-level directory
 named after the SOURCE identity's `package_name` (the flat-layout package
 root — under `src/` layout the package sits a level deeper, already
 covered by the `src/` exclusion) are never flagged: a fully rewritten

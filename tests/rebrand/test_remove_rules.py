@@ -22,7 +22,11 @@ import pytest
 
 from template_press.rebrand.cli import main
 from template_press.rebrand.config import SOURCE_CONFIG_REL, render_source_config
-from template_press.rebrand.engine import apply, build_plan
+from template_press.rebrand.engine import (
+    apply,
+    build_plan,
+    removal_coverage_warnings,
+)
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.regen import preflight_excluded_files
@@ -602,6 +606,69 @@ class TestRemovalCoverageWarning:
         assert "warning: 2 tracked files under projects/ will be rewritten" in out
         assert "declare [[remove]] or [rules] verify_ignore" in out
 
+    def test_warning_names_the_affected_paths_sorted(
+        self, src_target: Path, tmp_path: Path, capsys
+    ):
+        """Issue #150: the warning must list the files it refers to (sorted,
+        nested paths included) so the operator can decide per file without a
+        separate search."""
+        assets = src_target / "assets"
+        (assets / "sub").mkdir(parents=True)
+        (assets / "z-banner.md").write_text("demo_widget\n", encoding="utf-8")
+        (assets / "a-logo.md").write_text("demo_widget\n", encoding="utf-8")
+        (assets / "sub" / "m.md").write_text("demo_widget\n", encoding="utf-8")
+        _git(src_target, "add", "-A")
+        _git(src_target, "commit", "-q", "-m", "assets")
+        write_source_config(src_target)
+        code = main(
+            [
+                "--target",
+                str(src_target),
+                "--config",
+                str(write_answers(tmp_path)),
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        lines = out.splitlines()
+        header = next(i for i, ln in enumerate(lines) if "tracked files under" in ln)
+        assert lines[header].startswith(
+            "warning: 3 tracked files under assets/ will be rewritten"
+        )
+        assert lines[header].endswith("if this is template history")
+        assert lines[header + 1 : header + 4] == [
+            "  assets/a-logo.md",
+            "  assets/sub/m.md",
+            "  assets/z-banner.md",
+        ]
+
+    def test_warning_path_list_is_sorted_whatever_the_input_order(self):
+        tracked = ["assets/z.md", "assets/a.md", "assets/m.md"]
+        (warning,) = removal_coverage_warnings(DEFAULT_RULES, SOURCE, tracked, tracked)
+        assert warning.splitlines()[1:] == [
+            "  assets/a.md",
+            "  assets/m.md",
+            "  assets/z.md",
+        ]
+
+    def test_warning_path_list_at_the_cap_is_not_truncated(self):
+        tracked = [f"assets/f{i:02d}.md" for i in range(20)]
+        (warning,) = removal_coverage_warnings(DEFAULT_RULES, SOURCE, tracked, tracked)
+        lines = warning.splitlines()
+        assert lines[0].startswith("warning: 20 tracked files under assets/")
+        assert lines[1:] == [f"  {path}" for path in sorted(tracked)]
+
+    def test_long_warning_path_list_is_bounded_with_a_remainder_count(self):
+        tracked = [f"assets/f{i:02d}.md" for i in reversed(range(25))]
+        (warning,) = removal_coverage_warnings(DEFAULT_RULES, SOURCE, tracked, tracked)
+        lines = warning.splitlines()
+        assert lines[0].startswith("warning: 25 tracked files under assets/")
+        assert "declare [[remove]] or [rules] verify_ignore" in lines[0]
+        assert lines[1:-1] == [f"  assets/f{i:02d}.md" for i in range(20)]
+        assert lines[-1] == "  and 5 more"
+        assert "assets/f20.md" not in warning
+
     def test_no_warning_when_directory_is_declared_removed(
         self, src_target: Path, tmp_path: Path, capsys
     ):
@@ -804,7 +871,11 @@ class TestRemovalCoverageWarning:
             "warning: 2 tracked files under legacy_demo_widget_notes/ will "
             "be rewritten to the new identity and no rule removes or "
             "resets them — declare [[remove]] or [rules] verify_ignore "
-            "if this is template history"
+            "if this is template history\n"
+            + "\n".join(
+                f"  {path}"
+                for path in sorted((f"{history_name}/{included_rel}", excluded_source))
+            )
         ]
 
     def test_excluded_leaf_outside_rename_still_prevents_warning(
