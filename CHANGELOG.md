@@ -1,5 +1,23 @@
 # Changelog
 
+## [4.2.0](https://github.com/smorinlabs/template-press/compare/v4.1.0...v4.2.0) (2026-11-15)
+
+
+### Features
+
+* **ci:** restore contributors-please automation ([169e646](https://github.com/smorinlabs/template-press/commit/169e6468ad6024f53014c6942e9b45db90b1b435))
+* **ci:** restore contributors-please automation ([8208f76](https://github.com/smorinlabs/template-press/commit/8208f767968acffb585417af8f226a448bc9f3ad))
+
+
+### Bug Fixes
+
+* escape unprintable paths in the coverage warning ([398e01b](https://github.com/smorinlabs/template-press/commit/398e01b2a852a17ce80b0fdd9f46e172a7315d04)), closes [#150](https://github.com/smorinlabs/template-press/issues/150)
+* list the affected paths in the removal coverage warning ([c64e2e4](https://github.com/smorinlabs/template-press/commit/c64e2e4e370a035e56af6c4eb3b33bc1abb20404))
+* list the affected paths in the removal coverage warning ([56328cd](https://github.com/smorinlabs/template-press/commit/56328cdc84078a4d53ab0b0d87e4fb3e51f7080a)), closes [#150](https://github.com/smorinlabs/template-press/issues/150)
+* **rebrand:** clarify and reuse control-directory advice ([ee30a76](https://github.com/smorinlabs/template-press/commit/ee30a763d26ec81a95dccbe6b42ee516dcc6966c))
+* **rebrand:** clarify directory reuse and avoid duplicate inventory ([405a80f](https://github.com/smorinlabs/template-press/commit/405a80f278c699b6d4d3504da011e78f9922b361))
+* **rebrand:** warn when reusing ignored root directories ([7785ab2](https://github.com/smorinlabs/template-press/commit/7785ab2b715f09da2d28de69d7375f90d3e9c4ae))
+
 ## [4.1.0](https://github.com/smorinlabs/template-press/compare/v4.0.1...v4.1.0) (2026-09-10)
 
 
