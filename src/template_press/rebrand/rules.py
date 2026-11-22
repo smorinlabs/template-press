@@ -23,6 +23,7 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
 )
+from template_press.rebrand.languages import KNOWN_LANGUAGES, SUPPORTED_LANGUAGES
 from template_press.rebrand.safety import SafeRelPath, UnsafePathError
 
 RULES_REL = Path("press") / "press-rules.toml"
@@ -265,6 +266,9 @@ class Rules:
     clean: tuple[CleanRule, ...] = ()
     # Declared directory removals (P11), appended after clean for positional safety.
     remove_dirs: tuple[RemoveDirRule, ...] = ()
+    # Declared target languages ([rules] languages), appended last for the same
+    # positional-safety reason; None means the target declared nothing.
+    languages: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -326,6 +330,7 @@ _RULES_KEYS = frozenset(
         "verify_ignore",
         "substring_rewrite_fields",
         "display_forms",
+        "languages",
     }
 )
 
@@ -366,6 +371,32 @@ def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
                 f"multi-component paths are invalid: {nested}"
             )
     return value
+
+
+def _parse_languages(table: dict) -> tuple[str, ...] | None:
+    if "languages" not in table:
+        return None
+    value = table["languages"]
+    prefix = f"{RULES_REL}: [rules] languages"
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ValidationError(f"{prefix} must be a list of strings")
+    if not value:
+        raise ValidationError(f"{prefix} must not be empty")
+    if len(set(value)) != len(value):
+        raise ValidationError(f"{prefix} must not contain duplicates: {value!r}")
+    unknown = [v for v in value if v not in KNOWN_LANGUAGES]
+    if unknown:
+        raise ValidationError(
+            f"{prefix} unknown language(s): {unknown!r}; "
+            f"expected a subset of {list(KNOWN_LANGUAGES)}"
+        )
+    unsupported = [v for v in value if v not in SUPPORTED_LANGUAGES]
+    if unsupported:
+        raise ValidationError(
+            f"{prefix} {unsupported!r} not supported by this press version; "
+            f"supported: {sorted(SUPPORTED_LANGUAGES)}"
+        )
+    return tuple(value)
 
 
 def _parse_replace(entry: object) -> ReplaceRule:
@@ -1400,6 +1431,7 @@ def _parse_rules(target: Path) -> _ParsedRules:
             replace=tuple(_parse_replace(e) for e in raw_replace),
             substring_rewrite_fields=substring_fields,
             display_forms=tuple(dict.fromkeys(display_forms_list)),
+            languages=_parse_languages(table),
         ),
         regenerate=regenerate,
         reset=reset,
