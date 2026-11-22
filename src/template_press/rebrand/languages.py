@@ -105,7 +105,10 @@ def _undeclared_refusal(detected: tuple[DetectedLanguage, ...]) -> ValidationErr
     )
     if supported:
         listed = ", ".join(f'"{language}"' for language in supported)
-        message += f"; add this to press/press-rules.toml under [rules]: languages = [{listed}]"
+        message += (
+            "; add this to press/press-rules.toml under [rules]: "
+            f"languages = [{listed}]"
+        )
     else:
         message += "; this press version supports only python"
     return ValidationError(message)
