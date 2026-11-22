@@ -1,8 +1,13 @@
 # Rust and Cargo targets: design
 
-- **Status:** Draft for owner review. Owner chose Approach C on 2026-11-22.
+- **Status:** Approved by owner on 2026-11-22, then aligned with the TypeScript
+  design and the explicit-language guard on the same date.
 - **Created:** 2026-11-22
 - **Branch:** `feat/rust-targets`
+- **Project:** P15
+- **Depends on, in merge order:** `fix/hyphen-false-receipt` (P13),
+  `feat/explicit-target-languages` (P16), `feat/typescript-targets` (P14). This
+  branch rebases on each before its dependent task starts.
 - **Applies to:** `src/template_press/rebrand/` (`discovery.py`, `identity.py`,
   `config.py`, `pathing.py`, `substitutions.py`, `synthesize.py`,
   `verify_config.py`, `verifier.py`, `verify_cli.py`, `receipt.py`, `cli.py`)
@@ -40,7 +45,8 @@ in either the rewrite or the inline leak check.
 
 The work fails, even if Rust presses succeed, if any of these happens:
 
-- An existing Python target or existing source or answers file changes outcome.
+- An existing target or source or answers file changes outcome because of this
+  branch. The language guard owns its own approved breaking change.
 - A pure Cargo target receives a receipt while a declared crate name survives.
 - A press silently moves a locked third-party dependency version.
 - The package gains a runtime dependency.
@@ -108,9 +114,19 @@ The match boundary is `(?<![A-Za-z0-9_-])` and `(?![A-Za-z0-9_-])`. So
 `acme-core/serde`, `dep:acme-core`, and `acme_core::hi` match, while the
 third-party name `acme-core-extra` does not.
 
-Map rows run before all other identity rows, longest source first. This order is
-required: the existing `app_name` boundary treats `_` as a right-hand separator,
-so `acme` would otherwise rewrite the front of `acme_core`.
+Cargo map rows join TypeScript's `npm_name` and `cli_name` rows in one exact-name
+tier. That tier runs before all other identity rows, longest source first. This
+order is required: the existing `app_name` boundary treats `_` as a right-hand
+separator, so `acme` would otherwise rewrite the front of `acme_core`.
+
+Path handling reuses TypeScript's `field_renames_paths`. An independent sibling
+such as `acme-core-extra` is not rewritten, and it fails verification by default.
+A target that really depends on it declares it in TypeScript's `keep_names`:
+
+```toml
+[rules]
+keep_names = ["acme-core-extra"]
+```
 
 ```diff
 -members = ["crates/acme-core", "crates/acme-widget"]
@@ -127,18 +143,25 @@ path values change.
 
 ### Discovery
 
-**Manifest selection.** A `pyproject.toml` with a `[project]` table keeps Python
-discovery and its `src/<package>` layout check. Cargo manifests are read for such
-a target only when it declares `cargo_names`. This covers PyO3 and maturin
-repositories without changing them.
+**Language selection.** The explicit-language guard owns this decision. Press
+exits 2 before any write when a target has more than one root manifest that
+declares a project identity and no `[rules] languages` declaration. This branch
+adds no precedence between languages.
 
-**Cargo target predicate.** A target is a pure Cargo target when a regular file
-`Cargo.toml` exists at the target root and the root `pyproject.toml` is absent or
-has no `[project]` table. A `pyproject.toml` with only `[tool.*]` tables therefore
-does not block Cargo discovery. Nested manifests are read only as workspace
-members. A repository whose only manifest is in a subdirectory is not detected
-and keeps today's behavior. A root manifest with both `[workspace]` and `[package]`
-contributes the root package plus its members.
+- Rust is active when `Cargo.toml` is the only counted manifest, or when the
+  target's declaration includes Rust. The exact declaration value comes from the
+  guard branch.
+- A target that declares other languages but not Rust ignores `Cargo.toml`.
+- A declared multi-language target checks each language against its own manifest.
+  For example, `cargo_names` is checked against Cargo and `npm_name` against
+  `package.json`. This covers PyO3, maturin, Tauri, and napi-rs repositories.
+- `Discovered.source_kind` gains `"cargo"`. The Python `src/<package>` layout check
+  applies only to Python discovery.
+
+A root `Cargo.toml` counts when it has `[package]` or `[workspace]`. Nested
+manifests are read only as workspace members. A repository whose only manifest is
+in a subdirectory is not detected and keeps today's behavior. A root manifest with
+both tables contributes the root package plus its members.
 
 **Cargo names read:**
 
@@ -157,7 +180,9 @@ contributes the root package plus its members.
 - Authors parse as `Name <email>`. The first entry is the discovered author.
 - `package.repository` supplies `owner` and `repo_name` only when git origin is
   unavailable.
-- A malformed manifest exits 2.
+- A malformed or symlinked manifest is undiscoverable and produces a warning when
+  no map is declared. When `cargo_names` is declared it exits 2, because the map
+  cannot be checked.
 - `[[example]]`, `[[test]]`, `[[bench]]`, and feature names are not cross-checked.
   The content rewrite still updates any declared crate name inside them.
 
@@ -171,9 +196,20 @@ resolves to a declared source name but is not a local crate. A local crate uses
 it honors the `package` key. Rewriting such an entry would point it at a different
 registry crate.
 
-**Pure Cargo target without a map.** A root `Cargo.toml` with no `[project]` table
-in `pyproject.toml` and no `cargo_names` exits 2. The message prints a paste-ready
-table of the discovered names.
+**Rust active without a map.** Existing configs keep working unless the press
+would leave a broken identity behind:
+
+| Discovered Cargo name | Result |
+|---|---|
+| Contains a changing identity value, and no identity row rewrites the whole name | Exit 2 with a paste-ready `cargo_names` table |
+| Equals a changing identity value that a row rewrites whole | Continue |
+| Unrelated to the identity, or listed in `keep_names` | Warning on stderr, then continue |
+
+```text
+Crate acme-widget, repo acme-widget   continues
+Crate acme-widget, repo acme-repo     exit 2
+Crate tools-helper, unrelated name    warning
+```
 
 **Without a source config.** The current pending-config flow proposes the table,
 using each name's underscore form as its role. A single crate proposes
@@ -199,7 +235,8 @@ command = ["cargo", "update", "--workspace", "--offline"]
 - `Cargo.lock` does **not** join the default `exclude_files`, because that would
   change existing Python targets that contain one.
 - A target with `cargo_names` and a tracked `Cargo.lock` but no declared
-  regeneration exits 2 and prints the block above.
+  regeneration exits 2 and prints the block above through TypeScript's
+  `regenerate_suggestion`.
 - Probe result: `cargo update --workspace --offline` kept a vendored dependency
   at 1.0.0, while `cargo generate-lockfile --offline` moved it to 1.1.0.
 - The real press still runs its post-command scan on the regenerated lockfile.
@@ -226,10 +263,10 @@ dependencies vendored or cached in the default location.
 
 ### Compatibility
 
-New behavior is reached only by declaring `cargo_names`, or by a repository with
-a root `Cargo.toml` and no Python `[project]` table. Regression tests cover a
-six-field config, a `display_name` config, and a Python target that contains a
-`Cargo.toml` but no map.
+New behavior is reached only by declaring `cargo_names`, or when Rust is active
+and a press would otherwise leave a broken crate name. Regression tests cover a
+six-field config, a `display_name` config, a Cargo target whose crate equals
+`repo_name`, and a declared Python target that excludes Rust.
 
 ## Verification
 
@@ -243,11 +280,12 @@ six-field config, a `display_name` config, and a Python target that contains a
   source to prove locked-version preservation.
 - Cargo is a test prerequisite, not an eleventh tool in the shared provisioning
   set. Locally, real-Cargo tests skip with a clear reason when `cargo` is missing.
-  When `CI` is set, a missing `cargo` fails the run, and one CI job provisions it.
+  When `CI` is set, a missing `cargo` fails the run. The acceptance tests use the
+  `slow` marker and run through `scripts/rebrand_matrix.sh`, whose workflow
+  provisions Cargo.
 - `just check` and `just matrix` must pass.
 
 ## Left to the builder
 
 - Helper names and module placement for Cargo manifest parsing.
 - Exact error wording, within the requirements above.
-- The pytest marker for real-Cargo fixtures. CI must not silently skip them.

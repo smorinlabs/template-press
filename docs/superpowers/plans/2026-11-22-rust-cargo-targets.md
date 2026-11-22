@@ -10,9 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-22-rust-cargo-targets-design.md`
 
+**Project:** P15
+
+**Start gate:** Tasks 1-7 start only after `fix/hyphen-false-receipt`, `feat/explicit-target-languages`, and `feat/typescript-targets` have merged, in that order. Then rebase this branch on `origin/main`. Confirm these exact names exist and update this plan if any differ: the guard's `[rules]` key and Rust value, `Rules.keep_names`, `Discovered.source_kind`, `field_renames_paths`, and `regenerate_suggestion`.
+
 ## Global Constraints
 
-- Existing Python targets and existing source or answers files keep their outcomes.
+- This branch does not change any existing target's outcome, except refusing a press that would leave a broken crate name.
+- The language guard owns multi-language refusal. This branch adds no precedence between languages.
 - The Python hyphenated-name false receipt is out of scope. Branch `fix/hyphen-false-receipt` owns it.
 - Zero runtime dependencies.
 - `verifier.py` must not import `substitutions`, `engine`, or `doctor`, or receive table data.
@@ -31,7 +36,7 @@
 2. A `[lib] name` that differs from its package must be cross-checked and rewritten. Test in Task 3 and Task 7.
 3. A renamed dependency (`core = { package = "acme-core", path = "../acme-core" }`) keeps its alias. Test in Task 2.
 4. A workspace glob with `exclude`, and a member symlink leaving the target, must not read outside the root. Test in Task 3.
-5. A Python target with an unrelated or malformed `Cargo.toml` and no map must behave exactly as before. Test in Task 4.
+5. A declared Python target that excludes Rust must ignore even a malformed `Cargo.toml`. Test in Task 4.
 
 ---
 
@@ -39,10 +44,10 @@
 
 **Files:**
 - Modify: `PROJECTS.md`
-- Create: `projects/P13-rust-cargo-targets.md`
+- Create: `projects/P15-rust-cargo-targets.md`
 
-- [ ] **Step 1: Use `project-add`, then `project-refine`, to create P13.** Reference the spec and this plan, list Tasks 1-7 as `P13-T01`..`P13-T07`, and set status `[~]`.
-- [ ] **Step 2: Verify.** Run `git log -1 --stat`. Expected: the commit contains `PROJECTS.md` and the P13 file.
+- [ ] **Step 1: Use `project-add`, then `project-refine`, to create P15.** Reference the spec and this plan, list Tasks 1-7 as `P15-T01`..`P15-T07`, and set status `[~]`. If `project-add` assigns another number because P13, P14, or P16 is not visible on this branch, correct it to P15.
+- [ ] **Step 2: Verify.** Run `git log -1 --stat`. Expected: the commit contains `PROJECTS.md` and the P15 file.
 
 ### Task 1: Identity table and control-file round trip
 
@@ -122,10 +127,12 @@ def test_package_name_row_merges_with_primary_ident_row(): ...
 def test_cargo_rows_rename_crate_directory(tmp_path): ...
 def test_engine_pairs_match_table_rows_for_cargo_identity(): ...
 def test_identity_without_table_compiles_identical_rows(): ...
+def test_cargo_npm_and_cli_rows_share_longest_first_tier(): ...
+def test_keep_names_protects_cargo_sibling(tmp_path): ...  # acme-core-extra
 ```
 
 - [ ] **Step 2: Run** `uv run pytest tests/rebrand/test_cargo_substitutions.py -v`. Expected: FAIL on row order and boundaries.
-- [ ] **Step 3: Implement.** Prepend Cargo rows in `_identity_rows`, so their order survives `_normalize_rows`. Treat Cargo fields as rename fields in `_identity_hunts` and rewrite surfaces. Add each destination spelling to `_validate_rows` stability sinks. Keep the non-Cargo sort unchanged.
+- [ ] **Step 3: Implement.** Put Cargo rows in TypeScript's exact-name tier of the `_identity_rows` sort key, so their order survives `_normalize_rows`. Extend `field_renames_paths` for Cargo fields and use it in `_identity_hunts` and rewrite surfaces. Add each destination spelling to `_validate_rows` stability sinks. Keep the sort for targets without exact-name fields unchanged.
 - [ ] **Step 4: Run** `uv run pytest tests/rebrand/test_cargo_substitutions.py tests/rebrand/test_substitutions.py tests/rebrand/test_substitution_safety.py -v`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(rebrand): rewrite both spellings of cargo names`.
 
@@ -151,7 +158,6 @@ class CargoFacts:
     external_dependencies: tuple[str, ...]  # resolved package names, non-local
 
 
-def is_pure_cargo_target(target: Path) -> bool: ...
 def read_cargo_facts(target: Path) -> CargoFacts: ...  # raises ValidationError
 ```
 
@@ -170,15 +176,7 @@ def test_malformed_manifest_raises_validation_error(tmp_path): ...
 def test_external_dependency_honors_package_key_and_target_tables(tmp_path): ...
 def test_path_and_workspace_dependencies_are_local(tmp_path): ...
 def test_examples_tests_and_benches_are_not_names(tmp_path): ...
-@pytest.mark.parametrize(
-    "pyproject,want",
-    [
-        (None, True),
-        ("[tool.ruff]\n", True),
-        ('[project]\nname = "x"\n', False),
-    ],
-)
-def test_pure_cargo_predicate(tmp_path, pyproject, want): ...
+def test_symlinked_root_manifest_raises_validation_error(tmp_path): ...
 ```
 
 - [ ] **Step 2: Run** `uv run pytest tests/rebrand/test_cargo_manifest.py -v`. Expected: FAIL with a module import error.
@@ -193,20 +191,25 @@ def test_pure_cargo_predicate(tmp_path, pyproject, want): ...
 - Test: `tests/rebrand/test_cargo_discovery.py`
 
 **Interfaces:**
-- Consumes: `CargoFacts`, `read_cargo_facts`, `is_pure_cargo_target`, `cargo_identity_problem`.
-- Produces: `cargo_problems(target: Path, source: Identity) -> list[str]` and `cargo_table_hint(facts: CargoFacts) -> str`, both in `discovery.py`.
-- Produces: `Discovered.manifest: str | None = None`, with values `"pyproject"`, `"cargo"`, or `None`.
+- Consumes: `CargoFacts`, `read_cargo_facts`, `cargo_identity_problem`, the guard's active-language result, `Rules.keep_names`, and `Discovered.source_kind`.
+- Produces: `cargo_problems(target: Path, source: Identity, dest: Identity | None) -> list[str]`, `cargo_warnings(target: Path, source: Identity) -> list[str]`, and `cargo_table_hint(facts: CargoFacts) -> str`, all in `discovery.py`.
+- Produces: `"cargo"` as a `Discovered.source_kind` value.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-def test_pure_cargo_without_map_exits_2_with_paste_ready_table(tmp_path): ...
+def test_no_map_broken_crate_name_exits_2_with_paste_ready_table(tmp_path): ...
+def test_no_map_crate_equal_to_repo_name_continues(tmp_path): ...
+def test_no_map_unrelated_crate_warns_on_stderr(tmp_path): ...
+def test_no_map_name_in_keep_names_does_not_refuse(tmp_path): ...
 def test_undeclared_discovered_name_exits_2(tmp_path): ...
 def test_declared_name_missing_from_manifests_exits_2(tmp_path): ...
 def test_third_party_dependency_with_mapped_name_exits_2(tmp_path): ...
 def test_no_python_layout_check_for_cargo_target(tmp_path): ...
-def test_python_target_with_malformed_cargo_toml_and_no_map_unchanged(tmp_path): ...
-def test_pyo3_target_with_map_is_cross_checked(tmp_path): ...
+def test_malformed_manifest_warns_without_map_and_exits_2_with_map(tmp_path): ...
+def test_declared_python_excluding_rust_ignores_malformed_cargo_toml(tmp_path): ...
+def test_declared_python_and_rust_checks_each_manifest(tmp_path): ...
+def test_declared_rust_and_node_checks_each_manifest(tmp_path): ...
 def test_no_config_single_crate_proposes_table(tmp_path): ...
 def test_no_config_library_only_proposes_app_name_from_package(tmp_path): ...
 def test_no_config_virtual_workspace_exits_2(tmp_path): ...
@@ -215,7 +218,7 @@ def test_verify_preflight_reports_cargo_problems(tmp_path): ...
 ```
 
 - [ ] **Step 2: Run** `uv run pytest tests/rebrand/test_cargo_discovery.py -v`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Python discovery wins when `[project]` exists. Limit the layout mismatch to `manifest == "pyproject"`. Call `cargo_problems` in `_resolve_source` and `_preflight`. It reads manifests for a pure Cargo target or a target that declares `cargo_names`. Call `cargo_identity_problem` beside `display_name_problem`.
+- [ ] **Step 3: Implement.** Read Cargo manifests only when the guard reports Rust as active. Limit the layout mismatch to `source_kind == "python"`. Call `cargo_problems` and print `cargo_warnings` to stderr in `_resolve_source` and `_preflight`. Without a map, refuse only a name that contains a changing identity value and that no identity row rewrites whole. Call `cargo_identity_problem` beside `display_name_problem`.
 - [ ] **Step 4: Run** `uv run pytest tests/rebrand/test_cargo_discovery.py tests/rebrand/test_discovery.py tests/rebrand/test_cli.py -v`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(rebrand): cross-check cargo names against manifests`.
 
@@ -250,12 +253,12 @@ def test_six_field_synthesis_is_byte_identical(): ...
 ### Task 6: Lockfile declaration
 
 **Files:**
-- Modify: `src/template_press/rebrand/pathing.py:20`, `discovery.py:cargo_problems`
+- Modify: `src/template_press/rebrand/pathing.py:20`, `rules.py:regenerate_suggestion`, `discovery.py:cargo_problems`
 - Test: `tests/rebrand/test_cargo_lockfile.py`
 
 **Interfaces:**
-- Consumes: `cargo_problems`.
-- Produces: `REGENERATE_EXEMPTIBLE` containing `Cargo.lock`, and `CARGO_LOCK_REGENERATE_HINT: str`, the exact block in the spec.
+- Consumes: `cargo_problems`, `regenerate_suggestion`.
+- Produces: `REGENERATE_EXEMPTIBLE` containing `Cargo.lock`, and `regenerate_suggestion("Cargo.lock")` returning the exact block in the spec.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -264,13 +267,13 @@ def test_cargo_lock_is_exempt_only_when_declared(): ...
 def test_cargo_lock_is_not_a_default_exclude(): ...
 def test_tracked_lock_without_regeneration_exits_2_with_hint(tmp_path): ...
 def test_untracked_or_absent_lock_needs_no_declaration(tmp_path): ...
-def test_python_target_with_cargo_lock_and_no_map_unchanged(tmp_path): ...
+def test_declared_python_excluding_rust_ignores_cargo_lock(tmp_path): ...
 @pytest.mark.slow
 def test_update_workspace_preserves_vendored_version(tmp_path): ...  # 1.0.0 stays
 ```
 
 - [ ] **Step 2: Run** `uv run pytest -m "" tests/rebrand/test_cargo_lockfile.py -v`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `cargo_problems` takes `rules: Rules` as a third argument in this task. Update both callers. Tracked state comes from the existing surface snapshot.
+- [ ] **Step 3: Implement.** `cargo_problems` takes `rules: Rules` as a fourth argument in this task. Update both callers. Tracked state comes from the existing surface snapshot.
 - [ ] **Step 4: Run** the same command. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(rebrand): support declared cargo lock regeneration`.
 
@@ -278,7 +281,7 @@ def test_update_workspace_preserves_vendored_version(tmp_path): ...  # 1.0.0 sta
 
 **Files:**
 - Create: `tests/rebrand/test_cargo_acceptance.py`
-- Modify: `.github/workflows/ci.yml` (test job), `.claude/skills/press-target/SKILL.md`, `AGENTS.md` (Running the press), `docs/design/0008-identity-variants-and-replace-rules.md`
+- Modify: `.github/workflows/rebrand-matrix.yml`, `scripts/rebrand_matrix.sh`, `.claude/skills/press-target/SKILL.md`, `AGENTS.md` (Running the press), `docs/design/0008-identity-variants-and-replace-rules.md`
 
 **Interfaces:**
 - Consumes: the whole press CLI through `template_press.rebrand.cli.main` and `verify_cli`.
@@ -308,6 +311,6 @@ def test_second_press_from_refreshed_source(tmp_path, cargo_or_skip): ...
 ```
 
 - [ ] **Step 2: Run** `uv run pytest -m "" tests/rebrand/test_cargo_acceptance.py -v`. Fix any integration gap in the owning module. Expected after fixes: PASS.
-- [ ] **Step 3: Update CI and docs.** Add a Cargo provisioning step and run this file explicitly with `-m slow` in one Ubuntu test job. Document `cargo_names`, the lockfile block, and the `CARGO_HOME` limitation.
+- [ ] **Step 3: Update CI and docs.** Add this file with `-m slow` to `scripts/rebrand_matrix.sh`, and provision Cargo in the matrix workflow using its existing action-pinning style. Do not add Cargo to `mise.toml` or `.flox`. Document `cargo_names`, Rust in the language declaration, `keep_names` for sibling crates, the lockfile block, and the `CARGO_HOME` limitation.
 - [ ] **Step 4: Run gates.** Run `just check`, then `just matrix`, each with a foreground timeout. Expected: both exit 0. Run `uv run ruff format --check .` for Markdown fences.
-- [ ] **Step 5: Commit** `test(rebrand): prove cargo targets end to end`, flip P13 tasks through `project-refine`, then push and open the PR to `main`. Do not merge.
+- [ ] **Step 5: Commit** `test(rebrand): prove cargo targets end to end`, flip P15 tasks through `project-refine`, then push and open the PR to `main`. Do not merge.
