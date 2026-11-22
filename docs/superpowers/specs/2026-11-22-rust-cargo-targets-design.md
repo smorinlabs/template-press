@@ -114,10 +114,10 @@ The match boundary is `(?<![A-Za-z0-9_-])` and `(?![A-Za-z0-9_-])`. So
 `acme-core/serde`, `dep:acme-core`, and `acme_core::hi` match, while the
 third-party name `acme-core-extra` does not.
 
-Cargo map rows join TypeScript's `npm_name` and `cli_name` rows in one exact-name
-tier. That tier runs before all other identity rows, longest source first. This
+Cargo map rows use TypeScript's identity-row order: longest source first, with an
+exact-name row winning an equal-length tie so it owns the merged matcher. This
 order is required: the existing `app_name` boundary treats `_` as a right-hand
-separator, so `acme` would otherwise rewrite the front of `acme_core`.
+separator, so `acme` must run after the longer `acme_core`.
 
 Path handling reuses TypeScript's `field_renames_paths`. An independent sibling
 such as `acme-core-extra` is not rewritten, and it fails verification by default.
