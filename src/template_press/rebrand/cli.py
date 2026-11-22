@@ -440,12 +440,14 @@ def _resolve_source(
 
 
 def display_name_problem(source: Identity, dest: Identity) -> str | None:
-    """Half-specified display identity is refused (codesign sec-06).
+    """Half-specified optional identity is refused (codesign sec-06).
 
     The press knows what to erase but not what to write — proceeding would
     ship a half-rebrand where every prose mention keeps the old product
-    name. The reverse direction is harmless: nothing to rewrite, and the
-    post-apply source-config write records the new display name.
+    name. The same holds for ``npm_name`` and ``cli_name``, and for them the
+    opposite direction is refused too: a value only the answers declare
+    cannot be matched in the target. A source ``npm_name``/``cli_name`` equal
+    to another source identity value must stay equal in the answers.
     """
     if source.display_name is not None and dest.display_name is None:
         return (
@@ -454,6 +456,41 @@ def display_name_problem(source: Identity, dest: Identity) -> str | None:
             f"add display_name to [answers]; press cannot know the new "
             f"display name"
         )
+    source_values = source.as_dict()
+    dest_values = dest.as_dict()
+    for field_name in ("npm_name", "cli_name"):
+        in_source = field_name in source_values
+        in_dest = field_name in dest_values
+        if in_source and not in_dest:
+            return (
+                f"source-config declares {field_name} "
+                f"({source_values[field_name]!r}) but the answers file does "
+                f"not — add {field_name} to [answers]; press cannot know the "
+                f"new value"
+            )
+        if in_dest and not in_source:
+            return (
+                f"the answers file declares {field_name} "
+                f"({dest_values[field_name]!r}) but the source-config does "
+                f"not — add {field_name} to [identity] in the source-config; "
+                f"press cannot know the value to replace"
+            )
+    for field_name in ("npm_name", "cli_name"):
+        if field_name not in source_values:
+            continue
+        for other, value in source_values.items():
+            if (
+                other in (field_name, "app_name_upper")
+                or value != (source_values[field_name])
+            ):
+                continue
+            if dest_values[field_name] != dest_values[other]:
+                return (
+                    f"source {field_name} equals source {other} "
+                    f"({value!r}) but the answers give them different values "
+                    f"({dest_values[field_name]!r} vs {dest_values[other]!r}) "
+                    f"— keep them equal in [answers]"
+                )
     return None
 
 

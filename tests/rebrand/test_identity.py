@@ -4,6 +4,7 @@ import pytest
 
 from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
+    OPTIONAL_FIELDS,
     Identity,
     ValidationError,
     display_forms,
@@ -11,7 +12,9 @@ from template_press.rebrand.identity import (
     token_occurs,
     token_pattern,
     validate_author,
+    validate_cli_name,
     validate_display_name,
+    validate_npm_name,
 )
 
 
@@ -262,3 +265,64 @@ class TestPathDotSegments:
     def test_ordinary_dotted_names_still_valid(self, value):
         assert validate_author(value) == value
         assert validate_display_name(value) == value
+
+
+@pytest.mark.parametrize("name", ["acme-widget", "@acme/widget-api", "a.b_c~d"])
+def test_npm_name_accepts(name):
+    assert validate_npm_name(name) == name
+
+
+@pytest.mark.parametrize(
+    "name", ["", "Acme", "@acme", "@acme/", "a/b", "@a/b/c", "a" * 215]
+)
+def test_npm_name_rejects(name):
+    with pytest.raises(ValidationError):
+        validate_npm_name(name)
+
+
+@pytest.mark.parametrize("name", ["acme-cli", "acme.cli", "a1"])
+def test_cli_name_accepts(name):
+    assert validate_cli_name(name) == name
+
+
+@pytest.mark.parametrize("name", ["", ".", "..", "a/b", "-a", "Acme"])
+def test_cli_name_rejects(name):
+    with pytest.raises(ValidationError):
+        validate_cli_name(name)
+
+
+def test_optional_fields_order():
+    assert OPTIONAL_FIELDS == ("display_name", "npm_name", "cli_name")
+
+
+def test_as_dict_omits_unset_new_fields_and_keeps_order():
+    assert set(make_identity().as_dict()) == {
+        "package_name",
+        "repo_name",
+        "app_name",
+        "app_name_upper",
+        "author",
+        "email",
+        "owner",
+    }
+    ident = make_identity(display_name="Demo", npm_name="@a/b", cli_name="demo")
+    assert list(ident.as_dict())[-3:] == ["display_name", "npm_name", "cli_name"]
+
+
+def test_from_mapping_and_validate_new_fields():
+    ident = Identity.from_mapping(
+        {
+            "package_name": "demo_widget",
+            "repo_name": "demo-widget",
+            "app_name": "press",
+            "author": "Demo Author",
+            "email": "demo@example.test",
+            "owner": "demolabs",
+            "npm_name": "@demo/widget",
+            "cli_name": "demo-cli",
+        }
+    )
+    assert (ident.npm_name, ident.cli_name) == ("@demo/widget", "demo-cli")
+    ident.validate()
+    with pytest.raises(ValidationError):
+        make_identity(npm_name="Bad").validate()

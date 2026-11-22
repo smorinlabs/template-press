@@ -43,6 +43,8 @@ _PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 ALLOWED_PLACEHOLDERS: frozenset[str] = frozenset(REQUIRED_FIELDS) | {
     "app_name_upper",
     "display_name",
+    "npm_name",
+    "cli_name",
 }
 
 _REPLACE_KEYS = frozenset({"pattern", "files", "paths", "content", "reason"})

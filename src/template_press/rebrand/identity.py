@@ -16,6 +16,9 @@ PYTHON_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 REPO_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 GITHUB_OWNER_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$", re.IGNORECASE)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+NPM_NAME_RE = re.compile(r"^(?:@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*$")
+NPM_NAME_MAX_LENGTH = 214
+CLI_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 # Whole values that are filesystem path traversal segments rather than names.
 # Only the free-form fields (author, display_name) can hold them — every other
@@ -103,6 +106,29 @@ def validate_display_name(value: str) -> str:
     return value
 
 
+def validate_npm_name(name: str) -> str:
+    # The exact root package.json "name": optionally scoped, lowercase, at most
+    # 214 characters (npm's own limit, scope included).
+    if len(name) > NPM_NAME_MAX_LENGTH or not NPM_NAME_RE.fullmatch(name):
+        raise ValidationError(
+            f"npm name must be an optionally scoped lowercase npm package name "
+            f"of at most {NPM_NAME_MAX_LENGTH} characters "
+            f"(matching {NPM_NAME_RE.pattern}): {name!r}"
+        )
+    return name
+
+
+def validate_cli_name(name: str) -> str:
+    # The exact package.json "bin" key. The charset starts with an
+    # alphanumeric, so the dot segments "." and ".." are already excluded.
+    if not CLI_NAME_RE.fullmatch(name) or name in _PATH_DOT_SEGMENTS:
+        raise ValidationError(
+            f"cli name must be lowercase alphanumeric plus . _ - and not a dot "
+            f"segment (matching {CLI_NAME_RE.pattern}): {name!r}"
+        )
+    return name
+
+
 VALIDATORS = {
     "package_name": validate_package_name,
     "repo_name": validate_repo_name,
@@ -111,6 +137,8 @@ VALIDATORS = {
     "owner": validate_owner,
     "email": validate_email,
     "display_name": validate_display_name,
+    "npm_name": validate_npm_name,
+    "cli_name": validate_cli_name,
 }
 
 REQUIRED_FIELDS: tuple[str, ...] = (
@@ -124,7 +152,7 @@ REQUIRED_FIELDS: tuple[str, ...] = (
 
 # Optional identity fields: absent means the feature is off — existing
 # 6-field press-source.toml files stay valid (codesign sec-01/sec-06).
-OPTIONAL_FIELDS: tuple[str, ...] = ("display_name",)
+OPTIONAL_FIELDS: tuple[str, ...] = ("display_name", "npm_name", "cli_name")
 
 # The closed set of exact display-name rewrite forms (codesign sec-04).
 DISPLAY_FORM_NAMES: tuple[str, ...] = ("spaced", "pascal", "camel")
@@ -141,6 +169,8 @@ class Identity:
     email: str
     owner: str
     display_name: str | None = None
+    npm_name: str | None = None
+    cli_name: str | None = None
 
     @property
     def app_name_upper(self) -> str:
@@ -158,6 +188,10 @@ class Identity:
         }
         if self.display_name is not None:
             d["display_name"] = self.display_name
+        if self.npm_name is not None:
+            d["npm_name"] = self.npm_name
+        if self.cli_name is not None:
+            d["cli_name"] = self.cli_name
         return d
 
     def as_dict_prompted(self) -> dict[str, str]:
