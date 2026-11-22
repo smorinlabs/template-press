@@ -4,7 +4,7 @@
 
 **Goal:** Make npm and Bun TypeScript repositories first-class `press` targets without changing any existing target's outcome.
 
-**Architecture:** `package.json` becomes a second discovery source, used only when `pyproject.toml` has no `[project]` table. Two optional identity fields carry exact npm and CLI names through the existing substitution table. A neutral `keep_names` module lets every rewrite and scan honor declared independent names, while `verifier.py` stays independent of the table.
+**Architecture:** `package.json` becomes a second discovery source, selected in one function that rebases onto the owner-approved language guard. Two optional identity fields carry exact npm and CLI names through the existing substitution table. A neutral `keep_names` module lets every rewrite and scan honor declared independent names, while `verifier.py` stays independent of the table.
 
 **Tech Stack:** Python 3.13 standard library, pytest, uv, just, npm, Bun, optional pnpm.
 
@@ -12,7 +12,8 @@
 
 ## Global Constraints
 
-- Existing Python targets and existing source or answers files keep their outcome.
+- Existing Python targets and existing source or answers files keep their outcome, other than through the owner-approved language guard from `feat/explicit-target-languages`.
+- Merge order: `fix/hyphen-false-receipt`, `feat/explicit-target-languages`, TypeScript, Rust. Do not open the PR before the first two are on `origin/main`.
 - Safety contract: config-first identity, discovery cross-check, verify-then-mark, exit codes 0/1/2, no receipt on leaks.
 - The shipped package has zero runtime dependencies.
 - `verifier.py` must not import `substitutions`, `engine`, or `doctor`, or accept table data.
@@ -36,15 +37,15 @@
 
 **Files:**
 - Modify: `PROJECTS.md`, `src/template_press/rebrand/identity.py`, `src/template_press/rebrand/cli.py:440-455`, `src/template_press/rebrand/rules.py:39-42`
-- Create: `projects/P13-typescript-bun-targets.md`
+- Create: `projects/P14-typescript-bun-targets.md`
 - Test: `tests/rebrand/test_identity.py`, `tests/rebrand/test_node_identity_cli.py`
 
 **Interfaces:**
 - Produces: `validate_npm_name(name: str) -> str`, `validate_cli_name(name: str) -> str`, `Identity.npm_name: str | None`, `Identity.cli_name: str | None`, `OPTIONAL_FIELDS == ("display_name", "npm_name", "cli_name")`.
 
-- [ ] **Step 1: Register P13 through `project-add`, then scope it through `project-refine`**
+- [ ] **Step 1: Register P14 through `project-add`, then scope it through `project-refine`**
 
-Record the spec and this plan as references. Expected: `PROJECTS.md` has a P13 row with status `[~]`, committed.
+Record the spec and this plan as references. Expected: `PROJECTS.md` has a P14 row with status `[~]`, committed.
 
 - [ ] **Step 2: Write failing tests**
 
@@ -92,7 +93,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/template_press/rebrand tests/rebrand PROJECTS.md projects/P13-typescript-bun-targets.md
+git add src/template_press/rebrand tests/rebrand PROJECTS.md projects/P14-typescript-bun-targets.md
 git commit -m "feat(identity): add optional npm and cli name fields"
 ```
 
@@ -116,7 +117,6 @@ git commit -m "feat(identity): add optional npm and cli name fields"
 Cover these named cases with exact assertions:
 
 ```python
-def test_pyproject_project_table_wins_over_package_json(...): assert found.source_kind == "python"
 def test_pyproject_without_project_table_uses_package_json(...): assert found.source_kind == "node"
 def test_author_string_form(...): assert (m.author, m.email) == ("Ann Lee", "ann@example.test")  # "Ann Lee <ann@example.test> (https://example.test)"
 def test_author_object_form(...): assert (m.author, m.email) == ("Ann Lee", "ann@example.test")
@@ -130,7 +130,6 @@ def test_declared_npm_name_mismatch_is_fatal(...): assert any("npm_name" in p fo
 def test_declared_cli_name_must_be_bin_key(...): assert any("cli_name" in p for p in mismatches(source, found))
 def test_undeclared_manifest_disagreement_only_warns(...): assert mismatches(source, found) == [] and manifest_warnings(source, found)
 def test_node_target_skips_python_layout_check(...): assert not any("layout" in p for p in mismatches(source, found))
-def test_python_target_with_tooling_package_json_is_unchanged(...): assert discover(t) == expected_python_discovered
 ```
 
 A valid manifest with a leading BOM parses normally.
@@ -446,7 +445,7 @@ git commit -m "test(rebrand): prove npm and bun targets end to end"
 ### Task 9: Document, verify, and open the PR
 
 **Files:**
-- Modify: `.claude/skills/press-target/SKILL.md`, `docs/design/0006-external-target-model.md`, `docs/design/0008-identity-variants-and-replace-rules.md`, `docs/source/reference/cli.md`, `AGENTS.md`, `PROJECTS.md`, `projects/P13-typescript-bun-targets.md`
+- Modify: `.claude/skills/press-target/SKILL.md`, `docs/design/0006-external-target-model.md`, `docs/design/0008-identity-variants-and-replace-rules.md`, `docs/source/reference/cli.md`, `AGENTS.md`, `PROJECTS.md`, `projects/P14-typescript-bun-targets.md`
 
 **Interfaces:**
 - Consumes: final behavior.
@@ -471,10 +470,10 @@ Expected: no matches.
 
 - [ ] **Step 5: Commit docs and project state**
 
-Route status changes through the project-harness skills. Keep P13 at `[~]` until the PR merges.
+Route status changes through the project-harness skills. Keep P14 at `[~]` until the PR merges.
 
 ```bash
-git add .claude/skills/press-target/SKILL.md docs AGENTS.md PROJECTS.md projects/P13-typescript-bun-targets.md
+git add .claude/skills/press-target/SKILL.md docs AGENTS.md PROJECTS.md projects/P14-typescript-bun-targets.md
 git commit -m "docs: document typescript and bun targets"
 ```
 

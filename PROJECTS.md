@@ -36,8 +36,8 @@ file by hand — see Conventions.
 | P11A | `[x]` | [CI speed and cost optimization](projects/P11A-ci-speed-and-cost-optimization.md) — closeout effective on PR #124 merge; diagnostics and gate repairs, no performance adoption, Windows job splitting declined |
 | P12 | `[x]` | [Origin guard relaxation, closure diagnostics, warnings and docs](projects/P12-origin-guard-and-diagnostics.md) — base and four corrections merged; six follow-ups declined by owner on 2026-09-10 with limitations recorded |
 | P13 | `[x]` | [Hyphenated package-name false receipt](projects/P13-hyphenated-package-name-false-receipt.md) — no receipt while a hyphenated package name survives |
+| P14 | `[~]` | [TypeScript and Bun targets](projects/P14-typescript-bun-targets.md) — package.json discovery, exact npm and CLI names, keep_names, declared lockfile exemptions |
 | P16 | `[x]` | [Explicit target languages](projects/P16-explicit-target-languages.md) — multi-language targets must declare `[rules] languages` or press exits 2 |
-| P13 | `[~]` | [TypeScript and Bun targets](projects/P13-typescript-bun-targets.md) — package.json discovery, exact npm and CLI names, keep_names, declared lockfile exemptions |
 
 ## Conventions
 

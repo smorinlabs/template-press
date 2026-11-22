@@ -1,4 +1,4 @@
-# P13 — TypeScript and Bun targets
+# P14 — TypeScript and Bun targets
 
 - **Status:** `[~]` in progress on branch `feat/typescript-targets`
 
@@ -28,12 +28,12 @@ changing any existing target's outcome.
 
 ### Tests & Tasks
 
-- [ ] [P13-T01] Add identity fields and validators
-- [ ] [P13-T02] Discover and cross-check `package.json`
-- [ ] [P13-T03] Propose a source config from `package.json`
-- [ ] [P13-T04] Rewrite and scan exact npm and CLI names
-- [ ] [P13-T05] Load `keep_names` and protect rewrites
-- [ ] [P13-T06] Honor `keep_names` in every scan and report
-- [ ] [P13-T07] Handle npm, Bun, and pnpm lockfiles
-- [ ] [P13-TS01] Prove npm, Bun, and pnpm targets end to end
-- [ ] [P13-T08] Update documentation and open the PR
+- [ ] [P14-T01] Add identity fields and validators
+- [ ] [P14-T02] Discover and cross-check `package.json`
+- [ ] [P14-T03] Propose a source config from `package.json`
+- [ ] [P14-T04] Rewrite and scan exact npm and CLI names
+- [ ] [P14-T05] Load `keep_names` and protect rewrites
+- [ ] [P14-T06] Honor `keep_names` in every scan and report
+- [ ] [P14-T07] Handle npm, Bun, and pnpm lockfiles
+- [ ] [P14-TS01] Prove npm, Bun, and pnpm targets end to end
+- [ ] [P14-T08] Update documentation and open the PR

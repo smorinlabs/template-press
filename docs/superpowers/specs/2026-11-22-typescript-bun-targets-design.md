@@ -37,7 +37,8 @@ is not eligible for the verifier exemption.
 
 The work fails, even if TypeScript presses succeed, if any of these happens:
 
-- An existing Python target or existing source or answers file changes outcome.
+- An existing Python target or existing source or answers file changes outcome,
+  other than through the owner-approved language guard.
 - A press writes a receipt while a source identity leak remains.
 - The package gains a runtime dependency.
 - `verifier.py` starts deriving its matches from the substitution table.
@@ -141,10 +142,16 @@ keep_names = ["@acme/widget-extra"]
 
 ### Discovery
 
-**Manifest selection.** `pyproject.toml` with a `[project]` table wins, and
-`package.json` is then ignored completely. This keeps Python repositories with
-tooling manifests unchanged. A `pyproject.toml` without `[project]` does not
-block `package.json` discovery.
+**Manifest selection.** Owner decision, 2026-11-22: this design no longer gives
+`pyproject.toml` precedence. When a target has more than one root manifest
+declaring a project identity, `press` exits 2 before any write unless the target
+declares which languages apply. That guard is owned by
+`feat/explicit-target-languages`, lands before this work, and defines the final
+key and values. The approved breaking change includes Python repositories with a
+named tooling `package.json`.
+
+This work keeps manifest selection in one function and rebases onto the guard. A
+`pyproject.toml` without `[project]` does not count as an identity manifest.
 
 **Fields read from `package.json`:**
 
@@ -199,10 +206,11 @@ The real press still runs the post-command scan on each regenerated lockfile.
 
 ### Compatibility
 
-The new behavior is reached only by a repository without a `[project]` table, by
-declaring a new field, or by declaring a lockfile regeneration. Regression tests
-must cover a Python target with a tooling `package.json`, an existing six-field
-config, and an existing `display_name` config.
+Apart from the owner-approved language guard, the new behavior is reached only by
+a Node target, by declaring a new field, or by declaring a lockfile regeneration.
+Regression tests must cover an existing six-field config and an existing
+`display_name` config. Coverage for a Python target with a tooling `package.json`
+follows the guard's final behavior after the rebase.
 
 ## Verification
 
