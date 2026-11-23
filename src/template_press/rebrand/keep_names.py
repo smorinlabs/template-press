@@ -42,6 +42,7 @@ _REPORT_LIMIT = 20
 # The case-sensitive lower-to-upper tail of ``matcher.identity_pattern``.
 _CAMEL_TAIL = re.compile(r"[a-z][A-Z]")
 _ASCII_ALNUM = _NAME_CHARS - {"_", "-"}
+_SCOPE_CHARS = _NAME_CHARS | {"."}
 
 
 @dataclass(frozen=True)
@@ -349,6 +350,23 @@ def _row_rewrites(patterns: Iterable[re.Pattern[str]], text: str, span: Span) ->
     return False
 
 
+def _scoped_start(text: str, start: int, end: int) -> int | None:
+    """Where ``@scope/`` begins when ``text[start:end]`` is that scope's basename."""
+    if text[start - 1 : start] != "/" or text[end : end + 1] in _NAME_CHARS:
+        return None
+    at = start - 1
+    while at > 0 and text[at - 1] in _SCOPE_CHARS:
+        at -= 1
+    if at == start - 1 or text[at - 1 : at] != "@":
+        return None
+    at -= 1
+    if text[at - 1 : at] in _ASCII_ALNUM:
+        return None
+    while at > 0 and text[at - 1] in _NAME_CHARS:
+        at -= 1
+    return at
+
+
 def _sibling_tokens(
     text: str,
     value: str,
@@ -368,6 +386,8 @@ def _sibling_tokens(
     name character touching it makes a sibling: ``acme-cli2``, ``xacme-cli``.
     A glued token is still reported when it is exactly an identity form that no
     row rewrites on this surface, because that form would survive the press.
+    An unscoped value that is the basename of ``@scope/value`` is a sibling too:
+    it names a different package.
     """
     tokens: list[str] = []
     occupied: list[Span] | None = None
@@ -378,29 +398,35 @@ def _sibling_tokens(
     while (match := pattern.search(text, position)) is not None:
         position = match.start() + 1
         start, end = match.span()
-        while start > 0 and text[start - 1] in _NAME_CHARS:
-            start -= 1
-        while end < len(text) and text[end] in _NAME_CHARS:
-            end += 1
-        if (start, end) == match.span():
-            continue
-        left, right = text[start : match.start()], text[match.end() : end]
+        scoped = None if "/" in value else _scoped_start(text, start, end)
+        if scoped is not None:
+            start = scoped
+        else:
+            while start > 0 and text[start - 1] in _NAME_CHARS:
+                start -= 1
+            while end < len(text) and text[end] in _NAME_CHARS:
+                end += 1
+            if (start, end) == match.span():
+                continue
+            left, right = text[start : match.start()], text[match.end() : end]
+            camel_tail = _CAMEL_TAIL.match(text, match.end() - 1) is not None
+            # ASCII only, matching the boundaries in ``identity.token_pattern``.
+            inside_word = text[match.start() - 1 : match.start()] in _ASCII_ALNUM or (
+                text[match.end() : match.end() + 1] in _ASCII_ALNUM and not camel_tail
+            )
+            is_join = (
+                _joined(left, left[-1:]) or _joined(right, right[:1]) or camel_tail
+            )
+            if not (multi_part or not inside_word or text[start:end] in unrewritten):
+                continue
+            if (
+                not multi_part
+                and not is_join
+                and not inside_word
+                and _row_rewrites(rewritten.patterns, text, match.span())
+            ):
+                continue
         token = text[start:end]
-        camel_tail = _CAMEL_TAIL.match(text, match.end() - 1) is not None
-        # ASCII only, matching the rewrite boundaries in ``identity.token_pattern``.
-        inside_word = text[match.start() - 1 : match.start()] in _ASCII_ALNUM or (
-            text[match.end() : match.end() + 1] in _ASCII_ALNUM and not camel_tail
-        )
-        is_join = _joined(left, left[-1:]) or _joined(right, right[:1]) or camel_tail
-        if not (multi_part or not inside_word or token in unrewritten):
-            continue
-        if (
-            not multi_part
-            and not is_join
-            and not inside_word
-            and _row_rewrites(rewritten.patterns, text, match.span())
-        ):
-            continue
         if not outside_kept(((start, end),), kept):
             continue
         if occupied is None:

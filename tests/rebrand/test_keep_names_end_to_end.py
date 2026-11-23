@@ -1734,3 +1734,73 @@ def test_interleaved_edge_wrappers_exit_2_before_writes(tmp_path, capsys, entry)
     capsys.readouterr()
     assert not (target / RECEIPT_REL).exists()
     assert _status(target) == ""
+
+
+# A declared unscoped name as the basename of another scoped package
+
+
+def _scoped_basename_target(tmp_path: Path, rules: str, files: dict[str, str]) -> Path:
+    target = _with_source(tmp_path, SINGLE_SOURCE, rules, files)
+    manifest = {"name": "ledgerkit", "version": "0.1.0", "bin": {"zcli": "./run.js"}}
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "single-token manifest")
+    return target
+
+
+@pytest.mark.parametrize(
+    ("files", "token"),
+    [
+        ({"src/a.ts": 'import x from "@vendor/ledgerkit";\n'}, "@vendor/ledgerkit"),
+        ({"docs/a.md": "npm i @vendor/zcli@1.2.3\n"}, "@vendor/zcli"),
+        ({"docs/a.md": "see @vendor/zcli/sub\n"}, "@vendor/zcli"),
+        ({"vendor/@vendor/ledgerkit/a.js": "x\n"}, "@vendor/ledgerkit"),
+    ],
+)
+def test_scoped_basename_is_a_sibling(tmp_path, capsys, files, token):
+    target = _scoped_basename_target(tmp_path, LANGUAGES, files)
+    assert _verify(target) == 1
+    capsys.readouterr()
+    code = _press(target, _answers(tmp_path, SINGLE_DEST))
+    err = capsys.readouterr().err
+    _assert_refused_clean(target, code)
+    assert f"keep_names = {json.dumps([token])}" in err
+
+
+def test_declared_scoped_basename_survives_content_and_path(tmp_path):
+    text = 'import x from "@vendor/ledgerkit";\n'
+    rel = "vendor/@vendor/zcli/a.js"
+    rules = _keep_rules(["@vendor/ledgerkit", "@vendor/zcli"])
+    target = _scoped_basename_target(tmp_path, rules, {"src/a.ts": text, rel: "x\n"})
+    assert _verify(target) == 0
+    assert _press(target, _answers(tmp_path, SINGLE_DEST)) == 0
+    assert (target / "src" / "a.ts").read_text(encoding="utf-8") == text
+    assert (target / rel).is_file()
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"bin/zcli.js": "// entry\n"},
+        {"docs/ledgerkit/a.md": "x\n"},
+        {"docs/a.md": "see example.test/vendor/zcli and git@example.test/zcli\n"},
+    ],
+)
+def test_non_scoped_paths_stay_allowed(tmp_path, files):
+    target = _scoped_basename_target(tmp_path, LANGUAGES, files)
+    assert _press(target, _answers(tmp_path, SINGLE_DEST), "--dry-run") == 0
+
+
+def test_own_scoped_name_with_equal_cli_basename_stays_allowed(tmp_path):
+    source = replace(SOURCE, npm_name="@acme/zcli", cli_name="zcli")
+    dest = replace(DEST, npm_name="@new/ocli", cli_name="ocli")
+    target = _with_source(
+        tmp_path, source, LANGUAGES, {"docs/a.md": "install @acme/zcli\n"}
+    )
+    manifest = {"name": "@acme/zcli", "version": "0.1.0", "bin": {"zcli": "./run.js"}}
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "scoped manifest")
+    assert _press(target, _answers(tmp_path, dest)) == 0
+    text = (target / "docs" / "a.md").read_text(encoding="utf-8")
+    assert text == "install @new/ocli\n"
