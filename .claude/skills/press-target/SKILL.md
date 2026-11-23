@@ -315,6 +315,13 @@ widget = "zeta-gadget"
 - `[[replace]]` patterns cannot reference `cargo_names`.
 - Without a source config, the press proposes the table. A virtual workspace has
   no primary crate, so it exits 2 and asks for a source config.
+- A proposed role key is the old name's underscore form. It stays unchanged
+  after a press, by design, because a role is a stable key and not a name.
+- `env!("CARGO_BIN_EXE_<name>")` follows a changed name. It cannot be listed in
+  `keep_names`.
+- An uppercase crate whose underscore form equals a separated `app_name_upper`
+  (crate `ACME-TOOL` with `app_name = "acme_tool"`) presses but cannot be
+  verified: `press verify` exits 2.
 
 ### Language declaration
 
@@ -382,6 +389,8 @@ These stop the press before any write:
 | Destination extends a source name | `acme-core` to `acme-core-next` | 2 |
 | Destination contains another field's source spelling | `zeta-acme` when `app_name = "acme"` | 2 |
 | A crate's Rust identifier would be left behind | crate `acme-widget`, no table, `repo_name` changes | 2 |
+| A hyphen-free source name takes a hyphenated destination | `acme_core` to `zeta-core` | 2 |
+| A source or destination name equals a non-local dependency | crate pressed to `padkit` beside `padkit = "1"` | 2 |
 | Versioned string that extends a declared name | `acme-core-0.1.0` in a README | 1 |
 
 For the first two, press in two steps through an intermediate identity. For a

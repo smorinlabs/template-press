@@ -118,6 +118,12 @@ retained decision record does not require those files to remain present.
    check both, or omits `"rust"` when `Cargo.toml` is tooling only. An
    independent sibling crate is declared in `keep_names`.
 
+   Two more table refusals exit 2 before any write. A hyphen-free source name
+   cannot take a hyphenated destination, because text cannot separate its
+   package spelling from its Rust identifier. A source or destination name
+   cannot equal a non-local dependency, because Cargo would resolve the wrong
+   crate.
+
    A target with `cargo_names` and a tracked `Cargo.lock` must declare
    regeneration, or the press exits 2 and prints the block:
 
