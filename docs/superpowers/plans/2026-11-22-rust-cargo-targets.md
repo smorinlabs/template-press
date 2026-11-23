@@ -12,6 +12,8 @@
 
 **Project:** P15
 
+**Execution method:** Subagent-driven, chosen by the owner on 2026-11-22. Use `superpowers:subagent-driven-development` after the start gate opens.
+
 **Start gate:** Tasks 1-7 start only after `fix/hyphen-false-receipt`, `feat/explicit-target-languages`, and `feat/typescript-targets` have merged, in that order. Then rebase this branch on `origin/main`. Confirm these exact names exist and update this plan if any differ: the guard's `[rules]` key and Rust value, `Rules.keep_names`, `Discovered.source_kind`, `field_renames_paths`, and `regenerate_suggestion`.
 
 ## Global Constraints
