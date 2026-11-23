@@ -16,4 +16,4 @@ uv run pytest tests/rebrand/test_node_targets.py -m live -q -n auto --dist loadg
 echo "== Cargo single-crate and workspace end-to-end targets =="
 # Direct cargo commands keep CARGO_HOME in tmp_path. The press's declared
 # `cargo update` uses the default Cargo home, so those tests share one worker.
-uv run pytest tests/rebrand/test_cargo_acceptance.py -m slow -q -n auto --dist loadgroup
+uv run pytest tests/rebrand/test_cargo_acceptance.py tests/rebrand/test_cargo_lockfile.py -m slow -q -n auto --dist loadgroup

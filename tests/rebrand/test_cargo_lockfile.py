@@ -168,6 +168,7 @@ def _locked_dep_version(root: Path) -> str:
 
 
 @pytest.mark.slow
+@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_update_workspace_preserves_vendored_version(tmp_path: Path) -> None:
     _require_cargo()
     root = tmp_path / "ws"
