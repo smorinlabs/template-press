@@ -347,27 +347,31 @@ def test_near_miss_still_fails(tmp_path, capsys):
 def test_kept_name_in_filename_and_symlink_survives(tmp_path):
     target = _make_target(
         tmp_path,
-        _keep_rules(["acme-cli-helper"]),
-        {"tools/acme-cli-helper/run.sh": "x\n"},
+        _keep_rules(["acme-repo-extra"]),
+        {"acme-repo-extra/a.txt": "x\n", "tools/acme-repo-extra.sh": "y\n"},
     )
-    os.symlink("tools/acme-cli-helper/run.sh", target / "helper-link")
-    os.symlink("missing/acme-cli-helper", target / "dangling-link")
+    os.symlink("acme-repo-extra/a.txt", target / "live-link")
+    os.symlink("missing/acme-repo-extra", target / "dangling-link")
     _git(target, "add", "-A")
     _git(target, "commit", "-q", "-m", "paths")
     assert _verify(target) == 0
     assert _press(target, _answers(tmp_path)) == 0
-    assert (target / "tools" / "acme-cli-helper" / "run.sh").is_file()
-    assert os.readlink(target / "helper-link") == "tools/acme-cli-helper/run.sh"
-    assert os.readlink(target / "dangling-link") == "missing/acme-cli-helper"
+    assert (target / "acme-repo-extra" / "a.txt").is_file()
+    assert (target / "tools" / "acme-repo-extra.sh").is_file()
+    assert os.readlink(target / "live-link") == "acme-repo-extra/a.txt"
+    assert os.readlink(target / "dangling-link") == "missing/acme-repo-extra"
 
 
 def test_scoped_kept_name_across_path_components_survives(tmp_path):
     target = _make_target(
-        tmp_path, _keep_rules([KEPT]), {f"packages/{KEPT}/index.js": "x\n"}
+        tmp_path,
+        _keep_rules(["@tools/acme-repo"]),
+        {"packages/@tools/acme-repo/x.js": "x\n", "other/acme-repo/y.js": "y\n"},
     )
     assert _verify(target) == 0
     assert _press(target, _answers(tmp_path)) == 0
-    assert (target / "packages" / "@acme" / "widget-extra" / "index.js").is_file()
+    assert (target / "packages" / "@tools" / "acme-repo" / "x.js").is_file()
+    assert (target / "other" / "other-repo" / "y.js").is_file()
 
 
 def test_rename_plan_leaves_kept_component_alone(tmp_path):
@@ -435,6 +439,16 @@ def test_repeat_press_keeps_list_valid(tmp_path):
     answers.write_text(_toml_identity(third, "answers"), encoding="utf-8")
     assert _press(target, answers, "--force") == 0
     assert KEPT in (target / "docs" / "a.md").read_text(encoding="utf-8")
+    _git(
+        target,
+        "remote",
+        "set-url",
+        "origin",
+        f"https://github.com/{third.owner}/{third.repo_name}.git",
+    )
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "pressed again")
+    assert _verify(target) == 0
 
 
 def test_dry_run_and_receipt_list_kept_names(tmp_path, capsys):
@@ -753,3 +767,76 @@ def test_proposed_cli_name_cannot_leave_bin_unchanged(tmp_path, capsys):
     pressed = json.loads((target / "package.json").read_text(encoding="utf-8"))
     assert "new-web" in pressed["bin"]
     assert "web-cli" not in pressed["bin"]
+
+
+def test_string_bin_is_not_proposed_and_verify_passes_after_press(tmp_path, capsys):
+    target = _make_target(tmp_path, LANGUAGES)
+    (target / "press" / "press-source.toml").unlink()
+    manifest = json.loads((target / "package.json").read_text(encoding="utf-8"))
+    manifest["bin"] = "./cli.js"
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "string bin")
+    answers = _answers(tmp_path, replace(DEST, cli_name=None, display_name=None))
+    code = main(
+        ["--target", str(target), "--config", str(answers), "--accept-discovery"]
+    )
+    assert code == 0, capsys.readouterr().err
+    _git(
+        target,
+        "remote",
+        "set-url",
+        "origin",
+        f"https://github.com/{DEST.owner}/{DEST.repo_name}.git",
+    )
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "pressed")
+    assert _verify(target) == 0
+
+
+def test_receipt_key_is_accepted_with_directory_removal(tmp_path):
+    rules = _keep_rules(
+        [KEPT],
+        '\n[[remove]]\ndir = "history"\nreason = "template history"\n',
+    )
+    target = _make_target(
+        tmp_path, rules, {"docs/a.md": f"{KEPT}\n", "history/old.md": "old\n"}
+    )
+    assert _verify(target) == 0
+    assert _press(target, _answers(tmp_path)) == 0
+    receipt = tomllib.loads((target / RECEIPT_REL).read_text(encoding="utf-8"))
+    assert receipt["press"]["keep_names"] == [KEPT]
+    _git(
+        target,
+        "remote",
+        "set-url",
+        "origin",
+        f"https://github.com/{DEST.owner}/{DEST.repo_name}.git",
+    )
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "pressed")
+    assert _verify(target) == 0
+    third = replace(
+        DEST,
+        package_name="third_core",
+        repo_name="third-repo",
+        app_name="thirdapp",
+        owner="third-owner",
+        display_name="Third Thing",
+        npm_name="@third/y",
+        cli_name="third-cli",
+    )
+    answers = tmp_path / "third.toml"
+    answers.write_text(_toml_identity(third, "answers"), encoding="utf-8")
+    assert _press(target, answers, "--force") == 0
+
+
+def test_kept_name_in_excluded_verify_ignored_lockfile_is_accepted(tmp_path):
+    rules = _keep_rules(
+        [KEPT],
+        'extra_exclude_files = ["vendor.lock"]\nverify_ignore = ["vendor.lock"]\n',
+    )
+    target = _make_target(tmp_path, rules, {"vendor.lock": f"{KEPT}\n"})
+    assert _verify(target) == 0
+    assert _press(target, _answers(tmp_path)) == 0
+    assert (target / "vendor.lock").read_text(encoding="utf-8") == f"{KEPT}\n"

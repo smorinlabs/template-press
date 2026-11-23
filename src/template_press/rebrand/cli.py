@@ -485,7 +485,7 @@ def _resolve_source(
                 proposal["cli_name"] = next(
                     (
                         name
-                        for name in found.cli_names
+                        for name in found.named_cli_names
                         if name not in claimed and name != found.npm_name
                     ),
                     None,

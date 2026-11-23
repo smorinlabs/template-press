@@ -56,6 +56,7 @@ class Discovered:
     manifest_email: str | None = None
     manifest_owner: str | None = None  # package.json repository, never origin
     manifest_repo_name: str | None = None
+    named_cli_names: tuple[str, ...] = ()  # object-form bin keys only
 
 
 def _origin(target: Path) -> tuple[str | None, str | None]:
@@ -149,6 +150,7 @@ def discover(target: Path, languages: Sequence[str] | None = None) -> Discovered
         node_checked=True,
         npm_name=manifest.name,
         cli_names=manifest.bins,
+        named_cli_names=manifest.named_bins,
         manifest_package_name=(
             unscoped(manifest.name).replace("-", "_") if manifest.name else None
         ),

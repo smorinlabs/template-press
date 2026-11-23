@@ -30,6 +30,9 @@ class NodeManifest:
     bins: tuple[str, ...]
     owner: str | None
     repo_name: str | None
+    # Object-form bin keys only. A string-form bin has no key: its command name
+    # follows the package name, so it is not a separate identity value.
+    named_bins: tuple[str, ...] = ()
 
 
 def _text(value: object) -> str | None:
@@ -83,11 +86,13 @@ def read_node_manifest(target: Path) -> NodeManifest | None:
     name = _text(data.get("name"))
     author, email = _author(data.get("author"))
     owner, repo_name = _repository(data.get("repository"))
+    raw_bin = data.get("bin")
     return NodeManifest(
         name=name,
         author=author,
         email=email,
-        bins=_bins(data.get("bin"), name),
+        bins=_bins(raw_bin, name),
         owner=owner,
         repo_name=repo_name,
+        named_bins=_bins(raw_bin, None) if isinstance(raw_bin, dict) else (),
     )
