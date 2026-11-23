@@ -37,6 +37,10 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
 )
+from template_press.rebrand.languages import (
+    check_target_languages,
+    render_ignored_languages,
+)
 from template_press.rebrand.receipt import (
     RECEIPT_REL,
     OriginDecision,
@@ -602,6 +606,15 @@ def main(argv: list[str] | None = None) -> int:
                 _load_rules_and_removal_receipt(target)
             return _fail(problem)
 
+        # Language guard: a multi-language target must declare which
+        # languages the press checks. Runs before any source or answers work.
+        language_rules = load_selected_rules(target).rules
+        languages = check_target_languages(
+            target,
+            language_rules.languages,
+            [rule.file for rule in language_rules.remove],
+        )
+
         # The answers file is read BEFORE the guard so the guard can ask
         # whether origin already names the destination (E1). It is a pure
         # read: the only write in this function stays deferred behind every
@@ -782,6 +795,8 @@ def main(argv: list[str] | None = None) -> int:
         # refusal that owns stdout under --diagnostics-json) is behind us,
         # so a notice or warning can no longer precede a refusal on the same
         # stream.
+        for line in render_ignored_languages(languages):
+            print(line, file=sys.stderr)
         for notice in _render_origin_notices(origin, source, dest):
             print(notice)
         for warning in _render_origin_mismatch_warnings(origin, source, dest, found):

@@ -63,6 +63,10 @@ from template_press.rebrand.inventory import (
     capture_surface_snapshot,
     core_excludes_from_snapshot,
 )
+from template_press.rebrand.languages import (
+    check_target_languages,
+    render_ignored_languages,
+)
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.receipt import (
     accepted_origin_from_receipt,
@@ -472,6 +476,9 @@ def verify_command(argv: list[str] | None = None) -> int:
     try:
         selected = load_selected_rules(target)
         rules = selected.rules
+        languages = check_target_languages(
+            target, rules.languages, [rule.file for rule in rules.remove]
+        )
         cfg = _load_verify_config(target)
         scan_fields: tuple[str, ...] = cfg.fields
         if source.display_name is not None and "display_name" not in scan_fields:
@@ -527,6 +534,8 @@ def verify_command(argv: list[str] | None = None) -> int:
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)
         return 2
+    for line in render_ignored_languages(languages):
+        print(line, file=sys.stderr)
     # Announced only once preflight has cleared, and never under --json (whose
     # contract is that the JSON object is the whole of stdout): a "note:
     # accepted" line printed alongside a refusal would read as a contradiction,
