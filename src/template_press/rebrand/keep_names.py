@@ -41,6 +41,7 @@ _NORMALIZED_AWAY = str.maketrans("", "", "-_. ")
 _REPORT_LIMIT = 20
 # The case-sensitive lower-to-upper tail of ``matcher.identity_pattern``.
 _CAMEL_TAIL = re.compile(r"[a-z][A-Z]")
+_EDGE_PUNCTUATION = re.compile(r"^[^A-Za-z0-9@/_-]+|[^A-Za-z0-9@/_-]+$")
 
 
 @dataclass(frozen=True)
@@ -235,13 +236,20 @@ def _normalized(value: str) -> str:
 def _is_identity_spelling(name: str, forms: frozenset[str]) -> bool:
     """Exact form, or a normalized match for a name with no edge ``-`` or ``_``.
 
-    An edge separator makes a distinct token: ``--acme-cli`` is not ``acme-cli``.
+    Surrounding punctuation is ignored first, because a kept span containing
+    ``"acme-cli"`` would shield the identity value inside the quotes. An edge
+    separator makes a distinct token: ``--acme-cli`` is not ``acme-cli``.
     """
     if name in forms:
         return True
-    if name[0] in "-_" or name[-1] in "-_":
+    core = _EDGE_PUNCTUATION.sub("", name)
+    if not core:
         return False
-    return _normalized(name) in {_normalized(form) for form in forms}
+    if core in forms:
+        return True
+    if core[0] in "-_" or core[-1] in "-_":
+        return False
+    return _normalized(core) in {_normalized(form) for form in forms}
 
 
 def validate_keep_names(
@@ -253,10 +261,11 @@ def validate_keep_names(
 ) -> None:
     """Refuse an entry that is malformed or is a spelling of an identity value.
 
-    Entries and identity forms are compared after case-folding and removing
-    ``-``, ``_``, ``.``, and spaces, unless the entry starts or ends with ``-``
-    or ``_``; such an entry is refused only on exact equality. ``synthetic_dest`` is for ``press
-    verify``. Its destination is generated, so the user cannot choose around
+    Leading and trailing characters outside ``[A-Za-z0-9@/_-]`` are ignored.
+    Entries and identity forms are then compared after case-folding and
+    removing ``-``, ``_``, ``.``, and spaces, unless the entry starts or ends
+    with ``-`` or ``_``; such an entry is refused only on exact equality.
+    ``synthetic_dest`` is for ``press verify``. Its destination is generated, so the user cannot choose around
     an equality with it, and that comparison is skipped. Shape and source
     checks are identical in both commands.
     """

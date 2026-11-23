@@ -1521,3 +1521,51 @@ def test_pure_node_string_bin_is_not_proposed_and_verify_passes(tmp_path, capsys
     _git(target, "add", "-A")
     _git(target, "commit", "-q", "-m", "pressed")
     assert _verify(target) == 0
+
+
+# Punctuation wrapped around an identity value
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        '"acme-cli"',
+        "`acme-cli",
+        "`acme-cli`",
+        "'acme-repo'",
+        "(@acme/widget)",
+        "acme-cli.",
+    ],
+)
+def test_punctuation_wrapped_identity_value_is_refused(entry):
+    with pytest.raises(ValidationError, match="source identity"):
+        validate_keep_names([entry], SOURCE, DEST)
+    with pytest.raises(ValidationError, match="source identity"):
+        validate_keep_names([entry], SOURCE, DEST, synthetic_dest=True)
+
+
+def test_punctuation_wrapped_destination_value_is_refused():
+    with pytest.raises(ValidationError, match="destination identity"):
+        validate_keep_names(['"other-repo"'], SOURCE, DEST)
+
+
+def test_wrapped_identity_exits_2_before_writes(tmp_path, capsys):
+    rules = _keep_rules(['"acme-cli"', "`acme-cli"])
+    text = 'run "acme-cli" or `acme-cli --help`\n'
+    target = _make_target(tmp_path, rules, {"docs/a.md": text})
+    assert _verify(target) == 2
+    assert _press(target, _answers(tmp_path)) == 2
+    capsys.readouterr()
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
+
+
+def test_identity_form_ending_in_punctuation_stays_refused():
+    source = replace(SOURCE, display_name="Acme!")
+    with pytest.raises(ValidationError, match="source identity"):
+        validate_keep_names(["Acme!"], source, DEST)
+
+
+@pytest.mark.parametrize("entry", ["...", '""', "``"])
+def test_punctuation_only_entry_does_not_crash_validation(entry):
+    validate_keep_names([entry], SOURCE, DEST)
