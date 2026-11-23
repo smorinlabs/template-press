@@ -141,8 +141,10 @@ def _synthesize_plain(
     for value, fields in classes.items():
         dest_by_value[value] = _synth_value(value, fields, prefix, used, variants)
 
-    return Identity(
-        **{field: dest_by_value[values[field]] for field in REQUIRED_FIELDS},
+    return replace(
+        Identity.from_mapping(
+            {field: dest_by_value[values[field]] for field in REQUIRED_FIELDS}
+        ),
         display_name=(
             _synth_display(display, variants, used) if display is not None else None
         ),
@@ -349,8 +351,10 @@ def _synthesize_entangled(
             "resolved class value and app_name's derived uppercase form"
         )
 
-    return Identity(
-        **{f: dest_class_value[values[f]] for f in REQUIRED_FIELDS},
+    return replace(
+        Identity.from_mapping(
+            {f: dest_class_value[values[f]] for f in REQUIRED_FIELDS}
+        ),
         display_name=dest_display,
     )
 

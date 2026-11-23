@@ -9,7 +9,7 @@ to per-run values so any target's identity can be pressed (ARCH-03).
 from __future__ import annotations
 
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 
 PYTHON_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -19,6 +19,10 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 NPM_NAME_RE = re.compile(r"^(?:@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*$")
 NPM_NAME_MAX_LENGTH = 214
 CLI_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+CARGO_ROLE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+CARGO_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+CARGO_EXACT_PREFIX = "cargo_exact_"
+CARGO_IDENT_PREFIX = "cargo_ident_"
 
 # Whole values that are filesystem path traversal segments rather than names.
 # Only the free-form fields (author, display_name) can hold them — every other
@@ -129,6 +133,26 @@ def validate_cli_name(name: str) -> str:
     return name
 
 
+def validate_cargo_role(role: str) -> str:
+    if not CARGO_ROLE_RE.fullmatch(role):
+        raise ValidationError(
+            f"cargo_names role must be lowercase letters, digits, and "
+            f"underscores, starting with a letter "
+            f"(matching {CARGO_ROLE_RE.pattern}): {role!r}"
+        )
+    return role
+
+
+def validate_cargo_name(name: str) -> str:
+    if not CARGO_NAME_RE.fullmatch(name):
+        raise ValidationError(
+            f"cargo_names name must start with a letter and use letters, "
+            f"digits, hyphens, and underscores "
+            f"(matching {CARGO_NAME_RE.pattern}): {name!r}"
+        )
+    return name
+
+
 VALIDATORS = {
     "package_name": validate_package_name,
     "repo_name": validate_repo_name,
@@ -177,6 +201,12 @@ class Identity:
     display_name: str | None = None
     npm_name: str | None = None
     cli_name: str | None = None
+    # Role -> exact Cargo name, sorted by role. Kept out of as_dict(), whose
+    # values are all strings; control_mapping() adds it for the receipt.
+    cargo_names: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "cargo_names", tuple(sorted(self.cargo_names)))
 
     @property
     def app_name_upper(self) -> str:
@@ -205,14 +235,30 @@ class Identity:
         d.pop("app_name_upper")
         return d
 
+    def control_mapping(self) -> dict[str, str | dict[str, str]]:
+        """The mapping written to the source config and the receipt tables.
+
+        Equal to ``as_dict_prompted()`` plus ``cargo_names`` only when the
+        table is non-empty, so an identity without one is unchanged.
+        """
+        mapping: dict[str, str | dict[str, str]] = dict(self.as_dict_prompted())
+        if self.cargo_names:
+            mapping["cargo_names"] = dict(self.cargo_names)
+        return mapping
+
     def validate(self) -> None:
         for field_name, value in self.as_dict().items():
             validator = VALIDATORS.get(field_name)
             if validator is not None:
                 validator(value)
+        for role, name in self.cargo_names:
+            validate_cargo_role(role)
+            validate_cargo_name(name)
 
     @classmethod
-    def from_mapping(cls, data: dict[str, str]) -> Identity:
+    def from_mapping(
+        cls, data: dict[str, str], cargo_names: Mapping[str, str] | None = None
+    ) -> Identity:
         missing = [k for k in REQUIRED_FIELDS if k not in data]
         if missing:
             raise ValidationError(f"identity is missing fields: {', '.join(missing)}")
@@ -220,7 +266,7 @@ class Identity:
         for opt in OPTIONAL_FIELDS:
             if data.get(opt) is not None:
                 fields[opt] = data[opt]
-        return cls(**fields)
+        return cls(**fields, cargo_names=tuple((cargo_names or {}).items()))
 
 
 def token_pattern(field: str, value: str) -> re.Pattern[str] | None:
@@ -341,3 +387,96 @@ def display_forms(value: str) -> dict[str, str]:
     pascal = "".join(w[:1].upper() + w[1:] for w in words)
     camel = pascal[:1].lower() + pascal[1:]
     return {"spaced": value, "pascal": pascal, "camel": camel}
+
+
+def cargo_ident(name: str) -> str:
+    """The Rust identifier spelling of a Cargo name (hyphens become underscores)."""
+    return name.replace("-", "_")
+
+
+def is_cargo_field(field: str) -> bool:
+    return field.startswith((CARGO_EXACT_PREFIX, CARGO_IDENT_PREFIX))
+
+
+def cargo_name_pairs(source: Identity, dest: Identity) -> list[tuple[str, str, str]]:
+    """``(tag, from, to)`` rewrite pairs for the Cargo name table.
+
+    Each role gives an exact-name pair (``cargo_exact_<role>``) and an
+    underscore pair (``cargo_ident_<role>``). An underscore pair equal to its
+    exact pair, and any pair whose two sides match, is dropped. Longest source
+    first; an exact pair wins an equal-length tie.
+    """
+    dest_names = dict(dest.cargo_names)
+    pairs: list[tuple[str, str, str]] = []
+    for role, old in source.cargo_names:
+        new = dest_names.get(role)
+        if new is None:
+            continue
+        exact = (f"{CARGO_EXACT_PREFIX}{role}", old, new)
+        ident = (f"{CARGO_IDENT_PREFIX}{role}", cargo_ident(old), cargo_ident(new))
+        if exact[1] != exact[2]:
+            pairs.append(exact)
+        if ident[1:] != exact[1:] and ident[1] != ident[2]:
+            pairs.append(ident)
+    pairs.sort(
+        key=lambda p: (-len(p[1]), not p[0].startswith(CARGO_EXACT_PREFIX), p[0])
+    )
+    return pairs
+
+
+def _cargo_forms(name: str) -> set[str]:
+    return {name, cargo_ident(name)}
+
+
+def cargo_identity_problem(source: Identity, dest: Identity) -> str | None:
+    """Why this source and destination Cargo name tables cannot be pressed.
+
+    ``None`` means they can, or neither side declares a table.
+    """
+    if not source.cargo_names and not dest.cargo_names:
+        return None
+    if not source.cargo_names or not dest.cargo_names:
+        return (
+            "cargo_names must be declared on both the source config and the "
+            "answers file, or on neither"
+        )
+    src_map, dst_map = dict(source.cargo_names), dict(dest.cargo_names)
+    if src_map.keys() != dst_map.keys():
+        return (
+            "cargo_names role sets differ: source has "
+            f"{sorted(src_map)}, destination has {sorted(dst_map)}"
+        )
+    for side, mapping in (("source", src_map), ("destination", dst_map)):
+        seen: dict[str, str] = {}
+        for role, name in sorted(mapping.items()):
+            key = cargo_ident(name)
+            if key in seen:
+                return (
+                    f"cargo_names roles {seen[key]!r} and {role!r} have the "
+                    f"same underscore-normalized {side} name {key!r}"
+                )
+            seen[key] = role
+    for role, new in dst_map.items():
+        for other, old in src_map.items():
+            if other != role and _cargo_forms(new) & _cargo_forms(old):
+                return (
+                    f"cargo_names destination {new!r} for role {role!r} equals "
+                    f"source name {old!r} of role {other!r}; sequential "
+                    "rewrites would chain"
+                )
+    role = next(
+        (r for r, n in src_map.items() if cargo_ident(n) == source.package_name),
+        None,
+    )
+    if role is None:
+        return (
+            f"package_name {source.package_name!r} is not the underscore form "
+            "of any source cargo_names value"
+        )
+    if dest.package_name != cargo_ident(dst_map[role]):
+        return (
+            f"destination package_name {dest.package_name!r} is not the "
+            f"underscore form of cargo_names role {role!r} destination "
+            f"{dst_map[role]!r}"
+        )
+    return None

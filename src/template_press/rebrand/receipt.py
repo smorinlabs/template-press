@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from template_press.rebrand.config import toml_string
+from template_press.rebrand.config import cargo_names_lines, toml_string
 from template_press.rebrand.engine import ApplyReport
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.pathing import ROOT_CONTROL
@@ -147,6 +147,7 @@ def invalidate_receipt(target: Path) -> bool:
 def _identity_table(name: str, identity: Identity) -> list[str]:
     lines = [f"[press.{name}]"]
     lines += [f"{k} = {toml_string(v)}" for k, v in identity.as_dict_prompted().items()]
+    lines += cargo_names_lines(f"press.{name}", identity)
     return lines
 
 
@@ -549,7 +550,7 @@ def receipt_binding_problem(text: str | None, source: Identity) -> str | None:
        pass, so anything else is not a completed, verified press.
     2. ``[press.to]`` is EQUAL to the target's current source-config
        identity — the same key set and the same value for every key. The
-       press writes the same ``Identity.as_dict_prompted()`` mapping into
+       press writes the same ``Identity.control_mapping()`` mapping into
        both ``[press.to]`` and ``press/press-source.toml``, so a genuine
        receipt matches its own target exactly, while a hand-written table
        asserting an acceptance does not.
@@ -569,7 +570,7 @@ def receipt_binding_problem(text: str | None, source: Identity) -> str | None:
     press_table = _press_table(text)
     if press_table.get("verified") is not True:
         return "receipt is not a verified press"
-    if press_table.get("to") != source.as_dict_prompted():
+    if press_table.get("to") != source.control_mapping():
         return "[press.to] does not match press-source.toml"
     return None
 
@@ -851,7 +852,7 @@ def directory_history_from_receipt(
         raise ValidationError("directory receipt requires remove_dirs_version = 1")
     if table.get("verified") is not True:
         raise ValidationError("directory receipt is not a verified press")
-    if table.get("to") != source.as_dict_prompted():
+    if table.get("to") != source.control_mapping():
         raise ValidationError(
             "directory receipt [press.to] does not match press-source.toml"
         )

@@ -64,6 +64,16 @@ def toml_string(value: str) -> str:
     return '"' + "".join(out) + '"'
 
 
+def cargo_names_lines(table: str, identity: Identity) -> list[str]:
+    """``[<table>.cargo_names]`` and its rows, or nothing when no table is set."""
+    if not identity.cargo_names:
+        return []
+    return [
+        f"[{table}.cargo_names]",
+        *(f"{role} = {toml_string(name)}" for role, name in identity.cargo_names),
+    ]
+
+
 def load_identity_toml(path: Path, table: str) -> Identity:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     section = data.get(table)
@@ -73,7 +83,7 @@ def load_identity_toml(path: Path, table: str) -> Identity:
     # fail loud — the dict-comprehension below silently drops any key it
     # doesn't recognize, so a typo would otherwise pass through as if the
     # field were simply absent, and press proceeds none the wiser.
-    known = frozenset(REQUIRED_FIELDS) | frozenset(OPTIONAL_FIELDS)
+    known = frozenset(REQUIRED_FIELDS) | frozenset(OPTIONAL_FIELDS) | {"cargo_names"}
     unknown = set(section) - known
     if unknown:
         raise ValidationError(
@@ -85,8 +95,19 @@ def load_identity_toml(path: Path, table: str) -> Identity:
                 f"{path}: [{table}] {key} must be a string, got "
                 f"{type(section[key]).__name__}"
             )
+    cargo = section.get("cargo_names", {})
+    if not isinstance(cargo, dict):
+        raise ValidationError(
+            f"{path}: [{table}] cargo_names must be a table, got {type(cargo).__name__}"
+        )
+    for role, name in cargo.items():
+        if not isinstance(name, str):
+            raise ValidationError(
+                f"{path}: [{table}.cargo_names] {role} must be a string, got "
+                f"{type(name).__name__}"
+            )
     identity = Identity.from_mapping(
-        {k: v for k, v in section.items() if isinstance(v, str)}
+        {k: v for k, v in section.items() if isinstance(v, str)}, cargo
     )
     identity.validate()
     return identity
@@ -108,6 +129,7 @@ def render_source_config(identity: Identity) -> str:
         "[identity]",
     ]
     lines += [f"{k} = {toml_string(v)}" for k, v in identity.as_dict_prompted().items()]
+    lines += cargo_names_lines("identity", identity)
     return "\n".join(lines) + "\n"
 
 
