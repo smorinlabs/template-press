@@ -198,9 +198,29 @@ def row_matches_scope(row: RenderedSubstitution, posix: str) -> bool:
     return _scope_matches(row.scope, posix)
 
 
+def _project_name(text: str) -> object:
+    try:
+        return tomllib.loads(text).get("project", {}).get("name")
+    except (tomllib.TOMLDecodeError, AttributeError):
+        return None
+
+
+def _rewrite_project_name(text: str, from_value: str, to_value: str) -> str:
+    """Replace only the assignment that TOML resolves to ``[project].name``."""
+
+    before = _project_name(text)
+    for match in re.finditer(re.escape(from_value), text):
+        candidate = text[: match.start()] + to_value + text[match.end() :]
+        if _project_name(candidate) != before:
+            return candidate
+    return text
+
+
 def rewrite_with_row(row: RenderedSubstitution, text: str) -> str:
     """Apply one row's matcher without consulting source configuration."""
 
+    if row.provenance[0].kind == "manifest_name":
+        return _rewrite_project_name(text, row.from_value, row.to_value)
     if row.matcher.algorithm == "literal" or row.matcher.substring:
         return text.replace(row.from_value, row.to_value)
     if row.matcher.algorithm != "conservative":
@@ -1107,27 +1127,27 @@ def _manifest_name_rows(
     if owners and all(destination_values.get(name) == to_value for name in owners):
         return []
     text = manifest[0]
-    header = re.search(r"(?m)^[ \t]*\[project\][ \t]*(?:#.*)?$", text)
-    if header is None:
-        return []
-    line = re.compile(
+    assignment = re.compile(
         rf"(?m)^[ \t]*name[ \t]*=[ \t]*([\"']){re.escape(hyphen)}\1"
-    ).search(text, header.end())
-    if line is None:
-        return []
-    from_value = line.group(0).lstrip()
-    return [
-        RenderedSubstitution(
-            row_id="manifest:name",
-            provenance=(Provenance(kind="manifest_name", name="package_name"),),
-            matcher=MatcherSpec("literal", None, False),
-            from_value=from_value,
-            to_value=from_value.replace(hyphen, to_value),
-            rewrite_surfaces=frozenset({"content"}),
-            hunts=(),
-            scope=Scope(("pyproject.toml",)),
-        )
-    ]
+    )
+    for line in assignment.finditer(text):
+        from_value = line.group(0).lstrip()
+        rewritten = from_value.replace(hyphen, to_value)
+        if _rewrite_project_name(text, from_value, rewritten) == text:
+            continue
+        return [
+            RenderedSubstitution(
+                row_id="manifest:name",
+                provenance=(Provenance(kind="manifest_name", name="package_name"),),
+                matcher=MatcherSpec("literal", None, False),
+                from_value=from_value,
+                to_value=rewritten,
+                rewrite_surfaces=frozenset({"content"}),
+                hunts=(),
+                scope=Scope(("pyproject.toml",)),
+            )
+        ]
+    return []
 
 
 def _merge_row_metadata(

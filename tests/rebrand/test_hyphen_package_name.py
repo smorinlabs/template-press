@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 from template_press.rebrand.cli import main
@@ -49,19 +50,24 @@ def _target(
     source: Identity = SOURCE,
     files: dict[str, str] | None = None,
     rules: str | None = None,
+    manifest_prefix: str = "",
+    manifest_suffix: str = "",
+    crlf: bool = False,
 ) -> Path:
     repo = base / "target"
     package = repo / "src" / source.package_name
     package.mkdir(parents=True)
     (repo / "press").mkdir()
     (repo / "pyproject.toml").write_text(
-        "[project]\n"
+        f"{manifest_prefix}[project]\n"
         f'name = "{manifest}"\n'
         'version = "0.1.0"\n'
         f'authors = [{{name="{source.author}", email="{source.email}"}}]\n'
         "[project.scripts]\n"
-        f'{source.app_name} = "{source.package_name}:main"\n',
+        f'{source.app_name} = "{source.package_name}:main"\n'
+        f"{manifest_suffix}",
         encoding="utf-8",
+        newline="\r\n" if crlf else None,
     )
     (package / "__init__.py").write_text("def main() -> None: ...\n", encoding="utf-8")
     (repo / "press" / "press-source.toml").write_text(
@@ -111,6 +117,11 @@ def _verify(target: Path) -> int:
 
 def _manifest_line(target: Path) -> str:
     return (target / "pyproject.toml").read_text(encoding="utf-8").splitlines()[1]
+
+
+def _project_name(target: Path) -> str:
+    data = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))
+    return data["project"]["name"]
 
 
 def test_proven_hyphen_name_is_rewritten_everywhere(tmp_path: Path) -> None:
@@ -201,6 +212,46 @@ def test_repo_name_collision_keeps_manifest_on_package_name(tmp_path: Path) -> N
     assert (target / "README.md").read_text(encoding="utf-8") == "See zeta-repo\n"
     _settle(target)
     assert _verify(target) == 0
+
+
+def test_collision_override_leaves_a_later_table_on_repo_name(tmp_path: Path) -> None:
+    source = _with(SOURCE, repo_name="acme-widget")
+    target = _target(
+        tmp_path,
+        source=source,
+        manifest_suffix='[[tool.uv.index]]\nname = "acme-widget"\n',
+    )
+
+    assert _press(tmp_path, target) == 0
+
+    data = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))
+    assert data["project"]["name"] == "zeta-gadget"
+    assert data["tool"]["uv"]["index"][0]["name"] == "zeta-repo"
+
+
+def test_collision_override_skips_an_earlier_table(tmp_path: Path) -> None:
+    source = _with(SOURCE, repo_name="acme-widget")
+    target = _target(
+        tmp_path,
+        source=source,
+        manifest_prefix='[tool.example]\nname = "acme-widget"\n\n',
+    )
+
+    assert _press(tmp_path, target) == 0
+
+    data = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))
+    assert data["project"]["name"] == "zeta-gadget"
+    assert data["tool"]["example"]["name"] == "zeta-repo"
+
+
+def test_collision_override_handles_crlf_manifest(tmp_path: Path) -> None:
+    source = _with(SOURCE, repo_name="acme-widget")
+    target = _target(tmp_path, source=source, crlf=True)
+
+    assert _press(tmp_path, target) == 0
+
+    assert _project_name(target) == "zeta-gadget"
+    assert b"\r\n" in (target / "pyproject.toml").read_bytes()
 
 
 def test_repo_name_collision_with_matching_destination_is_unchanged(
