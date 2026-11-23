@@ -39,9 +39,10 @@ PY = sys.executable
 def test_exemptible_cap_is_the_explicit_constant():
     """Never derived from exclude_files (CHANGELOG.md-class artifacts must
     not be exemptible) nor from any rules default (removed with D1)."""
-    assert REGENERATE_EXEMPTIBLE == frozenset({"uv.lock", "bun.lock"})
+    assert REGENERATE_EXEMPTIBLE == frozenset(
+        {"uv.lock", "bun.lock", "package-lock.json", "pnpm-lock.yaml"}
+    )
     assert "CHANGELOG.md" not in REGENERATE_EXEMPTIBLE
-    assert "package-lock.json" not in REGENERATE_EXEMPTIBLE
 
 
 class TestScanPathsTranslation:

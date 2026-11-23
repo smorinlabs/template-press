@@ -405,8 +405,9 @@ def scan_paths(
       from ``exclude_files`` — that would wrongly exempt ``CHANGELOG.md``-
       class artifacts (P04 D3).
 
-    Everything else stays: non-exemptible lockfiles (``package-lock.json``),
-    a force-added gitignored file, and symlink/gitlink entries (type-tagged,
+    Everything else stays: any lockfile off that cap or without a target
+    declaration (an undeclared ``package-lock.json`` included), a
+    force-added gitignored file, and symlink/gitlink entries (type-tagged,
     for Task 7).
 
     ``renamed`` (the press's rename map/report) translates declared

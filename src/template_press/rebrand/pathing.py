@@ -17,7 +17,9 @@ ROOT_CONTROL: frozenset[str] = frozenset(
         "press/press-answers.toml",
     }
 )
-REGENERATE_EXEMPTIBLE: frozenset[str] = frozenset({"uv.lock", "bun.lock"})
+REGENERATE_EXEMPTIBLE: frozenset[str] = frozenset(
+    {"uv.lock", "bun.lock", "package-lock.json", "pnpm-lock.yaml"}
+)
 
 
 def is_root_press(rel: Path, index: int) -> bool:

@@ -325,6 +325,32 @@ DEFAULT_RULES = Rules(
 )
 
 
+# Suggested [[regenerate]] commands for lockfiles a Node target commonly
+# leaves undeclared. Suggestion only: press never chooses or runs a command
+# the target did not declare. scan = "boundary" for all three: each format
+# embeds sha512 integrity hashes, which false-positive a short substring-mode
+# identity value under the strict content scan (see RegenerateRule.scan).
+_LOCKFILE_COMMANDS: dict[str, tuple[str, ...]] = {
+    "package-lock.json": ("npm", "install", "--package-lock-only", "--silent"),
+    "bun.lock": ("bun", "install", "--lockfile-only"),
+    "pnpm-lock.yaml": ("pnpm", "install", "--lockfile-only"),
+}
+
+
+def regenerate_suggestion(file: str) -> str | None:
+    """A paste-ready [[regenerate]] block for a known root lockfile, else None.
+
+    Nested paths get no suggestion: the command would run from the target
+    root and could not rebuild a lockfile in a subdirectory.
+    """
+
+    command = _LOCKFILE_COMMANDS.get(file)
+    if command is None:
+        return None
+    argv = ", ".join(f'"{part}"' for part in command)
+    return f'[[regenerate]]\nfile = "{file}"\ncommand = [{argv}]\nscan = "boundary"\n'
+
+
 _COMPONENT_KEYS = frozenset({"extra_exclude_dirs", "verify_ignore"})
 
 # The exact set of keys load_rules reads from [rules] — a typo (e.g.

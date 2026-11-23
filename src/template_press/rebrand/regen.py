@@ -50,6 +50,7 @@ from template_press.rebrand.rules import (
     ReplaceRule,
     ResetRule,
     Rules,
+    regenerate_suggestion,
     rule_matches_path,
 )
 from template_press.rebrand.safety import (
@@ -776,8 +777,21 @@ def preflight_excluded_files(target: Path, rules: Rules) -> list[str]:
             f"unscanned; declare a [[regenerate]] command, a [[reset]] stub, "
             f"or a [[remove]] in press/press-rules.toml, or list it under "
             f"[rules] verify_ignore (the deliberate, committed exemption)"
+            + _suggestion_note(rel)
         )
     return problems
+
+
+def _suggestion_note(rel: str) -> str:
+    """The paste-ready block for a known lockfile; press never runs it."""
+
+    suggestion = regenerate_suggestion(rel)
+    if suggestion is None:
+        return ""
+    return (
+        "\nsuggested block for press/press-rules.toml (press does not run "
+        "it; review the command first):\n" + suggestion
+    )
 
 
 def changed_identity_pairs(source: Identity, dest: Identity) -> list[tuple[str, str]]:

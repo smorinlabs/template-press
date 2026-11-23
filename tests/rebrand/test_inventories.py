@@ -121,23 +121,22 @@ def test_scan_paths_regenerate_exemption_keyed_on_tool_cap_and_declaration(
 ):
     """EMP-01/F5 under P04 D3: the exemption requires a lockfile to be BOTH
     declared by the target ([[regenerate]]) AND on the tool's own explicit
-    ``REGENERATE_EXEMPTIBLE`` cap (uv.lock, bun.lock). A target declaring a
-    regeneration for a file OFF that list (package-lock.json) cannot blind
+    ``REGENERATE_EXEMPTIBLE`` cap (uv.lock, bun.lock, package-lock.json,
+    pnpm-lock.yaml). A target declaring a regeneration for a file OFF that
+    list (CHANGELOG.md) cannot blind
     the no-leak scan to it.
     """
     (src_target / "uv.lock").write_text("version = 1\n", encoding="utf-8")
     (src_target / "bun.lock").write_text(
         '{"lockfileVersion": 0, "name": "demo_widget"}\n', encoding="utf-8"
     )
-    (src_target / "package-lock.json").write_text(
-        '{"name": "demo_widget"}\n', encoding="utf-8"
-    )
+    (src_target / "CHANGELOG.md").write_text("## demo_widget\n", encoding="utf-8")
     control = src_target / "press"
     control.mkdir(exist_ok=True)
     (control / "press-rules.toml").write_text(
         '[[regenerate]]\nfile = "uv.lock"\ncommand = ["uv", "lock"]\n'
         '[[regenerate]]\nfile = "bun.lock"\ncommand = ["bun", "install"]\n'
-        '[[regenerate]]\nfile = "package-lock.json"\ncommand = ["npm", "install"]\n',
+        '[[regenerate]]\nfile = "CHANGELOG.md"\ncommand = ["gen-log"]\n',
         encoding="utf-8",
     )
     _git(src_target, "add", "-A")
@@ -146,12 +145,12 @@ def test_scan_paths_regenerate_exemption_keyed_on_tool_cap_and_declaration(
     assert tuple(r.file for r in rules.regenerate) == (
         "uv.lock",
         "bun.lock",
-        "package-lock.json",
+        "CHANGELOG.md",
     )
     rels = _rels(scan_paths(src_target, rules))
     assert "uv.lock" not in rels  # exempt — declared AND on the tool cap
     assert "bun.lock" not in rels  # exempt — declared AND on the tool cap
-    assert "package-lock.json" in rels  # declared but OFF the cap — scanned
+    assert "CHANGELOG.md" in rels  # declared but OFF the cap — scanned
 
 
 def test_scan_paths_scans_uv_lock_when_target_declares_no_regeneration(
