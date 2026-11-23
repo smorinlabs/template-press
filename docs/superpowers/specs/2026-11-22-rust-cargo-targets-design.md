@@ -119,6 +119,13 @@ exact-name row winning an equal-length tie so it owns the merged matcher. This
 order is required: the existing `app_name` boundary treats `_` as a right-hand
 separator, so `acme` must run after the longer `acme_core`.
 
+The merged P13 fix adds a `package_name_hyphen` row that only hunts when the Python
+manifest does not prove the hyphen spelling. On a Cargo target with a map, that
+row must not exist for a declared name: `distinct_hyphen_form` treats every source
+and destination Cargo name as already claimed. Otherwise a hunt-only row could own
+the merged row and drop the Cargo rewrite, or disagree with a destination spelled
+with `_`.
+
 Path handling reuses TypeScript's `field_renames_paths`. An independent sibling
 such as `acme-core-extra` is not rewritten, and it fails verification by default.
 A target that really depends on it declares it in TypeScript's `keep_names`:
@@ -143,15 +150,18 @@ path values change.
 
 ### Discovery
 
-**Language selection.** The explicit-language guard owns this decision. Press
-exits 2 before any write when a target has more than one root manifest that
-declares a project identity and no `[rules] languages` declaration. This branch
-adds no precedence between languages.
+**Language selection.** The merged explicit-language guard (P16) owns this
+decision. Press exits 2 before any write when a target has more than one root
+manifest that declares a project identity and no `[rules] languages` declaration.
+This branch adds no precedence between languages, and it adds `"rust"` to
+`SUPPORTED_LANGUAGES`.
 
-- Rust is active when `Cargo.toml` is the only counted manifest, or when the
-  target's declaration includes Rust. The exact declaration value comes from the
-  guard branch.
-- A target that declares other languages but not Rust ignores `Cargo.toml`.
+- Rust is active when `"rust"` is in `LanguageDecision.checked`, the result of
+  `check_target_languages`. That covers a sole `Cargo.toml` and a declaration that
+  includes `"rust"`.
+- A target that declares other languages but not Rust skips Cargo identity checks.
+  The guard still parses every root manifest, so a malformed root `Cargo.toml`
+  exits 2 even when Rust is not declared.
 - A declared multi-language target checks each language against its own manifest.
   For example, `cargo_names` is checked against Cargo and `npm_name` against
   `package.json`. This covers PyO3, maturin, Tauri, and napi-rs repositories.
@@ -180,9 +190,11 @@ both tables contributes the root package plus its members.
 - Authors parse as `Name <email>`. The first entry is the discovered author.
 - `package.repository` supplies `owner` and `repo_name` only when git origin is
   unavailable.
-- A malformed or symlinked manifest is undiscoverable and produces a warning when
-  no map is declared. When `cargo_names` is declared it exits 2, because the map
-  cannot be checked.
+- A malformed or symlinked root manifest exits 2 through the guard. When Rust is
+  active, the same applies to a malformed or symlinked workspace member.
+- `keep_names` refusal uses TypeScript's normalized comparison, which ignores case
+  and `-`, `_`, `.`, and space. Rust extends it to `cargo_names`, so `Acme_Widget`
+  cannot keep crate `acme-widget`.
 - `[[example]]`, `[[test]]`, `[[bench]]`, and feature names are not cross-checked.
   The content rewrite still updates any declared crate name inside them.
 
