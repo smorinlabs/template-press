@@ -45,7 +45,10 @@ mismatch; a completed run is verified leak-free before a receipt is written.
    leak needs the link's OWN name in `verify_ignore` too, not just its
    target's directory — see the symlink gotcha below; do NOT re-run
    with `--force` as the remedy); 2 = precondition/mismatch (report, do not
-   retry blindly).
+   retry blindly). A refusal saying the target has several language manifests
+   and `[rules] languages` is not declared is fixed by adding that key to
+   `press/press-rules.toml` (see "`languages`" under Rules authoring), then
+   re-running the dry run.
 6. On success the press also refreshes `<TARGET>/press/press-source.toml` to the
    NEW identity (so a future re-press starts from a valid baseline). Show
    the receipt (`<TARGET>/press/press-receipt.toml`) and remind the user to
@@ -168,6 +171,33 @@ glued UPPERCASE forms (`PLBPOwned`); pair it with `app_name_upper` when
 those exist. `display_name` itself may not appear here (it fails
 validation as a no-op) — narrow which of its three forms rewrite via
 `[rules] display_forms` instead.
+
+### `languages` — declare multi-language targets
+
+```toml
+[rules]
+languages = ["python"]
+```
+
+A target with several root manifests that each declare a package identity
+makes `press rebrand` and `press verify` exit 2 (nothing written) until
+`[rules] languages` is declared. Counted manifests: `pyproject.toml` with
+`[project]` (python); `Cargo.toml` with `[package]` or `[workspace]` (rust);
+`package.json` with a non-empty string `name` (node). A `[tool.*]`-only
+`pyproject.toml` does not count; a tooling `package.json` with a `name` does.
+
+- One detected language needs no declaration.
+- Listed languages are checked; detected languages not listed are ignored
+  and printed to stderr.
+- `node` and `rust` are reserved names: this press version supports only
+  `python`, so listing either exits 2 with "not supported by this press
+  version".
+- Declaring a language with no such manifest, or whose manifest is a
+  `[[remove]]` target, exits 2. A malformed, non-UTF-8, or non-regular root
+  manifest also exits 2.
+- Breaking change for existing multi-language targets: add
+  `languages = ["python"]` (or the supported languages that apply) under
+  `[rules]`.
 
 ### Gotcha: `files` glob semantics
 

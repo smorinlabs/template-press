@@ -71,7 +71,12 @@ project template and ships no application. First target:
    the same pinned executable, target-root working directory, no-shell,
    deny-by-default environment, sink guards, and command-phase control/Git-
    visibility snapshots as regenerations.
-4. **The tool never ships into the target** — no marker in the tool's tree,
+4. **Multi-language targets must declare their languages**: when a target has
+   several root manifests that declare a package identity, `[rules] languages`
+   in `press/press-rules.toml` names the languages to check; without it
+   `press rebrand` and `press verify` exit 2 and write nothing. Spec:
+   [P16](../superpowers/specs/2026-11-22-explicit-target-languages-design.md).
+5. **The tool never ships into the target** — no marker in the tool's tree,
    no self-prune, no self-commit.
 
 ## Superseded documents

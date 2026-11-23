@@ -675,6 +675,43 @@ Git is not a declared command. Press and `press check-tools` require and check
 Git on every supported platform, including when no declared mutation is
 active.
 
+### Declared languages: `[rules] languages`
+
+A target that has manifests for several languages must say which ones the
+press checks. Without that declaration, `press rebrand` and `press verify`
+exit `2` and write nothing. Both commands read the same declaration from
+`press/press-rules.toml`.
+
+A root manifest counts as a language only when it declares a package identity:
+
+| Language | Root manifest | Counts when |
+|----------|---------------|-------------|
+| `python` | `pyproject.toml` | it has a `[project]` table (a `[tool.*]`-only file does not count) |
+| `rust` | `Cargo.toml` | it has a `[package]` or `[workspace]` table |
+| `node` | `package.json` | it has a non-empty string `name` (a tooling `package.json` with a `name` counts) |
+
+| Detected languages | `[rules] languages` | Result |
+|--------------------|---------------------|--------|
+| none or one | absent | proceeds; no declaration needed |
+| two or more | absent | exit `2`, nothing written; the message names the manifests |
+| any | lists languages | the listed languages are checked; detected languages not listed are ignored and printed to stderr as `ignored <language> (<manifest>): not declared in [rules] languages` |
+
+Exit `2` also results when a listed language has no manifest that declares a
+package identity, when its manifest is a `[[remove]]` target, or when a root
+manifest is malformed, not UTF-8, or not a regular file.
+
+`node` and `rust` are reserved names. This press version supports only
+`python`, so listing either exits `2` with `not supported by this press
+version`.
+
+This is a breaking change for multi-language targets that pressed cleanly
+before. To fix the refusal, add the supported languages under `[rules]`:
+
+```toml
+[rules]
+languages = ["python"]
+```
+
 ### After a successful press
 
 A receipt is written to `<target>/press/press-receipt.toml`, and
