@@ -255,9 +255,12 @@ def test_rewrite_keeps_replacement_literal():
 
 @pytest.mark.parametrize("kind", sorted(ROW_KINDS))
 def test_rewrite_without_kept_occurrence_equals_legacy(kind):
-    text = "acme/widget acme-x xacme acme_y widget acme/widgets"
+    # The unrelated kept name forces the span-aware loop, not the legacy branch.
+    unrelated = "@zzz/keep"
+    text = f"acme/widget acme-x xacme acme_y widget acme/widgets {unrelated}"
     row = ROW_KINDS[kind]
-    assert rewrite_with_row(row, text, keep_names=[KEPT]) == rewrite_with_row(row, text)
+    expected = rewrite_with_row(row, text)
+    assert rewrite_with_row(row, text, keep_names=[unrelated]) == expected
 
 
 def test_rules_default_to_no_keep_names():
@@ -265,8 +268,9 @@ def test_rules_default_to_no_keep_names():
     assert SubstitutionTable(rows=(), rename_plan=None).keep_names == ()  # type: ignore[arg-type]
 
 
-def test_keep_names_is_the_last_rules_field():
-    assert list(Rules.__dataclass_fields__)[-1] == "keep_names"
+def test_keep_names_is_appended_after_remove_dirs():
+    fields = list(Rules.__dataclass_fields__)
+    assert fields.index("keep_names") > fields.index("remove_dirs")
 
 
 def test_load_rules_reads_keep_names(tmp_path):
@@ -284,14 +288,14 @@ def test_load_rules_reads_keep_names(tmp_path):
     ids=["conservative", "substring", "replace"],
 )
 def test_press_apply_preserves_kept_content(tmp_path, extra):
-    files = {"src/use.ts": f'import "{KEPT}/sub";\nimport "@acme/widget";\n'}
+    files = {"src/use.ts": f'import "@acme/widget";\nimport "{KEPT}/sub";\n'}
     target = _make_target(tmp_path, _keep_rules([KEPT], extra), files)
     rules = load_rules(target)
     plan = build_plan(target, SOURCE, DEST, rules)
     assert plan.table.keep_names == (KEPT,)
     apply(target, SOURCE, DEST, rules, table=plan.table)
     assert (target / "src" / "use.ts").read_text(encoding="utf-8") == (
-        f'import "{KEPT}/sub";\nimport "@new/x";\n'
+        f'import "@new/x";\nimport "{KEPT}/sub";\n'
     )
 
 
