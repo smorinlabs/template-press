@@ -10,6 +10,8 @@ matcher semantics, surfaces, and scope.
 from __future__ import annotations
 
 import fnmatch
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -17,6 +19,14 @@ from template_press.rebrand.identity import (
     ValidationError,
     occurs,
     replace_token,
+    token_pattern,
+)
+from template_press.rebrand.keep_names import (
+    Span,
+    component_kept_spans,
+    disjoint_matches,
+    loses_kept_name,
+    splice_outside_kept,
 )
 
 MatcherKind = Literal["conservative", "literal", "paranoid"]
@@ -98,6 +108,27 @@ def _replace(candidate: PipelineCandidate, text: str) -> str:
     return replace_token(
         text, spec.identity_field, candidate.from_value, candidate.to_value
     )
+
+
+def _replace_outside_kept(
+    candidate: PipelineCandidate, text: str, kept: Sequence[Span]
+) -> tuple[str, tuple[Span, ...]]:
+    """Runtime path rewriting of one component around its kept spans."""
+
+    spec = candidate.matcher
+    if spec.algorithm == "literal" or spec.substring:
+        pattern = re.compile(re.escape(candidate.from_value))
+    elif spec.identity_field is None:
+        raise ValidationError(
+            f"candidate {_describe(candidate)} has {spec.algorithm} matcher "
+            "without an identity field"
+        )
+    else:
+        pattern = token_pattern(spec.identity_field, candidate.from_value) or (
+            re.compile(re.escape(candidate.from_value))
+        )
+    spans = disjoint_matches(pattern, text, kept)
+    return splice_outside_kept(text, spans, candidate.to_value, kept)
 
 
 def _is_exact_scope(files: tuple[str, ...]) -> bool:
@@ -502,6 +533,7 @@ def _validate_target_paths(
     candidates: tuple[PipelineCandidate, ...],
     initial_paths: tuple[str, ...],
     initial_symlink_paths: frozenset[str],
+    keep_names: Sequence[str] = (),
 ) -> None:
     path_rows = tuple(item for item in candidates if "path" in item.rewrite_surfaces)
     if not path_rows:
@@ -531,13 +563,23 @@ def _validate_target_paths(
             original_parts = current.split("/")
             parts = list(original_parts)
             change_rows: dict[int, list[PipelineCandidate]] = {}
+            kept_by_component = {
+                index: component_kept_spans(original_parts, index, keep_names)
+                for index in range(len(original_parts))
+            }
             for row in active_rows:
                 for component_index, component in enumerate(parts):
                     # The engine protects the literal root control directory
                     # while still renaming identity-bearing descendants.
                     if component_index == 0 and component == "press":
                         continue
-                    rewritten = _replace(row, component)
+                    kept = kept_by_component[component_index]
+                    if kept:
+                        rewritten, kept_by_component[component_index] = (
+                            _replace_outside_kept(row, component, kept)
+                        )
+                    else:
+                        rewritten = _replace(row, component)
                     if rewritten == component:
                         continue
                     change_rows.setdefault(component_index, []).append(row)
@@ -639,7 +681,14 @@ def _validate_target_paths(
                 ):
                     continue
                 suffix = current[len(source_prefix) :]
-                current_by_initial[initial] = f"{destination_prefix}{suffix}"
+                moved = f"{destination_prefix}{suffix}"
+                if loses_kept_name(current, moved, keep_names):
+                    raise ValidationError(
+                        f"keep_names: moving {source_prefix!r} to "
+                        f"{destination_prefix!r} would change a kept name in "
+                        f"{current!r}"
+                    )
+                current_by_initial[initial] = moved
                 for row in move_rows:
                     if all(
                         item.row_id != row.row_id for item in movers_by_initial[initial]
@@ -693,6 +742,7 @@ def validate_pipeline(
     initial_paths: tuple[str, ...] | None = None,
     initial_symlink_paths: frozenset[str] = frozenset(),
     stability_sinks: tuple[StabilitySink, ...] = (),
+    keep_names: Sequence[str] = (),
 ) -> tuple[PipelineCandidate, ...]:
     """Normalize candidates and reject every unstable ordered pipeline.
 
@@ -701,6 +751,8 @@ def validate_pipeline(
     is an authoritative target inventory and enables target-aware proofs.
     ``initial_symlink_paths`` identifies occupied symlink destinations that
     the runtime deliberately preserves by skipping the corresponding move.
+    ``keep_names`` are protected in the path simulation as they are at runtime,
+    so a kept path cannot cause a collision refusal.
     """
 
     normalized = _normalize(candidates)
@@ -709,6 +761,6 @@ def validate_pipeline(
     _validate_ambiguity(normalized, target_paths_known=target_paths_known)
     _validate_dependencies(normalized, target_paths_known=target_paths_known)
     _validate_stability_sinks(normalized, stability_sinks)
-    _validate_target_paths(normalized, target_paths, initial_symlink_paths)
+    _validate_target_paths(normalized, target_paths, initial_symlink_paths, keep_names)
     _validate_symlink_dependencies(normalized)
     return normalized

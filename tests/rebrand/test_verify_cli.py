@@ -22,6 +22,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.verify_cli import _effective_scan_fields, verify_command
 
@@ -815,3 +817,14 @@ def test_substring_rewrite_field_absent_from_defaults_scanned_via_escaping_symli
     )
     _commit(repo)
     assert verify_command(["--target", str(repo)]) == 1
+
+
+@pytest.mark.parametrize("field", ["npm_name", "cli_name"])
+def test_undeclared_exact_name_field_is_not_scanned(tmp_path: Path, field: str) -> None:
+    repo = make_pressable(tmp_path)
+    (repo / "press" / "press-rules.toml").write_text(
+        f'[verify]\nextra_fields = ["{field}"]\nsubstring_fields = ["{field}"]\n',
+        encoding="utf-8",
+    )
+    _commit(repo)
+    assert verify_command(["--target", str(repo)]) == 0

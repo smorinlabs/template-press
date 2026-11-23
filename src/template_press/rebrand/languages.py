@@ -15,7 +15,7 @@ from template_press.rebrand.safety import SafetyError, read_regular_nofollow
 KNOWN_LANGUAGES: tuple[str, ...] = ("python", "node", "rust")
 
 # Languages this press version can rebrand; the rest are reserved names.
-SUPPORTED_LANGUAGES: frozenset[str] = frozenset({"python"})
+SUPPORTED_LANGUAGES: frozenset[str] = frozenset({"python", "node"})
 
 # Root manifest that identifies each language, in ``KNOWN_LANGUAGES`` order.
 LANGUAGE_MANIFESTS: dict[str, str] = {
@@ -93,19 +93,19 @@ def detect_languages(target: Path) -> tuple[DetectedLanguage, ...]:
 def _undeclared_refusal(detected: tuple[DetectedLanguage, ...]) -> ValidationError:
     manifests = ", ".join(d.manifest for d in detected)
     supported = [d.language for d in detected if d.language in SUPPORTED_LANGUAGES]
-    message = (
+    # Only rust is unsupported, so two detected languages always list one.
+    listed = ", ".join(f'"{language}"' for language in supported)
+    prefix = (
         f"target has several language manifests ({manifests}) and "
-        "[rules] languages is not declared"
+        "[rules] languages is not declared; add this to press/press-rules.toml "
+        "under [rules]: "
     )
-    if supported:
-        listed = ", ".join(f'"{language}"' for language in supported)
-        message += (
-            "; add this to press/press-rules.toml under [rules]: "
-            f"languages = [{listed}]"
+    if supported == ["python", "node"]:
+        return ValidationError(
+            f'{prefix}languages = ["python"] when package.json is tooling only, '
+            f"or languages = [{listed}] when both manifests carry this identity"
         )
-    else:
-        message += "; this press version supports only python"
-    return ValidationError(message)
+    return ValidationError(f"{prefix}languages = [{listed}]")
 
 
 def check_target_languages(

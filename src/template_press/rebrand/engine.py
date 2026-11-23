@@ -3,7 +3,8 @@
 Scan-based (ARCH-03): no per-target file lists. Every tracked text file is a
 replace candidate; every path component containing an identity token is a
 rename candidate. Failure mode: any op raising propagates — git in the
-TARGET is the undo button (`git checkout . && git clean -fd`).
+TARGET is the undo button (`git -C <target> checkout .`, preview with
+`git -C <target> clean -nd`, then `git -C <target> clean -fd`).
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import os
 import stat
 from collections import Counter
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
     display_forms,
+    pair_renames_paths,
     replace_token,
     token_pattern,
 )
@@ -36,6 +38,7 @@ from template_press.rebrand.inventory import (
     select_verifier_entries,
     tracked_path_strings,
 )
+from template_press.rebrand.keep_names import kept_spans, outside_kept
 from template_press.rebrand.matcher import classify_occurrence
 from template_press.rebrand.pathing import (
     REGENERATE_EXEMPTIBLE as REGENERATE_EXEMPTIBLE,
@@ -86,15 +89,8 @@ from template_press.rebrand.substitutions import (
     compile_substitution_table,
     declared_rule_triples,
     revalidate_substitution_table,
-    rewrite_with_row,
+    rewrite_file,
     row_matches_scope,
-)
-
-RENAME_FIELDS: tuple[str, ...] = (
-    "package_name",
-    "repo_name",
-    "app_name",
-    "app_name_upper",
 )
 
 # Marker files that identify a press/ directory as THIS tool's control dir
@@ -410,8 +406,9 @@ def scan_paths(
       from ``exclude_files`` — that would wrongly exempt ``CHANGELOG.md``-
       class artifacts (P04 D3).
 
-    Everything else stays: non-exemptible lockfiles (``package-lock.json``),
-    a force-added gitignored file, and symlink/gitlink entries (type-tagged,
+    Everything else stays: any lockfile off that cap or without a target
+    declaration (an undeclared ``package-lock.json`` included), a
+    force-added gitignored file, and symlink/gitlink entries (type-tagged,
     for Task 7).
 
     ``renamed`` (the press's rename map/report) translates declared
@@ -517,7 +514,7 @@ def _raw_replacement_pairs(
             continue
         seen[cur] = (tag, repl)
         deduped.append((tag, cur, repl))
-    deduped.sort(key=lambda t: -len(t[1]))
+    deduped.sort(key=lambda t: (-len(t[1]), t[0] != "npm_name"))
     return deduped
 
 
@@ -652,7 +649,7 @@ def _pipeline_inputs(
         row_id = f"identity:{index}:{tag}"
         pair_by_id[row_id] = pair
         identity_surfaces = {"content"}
-        if tag in RENAME_FIELDS:
+        if pair_renames_paths(tag, cur, repl):
             identity_surfaces.add("path")
         if not tag.startswith("display_name_"):
             identity_surfaces.add("symlink")
@@ -816,7 +813,7 @@ def _renamed_rel(
             if rule.paths and rule_matches_path(rule, posix):
                 new = new.replace(frm, to)
         for f, cur, repl in pairs:
-            if f in RENAME_FIELDS:
+            if pair_renames_paths(f, cur, repl):
                 if f in substring_fields:
                     new = new.replace(cur, repl)
                 else:
@@ -901,16 +898,20 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
         text = _read_text(path, expected_kind=entry.worktree_kind)
         if text is not None:
             if entry.tracked:
-                _tally_prefix_occurrences(text, prefix_fields, prefix_counts)
-            preview = text
-            for row in table.rows:
-                if "content" not in row.rewrite_surfaces or not row_matches_scope(
-                    row, rel.as_posix()
-                ):
-                    continue
-                rewritten = rewrite_with_row(row, preview)
-                if rewritten == preview:
-                    continue
+                _tally_prefix_occurrences(
+                    text, prefix_fields, prefix_counts, table.keep_names
+                )
+            _, changed_rows = rewrite_file(
+                (
+                    row
+                    for row in table.rows
+                    if "content" in row.rewrite_surfaces
+                    and row_matches_scope(row, rel.as_posix())
+                ),
+                text,
+                table.keep_names,
+            )
+            for row in changed_rows:
                 provenance = row.provenance[0]
                 detail = (
                     f"rule {row.from_value!r} -> {row.to_value!r}"
@@ -918,7 +919,6 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                     else f"fields={[provenance.name]}"
                 )
                 plan.items.append(PlanItem("replace", rel.as_posix(), detail))
-                preview = rewritten
     plan.prefix_warnings = prefix_only_warnings(prefix_counts)
     for step in table.rename_plan.steps:
         plan.items.append(PlanItem("rename", step.old_prefix, f"→ {step.new_prefix}"))
@@ -1125,6 +1125,7 @@ def _tally_prefix_occurrences(
     text: str,
     fields: Mapping[str, str],
     counts: Mapping[str, _PrefixCounts],
+    keep_names: Sequence[str] = (),
 ) -> None:
     """Classify every occurrence of every checked field's value in `text`.
 
@@ -1139,15 +1140,18 @@ def _tally_prefix_occurrences(
     that share the same letters with different separators. `token_pattern`
     matches only the field's own literal value, so a hyphen right after it
     is exactly the boundary the rewriter itself would happily cross —
-    which is the E9(b) signal.
+    which is the E9(b) signal. A declared kept name is not a stale prefix.
     """
 
+    kept = kept_spans(text, keep_names)
     for field_name, value in fields.items():
         tally = counts[field_name]
         pattern = token_pattern(field_name, value)
         if pattern is None:  # every field currently returns a pattern
             continue
         for match in pattern.finditer(text):
+            if kept and not outside_kept((match.span(),), kept):
+                continue
             kind, token = classify_occurrence(text, match.span())
             if kind == "prefix":
                 tally.prefix_tokens[token] += 1
@@ -1304,10 +1308,15 @@ def _apply_replacements(
             kind = "symlink" if path.is_symlink() else "binary"
             report.skipped.append(f"replace {rel} ({kind})")
             continue
-        new_text = text
-        for row in table.rows:
-            if "content" in row.rewrite_surfaces and row_matches_scope(row, rel):
-                new_text = rewrite_with_row(row, new_text)
+        new_text, _ = rewrite_file(
+            (
+                row
+                for row in table.rows
+                if "content" in row.rewrite_surfaces and row_matches_scope(row, rel)
+            ),
+            text,
+            table.keep_names,
+        )
         if new_text != text:
             # Route through safe_write: its assert_under_root closes the
             # ancestor-symlink hole (a symlinked ancestor would write OUTSIDE

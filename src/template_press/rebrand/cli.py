@@ -24,7 +24,13 @@ from template_press.rebrand.config import (
     load_source_config,
     render_source_config,
 )
-from template_press.rebrand.discovery import Discovered, discover, mismatches
+from template_press.rebrand.discovery import (
+    Discovered,
+    discover,
+    manifest_warnings,
+    mismatches,
+    node_proposal,
+)
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import (
     RenamePreflight,
@@ -37,10 +43,16 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
 )
+from template_press.rebrand.keep_names import (
+    render_stale,
+    render_undeclared,
+    validate_keep_names,
+)
 from template_press.rebrand.languages import (
     check_target_languages,
     render_ignored_languages,
 )
+from template_press.rebrand.node_manifest import NodeManifest
 from template_press.rebrand.receipt import (
     RECEIPT_REL,
     OriginDecision,
@@ -106,6 +118,7 @@ from template_press.rebrand.safety import (
 )
 from template_press.rebrand.substitutions import (
     SubstitutionTable,
+    check_target_keep_names,
     declared_rule_triples,
     revalidate_substitution_table,
     validate_reset_visibility,
@@ -383,12 +396,42 @@ def _render_origin_mismatch_warnings(
     ]
 
 
+# Required proposal field -> the package.json key (or origin) that supplies it.
+_NODE_PROPOSAL_KEYS: dict[str, str] = {
+    "package_name": "name",
+    "app_name": "bin",
+    "author": "author",
+    "email": "author (with an <email>)",
+    "owner": "repository (or a git origin)",
+    "repo_name": "repository (or a git origin)",
+}
+
+
+def _distinct_bins(found: Discovered, *claimed: str | None) -> tuple[str, ...]:
+    """Object-form bin keys that no other proposed identity value covers."""
+    return tuple(
+        name
+        for name in found.named_cli_names
+        if name not in claimed and name != found.npm_name
+    )
+
+
+def _several_bins_refusal(bins: Sequence[str]) -> int:
+    return _fail(
+        f"no source-config at {SOURCE_CONFIG_REL} and package.json bin declares "
+        f"several distinct commands ({', '.join(bins)}); identity holds one "
+        f"cli_name, so the press will not guess. Write the source-config by "
+        f"hand, and list each independent CLI in [rules] keep_names."
+    )
+
+
 def _resolve_source(
     target: Path,
     override: Path | None,
     accept_discovery: bool,
     dest: Identity | None,
     accept_origin_mismatch: bool,
+    languages: Sequence[str],
 ) -> tuple[Identity, bool, OriginDecision, Discovered] | int:
     """Resolve the FROM identity; second element = write source-config later.
 
@@ -399,23 +442,79 @@ def _resolve_source(
     """
     write_pending = False
     source = load_source_config(target, override)
-    found = discover(target)
+    found = discover(target, languages)
     if source is None:
-        proposal = {
-            "package_name": found.package_name,
-            "repo_name": found.repo_name,
-            "app_name": found.app_name,
-            "author": found.author,
-            "email": found.email,
-            "owner": found.owner,
-        }
-        unresolved = [k for k, v in proposal.items() if v is None]
-        if unresolved:
-            return _fail(
-                f"no source-config at {SOURCE_CONFIG_REL} and discovery "
-                f"could not resolve: {', '.join(unresolved)}. Write the "
-                f"source-config by hand."
+        proposal: dict[str, str | None]
+        if found.source_kind == "node":
+            manifest = NodeManifest(
+                name=found.npm_name,
+                author=found.manifest_author,
+                email=found.manifest_email,
+                bins=found.cli_names,
+                owner=found.manifest_owner,
+                repo_name=found.manifest_repo_name,
+                named_bins=found.named_cli_names,
             )
+            if found.owner is not None:  # git origin wins over the manifest
+                proposal = node_proposal(manifest, found.owner, found.repo_name)
+            else:
+                proposal = node_proposal(manifest, manifest.owner, manifest.repo_name)
+            # The first bin becomes app_name (and cli_name when hyphenated). Any
+            # bin no proposed value covers would survive the press unchanged.
+            covered = {
+                found.npm_name,
+                *(
+                    proposal[key]
+                    for key in ("app_name", "cli_name", "repo_name", "package_name")
+                ),
+            }
+            if any(name not in covered for name in found.named_cli_names):
+                return _several_bins_refusal(found.named_cli_names)
+            unresolved = list(
+                dict.fromkeys(
+                    _NODE_PROPOSAL_KEYS[k]
+                    for k in _NODE_PROPOSAL_KEYS
+                    if proposal[k] is None
+                )
+            )
+            if unresolved:
+                return _fail(
+                    f"no source-config at {SOURCE_CONFIG_REL} and package.json "
+                    f"could not resolve: {', '.join(unresolved)}. Add the "
+                    f"missing keys to package.json or write the source-config "
+                    f"by hand."
+                )
+        else:
+            proposal = {
+                "package_name": found.package_name,
+                "repo_name": found.repo_name,
+                "app_name": found.app_name,
+                "author": found.author,
+                "email": found.email,
+                "owner": found.owner,
+            }
+            unresolved = [k for k, v in proposal.items() if v is None]
+            if unresolved:
+                return _fail(
+                    f"no source-config at {SOURCE_CONFIG_REL} and discovery "
+                    f"could not resolve: {', '.join(unresolved)}. Write the "
+                    f"source-config by hand."
+                )
+            if found.node_checked and found.npm_name not in (
+                None,
+                found.repo_name,
+                found.package_name,
+            ):
+                proposal["npm_name"] = found.npm_name
+            if found.node_checked:
+                # Without a declared cli_name, a distinct bin would survive
+                # the press unchanged and still earn a clean exit.
+                bins = _distinct_bins(
+                    found, found.app_name, found.repo_name, found.package_name
+                )
+                if len(bins) > 1:
+                    return _several_bins_refusal(bins)
+                proposal["cli_name"] = bins[0] if bins else None
         try:
             candidate = Identity.from_mapping(
                 {k: v for k, v in proposal.items() if v is not None}
@@ -440,12 +539,14 @@ def _resolve_source(
 
 
 def display_name_problem(source: Identity, dest: Identity) -> str | None:
-    """Half-specified display identity is refused (codesign sec-06).
+    """Half-specified optional identity is refused (codesign sec-06).
 
     The press knows what to erase but not what to write — proceeding would
     ship a half-rebrand where every prose mention keeps the old product
-    name. The reverse direction is harmless: nothing to rewrite, and the
-    post-apply source-config write records the new display name.
+    name. The same holds for ``npm_name`` and ``cli_name``, and for them the
+    opposite direction is refused too: a value only the answers declare
+    cannot be matched in the target. A source ``npm_name``/``cli_name`` equal
+    to another source identity value must stay equal in the answers.
     """
     if source.display_name is not None and dest.display_name is None:
         return (
@@ -454,6 +555,41 @@ def display_name_problem(source: Identity, dest: Identity) -> str | None:
             f"add display_name to [answers]; press cannot know the new "
             f"display name"
         )
+    source_values = source.as_dict()
+    dest_values = dest.as_dict()
+    for field_name in ("npm_name", "cli_name"):
+        in_source = field_name in source_values
+        in_dest = field_name in dest_values
+        if in_source and not in_dest:
+            return (
+                f"source-config declares {field_name} "
+                f"({source_values[field_name]!r}) but the answers file does "
+                f"not — add {field_name} to [answers]; press cannot know the "
+                f"new value"
+            )
+        if in_dest and not in_source:
+            return (
+                f"the answers file declares {field_name} "
+                f"({dest_values[field_name]!r}) but the source-config does "
+                f"not — add {field_name} to [identity] in the source-config; "
+                f"press cannot know the value to replace"
+            )
+    for field_name in ("npm_name", "cli_name"):
+        if field_name not in source_values:
+            continue
+        for other, value in source_values.items():
+            if (
+                other in (field_name, "app_name_upper")
+                or value != (source_values[field_name])
+            ):
+                continue
+            if dest_values[field_name] != dest_values[other]:
+                return (
+                    f"source {field_name} equals source {other} "
+                    f"({value!r}) but the answers give them different values "
+                    f"({dest_values[field_name]!r} vs {dest_values[other]!r}) "
+                    f"— keep them equal in [answers]"
+                )
     return None
 
 
@@ -552,6 +688,7 @@ def _preflight_directory_receipt(
         clean=[rule.paths for rule in rules.clean],
         remove_dirs=directories,
         renames=renames,
+        keep_names=rules.keep_names,
     )
 
 
@@ -630,10 +767,13 @@ def main(argv: list[str] | None = None) -> int:
             args.accept_discovery,
             dest,
             args.accept_origin_mismatch,
+            languages.checked,
         )
         if isinstance(resolved, int):
             return resolved
         source, write_pending, origin, found = resolved
+        for warning in manifest_warnings(source, found):
+            print(warning, file=sys.stderr)
         if write_pending and not args.accept_discovery:
             print(
                 f"no source-config found at {SOURCE_CONFIG_REL}.\n"
@@ -670,6 +810,7 @@ def main(argv: list[str] | None = None) -> int:
         # Pipeline stability, ambiguity, and termination are validated together
         # by build_plan before any write.  Keeping the target rules here ensures
         # the adapter preserves each field's effective substring posture.
+        validate_keep_names(rules.keep_names, source, dest)
         prior_removed = removed_files_from_receipt(receipt_text)
         removal_plan = plan_removals(
             target,
@@ -680,6 +821,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         removal_receipt_metadata(removal_plan, prior_removed)
         effective_rules = removal_rules_view(rules, removal_plan)
+        keep_check = check_target_keep_names(
+            target,
+            source,
+            dest,
+            rules,
+            frozenset(member.current_file for member in removal_plan.members),
+        )
+        if keep_check.undeclared:
+            print(render_undeclared(keep_check.undeclared, source), file=sys.stderr)
+            return 1
         plan = build_plan(target, source, dest, effective_rules)
         validate_removal_conflicts(rules, removal_plan, plan.renames)
         removal_receipt_metadata(
@@ -797,12 +948,16 @@ def main(argv: list[str] | None = None) -> int:
         # stream.
         for line in render_ignored_languages(languages):
             print(line, file=sys.stderr)
+        for line in render_stale(keep_check.stale):
+            print(line, file=sys.stderr)
         for notice in _render_origin_notices(origin, source, dest):
             print(notice)
         for warning in _render_origin_mismatch_warnings(origin, source, dest, found):
             print(warning)
         print(f"Platform: {selected.platform}")
         print(plan.render())
+        if rules.keep_names:
+            print(f"Kept names (keep_names): {', '.join(rules.keep_names)}")
         # Phase order (E4): every edit runs before every regeneration, so the
         # plan the operator approves reads in the order execution will take.
         if edit_plans:
@@ -1176,6 +1331,7 @@ def _press(
             exclude_files=DEFAULT_RULES.exclude_files,
             regenerate=rules.regenerate,
             verify_ignore=rules.verify_ignore,
+            keep_names=rules.keep_names,
         )
         leaks = find_leaks(
             target,
@@ -1248,6 +1404,7 @@ def _press(
             removals=removals,
             remove_dirs=all_directories,
             exempt=phases.exempt,
+            keep_names=rules.keep_names,
         )
         # The receipt is the durable completion boundary. Interruptions during
         # the success-reporting prints below must not advise rolling back a

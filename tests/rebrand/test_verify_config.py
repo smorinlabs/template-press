@@ -307,3 +307,10 @@ def test_non_dict_table_bool_raises_validation_error():
 def test_display_name_is_a_known_extra_field():
     cfg = parse_verify_config({"extra_fields": ["display_name"]})
     assert "display_name" in cfg.fields
+
+
+@pytest.mark.parametrize("field", ["npm_name", "cli_name"])
+def test_exact_name_fields_are_accepted(field):
+    config = parse_verify_config({"extra_fields": [field], "substring_fields": [field]})
+    assert field in config.fields
+    assert config.substring_fields == frozenset({field})

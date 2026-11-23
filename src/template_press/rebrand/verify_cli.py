@@ -49,7 +49,12 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from template_press.rebrand.config import SOURCE_CONFIG_REL, load_source_config
-from template_press.rebrand.discovery import Discovered, discover, mismatches
+from template_press.rebrand.discovery import (
+    Discovered,
+    discover,
+    manifest_warnings,
+    mismatches,
+)
 from template_press.rebrand.engine import (
     apply,
     build_plan,
@@ -62,6 +67,12 @@ from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_
 from template_press.rebrand.inventory import (
     capture_surface_snapshot,
     core_excludes_from_snapshot,
+)
+from template_press.rebrand.keep_names import (
+    render_stale,
+    render_undeclared,
+    sibling_guidance,
+    validate_keep_names,
 )
 from template_press.rebrand.languages import (
     check_target_languages,
@@ -92,6 +103,7 @@ from template_press.rebrand.safety import (
     scrubbed_git_env,
 )
 from template_press.rebrand.sandbox import make_sandbox
+from template_press.rebrand.substitutions import check_target_keep_names
 from template_press.rebrand.synthesize import synthesize_dest
 from template_press.rebrand.verifier import Finding, attach_ignore_hints, scan
 from template_press.rebrand.verify_config import (
@@ -259,6 +271,7 @@ def _preflight(
     scan_fields: Sequence[str],
     substring_fields: frozenset[str],
     accepted_origin: dict[str, str],
+    languages: Sequence[str],
 ) -> tuple[list[str], dict[str, str]]:
     """Consistency + presence check against the REAL target; problems -> 2.
 
@@ -281,7 +294,9 @@ def _preflight(
     ``--accept-origin-mismatch`` press; the second return value names the
     fields whose mismatch it waived (see ``_honor_accepted_origin``).
     """
-    found = discover(target)
+    found = discover(target, languages)
+    for warning in manifest_warnings(source, found):
+        print(warning, file=sys.stderr)
     problems, honored = _honor_accepted_origin(
         list(mismatches(source, found)), found, accepted_origin
     )
@@ -421,6 +436,7 @@ def _report(
     stale: list[Ignore],
     unavailable: tuple[str, ...],
     equal_collision: tuple[str, str] | None,
+    source: Identity,
 ) -> None:
     """Human, grouped-by-file failure report to stderr."""
     print(
@@ -435,6 +451,12 @@ def _report(
         for f in by_file[path]:
             where = f.where if f.line is None else f"{f.where} L{f.line}:C{f.col}"
             print(f"    [{where}] {f.field}={f.value!r}", file=sys.stderr)
+            if f.where == "content" and f.col is not None:
+                guidance = sibling_guidance(
+                    f.context, (f.col, f.col + len(f.value)), source
+                )
+                if guidance is not None:
+                    print(f"      if independent: {guidance}", file=sys.stderr)
             if f.note is not None:
                 print(f"      note: {f.note}", file=sys.stderr)
     for ignore in stale:
@@ -485,6 +507,14 @@ def verify_command(argv: list[str] | None = None) -> int:
             # codesign sec-05: a declared display name is scanned as its own
             # field — the only coverage when its words diverge from the slug.
             scan_fields = (*scan_fields, "display_name")
+        # Declared exact names are identity the press rewrites, so they are
+        # always scanned: a leftover must never produce a clean verify.
+        for field_name in ("npm_name", "cli_name"):
+            if (
+                getattr(source, field_name) is not None
+                and field_name not in scan_fields
+            ):
+                scan_fields = (*scan_fields, field_name)
         # A field the SANDBOX PRESS rewrites substring-wide (`[rules]
         # substring_rewrite_fields`) must be SCANNED at all (Fix F2) — a field
         # absent from DEFAULT_FIELDS (e.g. app_name_upper) is otherwise never
@@ -518,7 +548,13 @@ def verify_command(argv: list[str] | None = None) -> int:
         accepted_origin = {} if unbound is not None else recorded
         recorded_but_unbound = unbound is not None and bool(recorded)
         problems, honored_origin = _preflight(
-            target, source, rules, scan_fields, scan_substring, accepted_origin
+            target,
+            source,
+            rules,
+            scan_fields,
+            scan_substring,
+            accepted_origin,
+            languages.checked,
         )
     except _CONFIG_ERRORS as exc:
         return _fail(f"preflight failed: {exc}")
@@ -563,6 +599,36 @@ def verify_command(argv: list[str] | None = None) -> int:
     exempt: list[tuple[str, str]] = []
     try:
         synth = synthesize_dest(source)
+        validate_keep_names(rules.keep_names, source, synth, synthetic_dest=True)
+        keep_check = check_target_keep_names(
+            target,
+            source,
+            synth,
+            rules,
+            frozenset(member.current_file for member in removal_plan.members),
+        )
+        if keep_check.undeclared:
+            if args.as_json:
+                print(
+                    json.dumps(
+                        {
+                            "verified": False,
+                            "surviving": [],
+                            "stale_ignores": [],
+                            "unavailable_submodules": [],
+                            "equal_fields_collision": None,
+                            "exempt": [],
+                            "undeclared_names": [
+                                dataclasses.asdict(item)
+                                for item in keep_check.undeclared
+                            ],
+                        }
+                    )
+                )
+            print(render_undeclared(keep_check.undeclared, source), file=sys.stderr)
+            return 1
+        for line in render_stale(keep_check.stale):
+            print(line, file=sys.stderr)
         with owned_sandbox(target) as dest_root:
             sandbox = make_sandbox(target, dest_root)
             try:
@@ -701,7 +767,7 @@ def verify_command(argv: list[str] | None = None) -> int:
             print(f"not verified (exempt): {file} — {reason}")
     if failed:
         if not args.as_json:
-            _report(surviving, stale, unavailable, equal_collision)
+            _report(surviving, stale, unavailable, equal_collision, source)
         return 1
     if not args.as_json:
         print(

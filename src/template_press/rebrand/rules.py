@@ -43,6 +43,8 @@ _PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 ALLOWED_PLACEHOLDERS: frozenset[str] = frozenset(REQUIRED_FIELDS) | {
     "app_name_upper",
     "display_name",
+    "npm_name",
+    "cli_name",
 }
 
 _REPLACE_KEYS = frozenset({"pattern", "files", "paths", "content", "reason"})
@@ -273,6 +275,9 @@ class Rules:
     # Declared target languages ([rules] languages), appended last for the same
     # positional-safety reason; None means the target declared nothing.
     languages: tuple[str, ...] | None = None
+    # Exact names independent of the identity; every rewrite row leaves them
+    # unchanged. Appended last for positional safety.
+    keep_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -320,6 +325,47 @@ DEFAULT_RULES = Rules(
 )
 
 
+# Suggested [[regenerate]] commands for lockfiles a Node target commonly
+# leaves undeclared. Suggestion only: press never chooses or runs a command
+# the target did not declare. scan = "boundary" for all three: each format
+# embeds sha512 integrity hashes, which false-positive a short substring-mode
+# identity value under the strict content scan (see RegenerateRule.scan).
+# bun never rewrites an existing lock's workspace name, so the Bun command
+# removes the lock first, after a guard that keeps it intact when bun is
+# missing. That block is POSIX-only; Windows targets declare their own.
+_LOCKFILE_COMMANDS: dict[str, tuple[str, ...]] = {
+    "package-lock.json": ("npm", "install", "--package-lock-only", "--silent"),
+    "bun.lock": (
+        "sh",
+        "-c",
+        "command -v bun >/dev/null 2>&1 || exit 127; "
+        "rm -f bun.lock && exec bun install --lockfile-only",
+    ),
+    "pnpm-lock.yaml": ("pnpm", "install", "--lockfile-only"),
+}
+
+
+_SUGGESTION_NOTES: dict[str, str] = {
+    "bun.lock": "# POSIX-only; Windows targets declare their own command.\n",
+    "pnpm-lock.yaml": ('# Also add "pnpm-lock.yaml" to [rules] extra_exclude_files.\n'),
+}
+
+
+def regenerate_suggestion(file: str) -> str | None:
+    """A paste-ready [[regenerate]] block for a known root lockfile, else None.
+
+    Nested paths get no suggestion: the command would run from the target
+    root and could not rebuild a lockfile in a subdirectory.
+    """
+
+    command = _LOCKFILE_COMMANDS.get(file)
+    if command is None:
+        return None
+    argv = ", ".join(f'"{part}"' for part in command)
+    note = _SUGGESTION_NOTES.get(file, "")
+    return f'{note}[[regenerate]]\nfile = "{file}"\ncommand = [{argv}]\nscan = "boundary"\n'
+
+
 _COMPONENT_KEYS = frozenset({"extra_exclude_dirs", "verify_ignore"})
 
 # The exact set of keys load_rules reads from [rules] — a typo (e.g.
@@ -335,6 +381,7 @@ _RULES_KEYS = frozenset(
         "substring_rewrite_fields",
         "display_forms",
         "languages",
+        "keep_names",
     }
 )
 
@@ -1448,6 +1495,7 @@ def _parse_rules(target: Path) -> _ParsedRules:
             substring_rewrite_fields=substring_fields,
             display_forms=tuple(dict.fromkeys(display_forms_list)),
             languages=languages,
+            keep_names=tuple(dict.fromkeys(_str_list(table, "keep_names", []))),
         ),
         regenerate=regenerate,
         reset=reset,

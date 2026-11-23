@@ -11,6 +11,7 @@ import hashlib
 import os
 import stat
 import subprocess  # nosec B404 -- hardened Git reads of an untrusted target
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -19,6 +20,7 @@ from template_press.rebrand.safety import (
     SafeRelPath,
     SafetyError,
     UnsafePathError,
+    assert_ancestors_real,
     git_hardening_args,
     read_regular_nofollow,
     readlink_nofollow,
@@ -1145,6 +1147,44 @@ def select_verifier_entries(
         and entry.rel.as_posix() not in exempt_paths
         and not any(part in verify_ignore for part in entry.rel.parts)
     )
+
+
+def rewrite_surface_texts(
+    target: Path,
+    *,
+    exclude_files: frozenset[str],
+    exclude_dirs: frozenset[str],
+    root_control: frozenset[str],
+    skip_paths: frozenset[str] = frozenset(),
+) -> Iterator[tuple[str, str, str]]:
+    """``(path, where, text)`` for the content, path, and symlink rewrite surface.
+
+    Non-UTF-8 content is skipped: the rewrite pass cannot change it either.
+    """
+
+    snapshot = capture_surface_snapshot(target)
+    selection = {
+        "exclude_files": exclude_files,
+        "exclude_dirs": exclude_dirs,
+        "root_control": root_control,
+    }
+    for entry in select_rename_entries(snapshot, **selection):
+        posix = entry.rel.as_posix()
+        if posix in skip_paths:
+            continue
+        yield posix, "path", posix
+        if entry.worktree_kind == "symlink":
+            assert_ancestors_real(target / entry.rel, target)
+            yield posix, "symlink", readlink_nofollow(target / entry.rel)
+    for entry in select_content_rewrite_entries(snapshot, **selection):
+        if entry.rel.as_posix() in skip_paths:
+            continue
+        assert_ancestors_real(target / entry.rel, target)
+        try:
+            text = read_regular_nofollow(target / entry.rel).decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        yield entry.rel.as_posix(), "content", text
 
 
 def select_symlink_entries(snapshot: SurfaceSnapshot) -> tuple[SurfaceEntry, ...]:

@@ -16,6 +16,9 @@ PYTHON_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 REPO_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 GITHUB_OWNER_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$", re.IGNORECASE)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+NPM_NAME_RE = re.compile(r"^(?:@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*$")
+NPM_NAME_MAX_LENGTH = 214
+CLI_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 # Whole values that are filesystem path traversal segments rather than names.
 # Only the free-form fields (author, display_name) can hold them — every other
@@ -103,6 +106,29 @@ def validate_display_name(value: str) -> str:
     return value
 
 
+def validate_npm_name(name: str) -> str:
+    # The exact root package.json "name": optionally scoped, lowercase, at most
+    # 214 characters (npm's own limit, scope included).
+    if len(name) > NPM_NAME_MAX_LENGTH or not NPM_NAME_RE.fullmatch(name):
+        raise ValidationError(
+            f"npm name must be an optionally scoped lowercase npm package name "
+            f"of at most {NPM_NAME_MAX_LENGTH} characters "
+            f"(matching {NPM_NAME_RE.pattern}): {name!r}"
+        )
+    return name
+
+
+def validate_cli_name(name: str) -> str:
+    # The exact package.json "bin" key. The charset starts with an
+    # alphanumeric, so the dot segments "." and ".." are already excluded.
+    if not CLI_NAME_RE.fullmatch(name) or name in _PATH_DOT_SEGMENTS:
+        raise ValidationError(
+            f"cli name must be lowercase alphanumeric plus . _ - and not a dot "
+            f"segment (matching {CLI_NAME_RE.pattern}): {name!r}"
+        )
+    return name
+
+
 VALIDATORS = {
     "package_name": validate_package_name,
     "repo_name": validate_repo_name,
@@ -111,6 +137,8 @@ VALIDATORS = {
     "owner": validate_owner,
     "email": validate_email,
     "display_name": validate_display_name,
+    "npm_name": validate_npm_name,
+    "cli_name": validate_cli_name,
 }
 
 REQUIRED_FIELDS: tuple[str, ...] = (
@@ -124,7 +152,13 @@ REQUIRED_FIELDS: tuple[str, ...] = (
 
 # Optional identity fields: absent means the feature is off — existing
 # 6-field press-source.toml files stay valid (codesign sec-01/sec-06).
-OPTIONAL_FIELDS: tuple[str, ...] = ("display_name",)
+OPTIONAL_FIELDS: tuple[str, ...] = ("display_name", "npm_name", "cli_name")
+
+# Fields whose value is one path component, so a press renames paths with it.
+# `field_renames_paths` adds cli_name and an unscoped npm_name.
+RENAME_FIELDS: frozenset[str] = frozenset(
+    {"package_name", "repo_name", "app_name", "app_name_upper"}
+)
 
 # The closed set of exact display-name rewrite forms (codesign sec-04).
 DISPLAY_FORM_NAMES: tuple[str, ...] = ("spaced", "pascal", "camel")
@@ -141,6 +175,8 @@ class Identity:
     email: str
     owner: str
     display_name: str | None = None
+    npm_name: str | None = None
+    cli_name: str | None = None
 
     @property
     def app_name_upper(self) -> str:
@@ -158,6 +194,10 @@ class Identity:
         }
         if self.display_name is not None:
             d["display_name"] = self.display_name
+        if self.npm_name is not None:
+            d["npm_name"] = self.npm_name
+        if self.cli_name is not None:
+            d["cli_name"] = self.cli_name
         return d
 
     def as_dict_prompted(self) -> dict[str, str]:
@@ -206,6 +246,10 @@ def token_pattern(field: str, value: str) -> re.Pattern[str] | None:
         return re.compile(rf"(?<![A-Za-z0-9_-]){re.escape(value)}(?![A-Za-z0-9-])")
     if field == "app_name_upper":
         return re.compile(rf"(?<![A-Za-z0-9-]){re.escape(value)}(?![A-Za-z-])")
+    if field in ("npm_name", "cli_name"):
+        # Exact names: a same-prefix sibling (@acme/widget-extra) is a different
+        # package, while a subpath (@acme/widget/sub) still rewrites its prefix.
+        return re.compile(rf"(?<![A-Za-z0-9_-]){re.escape(value)}(?![A-Za-z0-9_-])")
     return re.compile(rf"(?<![A-Za-z0-9]){re.escape(value)}(?![A-Za-z0-9])")
 
 
@@ -226,6 +270,28 @@ def distinct_hyphen_form(source: Identity, dest: Identity) -> str | None:
         if field != "package_name"
     }
     return None if hyphen in claimed else hyphen
+
+
+def field_renames_paths(field: str, value: str) -> bool:
+    """True when ``value`` of ``field`` is one renameable path component.
+
+    A scoped ``npm_name`` contains ``/``, so it can never be one component.
+    """
+    if field == "npm_name":
+        return "/" not in value
+    return field == "cli_name" or field in RENAME_FIELDS
+
+
+def pair_renames_paths(field: str, current: str, replacement: str) -> bool:
+    """True when a rewrite may rename paths: both sides must be one component.
+
+    An unscoped source pressed to a scoped destination is content-only. The
+    doctor and verifier still hunt the source value in paths, so a file that
+    keeps the old name is reported as a leak.
+    """
+    return field_renames_paths(field, current) and field_renames_paths(
+        field, replacement
+    )
 
 
 def token_occurs(text: str, field: str, value: str) -> bool:

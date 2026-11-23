@@ -35,9 +35,12 @@ mismatch; a completed run is verified leak-free before a receipt is written.
    printed by the dry run; re-run with `--accept-discovery` only after the
    user confirms the identity is right.
 4. Apply: same command without `--dry-run`.
-5. Interpret exit codes: 0 = verified + receipt written; 1 = leaks found,
-   NO receipt (the target is already rewritten — restore it first:
-   `git -C <TARGET> checkout . && git clean -fd`; then fix the root cause,
+5. Interpret exit codes: 0 = verified + receipt written; 1 = NO receipt.
+   A pre-write preflight refusal (`nothing written, no receipt`) needs no
+   cleanup. A post-write failure (`rebrand is INCOMPLETE`) left the target
+   rewritten, so restore it first: run `git -C <TARGET> checkout .`, preview
+   untracked removals with `git -C <TARGET> clean -nd`, then run
+   `git -C <TARGET> clean -fd`. Then fix the root cause,
    or — for surviving identity that is VALID to keep, e.g. vendored code or
    historical docs — add its directory NAME to both `extra_exclude_dirs`
    (skips rewriting) and `verify_ignore` (skips the leak scan) in
@@ -68,13 +71,15 @@ app_name = "newcli"
 author = "Jane Dev"
 email = "jane@example.com"
 owner = "janedev"
-# display_name = "New CLI"   # optional 7th field; see Identity fields below
+# display_name = "New CLI"   # optional; see Identity fields below
+# npm_name = "@jane/new-widget"   # optional; exact package.json name
+# cli_name = "new-cli"            # optional; exact package.json bin key
 ```
 
 ## Identity fields
 
 `press/press-source.toml`'s `[identity]` table and `press-answers.toml`'s
-`[answers]` table share one field set — six required, one optional:
+`[answers]` table share one field set — six required, three optional:
 
 | Field | Required | Notes |
 |---|---|---|
@@ -85,12 +90,15 @@ owner = "janedev"
 | `email` | yes | `local@domain.tld` |
 | `owner` | yes | GitHub owner/org (1-39 chars, alphanumeric + hyphens, must start AND end with an alphanumeric — no leading/trailing hyphen) |
 | `display_name` | no | humanized product name, e.g. `"Py Launch Blueprint"`; absent = feature off |
+| `npm_name` | no | exact root `package.json` `name`; a scope is allowed (`@acme/widget`); at most 214 characters; absent = feature off |
+| `cli_name` | no | exact `package.json` `bin` key, e.g. `acme-cli` (lowercase letters, digits, `.`, `_`, `-`); absent = feature off |
 
 `app_name_upper` (uppercased `app_name`) is derived, not settable, but is a
 valid `{app_name_upper}` placeholder in `[[replace]]` patterns (below).
-Declaring `display_name` on only one side — source declares it, answers
-doesn't, or vice versa — is a precondition failure (exit 2); declare it on
-both or neither. When declared, it is rewritten as a CLOSED set of exact
+Declaring `display_name`, `npm_name`, or `cli_name` on only one side —
+source declares it, answers doesn't, or vice versa — is a precondition
+failure (exit 2); declare each on both or neither. When declared,
+`display_name` is rewritten as a CLOSED set of exact
 forms (spaced / PascalCase / camelCase), each replaced with the
 same-shaped form of the new name; narrow the set with
 `[rules] display_forms` in `press/press-rules.toml` (default: all three). See
@@ -113,6 +121,154 @@ literal occurs. A destination `"Acme Widget"` therefore replaces every
 `NumPy` occurrence with `Acme Widget` — not `AcmeWidget` for the would-be
 PascalCase spots.
 
+## Node and Bun targets (npm, Bun, pnpm)
+
+An npm or Bun repository is a first-class target. Only the root
+`package.json` is read; workspace-member identity is out of scope.
+
+### `npm_name` and `cli_name`
+
+- `npm_name` is the exact root `package.json` `name`, scoped names included
+  (`@acme/widget`). `cli_name` is the exact `bin` key (`acme-cli`).
+- Both are rewritten as exact values. A leading or trailing name character
+  (`[A-Za-z0-9_-]`) stops a match, so `@acme/widget/sub` is rewritten and
+  `@acme/widget-extra` is not (see "Sibling preflight").
+- `cli_name` and an UNSCOPED `npm_name` also rename file and directory paths
+  (a `bin/acme-cli.js` file follows the `bin` key). A SCOPED `npm_name`
+  contains `/`, so it rewrites content only; a path component left holding the
+  scoped name is a leak (exit 1).
+- If a source `npm_name` or `cli_name` equals another source identity value
+  (for example `npm_name` equal to `repo_name`), the answers must keep the
+  same equality, or the press exits 2.
+- A synthetic `press verify` destination keeps shape: a scoped source gets a
+  scoped destination.
+
+### Discovery from `package.json`
+
+Keys read: `name`, `author` (string `Name <email> (url)` or object
+`{name, email}`), `bin` (string or object), and `repository` (string or
+`{url}`, used for `owner` and `repo_name` only when git `origin` is
+unavailable). Absent or malformed keys are undiscoverable and never guessed.
+A string-form `bin` has no key of its own: its command is the unscoped
+package name.
+
+- With a source config, only two checks are fatal (exit 2): a declared
+  `npm_name` must equal the manifest `name`, and a declared `cli_name` must be
+  a `bin` key. Every other disagreement (`author`, `email`, derived
+  `package_name`, `bin` versus `app_name`, `repository` versus `origin`)
+  prints a `warning:` on stderr and does not fail.
+- With no source config and no `--accept-discovery`, any run (dry or not)
+  prints a proposed source config and exits 2. A first object-form `bin` key
+  containing `-` proposes `cli_name` and a `_` form for `app_name`. A
+  string-form `bin` has no key, so it never proposes `cli_name`.
+  When object-form `bin` declares several commands that no other proposed
+  value covers, the press exits 2 and asks for a hand-written source config
+  listing each independent CLI in `[rules] keep_names`.
+
+### `keep_names` — names that are independent of the template
+
+```toml
+# press/press-rules.toml
+[rules]
+keep_names = ["@acme/widget-extra"]
+```
+
+Use it for a name that merely starts with the source `npm_name` or
+`cli_name` but is a different thing (a sibling package, another CLI). Each
+entry is an exact, case-sensitive name matched with the `npm_name`
+boundaries, so `@acme/widget-extra/sub` is kept and `@acme/widget-extra-2` is
+not. A kept occurrence is unchanged by every rewrite row (including `owner`,
+`repo_name`, substring mode, and `[[replace]]`), and the doctor, the
+reset and regeneration scans, and `press verify` all ignore identity matches
+wholly inside it. A match that only overlaps a kept span is still a leak.
+
+- Entries equal to a source or destination identity value exit 2. That
+  includes case and separator variants (`Acme_CLI` for `acme-cli`) and
+  rendered `display_name` forms.
+  Leading and trailing characters outside `[A-Za-z0-9@/_-]` are ignored
+  first, then edge `/` and `@`, keeping the `@` of a scoped name. So
+  `"acme-cli"`, `/acme-cli`, and `@acme` (for `owner = "acme"`) also exit 2.
+  An entry with an edge `-` or `_` is compared exactly, so `--acme-cli`
+  (a flag spelling) may be kept. An entry holding a complete source
+  `npm_name` or `cli_name` (`widget-extra@acme/widget`) exits 2; rename it.
+  A `.` or `~` continuation (`acme-cli.extra`) is a different name and may
+  be kept.
+- Empty, control-character, and non-string entries exit 2.
+- An entry that occurs nowhere on the rewrite surface prints a stale-entry
+  warning on stderr. The dry-run plan and the receipt list the kept names.
+
+### Sibling preflight
+
+Before any rewrite, `press rebrand` and `press verify` scan the target for a
+token that joins a source `npm_name` or `cli_name` to another name part and is
+not declared in `keep_names`. A finding exits 1 with nothing written and no
+receipt, and prints each token with the `keep_names` line that would keep it.
+
+- Multi-part values (`acme-cli`, `@acme/widget`): any name character touching
+  either side is a sibling (`acme-cli2`, `xacme-cli`, `acme-cli-helper`).
+- Single-token values (`tsc`, `serve`): an alphanumeric character glued to
+  either side means an unrelated word, so `tsconfig`, `server`, `web-server`,
+  and `observe-mode` are allowed. Otherwise a directly touching `-` or `_` or a
+  camelCase tail is a sibling, so `tsc-helper`, `tscConfig`, `--tsc`, `_tsc_`,
+  `_tsc`, and `tsc_` are refused.
+- Scoped basenames: an unscoped value that is the basename of another package
+  (`@vendor/tsc`) is a sibling, on content and path surfaces.
+- Dependency keys: a root `package.json` dependency that extends a declared
+  name with `.` or `~` (`tsc.extra`) is a sibling. Without such a key,
+  `tsc.js` stays rewritable.
+- Exempt: a token that an applicable rewrite row or `[[replace]]` rule
+  rewrites on that exact path and surface, and any file planned for
+  `[[remove]]`.
+
+### Lockfiles
+
+`press` never chooses or runs a lockfile command. Declare it with
+`[[regenerate]]`; a declared `package-lock.json`, `bun.lock`, `uv.lock`, or
+`pnpm-lock.yaml` is exempt from the hermetic `press verify` scan (the real
+press still scans the regenerated file after the command). When the
+preflight refuses an undeclared `bun.lock`, `package-lock.json`, or
+`pnpm-lock.yaml`, it prints a paste-ready block:
+
+```toml
+# package-lock.json
+[[regenerate]]
+file = "package-lock.json"
+command = ["npm", "install", "--package-lock-only", "--silent"]
+scan = "boundary"
+
+# bun.lock (POSIX-only; Windows targets declare their own command)
+[[regenerate]]
+file = "bun.lock"
+command = ["sh", "-c", "command -v bun >/dev/null 2>&1 || exit 127; rm -f bun.lock && exec bun install --lockfile-only"]
+scan = "boundary"
+
+# pnpm-lock.yaml
+[[regenerate]]
+file = "pnpm-lock.yaml"
+command = ["pnpm", "install", "--lockfile-only"]
+scan = "boundary"
+```
+
+- `pnpm-lock.yaml` is not in the default excluded files; a pnpm target must
+  also list it in `[rules] extra_exclude_files`.
+- The Bun command deletes `bun.lock` and rebuilds it, because Bun keeps a
+  stale workspace name in an existing lock. The guard keeps the lock intact
+  when `bun` is missing. It needs a POSIX `sh`.
+- Nested lockfile paths get no suggestion.
+
+### Known limits
+
+- When `package_name` changes: a six-field config whose `package.json` name
+  equals the hyphen form exits 1. A scoped `npm_name` whose basename stays that
+  hyphen form exits 1 from `press rebrand` after rewriting, while `press verify`
+  exits 0. A declared unscoped `npm_name` left unchanged exits 0 legitimately.
+  `keep_names = ["<that hyphen form>"]` exits 2.
+- A scope-preserving press with a changed `owner` can exit 2 at press time
+  while `press verify` exits 0.
+- Non-UTF-8 files are outside the sibling preflight and the inline doctor;
+  only `press verify` scans them.
+- Workspace-member identity is out of scope.
+
 ## Rules authoring (`press/press-rules.toml`)
 
 ### `[[replace]]` — exact glued-token rules
@@ -134,7 +290,7 @@ reason = "glued token in generated fixtures"
   against the DESTINATION identity (the literal to write) — exact
   replacement, no fuzzy matching. Must reference at least one placeholder;
   valid placeholders are the six required fields above, plus
-  `app_name_upper` and `display_name`.
+  `app_name_upper`, `display_name`, `npm_name`, and `cli_name`.
 - `reason` (required): free-form; documents intent.
 - `files` (default: unscoped — all files): fnmatch globs (see the gotcha
   below).
@@ -188,15 +344,19 @@ makes `press rebrand` and `press verify` exit 2 (nothing written) until
 
 - One detected language needs no declaration.
 - Listed languages are checked; detected languages not listed are ignored
-  and printed to stderr.
-- `node` and `rust` are reserved names: this press version supports only
-  `python`, so listing either exits 2 with "not supported by this press
-  version".
+  and printed to stderr. Discovery and cross-checks in `press rebrand` and
+  `press verify` follow this declaration: `["python"]` does not read
+  `package.json`.
+- This press version supports `python` and `node`. `rust` is a reserved name,
+  so listing it exits 2 with "not supported by this press version".
+- Each listed language's manifest is cross-checked against the source config:
+  `["python"]` leaves `package.json` unchecked, `["node"]` does not check
+  `pyproject.toml`, and `["python", "node"]` checks both.
 - Declaring a language with no such manifest, or whose manifest is a
   `[[remove]]` target, exits 2. A malformed, non-UTF-8, or non-regular root
   manifest also exits 2.
 - Breaking change for existing multi-language targets: add
-  `languages = ["python"]` (or the supported languages that apply) under
+  `languages = ["python"]`, `["node"]`, or `["python", "node"]` under
   `[rules]`.
 
 ### Gotcha: `files` glob semantics

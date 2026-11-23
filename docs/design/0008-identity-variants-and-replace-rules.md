@@ -19,7 +19,7 @@ retained decision record does not require those files to remain present.
 
 ## Decisions
 
-1. **`display_name` — optional 7th identity field** (sec-01 ch-01-a).
+1. **`display_name` — optional identity field** (sec-01 ch-01-a).
    Declared in `[identity]`/`[answers]`; absent = feature off (existing
    configs stay valid). Rewritten as a CLOSED set of exact forms —
    spaced / PascalCase / camelCase — each replaced with the same-shaped
@@ -67,6 +67,42 @@ retained decision record does not require those files to remain present.
    the file in `[rules] verify_ignore`. To preserve a whole historical file
    when the manifest does prove the form, list its path in
    `extra_exclude_files` and its name in `verify_ignore`.
+
+6. **Exact npm and CLI names, and `keep_names` (P14, approved 2026-11-22).**
+   Two more optional identity fields, declared on both sides or neither (one
+   side only is exit 2): `npm_name` (exact root `package.json` `name`, scope
+   allowed) and `cli_name` (exact `bin` key). Both are rewritten as exact
+   values with `[A-Za-z0-9_-]` boundaries. `cli_name` and an unscoped
+   `npm_name` also rename paths; a scoped `npm_name` is content-only, and a
+   leftover scoped path is a leak. A source equality between either field and
+   another identity value must be preserved in the answers.
+
+   `[rules] keep_names` lists exact, case-sensitive names that are independent
+   of the identity. A kept occurrence survives every rewrite row, and every
+   scan ignores a match wholly inside it; an overlap is still a leak. An entry
+   equal to a source or destination identity value (including case and
+   separator variants and display forms) exits 2, after ignoring leading and
+   trailing characters outside `[A-Za-z0-9@/_-]` and then edge `/` and `@`
+   (a scoped name keeps its `@`). An entry with an edge `-` or
+   `_` (`--acme-cli`) is compared exactly and may be kept.
+
+   Before any rewrite, `press rebrand` and `press verify` run a sibling
+   preflight and exit 1 with no writes and no receipt on an undeclared name
+   joining a source `npm_name` or `cli_name` to another name part or touching
+   a bare separator. A multi-part value treats any touching name character as
+   a sibling. For a single-token value (`tsc`), a glued alphanumeric means an
+   unrelated word, so `tsconfig` and `web-server` pass; otherwise a touching
+   `-`, `_`, or camelCase tail fails, including `tsc-helper`, `tscConfig`,
+   `--tsc`, and `_tsc_`. Tokens a row or `[[replace]]` rewrites are exempt, as
+   are planned `[[remove]]` files. Known limits when `package_name` changes: a
+   six-field config whose `package.json` name equals the hyphen form exits 1;
+   a scoped `npm_name` whose basename stays that form exits 1 from
+   `press rebrand` after rewriting while `press verify` exits 0; a declared
+   unscoped `npm_name` left unchanged exits 0; `keep_names` holding that form
+   exits 2. Separately, a scope-preserving press with a changed `owner` can exit 2 at press time while
+   `press verify` exits 0; non-UTF-8 files are scanned only by `press verify`.
+   Spec: [TypeScript and Bun
+   targets](../superpowers/specs/2026-11-22-typescript-bun-targets-design.md).
 
 ## Independence guardrail (P06 D2)
 

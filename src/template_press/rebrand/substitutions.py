@@ -7,7 +7,7 @@ import os
 import re
 import stat
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -18,8 +18,11 @@ from template_press.rebrand.identity import (
     ValidationError,
     display_forms,
     distinct_hyphen_form,
+    field_renames_paths,
     occurs,
+    pair_renames_paths,
     replace_token,
+    token_pattern,
 )
 from template_press.rebrand.inventory import (
     SurfaceEntry,
@@ -27,11 +30,26 @@ from template_press.rebrand.inventory import (
     VisibilityInput,
     WorktreeKind,
     capture_surface_snapshot,
+    rewrite_surface_texts,
     select_rename_entries,
     select_symlink_entries,
 )
-from template_press.rebrand.matcher import find_occurrences
-from template_press.rebrand.pathing import ROOT_CONTROL
+from template_press.rebrand.keep_names import (
+    KeepCheck,
+    RewrittenForms,
+    check_keep_surfaces,
+    component_kept_spans,
+    disjoint_from_kept,
+    disjoint_matches,
+    find_outside_kept,
+    kept_spans,
+    loses_kept_name,
+    matches_outside_kept,
+    splice_outside_kept,
+)
+from template_press.rebrand.matcher import find_occurrences, identity_pattern
+from template_press.rebrand.node_manifest import read_node_manifest
+from template_press.rebrand.pathing import ROOT_CONTROL, symlink_target_posix
 from template_press.rebrand.pipeline import (
     MAX_RENAME_PASSES,
     MatcherSpec,
@@ -56,10 +74,6 @@ Surface = Literal["content", "path", "symlink"]
 HuntConsumer = Literal["doctor", "reset_stub", "reset_path", "regeneration"]
 ScopeCoordinates = Literal["source", "current_or_source"]
 ProvenanceKind = Literal["identity", "display_form", "replace_rule", "manifest_name"]
-
-RENAME_FIELDS: frozenset[str] = frozenset(
-    {"package_name", "repo_name", "app_name", "app_name_upper"}
-)
 
 
 @dataclass(frozen=True)
@@ -190,6 +204,7 @@ class SubstitutionTable:
 
     rows: tuple[RenderedSubstitution, ...]
     rename_plan: RenamePlan
+    keep_names: tuple[str, ...] = ()
 
 
 def row_matches_scope(row: RenderedSubstitution, posix: str) -> bool:
@@ -205,15 +220,84 @@ def _project_name(text: str) -> object:
         return None
 
 
-def _rewrite_project_name(text: str, from_value: str, to_value: str) -> str:
-    """Replace only the assignment that TOML resolves to ``[project].name``."""
+def _project_name_span(
+    text: str, from_value: str, to_value: str
+) -> tuple[int, int] | None:
+    """The occurrence of ``from_value`` that TOML resolves to ``[project].name``."""
 
     before = _project_name(text)
     for match in re.finditer(re.escape(from_value), text):
         candidate = text[: match.start()] + to_value + text[match.end() :]
         if _project_name(candidate) != before:
-            return candidate
-    return text
+            return match.span()
+    return None
+
+
+def _rewrite_project_name(text: str, from_value: str, to_value: str) -> str:
+    """Replace only the assignment that TOML resolves to ``[project].name``."""
+
+    span = _project_name_span(text, from_value, to_value)
+    if span is None:
+        return text
+    return text[: span[0]] + to_value + text[span[1] :]
+
+
+def _rewrite_outside_kept(
+    row: RenderedSubstitution, text: str, kept: Sequence[tuple[int, int]]
+) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """Replace matches disjoint from ``kept``; return text and shifted spans.
+
+    The pattern runs over the whole current text, so boundaries see true
+    neighbors.
+    """
+
+    replaced: list[tuple[int, int]] = []
+    if row.provenance[0].kind == "manifest_name":
+        span = _project_name_span(text, row.from_value, row.to_value)
+        if span is not None and disjoint_from_kept(span, kept):
+            replaced.append(span)
+    else:
+        if row.matcher.algorithm == "literal" or row.matcher.substring:
+            pattern = re.compile(re.escape(row.from_value))
+        elif row.matcher.algorithm != "conservative":
+            raise ValidationError(
+                f"rewrite row {row.row_id} uses non-rewrite matcher "
+                f"{row.matcher.algorithm!r}"
+            )
+        elif row.matcher.identity_field is None:
+            raise ValidationError(f"rewrite row {row.row_id} has no identity field")
+        else:
+            pattern = token_pattern(
+                row.matcher.identity_field, row.from_value
+            ) or re.compile(re.escape(row.from_value))
+        replaced = disjoint_matches(pattern, text, kept)
+    return splice_outside_kept(text, replaced, row.to_value, kept)
+
+
+def rewrite_file(
+    rows: Iterable[RenderedSubstitution],
+    text: str,
+    keep_names: Sequence[str] = (),
+) -> tuple[str, tuple[RenderedSubstitution, ...]]:
+    """Apply ``rows`` in order; return the text and the rows that changed it.
+
+    Kept spans come from the ORIGINAL text and are carried through every row.
+    An earlier row can therefore neither expose a kept name to a later row by
+    changing its neighbor nor create a new kept name.
+    """
+
+    kept = kept_spans(text, keep_names) if keep_names else ()
+    current = text
+    changed: list[RenderedSubstitution] = []
+    for row in rows:
+        if kept:
+            updated, kept = _rewrite_outside_kept(row, current, kept)
+        else:
+            updated = rewrite_with_row(row, current)
+        if updated != current:
+            changed.append(row)
+            current = updated
+    return current, tuple(changed)
 
 
 def rewrite_with_row(row: RenderedSubstitution, text: str) -> str:
@@ -234,14 +318,34 @@ def rewrite_with_row(row: RenderedSubstitution, text: str) -> str:
     return replace_token(text, field, row.from_value, row.to_value)
 
 
+def _hunt_pattern(row: RenderedSubstitution, matcher: MatcherSpec) -> re.Pattern[str]:
+    """The regular expression equivalent of one compiled hunt matcher."""
+
+    if matcher.algorithm == "literal":
+        return re.compile(re.escape(row.from_value))
+    field = matcher.identity_field
+    if field is None:
+        raise ValidationError(f"hunt for row {row.row_id} has no identity field")
+    if matcher.algorithm == "paranoid":
+        if matcher.substring:
+            return re.compile(re.escape(row.from_value), re.IGNORECASE)
+        return identity_pattern(field, row.from_value)
+    if matcher.substring:
+        return re.compile(re.escape(row.from_value))
+    return token_pattern(field, row.from_value) or re.compile(re.escape(row.from_value))
+
+
 def hunt_occurs(
     row: RenderedSubstitution,
     policy: HuntPolicy,
     text: str,
+    kept: Sequence[tuple[int, int]] = (),
 ) -> bool:
-    """Apply one compiled consumer hunt to text."""
+    """Apply one compiled consumer hunt to text, outside ``kept`` spans."""
 
     matcher = policy.matcher
+    if kept:
+        return bool(matches_outside_kept(_hunt_pattern(row, matcher), text, kept))
     if matcher.algorithm == "literal":
         return row.from_value in text
     field = matcher.identity_field
@@ -283,6 +387,7 @@ def matching_hunts(
     matcher yet a real leak of ``demo_widget``.
     """
 
+    kept = kept_spans(text, table.keep_names)
     matches: list[tuple[RenderedSubstitution, HuntPolicy]] = []
     for row in table.rows:
         if not row_matches_scope(row, source_scope_path):
@@ -297,15 +402,16 @@ def matching_hunts(
                 and policy.matcher.identity_field is not None
             ):
                 occurs_here = bool(
-                    find_occurrences(
+                    find_outside_kept(
                         text,
                         policy.matcher.identity_field,
                         row.from_value,
                         substring=False,
+                        kept=kept,
                     )
                 )
             else:
-                occurs_here = hunt_occurs(row, policy, text)
+                occurs_here = hunt_occurs(row, policy, text, kept)
             if occurs_here:
                 matches.append((row, policy))
     return tuple(matches)
@@ -364,7 +470,9 @@ def _rewrite_component(row: RenderedSubstitution, component: str) -> str:
 
 
 def _rewritten_path(
-    posix: str, path_rows: tuple[RenderedSubstitution, ...]
+    posix: str,
+    path_rows: tuple[RenderedSubstitution, ...],
+    keep_names: Sequence[str] = (),
 ) -> tuple[str, dict[int, tuple[str, ...]]]:
     rel = Path(posix)
     parts: list[str] = []
@@ -374,10 +482,14 @@ def _rewritten_path(
             parts.append(component)
             continue
         rewritten = component
+        kept = component_kept_spans(rel.parts, component_index, keep_names)
         for row in path_rows:
             if not _scope_matches(row.scope, posix):
                 continue
-            updated = _rewrite_component(row, rewritten)
+            if kept:
+                updated, kept = _rewrite_outside_kept(row, rewritten, kept)
+            else:
+                updated = _rewrite_component(row, rewritten)
             if updated != rewritten:
                 row_ids_by_component.setdefault(component_index, []).append(row.row_id)
                 rewritten = updated
@@ -398,7 +510,9 @@ def _rewritten_path(
 
 
 def _compile_rename_plan(
-    rows: tuple[RenderedSubstitution, ...], snapshot: SurfaceSnapshot
+    rows: tuple[RenderedSubstitution, ...],
+    snapshot: SurfaceSnapshot,
+    keep_names: Sequence[str] = (),
 ) -> RenamePlan:
     path_rows = tuple(row for row in rows if "path" in row.rewrite_surfaces)
     current_by_source = {
@@ -413,7 +527,9 @@ def _compile_rename_plan(
     for pass_number in range(1, MAX_RENAME_PASSES + 1):
         grouped: dict[str, tuple[str, set[str], set[str]]] = {}
         for source, current in current_by_source.items():
-            rewritten, row_ids_by_component = _rewritten_path(current, path_rows)
+            rewritten, row_ids_by_component = _rewritten_path(
+                current, path_rows, keep_names
+            )
             if rewritten == current:
                 continue
             current_parts = Path(current).parts
@@ -488,7 +604,14 @@ def _compile_rename_plan(
                 ):
                     continue
                 suffix = current[len(step.old_prefix) :]
-                current_by_source[source] = f"{step.new_prefix}{suffix}"
+                moved = f"{step.new_prefix}{suffix}"
+                if loses_kept_name(current, moved, keep_names):
+                    raise ValidationError(
+                        f"keep_names: moving {step.old_prefix!r} to "
+                        f"{step.new_prefix!r} would change a kept name in "
+                        f"{current!r}"
+                    )
+                current_by_source[source] = moved
                 prior_step_ids_by_source.setdefault(source, []).append(step.step_id)
         steps.extend(pass_steps)
 
@@ -653,10 +776,11 @@ def revalidate_rename_plan(target: Path, plan: RenamePlan) -> None:
 def _virtual_path_translation(
     posix: str,
     path_rows: tuple[RenderedSubstitution, ...],
+    keep_names: Sequence[str] = (),
 ) -> str:
     current = posix
     for _ in range(MAX_RENAME_PASSES):
-        rewritten, _row_ids = _rewritten_path(current, path_rows)
+        rewritten, _row_ids = _rewritten_path(current, path_rows, keep_names)
         if rewritten == current:
             return current
         current = rewritten
@@ -689,6 +813,7 @@ def _compile_virtual_translations(
     target: Path | None,
     rows: tuple[RenderedSubstitution, ...],
     snapshot: SurfaceSnapshot,
+    keep_names: Sequence[str] = (),
 ) -> tuple[tuple[str, str, str], ...]:
     if target is None:
         return ()
@@ -711,11 +836,11 @@ def _compile_virtual_translations(
             if (
                 occupied_prefix == target_posix
                 or not is_symlink
-                or _virtual_path_translation(occupied_prefix, path_rows)
+                or _virtual_path_translation(occupied_prefix, path_rows, keep_names)
                 != occupied_prefix
             ):
                 continue
-        translated = _virtual_path_translation(target_posix, path_rows)
+        translated = _virtual_path_translation(target_posix, path_rows, keep_names)
         if translated != target_posix:
             translations.append((entry.rel.as_posix(), target_posix, translated))
     return tuple(translations)
@@ -785,12 +910,16 @@ def _validate_visibility_projection(
             except UnicodeDecodeError:
                 text = None
             if text is not None:
-                projected = text
-                for row in rows:
-                    if "content" in row.rewrite_surfaces and row_matches_scope(
-                        row, rel
-                    ):
-                        projected = rewrite_with_row(row, projected)
+                projected, _ = rewrite_file(
+                    (
+                        row
+                        for row in rows
+                        if "content" in row.rewrite_surfaces
+                        and row_matches_scope(row, rel)
+                    ),
+                    text,
+                    rules.keep_names,
+                )
                 if projected != text:
                     raise SafetyError(
                         f"content rewrite would change Git visibility input "
@@ -879,6 +1008,7 @@ def _identity_hunts(
     field: str,
     matcher: MatcherSpec,
     *,
+    renames_paths: bool,
     enabled_display_form: bool = False,
     disabled_display_form: bool = False,
 ) -> tuple[HuntPolicy, ...]:
@@ -886,7 +1016,9 @@ def _identity_hunts(
     hunts: list[HuntPolicy] = []
     if not disabled_display_form:
         doctor_surfaces: set[Surface] = {"content", "symlink"}
-        if field in RENAME_FIELDS or enabled_display_form:
+        # A scoped npm_name is never rewritten in paths, but the doctor still
+        # hunts it across the whole relative path.
+        if renames_paths or enabled_display_form or field == "npm_name":
             doctor_surfaces.add("path")
         hunts.append(
             _policy(
@@ -1019,7 +1151,7 @@ def _identity_rows(
                 )
             )
 
-    values.sort(key=lambda item: -len(item[1]))
+    values.sort(key=lambda item: (-len(item[1]), item[0] != "npm_name"))
     rows: list[RenderedSubstitution] = []
     for field, from_value, to_value, enabled_display, disabled_display in values:
         display = field.startswith("display_name_")
@@ -1028,7 +1160,7 @@ def _identity_rows(
         rewrite_surfaces: set[Surface] = set()
         if not disabled_display:
             rewrite_surfaces.add("content")
-            if field in RENAME_FIELDS:
+            if pair_renames_paths(field, from_value, to_value):
                 rewrite_surfaces.add("path")
         kind: ProvenanceKind = "display_form" if display else "identity"
         rows.append(
@@ -1042,6 +1174,7 @@ def _identity_rows(
                 hunts=_identity_hunts(
                     field,
                     matcher,
+                    renames_paths=field_renames_paths(field, from_value),
                     enabled_display_form=enabled_display,
                     disabled_display_form=disabled_display,
                 ),
@@ -1051,10 +1184,15 @@ def _identity_rows(
     return rows
 
 
-def _manifest_text(target: Path | None) -> tuple[str, str] | None:
-    """The root manifest's text and literal ``[project].name``, if readable."""
+def _manifest_text(target: Path | None, rules: Rules) -> tuple[str, str] | None:
+    """The root manifest's text and literal ``[project].name``, if readable.
 
-    if target is None:
+    A declaration that excludes python leaves ``pyproject.toml`` unread.
+    """
+
+    if target is None or (
+        rules.languages is not None and "python" not in rules.languages
+    ):
         return None
     try:
         text = read_regular_nofollow(target / "pyproject.toml").decode("utf-8")
@@ -1068,6 +1206,7 @@ def _hyphen_rows(
     source: Identity,
     destination: Identity,
     target: Path | None,
+    rules: Rules,
 ) -> list[RenderedSubstitution]:
     """Rewrite a manifest-proven hyphen name; otherwise only hunt for it."""
 
@@ -1075,7 +1214,7 @@ def _hyphen_rows(
     if hyphen is None:
         return []
     field = "package_name_hyphen"
-    manifest = _manifest_text(target)
+    manifest = _manifest_text(target, rules)
     proven = manifest is not None and manifest[1] == hyphen
     matcher = MatcherSpec("conservative", field, False)
     return [
@@ -1102,7 +1241,7 @@ def _hyphen_rows(
 
 
 def _manifest_name_rows(
-    source: Identity, destination: Identity, target: Path | None
+    source: Identity, destination: Identity, target: Path | None, rules: Rules
 ) -> list[RenderedSubstitution]:
     """Keep ``[project].name`` on package_name when another field owns it."""
 
@@ -1114,7 +1253,7 @@ def _manifest_name_rows(
         or distinct_hyphen_form(source, destination) is not None
     ):
         return []
-    manifest = _manifest_text(target)
+    manifest = _manifest_text(target, rules)
     if manifest is None or manifest[1] != hyphen:
         return []
     source_values = source.as_dict()
@@ -1240,7 +1379,13 @@ def _normalize_rows(
             ),
             None,
         )
-        if duplicate_index is None:
+        # A cli_name or npm_name equal to a content-only field (owner, author)
+        # keeps its own row, or merging would drop its path rename.
+        if duplicate_index is None or (
+            row.provenance[0].name in ("npm_name", "cli_name")
+            and "path" in row.rewrite_surfaces
+            and "path" not in identity_owners[duplicate_index].rewrite_surfaces
+        ):
             identity_owners.append(row)
             continue
         identity_owners[duplicate_index] = _merge_row_metadata(
@@ -1333,8 +1478,10 @@ def _validate_rows(
                 for form in rules.display_forms
             }
         )
+    keep_arguments = {"keep_names": rules.keep_names} if rules.keep_names else {}
     pipeline_validator(
         tuple(candidates),
+        **keep_arguments,
         initial_paths=tuple(
             dict.fromkeys(
                 (
@@ -1359,6 +1506,115 @@ def _validate_rows(
     )
 
 
+def _compiled_rows(
+    source: Identity, destination: Identity, target: Path | None, rules: Rules
+) -> tuple[RenderedSubstitution, ...]:
+    """The normalized rewrite rows, shared by the table and the keep preflight."""
+
+    return _normalize_rows(
+        [
+            *_manifest_name_rows(source, destination, target, rules),
+            *_declared_rows(source, destination, rules),
+        ],
+        sorted(
+            [
+                *_identity_rows(source, destination, rules),
+                *_hyphen_rows(source, destination, target, rules),
+            ],
+            key=lambda row: -len(row.from_value),
+        ),
+        rules,
+    )
+
+
+def _identity_row_pattern(row: RenderedSubstitution) -> re.Pattern[str]:
+    """The matcher one compiled identity row rewrites with."""
+
+    field = row.matcher.identity_field
+    if row.matcher.substring or field is None:
+        return re.compile(re.escape(row.from_value))
+    return token_pattern(field, row.from_value) or re.compile(re.escape(row.from_value))
+
+
+def _checked_dependency_names(
+    target: Path, rules: Rules, removed: frozenset[str]
+) -> tuple[str, ...]:
+    """Root ``package.json`` dependency keys, when node is a checked language."""
+
+    if "package.json" in removed or (
+        rules.languages is not None and "node" not in rules.languages
+    ):
+        return ()
+    manifest = read_node_manifest(target)
+    return () if manifest is None else manifest.dependency_names
+
+
+def check_target_keep_names(
+    target: Path,
+    source: Identity,
+    destination: Identity,
+    rules: Rules,
+    removed: frozenset[str],
+) -> KeepCheck:
+    """Run the keep-name preflight with this press's real rewrite rows."""
+
+    rows = (
+        *_declared_rows(source, destination, rules),
+        *_identity_rows(source, destination, rules),
+        *_hyphen_rows(source, destination, target, rules),
+    )
+    # Equal-valued fields collapse to one owner row, so only the compiled rows
+    # prove which matcher really rewrites an occurrence.
+    compiled = _compiled_rows(source, destination, target, rules)
+
+    def rewritten(path: str, where: str, text: str) -> RewrittenForms:
+        scope_path = path
+        surface: Surface = "content" if where == "content" else "path"
+        if where == "symlink":
+            # Only an in-tree relative link follows a rename.
+            scope_path = symlink_target_posix(Path(path), text)
+            if os.path.isabs(text) or scope_path.split("/", 1)[0] == "..":
+                return RewrittenForms()
+        applying = [
+            row
+            for row in rows
+            if surface in row.rewrite_surfaces and row_matches_scope(row, scope_path)
+        ]
+        return RewrittenForms(
+            tokens=frozenset(
+                row.from_value
+                for row in applying
+                if row.provenance[0].kind != "replace_rule"
+            ),
+            literals=frozenset(
+                row.from_value
+                for row in applying
+                if row.provenance[0].kind == "replace_rule"
+            ),
+            patterns=tuple(
+                _identity_row_pattern(row)
+                for row in compiled
+                if row.provenance[0].kind not in ("replace_rule", "manifest_name")
+                and surface in row.rewrite_surfaces
+                and row_matches_scope(row, scope_path)
+            ),
+        )
+
+    return check_keep_surfaces(
+        rewrite_surface_texts(
+            target,
+            exclude_files=rules.exclude_files,
+            exclude_dirs=rules.exclude_dirs,
+            root_control=ROOT_CONTROL,
+            skip_paths=removed,
+        ),
+        source,
+        rules.keep_names,
+        rewritten=rewritten,
+        dependency_names=_checked_dependency_names(target, rules, removed),
+    )
+
+
 def compile_substitution_table(
     source: Identity,
     destination: Identity,
@@ -1374,20 +1630,7 @@ def compile_substitution_table(
 
     source.validate()
     destination.validate()
-    rows = _normalize_rows(
-        [
-            *_manifest_name_rows(source, destination, target),
-            *_declared_rows(source, destination, rules),
-        ],
-        sorted(
-            [
-                *_identity_rows(source, destination, rules),
-                *_hyphen_rows(source, destination, target),
-            ],
-            key=lambda row: -len(row.from_value),
-        ),
-        rules,
-    )
+    rows = _compiled_rows(source, destination, target, rules)
     rename_snapshot = SurfaceSnapshot(
         entries=select_rename_entries(
             snapshot,
@@ -1397,7 +1640,9 @@ def compile_substitution_table(
         ),
         visibility_inputs=snapshot.visibility_inputs,
     )
-    virtual_translations = _compile_virtual_translations(target, rows, snapshot)
+    virtual_translations = _compile_virtual_translations(
+        target, rows, snapshot, rules.keep_names
+    )
     _validate_rows(
         rows,
         destination,
@@ -1406,7 +1651,7 @@ def compile_substitution_table(
         pipeline_validator,
         tuple(source for _link, source, _destination in virtual_translations),
     )
-    rename_plan = _compile_rename_plan(rows, rename_snapshot)
+    rename_plan = _compile_rename_plan(rows, rename_snapshot, rules.keep_names)
     rename_plan = replace(
         rename_plan,
         virtual_translations=virtual_translations,
@@ -1424,4 +1669,5 @@ def compile_substitution_table(
     return SubstitutionTable(
         rows=rows,
         rename_plan=rename_plan,
+        keep_names=rules.keep_names,
     )

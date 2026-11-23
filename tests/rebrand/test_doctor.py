@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.doctor import find_leaks, render_leak_report
+from template_press.rebrand.doctor import Leak, find_leaks, render_leak_report
 from template_press.rebrand.engine import apply
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.rules import DEFAULT_RULES, ReplaceRule, Rules
@@ -901,3 +901,26 @@ class TestRuleScopeMigratedByAncestorRename:
             renamed=report.renamed,
         )
         assert leaks == []
+
+
+def test_recovery_hint_scopes_and_previews_git_clean() -> None:
+    report = render_leak_report([Leak("a.md", "owner", "acme", "content")])
+    assert "git -C <target> checkout ." in report
+    preview = report.index("git -C <target> clean -nd")
+    assert preview < report.index("git -C <target> clean -fd")
+    assert "&& git clean" not in report
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "README.md",
+        "docs/source/reference/cli.md",
+        ".claude/skills/press-target/SKILL.md",
+        "src/template_press/rebrand/engine.py",
+    ],
+)
+def test_recovery_docs_never_run_an_unscoped_clean(rel: str) -> None:
+    root = Path(__file__).resolve().parents[2]
+    text = (root / rel).read_text(encoding="utf-8")
+    assert "&& git clean" not in text

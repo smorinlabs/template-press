@@ -31,7 +31,7 @@ def _write_rules(target: Path, body: str) -> Path:
 
 def test_language_constants() -> None:
     assert KNOWN_LANGUAGES == ("python", "node", "rust")
-    assert SUPPORTED_LANGUAGES == frozenset({"python"})
+    assert SUPPORTED_LANGUAGES == frozenset({"python", "node"})
 
 
 def test_rules_languages_defaults_to_none(tmp_path: Path) -> None:
@@ -54,7 +54,13 @@ def test_rules_languages_rejects(tmp_path: Path, value: str) -> None:
         load_rules(target)
 
 
-@pytest.mark.parametrize("value", ['["node"]', '["python", "rust"]'])
+@pytest.mark.parametrize("value", ['["node"]', '["python", "node"]'])
+def test_rules_languages_accepts_node(tmp_path: Path, value: str) -> None:
+    target = _write_rules(tmp_path, f"[rules]\nlanguages = {value}\n")
+    assert "node" in (load_rules(target).languages or ())
+
+
+@pytest.mark.parametrize("value", ['["rust"]', '["python", "rust"]'])
 def test_rules_languages_reserved_not_supported(tmp_path: Path, value: str) -> None:
     target = _write_rules(tmp_path, f"[rules]\nlanguages = {value}\n")
     with pytest.raises(ValidationError, match="not supported by this press version"):
@@ -154,9 +160,11 @@ def test_undeclared_multi_language_refused(tmp_path: Path) -> None:
     assert "pyproject.toml" in message
     assert "package.json" in message
     assert 'languages = ["python"]' in message
+    assert "tooling" in message
+    assert 'languages = ["python", "node"]' in message
 
 
-def test_undeclared_multi_language_unsupported_has_no_paste_line(
+def test_undeclared_paste_line_lists_only_supported_languages(
     tmp_path: Path,
 ) -> None:
     _write(tmp_path, "package.json", '{"name": "a"}')
@@ -166,8 +174,8 @@ def test_undeclared_multi_language_unsupported_has_no_paste_line(
     message = str(exc.value)
     assert "package.json" in message
     assert "Cargo.toml" in message
-    assert "only python" in message
-    assert "languages = [" not in message
+    assert 'languages = ["node"]' in message
+    assert "rust" not in message
 
 
 def test_single_language_undeclared_continues(tmp_path: Path) -> None:

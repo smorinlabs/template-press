@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 import subprocess  # nosec B404 -- hardened check-ignore probes of an untrusted target
 import tempfile
 from collections.abc import Collection, Sequence
@@ -49,7 +50,12 @@ from template_press.rebrand.inventory import (
     select_rename_entries,
     select_verifier_entries,
 )
-from template_press.rebrand.matcher import find_occurrences
+from template_press.rebrand.keep_names import (
+    component_kept_spans,
+    find_outside_kept,
+    kept_spans,
+    matches_outside_kept,
+)
 from template_press.rebrand.pathing import (
     ROOT_CONTROL,
     exempt_regenerated_paths,
@@ -476,7 +482,9 @@ def _changed_fields(
     return [(f, src[f]) for f in fields if f in src and f in dst and src[f] != dst[f]]
 
 
-def _substring_occurrences(text: str, needle: str) -> list[tuple[int, int]]:
+def _substring_occurrences(
+    text: str, needle: str, kept: Sequence[tuple[int, int]] = ()
+) -> list[tuple[int, int]]:
     """Non-overlapping start/end spans of a LITERAL substring.
 
     A rendered ``[[replace]]`` FROM literal is an exact string (no boundary
@@ -487,6 +495,8 @@ def _substring_occurrences(text: str, needle: str) -> list[tuple[int, int]]:
     """
     if not needle:
         return []
+    if kept:
+        return matches_outside_kept(re.compile(re.escape(needle)), text, kept)
     spans: list[tuple[int, int]] = []
     pos = 0
     while True:
@@ -544,6 +554,7 @@ def _scan_path_components(
     substring_fields: Collection[str],
     rule_specs: Sequence[_RuleScanSpec],
     renamed: list[tuple[str, str]],
+    keep_names: Sequence[str],
 ) -> list[Finding]:
     """Every path component (all kinds) — a hit on the LAST part is a
     ``filename`` finding, on any earlier part a ``dirname`` finding. The
@@ -552,16 +563,31 @@ def _scan_path_components(
     findings: list[Finding] = []
     last_index = len(rel.parts) - 1
     path_rules = _rule_path_matches(posix, rule_specs, renamed, paths=True)
+    # A scoped npm_name spans two components, so no component scan sees it.
+    name_start = len(posix) - len(rel.name)
+    posix_kept = kept_spans(posix, keep_names)
+    for f, value in changed:
+        if f != "npm_name" or "/" not in value:
+            continue
+        substring = f in substring_fields
+        for _start, end in find_outside_kept(
+            posix, f, value, substring=substring, kept=posix_kept
+        ):
+            where = "filename" if end > name_start else "dirname"
+            findings.append(Finding(posix, f, value, where, None, None, posix))
     for i, comp in enumerate(rel.parts):
         if is_root_press(rel, i):
             continue
         where = "filename" if i == last_index else "dirname"
+        kept = component_kept_spans(rel.parts, i, keep_names)
         for f, value in changed:
             substring = f in substring_fields
-            for _start, _end in find_occurrences(comp, f, value, substring=substring):
+            for _start, _end in find_outside_kept(
+                comp, f, value, substring=substring, kept=kept
+            ):
                 findings.append(Finding(posix, f, value, where, None, None, comp))
         for spec in path_rules:
-            for _start, _end in _substring_occurrences(comp, spec.from_value):
+            for _start, _end in _substring_occurrences(comp, spec.from_value, kept):
                 findings.append(
                     Finding(
                         posix,
@@ -584,6 +610,7 @@ def _scan_symlink(
     substring_fields: Collection[str],
     rule_specs: Sequence[_RuleScanSpec],
     renamed: list[tuple[str, str]],
+    keep_names: Sequence[str],
 ) -> list[Finding]:
     """Scan the symlink's `readlink` STRING only — never the destination.
 
@@ -599,16 +626,19 @@ def _scan_symlink(
         # read. Never guess — flag it unscannable, mirroring `_scan_file`.
         return [Finding(posix, "io", "unreadable", "unscannable", None, None, "")]
     findings: list[Finding] = []
+    kept = kept_spans(link, keep_names)
     for f, value in changed:
         substring = f in substring_fields
-        for _start, _end in find_occurrences(link, f, value, substring=substring):
+        for _start, _end in find_outside_kept(
+            link, f, value, substring=substring, kept=kept
+        ):
             findings.append(Finding(posix, f, value, "symlink", None, None, link))
     # Rule scope for symlink text is the link's TARGET, normalized — mirroring
     # `_retarget_symlinks`/`doctor.find_leaks` — never the link's own location.
     link_target_posix = symlink_target_posix(rel, link)
     rule_hits = _rule_symlink_matches(link_target_posix, rule_specs, renamed)
     for spec in rule_hits:
-        for _start, _end in _substring_occurrences(link, spec.from_value):
+        for _start, _end in _substring_occurrences(link, spec.from_value, kept):
             findings.append(
                 Finding(
                     posix,
@@ -630,21 +660,25 @@ def _scan_content(
     substring_fields: Collection[str],
     rule_specs: Sequence[_RuleScanSpec],
     renamed: list[tuple[str, str]],
+    keep_names: Sequence[str],
 ) -> list[Finding]:
     """Line-by-line content scan; two matches on one line yield two findings
-    with distinct ``col`` (the span start, `find_occurrences` is already
-    non-overlapping)."""
+    with distinct ``col`` (the span start). A kept name cannot span lines:
+    ``validate_keep_names`` refuses every ``splitlines`` separator."""
     findings: list[Finding] = []
     content_rules = _rule_path_matches(posix, rule_specs, renamed, paths=False)
     for lineno, line in enumerate(text.splitlines(), start=1):
+        kept = kept_spans(line, keep_names)
         for f, value in changed:
             substring = f in substring_fields
-            for start, _end in find_occurrences(line, f, value, substring=substring):
+            for start, _end in find_outside_kept(
+                line, f, value, substring=substring, kept=kept
+            ):
                 findings.append(
                     Finding(posix, f, value, "content", lineno, start, line)
                 )
         for spec in content_rules:
-            for start, _end in _substring_occurrences(line, spec.from_value):
+            for start, _end in _substring_occurrences(line, spec.from_value, kept):
                 findings.append(
                     Finding(
                         posix,
@@ -664,6 +698,7 @@ def _scan_binary(
     posix: str,
     changed: list[tuple[str, str]],
     substring_fields: Collection[str],
+    keep_names: Sequence[str] = (),
 ) -> list[Finding]:
     """Byte-scan a non-UTF-8 file for surviving identity — VARIANT-aware.
 
@@ -680,9 +715,13 @@ def _scan_binary(
     notion of "word boundary", so an exact value glued to surrounding
     letters/digits (which the identifier-boundary matcher deliberately rejects)
     must still be flagged. Offsets are deduplicated so an exact match that both
-    scans find yields a single ``binary`` finding.
+    scans find yields a single ``binary`` finding. Kept names are compared in
+    the same latin-1 view, so an offset wholly inside one is dropped.
     """
     latin1 = data.decode("latin-1")
+    kept = kept_spans(
+        latin1, [name.encode("utf-8").decode("latin-1") for name in keep_names]
+    )
     findings: list[Finding] = []
     for f, value in changed:
         needle = value.encode("utf-8")
@@ -694,15 +733,23 @@ def _scan_binary(
         substring = f in substring_fields
         offsets = {
             start
-            for start, _end in find_occurrences(latin1, f, value, substring=substring)
+            for start, _end in find_outside_kept(
+                latin1, f, value, substring=substring, kept=kept
+            )
         }
-        pos = 0
-        while True:
-            idx = data.find(needle, pos)
-            if idx == -1:
-                break
-            offsets.add(idx)
-            pos = idx + len(needle)
+        if kept:
+            raw = re.compile(re.escape(needle.decode("latin-1")))
+            offsets.update(
+                start for start, _end in matches_outside_kept(raw, latin1, kept)
+            )
+        else:
+            pos = 0
+            while True:
+                idx = data.find(needle, pos)
+                if idx == -1:
+                    break
+                offsets.add(idx)
+                pos = idx + len(needle)
         findings.extend(
             Finding(posix, f, value, "binary", None, idx, "") for idx in sorted(offsets)
         )
@@ -717,6 +764,7 @@ def _scan_file(
     substring_fields: Collection[str],
     rule_specs: Sequence[_RuleScanSpec],
     renamed: list[tuple[str, str]],
+    keep_names: Sequence[str],
 ) -> list[Finding]:
     path = target / rel
     try:
@@ -741,8 +789,10 @@ def _scan_file(
         # more than it can via the token pass, so a rule-literal scan of
         # binary bytes is not attempted (mirrors `doctor.find_leaks`, which
         # only rule-scans `_read_for_scan`-returned TEXT).
-        return _scan_binary(data, posix, changed, substring_fields)
-    return _scan_content(text, posix, changed, substring_fields, rule_specs, renamed)
+        return _scan_binary(data, posix, changed, substring_fields, keep_names)
+    return _scan_content(
+        text, posix, changed, substring_fields, rule_specs, renamed, keep_names
+    )
 
 
 def scan(
@@ -832,7 +882,13 @@ def scan(
         posix = rel.as_posix()
         findings.extend(
             _scan_path_components(
-                rel, posix, changed, substring_fields, rule_specs, renamed
+                rel,
+                posix,
+                changed,
+                substring_fields,
+                rule_specs,
+                renamed,
+                rules.keep_names,
             )
         )
         if entry.kind == "gitlink":
@@ -847,6 +903,7 @@ def scan(
                     substring_fields,
                     rule_specs,
                     renamed,
+                    rules.keep_names,
                 )
             )
             continue
@@ -865,7 +922,14 @@ def scan(
             continue
         findings.extend(
             _scan_file(
-                target, rel, posix, changed, substring_fields, rule_specs, renamed
+                target,
+                rel,
+                posix,
+                changed,
+                substring_fields,
+                rule_specs,
+                renamed,
+                rules.keep_names,
             )
         )
     return attach_ignore_hints(target, findings, untracked, core_excludes)

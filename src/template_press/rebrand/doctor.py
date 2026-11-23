@@ -9,7 +9,8 @@ no receipt. Port of init_doctor.check_no_identity_leftover, generalized to
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Collection
+import re
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,12 +23,20 @@ from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
     Identity,
     display_forms,
+    field_renames_paths,
     occurs,
+    token_pattern,
 )
 from template_press.rebrand.inventory import (
     capture_surface_snapshot,
     core_excludes_from_snapshot,
     select_inline_doctor_entries,
+)
+from template_press.rebrand.keep_names import (
+    component_kept_spans,
+    kept_spans,
+    literal_occurs,
+    matches_outside_kept,
 )
 from template_press.rebrand.rules import (
     DEFAULT_RULES,
@@ -49,13 +58,6 @@ from template_press.rebrand.substitutions import (
     row_matches_scope,
 )
 from template_press.rebrand.verifier import ignore_near_miss
-
-PATH_FIELDS: tuple[str, ...] = (
-    "package_name",
-    "repo_name",
-    "app_name",
-    "app_name_upper",
-)
 
 
 @dataclass(frozen=True)
@@ -199,6 +201,23 @@ def _leak_field(row: RenderedSubstitution, policy: HuntPolicy) -> str:
     return policy.matcher.identity_field or row.provenance[0].name
 
 
+def _occurs_outside_kept(
+    text: str,
+    field_name: str,
+    value: str,
+    substring_fields: Collection[str],
+    kept: Sequence[tuple[int, int]],
+) -> bool:
+    if not kept:
+        return occurs(text, field_name, value, substring_fields)
+    pattern = (
+        None if field_name in substring_fields else token_pattern(field_name, value)
+    )
+    return bool(
+        matches_outside_kept(pattern or re.compile(re.escape(value)), text, kept)
+    )
+
+
 def _find_table_leaks(
     target: Path,
     rules: Rules,
@@ -243,8 +262,11 @@ def _find_table_leaks(
         for index, component in enumerate(rel.parts):
             if _is_root_press(rel, index):
                 continue
+            kept = component_kept_spans(rel.parts, index, table.keep_names)
             for row, policy in scoped_hunts:
-                if "path" in policy.surfaces and hunt_occurs(row, policy, component):
+                if "path" in policy.surfaces and hunt_occurs(
+                    row, policy, component, kept
+                ):
                     leaks.append(
                         Leak(
                             posix,
@@ -253,6 +275,15 @@ def _find_table_leaks(
                             "path",
                         )
                     )
+        # A scoped npm_name spans two components, so no component scan sees it.
+        for row, policy in scoped_hunts:
+            if (
+                policy.matcher.identity_field == "npm_name"
+                and "path" in policy.surfaces
+                and "/" in row.from_value
+                and hunt_occurs(row, policy, posix, kept_spans(posix, table.keep_names))
+            ):
+                leaks.append(Leak(posix, "npm_name", row.from_value, "path"))
         if entry.index_kind == "gitlink" and entry.worktree_kind in (
             "directory",
             "missing",
@@ -273,11 +304,12 @@ def _find_table_leaks(
                 leaks.append(Leak(posix, "io", "unreadable", "unverifiable"))
                 continue
             link_target = symlink_target_posix(rel, link)
+            link_kept = kept_spans(link, table.keep_names)
             for row, policy in doctor_hunts:
                 if (
                     "symlink" in policy.surfaces
                     and _table_symlink_scope_hits(row, link_target, table, executed)
-                    and hunt_occurs(row, policy, link)
+                    and hunt_occurs(row, policy, link, link_kept)
                 ):
                     leaks.append(
                         Leak(
@@ -298,8 +330,11 @@ def _find_table_leaks(
             continue
         if text is None:
             continue
+        text_kept = kept_spans(text, table.keep_names)
         for row, policy in scoped_hunts:
-            if "content" in policy.surfaces and hunt_occurs(row, policy, text):
+            if "content" in policy.surfaces and hunt_occurs(
+                row, policy, text, text_kept
+            ):
                 leaks.append(
                     Leak(
                         posix,
@@ -379,9 +414,9 @@ def find_leaks(
     # doctor already expands display_name into its exact forms for the
     # content/symlink scans above, but a leftover PyLaunchBlueprint/ dir
     # would otherwise pass the path-component loops below, which iterated
-    # PATH_FIELDS only.
+    # path-renaming fields only.
     path_fields = (
-        *PATH_FIELDS,
+        *(f for f, v in fields.items() if field_renames_paths(f, v)),
         *(f"display_name_{form}" for form in display_form_names),
     )
     snapshot = capture_surface_snapshot(target)
@@ -411,15 +446,30 @@ def find_leaks(
         for i, component in enumerate(rel.parts):
             if _is_root_press(rel, i):
                 continue
+            kept = component_kept_spans(rel.parts, i, rules.keep_names)
             for field_name in path_fields:
                 value = fields.get(field_name)
-                if value is not None and occurs(
-                    component, field_name, value, substring_fields
+                if value is not None and _occurs_outside_kept(
+                    component, field_name, value, substring_fields, kept
                 ):
                     leaks.append(Leak(rel_posix, field_name, value, "path"))
             for _rule, frm in path_rules:
-                if frm in component:
+                if literal_occurs(component, frm, kept):
                     leaks.append(Leak(rel_posix, "replace_rule", frm, "path"))
+        # A scoped npm_name spans two components, so no component scan sees it.
+        npm_name = fields.get("npm_name")
+        if (
+            npm_name is not None
+            and "/" in npm_name
+            and _occurs_outside_kept(
+                rel_posix,
+                "npm_name",
+                npm_name,
+                substring_fields,
+                kept_spans(rel_posix, rules.keep_names),
+            )
+        ):
+            leaks.append(Leak(rel_posix, "npm_name", npm_name, "path"))
         if entry.index_kind == "gitlink" and entry.worktree_kind in (
             "directory",
             "missing",
@@ -439,15 +489,18 @@ def find_leaks(
             except (OSError, SafetyError):
                 leaks.append(Leak(rel_posix, "io", "unreadable", "unverifiable"))
                 continue
+            link_kept = kept_spans(link, rules.keep_names)
             for field_name, value in fields.items():
-                if occurs(link, field_name, value, substring_fields):
+                if _occurs_outside_kept(
+                    link, field_name, value, substring_fields, link_kept
+                ):
                     leaks.append(Leak(rel_posix, field_name, value, "symlink"))
             link_target_posix = symlink_target_posix(rel, link)
             for rule, frm, _to in rendered_rules:
                 if (
                     rule.paths
                     and _rule_scope_hits(rule, link_target_posix, renamed)
-                    and frm in link
+                    and literal_occurs(link, frm, link_kept)
                 ):
                     leaks.append(Leak(rel_posix, "replace_rule", frm, "symlink"))
             continue
@@ -464,14 +517,17 @@ def find_leaks(
             continue
         if text is None:
             continue
+        text_kept = kept_spans(text, rules.keep_names)
         for field_name, value in fields.items():
-            if occurs(text, field_name, value, substring_fields):
+            if _occurs_outside_kept(
+                text, field_name, value, substring_fields, text_kept
+            ):
                 leaks.append(Leak(rel_posix, field_name, value, "content"))
         for rule, frm, _to in rendered_rules:
             if (
                 rule.content
                 and _rule_scope_hits(rule, rel_posix, renamed)
-                and frm in text
+                and literal_occurs(text, frm, text_kept)
             ):
                 leaks.append(Leak(rel_posix, "replace_rule", frm, "content"))
     return _attach_ignore_hints(target, leaks, untracked, core_excludes)
@@ -489,8 +545,9 @@ def render_leak_report(leaks: list[Leak], limit: int = 20) -> str:
     if len(leaks) > limit:
         lines.append(f"  … and {len(leaks) - limit} more")
     lines.append(
-        "hint: restore the target (git -C <target> checkout . && git clean "
-        "-fd), fix the root cause (or, for content that is VALID to keep, "
+        "hint: restore the target (git -C <target> checkout . ; preview with "
+        "git -C <target> clean -nd ; then git -C <target> clean -fd), fix the "
+        "root cause (or, for content that is VALID to keep, "
         "add its directory to BOTH extra_exclude_dirs and verify_ignore in "
         "<target>/press/press-rules.toml — the first skips rewriting, the "
         "second skips this scan; a [symlink] leak is keyed on the link's "
