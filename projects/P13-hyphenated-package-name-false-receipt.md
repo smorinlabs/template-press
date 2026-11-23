@@ -1,4 +1,4 @@
-# [~] Project P13: Hyphenated package-name false receipt
+# [x] Project P13: Hyphenated package-name false receipt
 
 **Goal/Requirement**: `press rebrand` must never write a receipt while a
 hyphenated form of the source `package_name` survives in the target.
