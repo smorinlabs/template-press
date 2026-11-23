@@ -320,15 +320,18 @@ def _changing_values(source: Identity, dest: Identity | None) -> dict[str, str]:
 
 
 def _identifier_on_surface(target: Path, ident: str, rules: Rules) -> bool:
-    """Whether the rewrite surface names the crate by its Rust identifier."""
+    """Whether a file the press keeps names the crate by its Rust identifier."""
+    removed_dirs = tuple(f"{rule.dir}/" for rule in rules.remove_dirs)
     return any(
         token_occurs(text, f"{CARGO_IDENT_PREFIX}crate", ident)
-        for _path, _where, text in rewrite_surface_texts(
+        for path, _where, text in rewrite_surface_texts(
             target,
             exclude_files=rules.exclude_files,
             exclude_dirs=rules.exclude_dirs,
             root_control=ROOT_CONTROL,
+            skip_paths=frozenset(rule.file for rule in rules.remove),
         )
+        if not path.startswith(removed_dirs)
     )
 
 
@@ -355,6 +358,8 @@ def _unmapped_name_is_broken(
     # The Rust identifier must follow the package spelling, or code that names
     # the crate (`acme_widget::hi()`) no longer resolves after the press.
     expected = cargo_ident(wanted[whole])
+    if expected == ident:
+        return False
     if any(
         value == ident and wanted.get(field) == expected
         for field, value in changing.items()

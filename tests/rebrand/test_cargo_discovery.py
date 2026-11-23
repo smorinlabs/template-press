@@ -872,3 +872,64 @@ def test_warning_uses_changing_values_when_destination_is_known(tmp_path) -> Non
     assert cargo_warnings(target, source, rules) == []
     dest = Identity.from_mapping(_dest_values(owner="acme"))
     assert "acme-tools" in cargo_warnings(target, source, rules, dest)[0]
+
+
+# --- Fix round 2 ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("rel", "rule"),
+    [
+        ("old.md", '[[remove]]\nfile = "old.md"\nreason = "template only"\n'),
+        (
+            "history/old.md",
+            '[[remove]]\ndir = "history"\nreason = "template only"\n',
+        ),
+    ],
+)
+def test_identifier_only_in_removed_path_is_not_surface(tmp_path, rel, rule) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("acme-core"),
+            "src/main.rs": "fn main() {}\n",
+            rel: "acme_core\n",
+            "press/press-source.toml": _source_config(
+                package_name="other_pkg", app_name="tool_app"
+            ),
+            "press/press-rules.toml": rule,
+        },
+    )
+    answers = _answers(tmp_path, package_name="zeta_pkg", app_name="zeta_app")
+    assert main(["--target", str(target), "--config", str(answers)]) == 0
+    assert 'name = "zeta-core"' in (target / "Cargo.toml").read_text()
+    assert not (target / rel).exists()
+
+
+@pytest.mark.parametrize("field", ["cli_name", "npm_name"])
+def test_rename_keeping_rust_identifier_continues(tmp_path, field) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("acme-core"),
+            "src/lib.rs": "pub fn hi() {}\n",
+            "src/main.rs": "fn main() { acme_core::hi(); }\n",
+            "press/press-source.toml": _source_config(
+                package_name="other_pkg",
+                repo_name="tools-repo",
+                app_name="tool_app",
+                **{field: "acme-core"},
+            ),
+        },
+        repo_name="tools-repo",
+    )
+    answers = _answers(
+        tmp_path,
+        package_name="zeta_pkg",
+        repo_name="zeta-repo",
+        app_name="zeta_app",
+        **{field: "acme_core"},
+    )
+    assert main(["--target", str(target), "--config", str(answers)]) == 0
+    assert 'name = "acme_core"' in (target / "Cargo.toml").read_text()
+    assert "acme_core::hi()" in (target / "src" / "main.rs").read_text()
