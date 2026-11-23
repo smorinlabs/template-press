@@ -51,6 +51,8 @@ from pathlib import Path
 from template_press.rebrand.config import SOURCE_CONFIG_REL, load_source_config
 from template_press.rebrand.discovery import (
     Discovered,
+    cargo_problems,
+    cargo_warnings,
     discover,
     manifest_warnings,
     mismatches,
@@ -62,7 +64,12 @@ from template_press.rebrand.engine import (
     scan_paths,
     translate_path,
 )
-from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.identity import (
+    Identity,
+    ValidationError,
+    cargo_ident,
+    cargo_identity_problem,
+)
 from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_map
 from template_press.rebrand.inventory import (
     capture_surface_snapshot,
@@ -300,7 +307,21 @@ def _preflight(
     problems, honored = _honor_accepted_origin(
         list(mismatches(source, found)), found, accepted_origin
     )
+    # The synthetic destination is generated later, so only the source side of
+    # the table can be wrong here: comparing it with itself runs those checks.
+    table_problem = cargo_identity_problem(source, source)
+    if table_problem is not None:
+        problems.append(table_problem)
     discovered = _discovered_map(found)
+    if found.cargo is not None:
+        problems.extend(cargo_problems(target, source, None, rules))
+        for warning in cargo_warnings(target, source, rules):
+            print(warning, file=sys.stderr)
+        # A crate name confirms the identifier form, which no text need contain.
+        idents = {cargo_ident(name) for name in found.cargo.names}
+        for field_name in ("package_name", "app_name"):
+            if getattr(source, field_name) in idents:
+                discovered[field_name] = getattr(source, field_name)
     declared = source.as_dict()
     # Only scanned fields that discovery can confirm (skip derived forms like
     # ``app_name_upper`` that are not independently discoverable).

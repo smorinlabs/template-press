@@ -15,9 +15,17 @@ import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from template_press.rebrand.identity import PYTHON_IDENTIFIER_RE, Identity
+from template_press.rebrand.cargo_manifest import CargoFacts, read_cargo_facts
+from template_press.rebrand.config import toml_string
+from template_press.rebrand.identity import (
+    PYTHON_IDENTIFIER_RE,
+    Identity,
+    cargo_ident,
+    distinct_hyphen_form,
+    occurs,
+)
 from template_press.rebrand.languages import KNOWN_LANGUAGES, SUPPORTED_LANGUAGES
 from template_press.rebrand.node_manifest import (
     NodeManifest,
@@ -25,6 +33,9 @@ from template_press.rebrand.node_manifest import (
     unscoped,
 )
 from template_press.rebrand.safety import git_hardening_args, scrubbed_git_env
+
+if TYPE_CHECKING:
+    from template_press.rebrand.rules import Rules
 
 _ORIGIN_RE = re.compile(
     r"^(?:https?://github\.com/|git@github\.com:)"
@@ -57,6 +68,7 @@ class Discovered:
     manifest_owner: str | None = None  # package.json repository, never origin
     manifest_repo_name: str | None = None
     named_cli_names: tuple[str, ...] = ()  # object-form bin keys only
+    cargo: CargoFacts | None = None  # set only when rust is a checked language
 
 
 def _origin(target: Path) -> tuple[str | None, str | None]:
@@ -112,7 +124,9 @@ def discover(target: Path, languages: Sequence[str] | None = None) -> Discovered
         for language, value in (("python", project), ("node", manifest))
         if value is not None
     }
-    source_kind = next((name for name in KNOWN_LANGUAGES if name in checked), None)
+    first_checked = next((name for name in KNOWN_LANGUAGES if name in checked), None)
+    source_kind = "cargo" if first_checked == "rust" else first_checked
+    cargo = read_cargo_facts(target) if "rust" in selected else None
     if project is not None:
         raw_name = project.get("name")
         if isinstance(raw_name, str):
@@ -142,6 +156,7 @@ def discover(target: Path, languages: Sequence[str] | None = None) -> Discovered
         layout=layout,
         app_names=app_names,
         source_kind=source_kind,
+        cargo=cargo,
     )
     if manifest is None:
         return found
@@ -195,6 +210,197 @@ def node_proposal(
     }
 
 
+def cargo_role_table(facts: CargoFacts) -> dict[str, str]:
+    """One role per name, keyed by its lowercase underscore form.
+
+    Spellings of one name share a role. ``facts.names`` is sorted, so a hyphen
+    spelling (``-`` sorts before ``_``) is the value that role records.
+    """
+    table: dict[str, str] = {}
+    seen: set[str] = set()
+    for name in facts.names:
+        ident = cargo_ident(name)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        base = role = ident.lower()
+        suffix = 2
+        while role in table:
+            role = f"{base}_{suffix}"
+            suffix += 1
+        table[role] = name
+    return table
+
+
+def cargo_table_hint(facts: CargoFacts) -> str:
+    """A paste-ready ``cargo_names`` table for both identity files."""
+    rows = [
+        f"{role} = {toml_string(name)}"
+        for role, name in sorted(cargo_role_table(facts).items())
+    ]
+    return "\n".join(
+        [
+            "# press/press-source.toml",
+            "[identity.cargo_names]",
+            *rows,
+            "",
+            "# press-answers.toml: replace each value with the new crate name",
+            "[answers.cargo_names]",
+            *rows,
+        ]
+    )
+
+
+def cargo_proposal(
+    facts: CargoFacts, owner: str | None, repo_name: str | None
+) -> dict[str, str | None]:
+    """Propose source-config values from Cargo facts; gaps stay ``None``.
+
+    Git origin wins; ``package.repository`` is used only when origin is absent.
+    ``app_name`` is the underscore form of the first binary in ``facts.bins``
+    (sorted order), or ``package_name`` for a library-only crate.
+    """
+    if owner is None and facts.repository is not None:
+        match = _ORIGIN_RE.match(facts.repository)
+        if match is not None:
+            owner, repo_name = match["owner"], match["repo"]
+    package_name = cargo_ident(facts.primary) if facts.primary else None
+    return {
+        "package_name": package_name,
+        "repo_name": repo_name,
+        "app_name": cargo_ident(facts.bins[0]) if facts.bins else package_name,
+        "author": facts.author,
+        "email": facts.email,
+        "owner": owner,
+    }
+
+
+def _rewritten_whole_by_python_row(
+    name: str, source: Identity, rules: Rules, target: Path
+) -> bool:
+    """Whether the proven hyphen row rewrites ``name``: a declared Python manifest."""
+    if name != source.package_name.replace("_", "-"):
+        return False
+    if rules.languages is None or "python" not in rules.languages:
+        return False
+    project = _python_project(target)
+    return project is not None and project.get("name") == name
+
+
+def _unmapped_name_is_related(
+    name: str, changing: dict[str, str], rules: Rules
+) -> bool:
+    return any(
+        occurs(spelling, field, value, rules.substring_rewrite_fields)
+        for spelling in {name, cargo_ident(name)}
+        for field, value in changing.items()
+    )
+
+
+def _unmapped_name_is_broken(
+    name: str, target: Path, source: Identity, dest: Identity | None, rules: Rules
+) -> bool:
+    """Whether a press without a table would leave ``name`` half rewritten."""
+    if name in rules.keep_names:
+        return False
+    current = source.as_dict()
+    wanted = dest.as_dict() if dest is not None else None
+    changing = {
+        field: value
+        for field, value in current.items()
+        if wanted is None or wanted.get(field) != value
+    }
+    if not _unmapped_name_is_related(name, changing, rules):
+        return False
+    whole = next((f for f, value in changing.items() if value == name), None)
+    if whole is None:
+        return not (
+            "package_name" in changing
+            and (dest is None or distinct_hyphen_form(source, dest) is not None)
+            and _rewritten_whole_by_python_row(name, source, rules, target)
+        )
+    if wanted is None or whole not in wanted:
+        return False
+    # The Rust identifier must follow the package spelling, or code that names
+    # the crate (`acme_widget::hi()`) no longer resolves after the press.
+    expected = cargo_ident(wanted[whole])
+    return any(
+        value == cargo_ident(name) and wanted.get(field) != expected
+        for field, value in changing.items()
+    )
+
+
+def cargo_problems(
+    target: Path, source: Identity, dest: Identity | None, rules: Rules
+) -> list[str]:
+    """Fatal Cargo checks. ``dest=None`` treats every identity value as changing.
+
+    Call only when rust is a checked language. Spellings are compared by
+    underscore form, because Cargo treats ``[lib] name = "acme_core"`` as the
+    default library of package ``acme-core``.
+    """
+    facts = read_cargo_facts(target)
+    if not source.cargo_names:
+        broken = [
+            name
+            for name in facts.names
+            if _unmapped_name_is_broken(name, target, source, dest, rules)
+        ]
+        if not broken:
+            return []
+        return [
+            f"cargo_names: crate name(s) {broken!r} contain a changing identity "
+            "value that no identity row rewrites whole, so the press would "
+            "leave a broken crate name. Declare the table:\n"
+            f"{cargo_table_hint(facts)}"
+        ]
+    declared = {cargo_ident(name) for _role, name in source.cargo_names}
+    discovered = {cargo_ident(name) for name in facts.names}
+    out: list[str] = []
+    undeclared = [n for n in facts.names if cargo_ident(n) not in declared]
+    if undeclared:
+        out.append(
+            f"cargo_names: target declares Cargo name(s) {undeclared!r} that are "
+            "not source cargo_names values; add a role for each (a name that "
+            "must not change uses the same value in both files)"
+        )
+    missing = [n for _r, n in source.cargo_names if cargo_ident(n) not in discovered]
+    if missing:
+        out.append(
+            f"cargo_names: source-config declares {missing!r} but no Cargo "
+            "manifest contains that name"
+        )
+    third_party = [
+        name for name in facts.external_dependencies if cargo_ident(name) in declared
+    ]
+    if third_party:
+        out.append(
+            f"cargo_names: non-local dependency {third_party!r} resolves to a "
+            "declared source name; rewriting it would point at a different "
+            "registry crate"
+        )
+    return out
+
+
+def cargo_warnings(target: Path, source: Identity, rules: Rules) -> list[str]:
+    """One stderr line per name a table-less press leaves unchanged."""
+    if source.cargo_names:
+        return []
+    facts = read_cargo_facts(target)
+    values = source.as_dict()
+    return [
+        f"warning: cargo name {name!r} is not rewritten: it is "
+        + (
+            "listed in keep_names"
+            if name in rules.keep_names
+            else "unrelated to the identity"
+        )
+        for name in facts.names
+        if name in rules.keep_names
+        or not _unmapped_name_is_related(name, values, rules)
+    ]
+
+
 def mismatches(source: Identity, found: Discovered) -> list[str]:
     """Non-empty means the source-config does NOT describe this target."""
     out: list[str] = []
@@ -225,7 +431,11 @@ def mismatches(source: Identity, found: Discovered) -> list[str]:
         )
     if found.node_checked:
         out.extend(_node_mismatches(declared, found))
-    if found.package_name is not None and found.layout is None:
+    if (
+        found.source_kind == "python"
+        and found.package_name is not None
+        and found.layout is None
+    ):
         out.append(
             f"layout: pyproject declares {found.package_name!r} but neither "
             f"src/{found.package_name}/ nor {found.package_name}/ exists"

@@ -484,6 +484,17 @@ def cargo_identity_problem(source: Identity, dest: Identity) -> str | None:
                     f"source name {old!r} of role {other!r}; sequential "
                     "rewrites would chain"
                 )
+    for role, old in src_map.items():
+        new = dst_map[role]
+        if old == cargo_ident(old) and new != cargo_ident(new):
+            return (
+                f"cargo_names role {role!r} maps {old!r}, which has no hyphen, to "
+                f"{new!r}, which has one. Text alone cannot tell the package "
+                f"spelling of {old!r} from its Rust identifier, so the press "
+                f"cannot tell whether to write {new!r} or {cargo_ident(new)!r}; "
+                f"use {cargo_ident(new)!r} as the destination, or rename the "
+                "source crate to a hyphenated name first"
+            )
     role = next(
         (r for r, n in src_map.items() if cargo_ident(n) == source.package_name),
         None,

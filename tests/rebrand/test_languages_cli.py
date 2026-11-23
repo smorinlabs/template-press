@@ -354,7 +354,7 @@ def test_verify_checks_only_declared_manifests(
         (BOTH, "python", True, True),
         (["node", "python"], "python", True, True),
         ((), "python", True, True),
-        (("rust",), "python", True, True),
+        (("unknown",), "python", True, True),
     ],
 )
 def test_discover_follows_checked_languages(

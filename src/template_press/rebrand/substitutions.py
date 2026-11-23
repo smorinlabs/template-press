@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
+from template_press.rebrand.cargo_manifest import read_cargo_facts
 from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
     Identity,
@@ -1594,6 +1595,21 @@ def _checked_dependency_names(
     return () if manifest is None else manifest.dependency_names
 
 
+def _checked_cargo_dependency_names(
+    target: Path, source: Identity, rules: Rules, removed: frozenset[str]
+) -> tuple[str, ...]:
+    """Non-local Cargo dependencies, when a Cargo table meets an active manifest."""
+
+    if (
+        not source.cargo_names
+        or "Cargo.toml" in removed
+        or (rules.languages is not None and "rust" not in rules.languages)
+        or not os.path.lexists(target / "Cargo.toml")
+    ):
+        return ()
+    return read_cargo_facts(target).external_dependencies
+
+
 def check_target_keep_names(
     target: Path,
     source: Identity,
@@ -1657,6 +1673,9 @@ def check_target_keep_names(
         rules.keep_names,
         rewritten=rewritten,
         dependency_names=_checked_dependency_names(target, rules, removed),
+        cargo_dependency_names=_checked_cargo_dependency_names(
+            target, source, rules, removed
+        ),
     )
 
 

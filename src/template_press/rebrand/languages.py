@@ -15,7 +15,7 @@ from template_press.rebrand.safety import SafetyError, read_regular_nofollow
 KNOWN_LANGUAGES: tuple[str, ...] = ("python", "node", "rust")
 
 # Languages this press version can rebrand; the rest are reserved names.
-SUPPORTED_LANGUAGES: frozenset[str] = frozenset({"python", "node"})
+SUPPORTED_LANGUAGES: frozenset[str] = frozenset({"python", "node", "rust"})
 
 # Root manifest that identifies each language, in ``KNOWN_LANGUAGES`` order.
 LANGUAGE_MANIFESTS: dict[str, str] = {
@@ -93,7 +93,6 @@ def detect_languages(target: Path) -> tuple[DetectedLanguage, ...]:
 def _undeclared_refusal(detected: tuple[DetectedLanguage, ...]) -> ValidationError:
     manifests = ", ".join(d.manifest for d in detected)
     supported = [d.language for d in detected if d.language in SUPPORTED_LANGUAGES]
-    # Only rust is unsupported, so two detected languages always list one.
     listed = ", ".join(f'"{language}"' for language in supported)
     prefix = (
         f"target has several language manifests ({manifests}) and "

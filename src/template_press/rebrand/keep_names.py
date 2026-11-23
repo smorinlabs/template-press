@@ -23,6 +23,7 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
     cargo_field_values,
+    cargo_ident,
     display_forms,
     is_cargo_field,
     token_pattern,
@@ -524,6 +525,33 @@ def _extended_dependencies(
                 yield UndeclaredName("package.json", "content", field, dependency)
 
 
+def _extended_cargo_dependencies(
+    dependencies: Iterable[str],
+    source: Identity,
+    names: Sequence[str],
+    subject: RewrittenForms,
+) -> Iterable[UndeclaredName]:
+    """Cargo dependencies whose name extends a declared Cargo name with a separator.
+
+    Compared in underscore form, because Cargo treats ``-`` and ``_`` alike.
+    """
+    values = cargo_field_values(source)
+    for dependency in dependencies:
+        if dependency in subject.tokens or dependency in subject.literals:
+            continue
+        ident = cargo_ident(dependency)
+        kept = kept_spans(dependency, names)
+        for field, value in values.items():
+            base = cargo_ident(value)
+            if (
+                ident.startswith(base)
+                and ident[len(base) : len(base) + 1] == "_"
+                and outside_kept(((0, len(base)),), kept)
+            ):
+                yield UndeclaredName("Cargo.toml", "content", field, dependency)
+                break
+
+
 def check_keep_surfaces(
     surfaces: Iterable[tuple[str, str, str]],
     source: Identity,
@@ -531,6 +559,7 @@ def check_keep_surfaces(
     *,
     rewritten: RewrittenLookup | None = None,
     dependency_names: Sequence[str] = (),
+    cargo_dependency_names: Sequence[str] = (),
 ) -> KeepCheck:
     """Find undeclared names and stale entries on ``(path, where, text)`` rows.
 
@@ -540,7 +569,9 @@ def check_keep_surfaces(
     Matching ignores case because the paranoid verifier does too. An entry
     found on no surface is stale. ``dependency_names`` are the root manifest's
     dependency keys: only that evidence separates the package ``name.extra``
-    from an ordinary file such as ``name.js``.
+    from an ordinary file such as ``name.js``. ``cargo_dependency_names`` are
+    the non-local Cargo dependencies; one extending a declared Cargo name is
+    reported even when its manifest is outside the rewrite surface.
     """
     values = (
         *(
@@ -581,6 +612,17 @@ def check_keep_surfaces(
         dependency_names, node_values, names, manifest_subject
     ):
         undeclared.setdefault((item.path, item.where, item.token), item)
+    cargo_subject = (
+        rewritten("Cargo.toml", "content", "")
+        if rewritten is not None and cargo_dependency_names
+        else RewrittenForms()
+    )
+    reported = {item.token for item in undeclared.values()}
+    for item in _extended_cargo_dependencies(
+        cargo_dependency_names, source, names, cargo_subject
+    ):
+        if item.token not in reported:
+            undeclared.setdefault((item.path, item.where, item.token), item)
     return KeepCheck(tuple(undeclared.values()), tuple(unseen))
 
 

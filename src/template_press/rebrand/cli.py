@@ -26,6 +26,10 @@ from template_press.rebrand.config import (
 )
 from template_press.rebrand.discovery import (
     Discovered,
+    cargo_problems,
+    cargo_proposal,
+    cargo_role_table,
+    cargo_warnings,
     discover,
     manifest_warnings,
     mismatches,
@@ -42,6 +46,8 @@ from template_press.rebrand.engine import (
 from template_press.rebrand.identity import (
     Identity,
     ValidationError,
+    cargo_ident,
+    cargo_identity_problem,
 )
 from template_press.rebrand.keep_names import (
     render_stale,
@@ -432,6 +438,7 @@ def _resolve_source(
     dest: Identity | None,
     accept_origin_mismatch: bool,
     languages: Sequence[str],
+    rules: Rules,
 ) -> tuple[Identity, bool, OriginDecision, Discovered] | int:
     """Resolve the FROM identity; second element = write source-config later.
 
@@ -484,6 +491,23 @@ def _resolve_source(
                     f"missing keys to package.json or write the source-config "
                     f"by hand."
                 )
+        elif found.source_kind == "cargo" and found.cargo is not None:
+            if found.cargo.primary is None:
+                return _fail(
+                    f"no source-config at {SOURCE_CONFIG_REL} and the root "
+                    "Cargo.toml is a virtual workspace with no primary crate. "
+                    "Write the source-config by hand, naming one member as "
+                    "package_name and every crate in [identity.cargo_names]."
+                )
+            proposal = cargo_proposal(found.cargo, found.owner, found.repo_name)
+            unresolved = [k for k, v in proposal.items() if v is None]
+            if unresolved:
+                return _fail(
+                    f"no source-config at {SOURCE_CONFIG_REL} and Cargo.toml "
+                    f"could not resolve: {', '.join(unresolved)}. Add the "
+                    "missing keys to Cargo.toml or write the source-config by "
+                    "hand."
+                )
         else:
             proposal = {
                 "package_name": found.package_name,
@@ -517,7 +541,8 @@ def _resolve_source(
                 proposal["cli_name"] = bins[0] if bins else None
         try:
             candidate = Identity.from_mapping(
-                {k: v for k, v in proposal.items() if v is not None}
+                {k: v for k, v in proposal.items() if v is not None},
+                cargo_role_table(found.cargo) if found.cargo is not None else None,
             )
             candidate.validate()
         except ValidationError as exc:
@@ -527,6 +552,8 @@ def _resolve_source(
     problems, origin = _relax_origin_guard(
         source, found, dest, mismatches(source, found), accept_origin_mismatch
     )
+    if found.cargo is not None:
+        problems = [*problems, *cargo_problems(target, source, dest, rules)]
     if problems:
         print(
             "error: source-config does not match the target "
@@ -535,6 +562,9 @@ def _resolve_source(
         for p in problems:
             print(f"  {p}")
         return 2
+    if found.cargo is not None:
+        for warning in cargo_warnings(target, source, rules):
+            print(warning, file=sys.stderr)
     return source, write_pending, origin, found
 
 
@@ -588,6 +618,25 @@ def display_name_problem(source: Identity, dest: Identity) -> str | None:
                     f"source {field_name} equals source {other} "
                     f"({value!r}) but the answers give them different values "
                     f"({dest_values[field_name]!r} vs {dest_values[other]!r}) "
+                    f"— keep them equal in [answers]"
+                )
+    dest_cargo = dict(dest.cargo_names)
+    for role, name in source.cargo_names:
+        new = dest_cargo.get(role)
+        if new is None:
+            continue
+        for other, value in source_values.items():
+            if other == "app_name_upper":
+                continue
+            if value not in (name, cargo_ident(name)):
+                continue
+            # An exact match keeps its spelling; an identifier match keeps its form.
+            expected = new if value == name else cargo_ident(new)
+            if dest_values.get(other) != expected:
+                return (
+                    f"source cargo_names role {role!r} ({name!r}) matches source "
+                    f"{other} ({value!r}), but the answers give "
+                    f"{dest_values.get(other)!r} where {expected!r} is required "
                     f"— keep them equal in [answers]"
                 )
     return None
@@ -768,6 +817,7 @@ def main(argv: list[str] | None = None) -> int:
             dest,
             args.accept_origin_mismatch,
             languages.checked,
+            rules,
         )
         if isinstance(resolved, int):
             return resolved
@@ -789,6 +839,9 @@ def main(argv: list[str] | None = None) -> int:
         display_problem = display_name_problem(source, dest)
         if display_problem is not None:
             return _fail(display_problem)
+        cargo_problem = cargo_identity_problem(source, dest)
+        if cargo_problem is not None:
+            return _fail(cargo_problem)
 
         if source == dest:
             message = (
