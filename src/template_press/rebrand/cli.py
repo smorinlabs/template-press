@@ -43,9 +43,7 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
 )
-from template_press.rebrand.inventory import rewrite_surface_texts
 from template_press.rebrand.keep_names import (
-    check_keep_surfaces,
     render_stale,
     render_undeclared,
     validate_keep_names,
@@ -55,7 +53,6 @@ from template_press.rebrand.languages import (
     render_ignored_languages,
 )
 from template_press.rebrand.node_manifest import NodeManifest
-from template_press.rebrand.pathing import ROOT_CONTROL
 from template_press.rebrand.receipt import (
     RECEIPT_REL,
     OriginDecision,
@@ -121,6 +118,7 @@ from template_press.rebrand.safety import (
 )
 from template_press.rebrand.substitutions import (
     SubstitutionTable,
+    check_target_keep_names,
     declared_rule_triples,
     revalidate_substitution_table,
     validate_reset_visibility,
@@ -409,6 +407,24 @@ _NODE_PROPOSAL_KEYS: dict[str, str] = {
 }
 
 
+def _distinct_bins(found: Discovered, *claimed: str | None) -> tuple[str, ...]:
+    """Object-form bin keys that no other proposed identity value covers."""
+    return tuple(
+        name
+        for name in found.named_cli_names
+        if name not in claimed and name != found.npm_name
+    )
+
+
+def _several_bins_refusal(bins: Sequence[str]) -> int:
+    return _fail(
+        f"no source-config at {SOURCE_CONFIG_REL} and package.json bin declares "
+        f"several distinct commands ({', '.join(bins)}); identity holds one "
+        f"cli_name, so the press will not guess. Write the source-config by "
+        f"hand, and list each independent CLI in [rules] keep_names."
+    )
+
+
 def _resolve_source(
     target: Path,
     override: Path | None,
@@ -442,6 +458,11 @@ def _resolve_source(
                 proposal = node_proposal(manifest, found.owner, found.repo_name)
             else:
                 proposal = node_proposal(manifest, manifest.owner, manifest.repo_name)
+            bins = _distinct_bins(
+                found, proposal["repo_name"], proposal["package_name"]
+            )
+            if len(bins) > 1:
+                return _several_bins_refusal(bins)
             unresolved = list(
                 dict.fromkeys(
                     _NODE_PROPOSAL_KEYS[k]
@@ -481,15 +502,12 @@ def _resolve_source(
             if found.node_checked:
                 # Without a declared cli_name, a distinct bin would survive
                 # the press unchanged and still earn a clean exit.
-                claimed = {found.app_name, found.repo_name, found.package_name}
-                proposal["cli_name"] = next(
-                    (
-                        name
-                        for name in found.named_cli_names
-                        if name not in claimed and name != found.npm_name
-                    ),
-                    None,
+                bins = _distinct_bins(
+                    found, found.app_name, found.repo_name, found.package_name
                 )
+                if len(bins) > 1:
+                    return _several_bins_refusal(bins)
+                proposal["cli_name"] = bins[0] if bins else None
         try:
             candidate = Identity.from_mapping(
                 {k: v for k, v in proposal.items() if v is not None}
@@ -786,19 +804,6 @@ def main(argv: list[str] | None = None) -> int:
         # by build_plan before any write.  Keeping the target rules here ensures
         # the adapter preserves each field's effective substring posture.
         validate_keep_names(rules.keep_names, source, dest)
-        keep_check = check_keep_surfaces(
-            rewrite_surface_texts(
-                target,
-                exclude_files=rules.exclude_files,
-                exclude_dirs=rules.exclude_dirs,
-                root_control=ROOT_CONTROL,
-            ),
-            source,
-            rules.keep_names,
-        )
-        if keep_check.undeclared:
-            print(render_undeclared(keep_check.undeclared), file=sys.stderr)
-            return 1
         prior_removed = removed_files_from_receipt(receipt_text)
         removal_plan = plan_removals(
             target,
@@ -809,6 +814,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         removal_receipt_metadata(removal_plan, prior_removed)
         effective_rules = removal_rules_view(rules, removal_plan)
+        keep_check = check_target_keep_names(
+            target,
+            source,
+            dest,
+            rules,
+            frozenset(member.current_file for member in removal_plan.members),
+        )
+        if keep_check.undeclared:
+            print(render_undeclared(keep_check.undeclared, source), file=sys.stderr)
+            return 1
         plan = build_plan(target, source, dest, effective_rules)
         validate_removal_conflicts(rules, removal_plan, plan.renames)
         removal_receipt_metadata(

@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 from template_press.rebrand.identity import (
@@ -57,6 +57,22 @@ class KeepCheck:
 
     undeclared: tuple[UndeclaredName, ...]
     stale: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RewrittenForms:
+    """What the compiled rows actually rewrite on one surface subject.
+
+    ``tokens`` are identity values, matched with name boundaries. ``literals``
+    are rendered ``[[replace]]`` sources, matched exactly.
+    """
+
+    tokens: frozenset[str] = frozenset()
+    literals: frozenset[str] = frozenset()
+
+
+# Called with (path, where, text) for one surface row.
+RewrittenLookup = Callable[[str, str, str], RewrittenForms]
 
 
 def kept_spans(text: str, names: Sequence[str]) -> tuple[Span, ...]:
@@ -267,41 +283,66 @@ def sibling_guidance(text: str, span: Span) -> str | None:
     return _keep_line(text[start:end])
 
 
-def _identity_occurrences(text: str, forms: Iterable[str]) -> tuple[Span, ...]:
-    return kept_spans(text, tuple(forms))
+def _literal_spans(text: str, literals: Iterable[str]) -> list[Span]:
+    spans: list[Span] = []
+    for literal in literals:
+        position = text.find(literal)
+        while position != -1:
+            spans.append((position, position + len(literal)))
+            position = text.find(literal, position + 1)
+    return spans
+
+
+def _joined(part: str, separator: str) -> bool:
+    """Whether ``part`` holds a name part joined by its adjacent ``-`` or ``_``."""
+    return separator in ("-", "_") and any(ch not in "-_" for ch in part)
 
 
 def _sibling_tokens(
     text: str,
     value: str,
-    other_forms: frozenset[str],
+    identity_forms: frozenset[str],
+    rewritten: RewrittenForms,
     kept: Sequence[Span],
 ) -> list[str]:
-    """Tokens holding ``value`` with a name character on either side."""
+    """Tokens joining ``value`` to another name part, unless a row rewrites them.
+
+    Only ``-`` and ``_`` join names, so ``tsconfig`` is no sibling of ``tsc``.
+    A glued token is still reported when it is exactly an identity form that no
+    row rewrites on this surface, because that form would survive the press.
+    """
     tokens: list[str] = []
-    occupied: tuple[Span, ...] | None = None
+    occupied: list[Span] | None = None
+    unrewritten = identity_forms - rewritten.tokens
     pattern = re.compile(re.escape(value), re.IGNORECASE)
     position = 0
     while (match := pattern.search(text, position)) is not None:
         position = match.start() + 1
         start, end = match.span()
-        if not (
-            (start > 0 and text[start - 1] in _NAME_CHARS)
-            or (end < len(text) and text[end] in _NAME_CHARS)
-        ):
-            continue
         while start > 0 and text[start - 1] in _NAME_CHARS:
             start -= 1
         while end < len(text) and text[end] in _NAME_CHARS:
             end += 1
+        if (start, end) == match.span():
+            continue
+        left, right = text[start : match.start()], text[match.end() : end]
+        token = text[start:end]
+        if not (
+            _joined(left, left[-1:])
+            or _joined(right, right[:1])
+            or token in unrewritten
+        ):
+            continue
         if not outside_kept(((start, end),), kept):
             continue
         if occupied is None:
-            occupied = _identity_occurrences(text, other_forms)
-        # A longer declared identity value is rewritten by its own row.
+            occupied = [
+                *kept_spans(text, tuple(rewritten.tokens)),
+                *_literal_spans(text, rewritten.literals),
+            ]
         if not outside_kept(((start, end),), occupied):
             continue
-        tokens.append(text[start:end])
+        tokens.append(token)
     return tokens
 
 
@@ -309,13 +350,16 @@ def check_keep_surfaces(
     surfaces: Iterable[tuple[str, str, str]],
     source: Identity,
     names: Sequence[str],
+    *,
+    rewritten: RewrittenLookup | None = None,
 ) -> KeepCheck:
     """Find undeclared names and stale entries on ``(path, where, text)`` rows.
 
-    A token containing a declared source ``npm_name`` or ``cli_name`` with a
-    name character on either side is undeclared unless one ``keep_names``
-    entry wholly covers it. Matching ignores case because the paranoid
-    verifier does too. An entry found on no surface is stale.
+    A token joining a declared source ``npm_name`` or ``cli_name`` to another
+    name part is undeclared unless one ``keep_names`` entry wholly covers it or
+    ``rewritten`` proves a row rewrites it on that exact path and surface.
+    Matching ignores case because the paranoid verifier does too. An entry
+    found on no surface is stale.
     """
     values = tuple(
         (field, value)
@@ -335,16 +379,20 @@ def check_keep_surfaces(
         for name in tuple(unseen):
             if kept_spans(text, (name,)):
                 del unseen[name]
+        subject = (
+            rewritten(path, where, text) if rewritten is not None else RewrittenForms()
+        )
         for field, value in values:
-            for token in _sibling_tokens(text, value, forms - {value}, kept):
+            for token in _sibling_tokens(text, value, forms, subject, kept):
                 undeclared.setdefault(
                     (path, where, token), UndeclaredName(path, where, field, token)
                 )
     return KeepCheck(tuple(undeclared.values()), tuple(unseen))
 
 
-def render_undeclared(findings: Sequence[UndeclaredName]) -> str:
+def render_undeclared(findings: Sequence[UndeclaredName], source: Identity) -> str:
     """The exit-1 refusal: each exact token and the line that would keep it."""
+    identity = {_normalized(form) for form in _identity_forms(source)}
     lines = [
         f"error: {len(findings)} undeclared name(s) contain a declared npm_name "
         "or cli_name; nothing written, no receipt.",
@@ -352,7 +400,14 @@ def render_undeclared(findings: Sequence[UndeclaredName]) -> str:
     for item in findings[:_REPORT_LIMIT]:
         path = item.path if item.path.isprintable() else repr(item.path)
         lines.append(f"  [{item.where}] {path}: {item.token}")
-        lines.append(f"    {_keep_line(item.token)}")
+        if _normalized(item.token) in identity:
+            lines.append(
+                "    this spelling is a source identity value that no row "
+                "rewrites here, so it cannot be kept; rename it or change "
+                "that field in the press"
+            )
+        else:
+            lines.append(f"    {_keep_line(item.token)}")
     if len(findings) > _REPORT_LIMIT:
         lines.append(f"  and {len(findings) - _REPORT_LIMIT} more")
     lines.append(

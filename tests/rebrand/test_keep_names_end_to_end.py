@@ -17,6 +17,7 @@ from template_press.rebrand.doctor import find_leaks
 from template_press.rebrand.engine import build_plan
 from template_press.rebrand.identity import Identity, ValidationError
 from template_press.rebrand.keep_names import (
+    RewrittenForms,
     check_keep_surfaces,
     find_outside_kept,
     kept_spans,
@@ -194,7 +195,10 @@ def test_excluded_and_control_files_are_outside_the_preflight(tmp_path):
 def test_longer_declared_identity_value_is_not_a_sibling():
     source = replace(SOURCE, repo_name="acme-cli-core")
     check = check_keep_surfaces(
-        [("README.md", "content", "see acme-cli-core and acme-cli\n")], source, ()
+        [("README.md", "content", "see acme-cli-core and acme-cli\n")],
+        source,
+        (),
+        rewritten=lambda *_: RewrittenForms(frozenset({"acme-cli-core"})),
     )
     assert check.undeclared == ()
 
@@ -202,7 +206,10 @@ def test_longer_declared_identity_value_is_not_a_sibling():
 def test_value_inside_another_identity_occurrence_is_not_a_sibling():
     source = replace(SOURCE, npm_name="@acme/widget-api", cli_name="widget")
     check = check_keep_surfaces(
-        [("README.md", "content", "install @acme/widget-api\n")], source, ()
+        [("README.md", "content", "install @acme/widget-api\n")],
+        source,
+        (),
+        rewritten=lambda *_: RewrittenForms(frozenset({"@acme/widget-api"})),
     )
     assert check.undeclared == ()
 
@@ -840,3 +847,219 @@ def test_kept_name_in_excluded_verify_ignored_lockfile_is_accepted(tmp_path):
     assert _verify(target) == 0
     assert _press(target, _answers(tmp_path)) == 0
     assert (target / "vendor.lock").read_text(encoding="utf-8") == f"{KEPT}\n"
+
+
+# Review regressions: exemptions, join rule, removals, several bins
+
+
+def _with_source(
+    tmp_path: Path, source: Identity, rules: str, files: dict[str, str]
+) -> Path:
+    target = _make_target(tmp_path, rules, files)
+    (target / "press" / "press-source.toml").write_text(
+        _toml_identity(source, "identity"), encoding="utf-8"
+    )
+    _git(
+        target,
+        "remote",
+        "set-url",
+        "origin",
+        f"https://github.com/{source.owner}/{source.repo_name}.git",
+    )
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "--allow-empty", "-m", "source")
+    return target
+
+
+def test_owner_form_has_no_path_row_so_path_is_refused(tmp_path, capsys):
+    source = replace(SOURCE, owner="acme-cli-labs")
+    target = _with_source(
+        tmp_path, source, LANGUAGES, {"tools/acme-cli-labs/run.sh": "x\n"}
+    )
+    code = _press(target, _answers(tmp_path))
+    _assert_refused_clean(target, code)
+    assert "acme-cli-labs" in capsys.readouterr().err
+
+
+def test_disabled_display_form_is_refused(tmp_path, capsys):
+    source = replace(SOURCE, display_name="acme-cli Tool")
+    rules = f'{LANGUAGES}display_forms = ["spaced"]\n'
+    target = _with_source(
+        tmp_path,
+        source,
+        rules,
+        {"README.md": "# acme-cli Tool\n", "docs/a.md": "see acme-cliTool here\n"},
+    )
+    code = _press(target, _answers(tmp_path))
+    _assert_refused_clean(target, code)
+    assert "acme-cliTool" in capsys.readouterr().err
+
+
+def test_unchanged_field_form_is_refused(tmp_path, capsys):
+    source = replace(SOURCE, repo_name="pre-acme-cli", owner="zetalabs")
+    dest = replace(DEST, repo_name="pre-acme-cli")
+    target = _with_source(
+        tmp_path, source, LANGUAGES, {"docs/a.md": "run pre-acme-cli now\n"}
+    )
+    code = _press(target, _answers(tmp_path, dest))
+    _assert_refused_clean(target, code)
+    err = capsys.readouterr().err
+    assert "pre-acme-cli" in err
+    assert "cannot be kept" in err
+    assert 'keep_names = ["pre-acme-cli"]' not in err
+
+
+def test_changed_longer_identity_value_still_presses(tmp_path):
+    source = replace(SOURCE, repo_name="acme-cli-core")
+    target = _with_source(
+        tmp_path, source, LANGUAGES, {"acme-cli-core/a.md": "acme-cli-core\n"}
+    )
+    assert _verify(target) == 0
+    assert _press(target, _answers(tmp_path)) == 0
+    assert (target / "other-repo" / "a.md").read_text(encoding="utf-8") == (
+        "other-repo\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("cli_name", "rel", "text"),
+    [
+        ("tsc", "tsconfig.json", "{}\n"),
+        ("serve", "docs/a.md", "the server observes reserved ports\n"),
+        ("acme-cli", "bin/acme-cli.js", "// acme-cli.js\n"),
+    ],
+)
+def test_glued_and_dotted_names_are_not_siblings(tmp_path, cli_name, rel, text):
+    source = replace(SOURCE, cli_name=cli_name)
+    target = _with_source(tmp_path, source, LANGUAGES, {rel: text})
+    manifest = json.loads((target / "package.json").read_text(encoding="utf-8"))
+    manifest["bin"] = {cli_name: "./bin/run.js"}
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "bin")
+    assert _press(target, _answers(tmp_path), "--dry-run") == 0
+
+
+def test_separator_without_a_name_part_is_not_a_join():
+    check = check_keep_surfaces(
+        [("a.md", "content", "pass --acme-cli or acme-cli-\n")], SOURCE, ()
+    )
+    assert check.undeclared == ()
+
+
+@pytest.mark.parametrize(
+    ("files", "token"),
+    [
+        ({"docs/a.md": "see x-@acme/widget-api here\n"}, "x-@acme/widget-api"),
+        ({"packages/@acme/widget-api-extra/a.js": "x\n"}, "@acme/widget-api-extra"),
+    ],
+)
+def test_exact_controller_cases_with_owner_zetalabs(tmp_path, capsys, files, token):
+    source = replace(SOURCE, owner="zetalabs", npm_name="@acme/widget-api")
+    target = _with_source(tmp_path, source, LANGUAGES, files)
+    manifest = json.loads((target / "package.json").read_text(encoding="utf-8"))
+    manifest["name"] = "@acme/widget-api"
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "name")
+    code = _press(target, _answers(tmp_path))
+    _assert_refused_clean(target, code)
+    assert f"keep_names = {json.dumps([token])}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        '[[remove]]\nfile = "docs/old.md"\nreason = "history"\n',
+        '[[remove]]\ndir = "docs"\nreason = "history"\n',
+    ],
+)
+def test_planned_removal_is_outside_the_preflight(tmp_path, rule):
+    target = _make_target(
+        tmp_path, f"{LANGUAGES}\n{rule}", {"docs/old.md": "pre-acme-cli\n"}
+    )
+    assert _verify(target) == 0
+    assert _press(target, _answers(tmp_path)) == 0
+    assert not (target / "docs" / "old.md").exists()
+
+
+def _no_source_target(tmp_path: Path, rules: str, *, python: bool) -> Path:
+    target = _make_target(tmp_path, rules)
+    (target / "press" / "press-source.toml").unlink()
+    manifest = json.loads((target / "package.json").read_text(encoding="utf-8"))
+    manifest.update(
+        author="Acme Author <author@example.test>",
+        bin={"web-cli": "./a.js", "api-cli": "./b.js"},
+    )
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    if not python:
+        (target / "pyproject.toml").unlink()
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "bins")
+    return target
+
+
+@pytest.mark.parametrize(
+    ("rules", "python"), [("", False), (LANGUAGES, True)], ids=["node", "python+node"]
+)
+def test_several_distinct_bins_exit_2_before_writes(tmp_path, capsys, rules, python):
+    target = _no_source_target(tmp_path, rules, python=python)
+    answers = _answers(tmp_path)
+    code = main(
+        ["--target", str(target), "--config", str(answers), "--accept-discovery"]
+    )
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "web-cli" in err
+    assert "api-cli" in err
+    assert "keep_names" in err
+    assert not (target / "press" / "press-source.toml").exists()
+    assert _status(target) == ""
+
+
+def _replace_rule(extra: str = "") -> str:
+    return (
+        f"{LANGUAGES}\n[[replace]]\n"
+        'pattern = "{cli_name}-helper"\nreason = "companion tool"\n'
+        f"{extra}"
+    )
+
+
+def test_applying_replace_rule_exempts_and_rewrites_token(tmp_path):
+    target = _make_target(
+        tmp_path, _replace_rule(), {"docs/a.md": "run acme-cli-helper now\n"}
+    )
+    assert _verify(target) == 0
+    assert _press(target, _answers(tmp_path)) == 0
+    assert (target / "docs" / "a.md").read_text(encoding="utf-8") == (
+        "run new-cli-helper now\n"
+    )
+
+
+def test_applying_path_rule_exempts_and_renames_token(tmp_path):
+    target = _make_target(
+        tmp_path,
+        _replace_rule("paths = true\n"),
+        {"tools/acme-cli-helper/a.sh": "x\n"},
+    )
+    assert _verify(target) == 0
+    assert _press(target, _answers(tmp_path)) == 0
+    assert (target / "tools" / "new-cli-helper" / "a.sh").is_file()
+
+
+@pytest.mark.parametrize(
+    ("extra", "files"),
+    [
+        ('files = ["docs/other.md"]\n', {"docs/a.md": "acme-cli-helper\n"}),
+        ("content = false\npaths = true\n", {"docs/a.md": "acme-cli-helper\n"}),
+        ("", {"tools/acme-cli-helper/a.sh": "x\n"}),
+    ],
+    ids=["other-file", "content-disabled", "paths-disabled"],
+)
+def test_non_applying_replace_rule_still_refuses(tmp_path, capsys, extra, files):
+    target = _make_target(
+        tmp_path, _replace_rule(extra), {"docs/other.md": "x\n", **files}
+    )
+    code = _press(target, _answers(tmp_path))
+    _assert_refused_clean(target, code)
+    assert "acme-cli-helper" in capsys.readouterr().err

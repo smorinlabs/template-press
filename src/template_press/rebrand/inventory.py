@@ -1155,6 +1155,7 @@ def rewrite_surface_texts(
     exclude_files: frozenset[str],
     exclude_dirs: frozenset[str],
     root_control: frozenset[str],
+    skip_paths: frozenset[str] = frozenset(),
 ) -> Iterator[tuple[str, str, str]]:
     """``(path, where, text)`` for the content, path, and symlink rewrite surface.
 
@@ -1169,11 +1170,15 @@ def rewrite_surface_texts(
     }
     for entry in select_rename_entries(snapshot, **selection):
         posix = entry.rel.as_posix()
+        if posix in skip_paths:
+            continue
         yield posix, "path", posix
         if entry.worktree_kind == "symlink":
             assert_ancestors_real(target / entry.rel, target)
             yield posix, "symlink", readlink_nofollow(target / entry.rel)
     for entry in select_content_rewrite_entries(snapshot, **selection):
+        if entry.rel.as_posix() in skip_paths:
+            continue
         assert_ancestors_real(target / entry.rel, target)
         try:
             text = read_regular_nofollow(target / entry.rel).decode("utf-8")

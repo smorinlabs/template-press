@@ -30,10 +30,14 @@ from template_press.rebrand.inventory import (
     VisibilityInput,
     WorktreeKind,
     capture_surface_snapshot,
+    rewrite_surface_texts,
     select_rename_entries,
     select_symlink_entries,
 )
 from template_press.rebrand.keep_names import (
+    KeepCheck,
+    RewrittenForms,
+    check_keep_surfaces,
     component_kept_spans,
     disjoint_from_kept,
     disjoint_matches,
@@ -43,7 +47,7 @@ from template_press.rebrand.keep_names import (
     splice_outside_kept,
 )
 from template_press.rebrand.matcher import find_occurrences, identity_pattern
-from template_press.rebrand.pathing import ROOT_CONTROL
+from template_press.rebrand.pathing import ROOT_CONTROL, symlink_target_posix
 from template_press.rebrand.pipeline import (
     MAX_RENAME_PASSES,
     MatcherSpec,
@@ -1490,6 +1494,61 @@ def _validate_rows(
             )
             for field, value in destination_sinks.items()
         ),
+    )
+
+
+def check_target_keep_names(
+    target: Path,
+    source: Identity,
+    destination: Identity,
+    rules: Rules,
+    removed: frozenset[str],
+) -> KeepCheck:
+    """Run the keep-name preflight with this press's real rewrite rows."""
+
+    rows = (
+        *_declared_rows(source, destination, rules),
+        *_identity_rows(source, destination, rules),
+        *_hyphen_rows(source, destination, target, rules),
+    )
+
+    def rewritten(path: str, where: str, text: str) -> RewrittenForms:
+        scope_path = path
+        surface: Surface = "content" if where == "content" else "path"
+        if where == "symlink":
+            # Only an in-tree relative link follows a rename.
+            scope_path = symlink_target_posix(Path(path), text)
+            if os.path.isabs(text) or scope_path.split("/", 1)[0] == "..":
+                return RewrittenForms()
+        applying = [
+            row
+            for row in rows
+            if surface in row.rewrite_surfaces and row_matches_scope(row, scope_path)
+        ]
+        return RewrittenForms(
+            tokens=frozenset(
+                row.from_value
+                for row in applying
+                if row.provenance[0].kind != "replace_rule"
+            ),
+            literals=frozenset(
+                row.from_value
+                for row in applying
+                if row.provenance[0].kind == "replace_rule"
+            ),
+        )
+
+    return check_keep_surfaces(
+        rewrite_surface_texts(
+            target,
+            exclude_files=rules.exclude_files,
+            exclude_dirs=rules.exclude_dirs,
+            root_control=ROOT_CONTROL,
+            skip_paths=removed,
+        ),
+        source,
+        rules.keep_names,
+        rewritten=rewritten,
     )
 
 

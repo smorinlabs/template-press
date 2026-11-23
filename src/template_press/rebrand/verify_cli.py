@@ -67,10 +67,8 @@ from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_
 from template_press.rebrand.inventory import (
     capture_surface_snapshot,
     core_excludes_from_snapshot,
-    rewrite_surface_texts,
 )
 from template_press.rebrand.keep_names import (
-    check_keep_surfaces,
     render_stale,
     render_undeclared,
     sibling_guidance,
@@ -81,7 +79,6 @@ from template_press.rebrand.languages import (
     render_ignored_languages,
 )
 from template_press.rebrand.matcher import find_occurrences
-from template_press.rebrand.pathing import ROOT_CONTROL
 from template_press.rebrand.receipt import (
     accepted_origin_from_receipt,
     receipt_binding_problem,
@@ -106,6 +103,7 @@ from template_press.rebrand.safety import (
     scrubbed_git_env,
 )
 from template_press.rebrand.sandbox import make_sandbox
+from template_press.rebrand.substitutions import check_target_keep_names
 from template_press.rebrand.synthesize import synthesize_dest
 from template_press.rebrand.verifier import Finding, attach_ignore_hints, scan
 from template_press.rebrand.verify_config import (
@@ -599,15 +597,12 @@ def verify_command(argv: list[str] | None = None) -> int:
     try:
         synth = synthesize_dest(source)
         validate_keep_names(rules.keep_names, source, synth, synthetic_dest=True)
-        keep_check = check_keep_surfaces(
-            rewrite_surface_texts(
-                target,
-                exclude_files=rules.exclude_files,
-                exclude_dirs=rules.exclude_dirs,
-                root_control=ROOT_CONTROL,
-            ),
+        keep_check = check_target_keep_names(
+            target,
             source,
-            rules.keep_names,
+            synth,
+            rules,
+            frozenset(member.current_file for member in removal_plan.members),
         )
         if keep_check.undeclared:
             if args.as_json:
@@ -627,7 +622,7 @@ def verify_command(argv: list[str] | None = None) -> int:
                         }
                     )
                 )
-            print(render_undeclared(keep_check.undeclared), file=sys.stderr)
+            print(render_undeclared(keep_check.undeclared, source), file=sys.stderr)
             return 1
         for line in render_stale(keep_check.stale):
             print(line, file=sys.stderr)
