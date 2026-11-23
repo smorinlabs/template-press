@@ -59,15 +59,18 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 
 from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
+    OPTIONAL_FIELDS,
     REQUIRED_FIELDS,
     VALIDATORS,
     Identity,
     ValidationError,
+    cargo_ident,
     display_forms,
 )
 
@@ -87,6 +90,8 @@ _EMAIL_TLD_LEN = 3
 # collision is resolved within a handful of attempts (see module docstring
 # point 4); 1000 is a generous margin, not a tuned/expected value.
 _MAX_ATTEMPTS = 1000
+# Tried in order for a non-primary Cargo suffix, so `x1` is the usual result.
+_CARGO_SUFFIX_LETTERS = "xyzwvutsrqponmlkjihgfedcba"
 
 
 def synthesize_dest(source: Identity) -> Identity:
@@ -106,6 +111,7 @@ def synthesize_dest(source: Identity) -> Identity:
     variant_inputs = list(values.values())
     if display is not None:
         variant_inputs.append(display)
+    variant_inputs.extend(name for _role, name in source.cargo_names)
     variants = _source_variants(variant_inputs)
     prefix = _safe_prefix(variants)
 
@@ -116,6 +122,7 @@ def synthesize_dest(source: Identity) -> Identity:
     else:
         dest = _synthesize_plain(values, display, prefix, variants)
     dest = _with_exact_names(source, dest, prefix, variants)
+    dest = _with_cargo_names(source, dest, variants)
 
     dest.validate()
     _assert_equality_signature(source, dest)
@@ -180,6 +187,113 @@ def _with_exact_names(
             used.add(minted)
         names[field] = by_value[value]
     return replace(dest, **names)
+
+
+def _shaped_like(token: str, name: str) -> str:
+    """``token`` cut into ``name``'s words, joined by ``name``'s separators."""
+    parts = re.split(r"([-_]+)", name)
+    words = [word for word in parts[0::2] if word]
+    text = token
+    while len(text) < len(words):
+        text += hashlib.sha256(text.encode()).hexdigest()
+    size = len(text) // len(words)
+    cuts = [text[i * size : (i + 1) * size] for i in range(len(words) - 1)]
+    cuts.append(text[(len(words) - 1) * size :])
+    shaped = cuts[0]
+    for separator, piece in zip(parts[1::2], [*cuts[1:], ""], strict=False):
+        shaped += separator + piece
+    return shaped
+
+
+def _mint_cargo_name(
+    stem: str, separator: str, taken: set[str], variants: frozenset[str]
+) -> str:
+    """The first ``<stem><separator><letter><number>`` free of source text."""
+    for letter, number in itertools.product(_CARGO_SUFFIX_LETTERS, range(1, 100)):
+        name = f"{stem}{separator}{letter}{number}"
+        ident = cargo_ident(name)
+        if ident not in taken and not (
+            _collides(name, variants) or _collides(ident, variants)
+        ):
+            taken.add(ident)
+            return name
+    raise ValidationError(
+        f"synthesize: could not derive a containment-free Cargo name from {stem!r}"
+    )
+
+
+def _cargo_destinations(
+    source: Identity, dest: Identity, variants: frozenset[str]
+) -> dict[str, str]:
+    """A synthetic Cargo name per role, shaped so both spellings stay coherent.
+
+    The primary role carries the package destination, so its underscore form
+    is the destination ``package_name``. Other roles add a generated suffix,
+    never role text. A separator-free name tied to ``owner`` or ``repo_name``
+    is glued, because those fields cannot hold an underscore.
+    """
+    primary = next(
+        (
+            (role, name)
+            for role, name in source.cargo_names
+            if cargo_ident(name) == source.package_name
+        ),
+        None,
+    )
+    base = _shaped_like(dest.package_name, primary[1]) if primary else dest.package_name
+    ident = cargo_ident(base)
+    names: dict[str, str] = {primary[0]: base} if primary else {}
+    taken = {ident}
+    for role, name in source.cargo_names:
+        if role in names:
+            continue
+        if "-" in name:
+            stem, separator = ident.replace("_", "-"), "-"
+        elif "_" not in name and name in (source.owner, source.repo_name):
+            stem, separator = ident.replace("_", ""), ""
+        else:
+            stem, separator = ident, "_"
+        names[role] = _mint_cargo_name(stem, separator, taken, variants)
+    return names
+
+
+def _with_cargo_names(
+    source: Identity, dest: Identity, variants: frozenset[str]
+) -> Identity:
+    """Add the Cargo table, moving any field that shares a Cargo source value.
+
+    One source value has one destination in the rewrite table, so a field equal
+    to a Cargo name in either spelling takes that name's matching spelling.
+    """
+    if not source.cargo_names:
+        return dest
+    names = _cargo_destinations(source, dest, variants)
+    moved: dict[str, str] = {}
+    for role, name in source.cargo_names:
+        moved[name] = names[role]
+        moved[cargo_ident(name)] = cargo_ident(names[role])
+    if source.app_name in moved:
+        moved[source.app_name_upper] = moved[source.app_name].upper()
+    changes: dict[str, str] = {
+        field: moved[value]
+        for field in (*REQUIRED_FIELDS, *OPTIONAL_FIELDS)
+        if (value := getattr(source, field)) is not None and value in moved
+    }
+    result = replace(dest, **changes, cargo_names=tuple(sorted(names.items())))
+    source_slots = _slot_values(source)
+    unrelated = {
+        value
+        for slot, value in _slot_values(result).items()
+        if source_slots[slot] not in moved
+    }
+    for name in names.values():
+        forms = {name, cargo_ident(name)}
+        if forms & unrelated or any(_collides(form, variants) for form in forms):
+            raise ValidationError(
+                f"synthesize: Cargo destination {name!r} collides with another "
+                "synthetic or source identity value"
+            )
+    return result
 
 
 # --- #46: equality-signature preservation across derived slots -------------

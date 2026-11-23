@@ -41,7 +41,7 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from template_press.rebrand.identity import Identity
+from template_press.rebrand.identity import CARGO_EXACT_PREFIX, Identity
 from template_press.rebrand.inventory import (
     SurfaceSnapshot,
     _run_git,
@@ -56,6 +56,7 @@ from template_press.rebrand.keep_names import (
     kept_spans,
     matches_outside_kept,
 )
+from template_press.rebrand.matcher import identity_pattern
 from template_press.rebrand.pathing import (
     ROOT_CONTROL,
     exempt_regenerated_paths,
@@ -469,7 +470,10 @@ def _rule_scan_specs(
 
 
 def _changed_fields(
-    source: Identity, dest: Identity, fields: Sequence[str]
+    source: Identity,
+    dest: Identity,
+    fields: Sequence[str],
+    substring_fields: Collection[str] = frozenset(),
 ) -> list[tuple[str, str]]:
     """(field, source_value) pairs for fields that actually differ.
 
@@ -477,9 +481,33 @@ def _changed_fields(
     leak — its token legitimately remains everywhere — so it is never
     scanned for. Total under the sparse identity dicts: a field absent on
     either side (optional `display_name`) is simply not scanned.
+
+    A declared Cargo name the press changes is always hunted, whatever
+    ``fields`` selects. One ``cargo_exact_<role>`` hunt covers both spellings
+    because the matcher treats ``-`` and ``_`` alike. It is skipped when a
+    selected boundary-matched field already has the identical pattern, so one
+    occurrence never yields two findings that a single ignore could not
+    suppress. A substring field is a literal hunt and covers one spelling only.
     """
     src, dst = source.as_dict(), dest.as_dict()
-    return [(f, src[f]) for f in fields if f in src and f in dst and src[f] != dst[f]]
+    changed = [
+        (f, src[f]) for f in fields if f in src and f in dst and src[f] != dst[f]
+    ]
+    hunted = {
+        identity_pattern(f, value).pattern
+        for f, value in changed
+        if f not in substring_fields
+    }
+    dest_names = dict(dest.cargo_names)
+    for role, name in source.cargo_names:
+        if dest_names.get(role, name) == name:
+            continue
+        field = f"{CARGO_EXACT_PREFIX}{role}"
+        pattern = identity_pattern(field, name).pattern
+        if pattern not in hunted:
+            hunted.add(pattern)
+            changed.append((field, name))
+    return changed
 
 
 def _substring_occurrences(
@@ -840,7 +868,7 @@ def scan(
     stable by selected path and then scan order (path components followed by
     symlink, content, or binary evidence).
     """
-    changed = _changed_fields(source, dest, fields)
+    changed = _changed_fields(source, dest, fields, substring_fields)
     renamed = renamed or []
     findings: list[Finding] = []
     # `renamed` also drives the regeneration exemption (P04 D3): declared

@@ -1532,17 +1532,23 @@ def _refuse_cargo_owner_stale_output(
 
     A merged field keeps its looser doctor hunt, so ``acme_core_next`` would be
     written by the Cargo row and then fail on ``package_name`` ``acme_core``.
+
+    The regeneration and reset hunts are paranoid, so ``-`` and ``_`` count as
+    boundaries. A destination Cargo name that extends a source name
+    (``acme-widget-next``) would land in a regenerated ``Cargo.lock`` and fail
+    that scan after the writes, so every hunt is checked against the
+    destination Cargo names. Other fields' outputs stay doctor-only: they do
+    not reach a lockfile, and a kept word in an email domain is legitimate.
     """
 
-    outputs = {row.to_value for row in rows if row.rewrite_surfaces}
-    outputs.update(cargo_field_values(destination).values())
+    cargo_outputs = set(cargo_field_values(destination).values())
+    outputs = {row.to_value for row in rows if row.rewrite_surfaces} | cargo_outputs
     for row in rows:
         if not is_cargo_field(row.provenance[0].name):
             continue
         for policy in row.hunts:
-            if policy.consumer != "doctor":
-                continue
-            for output in sorted(outputs):
+            candidates = outputs if policy.consumer == "doctor" else cargo_outputs
+            for output in sorted(candidates):
                 if hunt_occurs(row, policy, output):
                     raise ValidationError(
                         f"stale-source emission: {row.row_id} source "

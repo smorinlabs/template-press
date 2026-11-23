@@ -308,11 +308,12 @@ def _preflight(
     problems, honored = _honor_accepted_origin(
         list(mismatches(source, found)), found, accepted_origin
     )
-    # The synthetic destination is generated later, so only the source side of
-    # the table can be wrong here: comparing it with itself runs those checks.
-    table_problem = cargo_identity_problem(source, source)
-    if table_problem is not None:
-        problems.append(table_problem)
+    # Checked against the destination the sandbox will press toward, so a bad
+    # table exits 2 here with its own message, before any sandbox exists.
+    if source.cargo_names:
+        table_problem = cargo_identity_problem(source, synthesize_dest(source))
+        if table_problem is not None:
+            problems.append(table_problem)
     discovered = _discovered_map(found)
     if found.cargo is not None:
         # The no-table refusal needs the real destination, so it runs in rebrand.
@@ -371,7 +372,11 @@ def _preflight(
 
 
 def _equal_pair(source: Identity) -> tuple[str, str] | None:
-    """The first pair of SOURCE fields sharing the same value, or None."""
+    """The first pair of SOURCE fields sharing the same value, or None.
+
+    ``cargo_names`` is deliberately out of scope: a crate named after the repo
+    is the normal Cargo layout, and synthesis preserves that equality.
+    """
     items = list(source.as_dict_prompted().items())
     for i in range(len(items)):
         for j in range(i + 1, len(items)):
