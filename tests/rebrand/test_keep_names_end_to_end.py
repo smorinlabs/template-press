@@ -940,11 +940,19 @@ def test_glued_and_dotted_names_are_not_siblings(tmp_path, cli_name, rel, text):
     assert _press(target, _answers(tmp_path), "--dry-run") == 0
 
 
-def test_separator_without_a_name_part_is_not_a_join():
+def test_bare_separator_is_not_a_join_for_a_single_token_value():
+    source = replace(SOURCE, cli_name="tsc")
+    check = check_keep_surfaces(
+        [("a.md", "content", "pass --tsc or tsc-\n")], source, ()
+    )
+    assert check.undeclared == ()
+
+
+def test_bare_separator_touching_a_multi_part_value_is_a_sibling():
     check = check_keep_surfaces(
         [("a.md", "content", "pass --acme-cli or acme-cli-\n")], SOURCE, ()
     )
-    assert check.undeclared == ()
+    assert [item.token for item in check.undeclared] == ["--acme-cli", "acme-cli-"]
 
 
 @pytest.mark.parametrize(
@@ -1231,3 +1239,53 @@ def test_python_node_second_bin_becomes_cli_name(tmp_path, capsys):
     pressed = json.loads((target / "package.json").read_text(encoding="utf-8"))
     assert "web-cli" not in pressed["bin"]
     assert (target / "README.md").read_text(encoding="utf-8") == "run new-cli now\n"
+
+
+@pytest.mark.parametrize(
+    ("npm_name", "text", "token"),
+    [
+        ("@acme/widget", "acme-cli2", "acme-cli2"),
+        ("@acme/widget", "acme-clients", "acme-clients"),
+        ("@acme/widget", "xacme-cli", "xacme-cli"),
+        ("@acme/widget", "@acme/widget2", "@acme/widget2"),
+    ],
+)
+def test_glued_text_on_a_multi_part_value_is_a_sibling(npm_name, text, token):
+    source = replace(SOURCE, npm_name=npm_name)
+    check = check_keep_surfaces([("a.md", "content", f"{text}\n")], source, ())
+    assert [item.token for item in check.undeclared] == [token]
+
+
+@pytest.mark.parametrize(
+    "text", ["tsconfig", "web-server", "observe-mode", "vite-tsconfig-paths"]
+)
+def test_single_token_values_keep_the_both_sides_rule(text):
+    for cli_name in ("tsc", "serve"):
+        source = replace(SOURCE, cli_name=cli_name)
+        check = check_keep_surfaces([("a.md", "content", f"{text}\n")], source, ())
+        assert check.undeclared == ()
+
+
+@pytest.mark.parametrize("token", ["tscConfig", "tsc-helper"])
+def test_single_token_siblings_stay_refused(token):
+    source = replace(SOURCE, cli_name="tsc")
+    check = check_keep_surfaces([("a.md", "content", f"{token}\n")], source, ())
+    assert [item.token for item in check.undeclared] == [token]
+
+
+def test_glued_multi_part_name_full_press(tmp_path, capsys):
+    text = "run acme-cli2 now\n"
+    target = _make_target(tmp_path, LANGUAGES, {"docs/a.md": text})
+    code = _press(target, _answers(tmp_path))
+    err = capsys.readouterr().err
+    _assert_refused_clean(target, code)
+    assert 'keep_names = ["acme-cli2"]' in err
+    assert (target / "docs" / "a.md").read_text(encoding="utf-8") == text
+    (target / "press" / "press-rules.toml").write_text(
+        _keep_rules(["acme-cli2"]), encoding="utf-8"
+    )
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "keep")
+    assert _verify(target) == 0
+    assert _press(target, _answers(tmp_path)) == 0
+    assert (target / "docs" / "a.md").read_text(encoding="utf-8") == text

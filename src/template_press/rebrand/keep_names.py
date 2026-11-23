@@ -312,12 +312,15 @@ def _sibling_tokens(
     ``-``, ``_``, and a right-side lower-to-upper transition join names, so
     ``tscConfig`` is a sibling of ``tsc``. An alphanumeric glued to either side
     puts the match inside an unrelated word, so ``vite-tsconfig-paths`` is not.
+    A multi-part value (holding ``-``, ``_``, or ``/``) is not word-like, so any
+    name character touching it makes a sibling: ``acme-cli2``, ``xacme-cli``.
     A glued token is still reported when it is exactly an identity form that no
     row rewrites on this surface, because that form would survive the press.
     """
     tokens: list[str] = []
     occupied: list[Span] | None = None
     unrewritten = identity_forms - rewritten.tokens
+    multi_part = any(separator in value for separator in "-_/")
     pattern = re.compile(re.escape(value), re.IGNORECASE)
     position = 0
     while (match := pattern.search(text, position)) is not None:
@@ -336,7 +339,7 @@ def _sibling_tokens(
             text[match.end() : match.end() + 1].isalnum() and not camel_tail
         )
         is_join = _joined(left, left[-1:]) or _joined(right, right[:1]) or camel_tail
-        if not ((is_join and not inside_word) or token in unrewritten):
+        if not (multi_part or (is_join and not inside_word) or token in unrewritten):
             continue
         if not outside_kept(((start, end),), kept):
             continue
