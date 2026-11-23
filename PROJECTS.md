@@ -37,7 +37,7 @@ file by hand — see Conventions.
 | P12 | `[x]` | [Origin guard relaxation, closure diagnostics, warnings and docs](projects/P12-origin-guard-and-diagnostics.md) — base and four corrections merged; six follow-ups declined by owner on 2026-09-10 with limitations recorded |
 | P13 | `[x]` | [Hyphenated package-name false receipt](projects/P13-hyphenated-package-name-false-receipt.md) — no receipt while a hyphenated package name survives |
 | P13 | `[~]` | [Hyphenated package-name false receipt](projects/P13-hyphenated-package-name-false-receipt.md) — no receipt while a hyphenated package name survives |
-| P16 | `[~]` | [Explicit target languages](projects/P16-explicit-target-languages.md) — multi-language targets must declare `[rules] languages` or press exits 2 |
+| P16 | `[x]` | [Explicit target languages](projects/P16-explicit-target-languages.md) — multi-language targets must declare `[rules] languages` or press exits 2 |
 
 ## Conventions
 

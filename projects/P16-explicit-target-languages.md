@@ -5,7 +5,7 @@
 - **Design:** [explicit target languages design](../docs/superpowers/specs/2026-11-22-explicit-target-languages-design.md)
 - **Plan:** [implementation plan](../docs/superpowers/plans/2026-11-22-explicit-target-languages.md)
 
-## [~] Project P16: Explicit target languages (v5.0.0)
+## [x] Project P16: Explicit target languages (v5.0.0)
 **Goal/Requirement**: `press rebrand` and `press verify` exit 2 with no writes when a
 target has several languages and declares none in `[rules] languages`.
 - Declared targets behave the same through both commands.
@@ -21,10 +21,10 @@ target has several languages and declares none in `[rules] languages`.
 - [x] [P16-T02] Detect root manifests and resolve declarations
 - [x] [P16-T03] Guard `press rebrand` and `press verify`; declare this repository
 - [x] [P16-T04] Declare languages in disposable blueprint matrix clones
-- [~] [P16-T05] Document the guard and open the PR
+- [x] [P16-T05] Document the guard and open the PR
 - [x] [P16-TS01] Unit tests in `tests/rebrand/test_languages.py`
 - [x] [P16-TS02] CLI tests in `tests/rebrand/test_languages_cli.py`
-- [~] [P16-TS03] `just check` and `just matrix`
+- [x] [P16-TS03] `just check` and `just matrix`
 
 ### Deliverable
 ```text
