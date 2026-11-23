@@ -168,7 +168,7 @@ def test_matrix_script_runs_live_tests_in_parallel() -> None:
         for line in script.splitlines()
         if line.startswith("uv run pytest ")
     ]
-    assert len(commands) == 2
+    assert len(commands) == 3
     for command in commands:
         assert command[command.index("-n") + 1] == "auto"
         # `load` would ignore xdist_group and let shared-cache tests overlap.

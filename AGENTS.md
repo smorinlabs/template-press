@@ -129,13 +129,35 @@ identity validation → apply → verify → receipt). Command shape:
 `uv run press rebrand …`). The design contract is
 [`docs/design/0006-external-target-model.md`](docs/design/0006-external-target-model.md).
 The identity-field set (six required plus optional `display_name`, `npm_name`,
-and `cli_name`) and the target-authored `press/press-rules.toml` mechanisms
-(`[[replace]]` exact rules, `substring_rewrite_fields`, `keep_names`) are
-specified in
+`cli_name`, and `cargo_names`) and the target-authored `press/press-rules.toml`
+mechanisms (`[[replace]]` exact rules, `substring_rewrite_fields`, `keep_names`)
+are specified in
 [`docs/design/0008-identity-variants-and-replace-rules.md`](docs/design/0008-identity-variants-and-replace-rules.md).
 A target with several language manifests must declare `[rules] languages` in
 `press/press-rules.toml`, or `press rebrand` and `press verify` exit 2. npm
 and Bun targets are covered in the `press-target` skill.
+
+Rust targets, both single-crate and workspace, declare each exact Cargo name in
+`[identity.cargo_names]` and `[answers.cargo_names]`. When another identity
+manifest exists, list `"rust"` in `[rules] languages`, or omit it when
+`Cargo.toml` is tooling only. Put an independent sibling crate in `keep_names`.
+A tracked `Cargo.lock` needs this declaration:
+
+```toml
+[rules]
+extra_exclude_files = ["Cargo.lock"]
+
+[[regenerate]]
+file = "Cargo.lock"
+command = ["cargo", "update", "--workspace", "--offline"]
+```
+
+The command environment passes `HOME` but not `CARGO_HOME`, so a custom Cargo
+home needs dependencies vendored or cached in the default location. The press
+deliberately refuses a destination that extends a source name or contains
+another field's source spelling, a crate whose Rust identifier would be left
+behind, and a versioned string such as `acme-core-0.1.0`. See the `press-target`
+skill for the full rules.
 `provision`/`status` verbs arrive with the M6 Provision phase.
 
 ## Single source of truth

@@ -74,12 +74,15 @@ owner = "janedev"
 # display_name = "New CLI"   # optional; see Identity fields below
 # npm_name = "@jane/new-widget"   # optional; exact package.json name
 # cli_name = "new-cli"            # optional; exact package.json bin key
+
+# [answers.cargo_names]           # optional; see "Rust and Cargo targets"
+# core = "new-core"
 ```
 
 ## Identity fields
 
 `press/press-source.toml`'s `[identity]` table and `press-answers.toml`'s
-`[answers]` table share one field set — six required, three optional:
+`[answers]` table share one field set — six required, four optional:
 
 | Field | Required | Notes |
 |---|---|---|
@@ -92,10 +95,11 @@ owner = "janedev"
 | `display_name` | no | humanized product name, e.g. `"Py Launch Blueprint"`; absent = feature off |
 | `npm_name` | no | exact root `package.json` `name`; a scope is allowed (`@acme/widget`); at most 214 characters; absent = feature off |
 | `cli_name` | no | exact `package.json` `bin` key, e.g. `acme-cli` (lowercase letters, digits, `.`, `_`, `-`); absent = feature off |
+| `cargo_names` | no | table of role to exact Cargo package, library, or binary name; see "Rust and Cargo targets"; absent = feature off |
 
 `app_name_upper` (uppercased `app_name`) is derived, not settable, but is a
 valid `{app_name_upper}` placeholder in `[[replace]]` patterns (below).
-Declaring `display_name`, `npm_name`, or `cli_name` on only one side —
+Declaring `display_name`, `npm_name`, `cli_name`, or `cargo_names` on only one side —
 source declares it, answers doesn't, or vice versa — is a precondition
 failure (exit 2); declare each on both or neither. When declared,
 `display_name` is rewritten as a CLOSED set of exact
@@ -269,6 +273,120 @@ scan = "boundary"
   only `press verify` scans them.
 - Workspace-member identity is out of scope.
 
+## Rust and Cargo targets
+
+A single-crate repository or a Cargo workspace is a first-class target. A root
+`Cargo.toml` counts when it has `[package]` or `[workspace]`. Workspace members
+come from root `[workspace] members`, with globs expanded and `exclude` removed.
+A repository whose only manifest is in a subdirectory is not detected.
+
+### `cargo_names`
+
+`cargo_names` maps a stable role to one exact Cargo name. Declare the same roles
+on both sides:
+
+```toml
+# press/press-source.toml
+[identity.cargo_names]
+core = "acme-core"
+engine = "acme_engine"  # a [lib] name that differs from its package
+widget = "acme-widget"
+
+# press-answers.toml
+[answers.cargo_names]
+core = "zeta-core"
+engine = "zeta_engine"
+widget = "zeta-gadget"
+```
+
+- One role covers every use of one name. A package and a binary with the same
+  name share a role. A `[lib]` or `[[bin]]` with a different name gets its own.
+- Role keys match `^[a-z][a-z0-9_]*$`. Values match `^[A-Za-z][A-Za-z0-9_-]*$`.
+- `package_name` must be the underscore form of one source value, and its
+  destination must be the underscore form of the same role's destination. In a
+  virtual workspace, choose one member as the primary crate.
+- Each role rewrites both spellings, `acme-core` and `acme_core`, in content and
+  in paths. Crate directories, `members`, and path dependencies follow.
+- A renamed dependency keeps its local alias. In
+  `core = { package = "acme-core", path = "../acme-core" }`, only the `package`
+  and `path` values change.
+- Every Cargo name found in the manifests must be a source value, and every
+  source value must be found in a manifest. Otherwise the press exits 2.
+- `[[replace]]` patterns cannot reference `cargo_names`.
+- Without a source config, the press proposes the table. A virtual workspace has
+  no primary crate, so it exits 2 and asks for a source config.
+
+### Language declaration
+
+A target whose only identity manifest is `Cargo.toml` needs no declaration. A
+target that also has an identity-bearing `pyproject.toml` or `package.json` must
+declare `[rules] languages`:
+
+```toml
+# press/press-rules.toml
+[rules]
+languages = ["python", "rust"]  # PyO3 or maturin: check both manifests
+# languages = ["python"]        # Cargo.toml is tooling only: skip Cargo checks
+```
+
+The tooling-only choice skips Cargo identity checks, but a malformed root
+`Cargo.toml` still exits 2.
+
+### `keep_names` for sibling crates
+
+An independent crate whose name extends a declared name, such as
+`acme-core-extra`, is not rewritten. The sibling preflight exits 1 with nothing
+written until the name is declared:
+
+```toml
+[rules]
+keep_names = ["acme-core-extra"]
+```
+
+Comparison against identity values ignores case and `-`, `_`, `.`, and space, so
+`Acme_Widget` cannot keep crate `acme-widget`.
+
+### `Cargo.lock`
+
+`press` adds no hidden command. A target with `cargo_names` and a tracked
+`Cargo.lock` must declare regeneration, or the press exits 2 and prints this
+block:
+
+```toml
+[rules]
+extra_exclude_files = ["Cargo.lock"]
+
+[[regenerate]]
+file = "Cargo.lock"
+command = ["cargo", "update", "--workspace", "--offline"]
+```
+
+- The command renames the workspace entries and keeps locked third-party
+  versions. `cargo generate-lockfile` would move them, so do not substitute it.
+- A staged `Cargo.lock` counts as tracked, as does a force-added ignored one.
+- `press verify` lists `Cargo.lock` as exempt. The real press scans the
+  regenerated file after the command.
+- A failed regeneration exits 1 with no receipt and no automatic rollback.
+  Restore the target from git.
+- **`CARGO_HOME` limitation:** the command environment passes `HOME` but not
+  `CARGO_HOME`. A machine with a custom Cargo home, or without cached
+  dependencies, needs the dependencies vendored or cached in the default
+  location.
+
+### Deliberate refusals
+
+These stop the press before any write:
+
+| Situation | Example | Exit |
+|---|---|---|
+| Destination extends a source name | `acme-core` to `acme-core-next` | 2 |
+| Destination contains another field's source spelling | `zeta-acme` when `app_name = "acme"` | 2 |
+| A crate's Rust identifier would be left behind | crate `acme-widget`, no table, `repo_name` changes | 2 |
+| Versioned string that extends a declared name | `acme-core-0.1.0` in a README | 1 |
+
+For the first two, press in two steps through an intermediate identity. For a
+versioned string, edit the text or add the exact token to `keep_names`.
+
 ## Rules authoring (`press/press-rules.toml`)
 
 ### `[[replace]]` — exact glued-token rules
@@ -347,17 +465,17 @@ makes `press rebrand` and `press verify` exit 2 (nothing written) until
   and printed to stderr. Discovery and cross-checks in `press rebrand` and
   `press verify` follow this declaration: `["python"]` does not read
   `package.json`.
-- This press version supports `python` and `node`. `rust` is a reserved name,
-  so listing it exits 2 with "not supported by this press version".
+- This press version supports `python`, `node`, and `rust`.
 - Each listed language's manifest is cross-checked against the source config:
-  `["python"]` leaves `package.json` unchecked, `["node"]` does not check
-  `pyproject.toml`, and `["python", "node"]` checks both.
+  `["python"]` leaves `package.json` and `Cargo.toml` unchecked, `["node"]` does
+  not check `pyproject.toml`, and `["python", "rust"]` checks both of its
+  manifests.
 - Declaring a language with no such manifest, or whose manifest is a
   `[[remove]]` target, exits 2. A malformed, non-UTF-8, or non-regular root
   manifest also exits 2.
 - Breaking change for existing multi-language targets: add
-  `languages = ["python"]`, `["node"]`, or `["python", "node"]` under
-  `[rules]`.
+  `languages = ["python"]`, `["node"]`, `["rust"]`, or a combination such as
+  `["python", "node"]` under `[rules]`.
 
 ### Gotcha: `files` glob semantics
 

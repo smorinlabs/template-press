@@ -88,6 +88,23 @@ def test_tracked_lock_without_regeneration_refuses_in_cargo_problems(
     assert any("Cargo.lock" in p for p in problems)
 
 
+def test_staged_only_lock_counts_as_tracked(tmp_path: Path) -> None:
+    target = _repo(tmp_path, _files({}))
+    (target / "Cargo.lock").write_text(LOCK, encoding="utf-8")
+    _git(target, "add", "Cargo.lock")
+    problems = cargo_problems(target, _identity(CORE_MAP), None, load_rules(target))
+    assert any("Cargo.lock" in p for p in problems)
+
+
+def test_tracked_but_ignored_lock_counts_as_tracked(tmp_path: Path) -> None:
+    target = _repo(tmp_path, _files({".gitignore": "Cargo.lock\n"}))
+    (target / "Cargo.lock").write_text(LOCK, encoding="utf-8")
+    _git(target, "add", "-f", "Cargo.lock")
+    _git(target, "commit", "-q", "-m", "track an ignored lock")
+    problems = cargo_problems(target, _identity(CORE_MAP), None, load_rules(target))
+    assert any("Cargo.lock" in p for p in problems)
+
+
 def test_declared_lock_is_accepted(tmp_path: Path) -> None:
     target = _repo(
         tmp_path, _files({"Cargo.lock": LOCK, "press/press-rules.toml": BLOCK})

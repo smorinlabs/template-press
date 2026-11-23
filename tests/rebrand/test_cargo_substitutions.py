@@ -83,7 +83,7 @@ def _git(target: Path, *args: str) -> None:
 
 def _repo(tmp_path: Path, files: dict[str, str]) -> Path:
     target = tmp_path / "target"
-    target.mkdir()
+    target.mkdir(parents=True)
     for rel, text in files.items():
         path = target / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -170,9 +170,39 @@ def test_app_prefixed_underscore_sibling_is_refused_until_kept(tmp_path: Path) -
     assert text == "use acme_core_extra::x;\n"
 
 
-def test_substring_package_name_survives_cargo_ownership() -> None:
+def test_substring_row_survives_cargo_ownership_at_table_level_only(
+    tmp_path: Path,
+) -> None:
     rules = replace(DEFAULT_RULES, substring_rewrite_fields=frozenset({"package_name"}))
     assert _rewrite(_compile(rules=rules), "xacme_corey") == "xzeta_corey"
+    # The table keeps the glued match, but preflight refuses a multi-part token.
+    multi = _repo(tmp_path / "multi", {"src/lib.rs": "xacme_corey\n"})
+    found = check_target_keep_names(
+        multi, SOURCE, DEST, rules, frozenset(), ("rust",)
+    ).undeclared
+    assert [item.token for item in found] == ["xacme_corey"]
+
+
+def test_single_part_glued_token_passes_preflight_and_rewrites(
+    tmp_path: Path,
+) -> None:
+    rules = replace(DEFAULT_RULES, substring_rewrite_fields=frozenset({"package_name"}))
+    source = replace(
+        SOURCE,
+        package_name="acmecore",
+        app_name="tool",
+        cargo_names=(("core", "acmecore"),),
+    )
+    dest = replace(
+        DEST,
+        package_name="zetacore",
+        app_name="gear",
+        cargo_names=(("core", "zetacore"),),
+    )
+    assert _rewrite(_compile(source, dest, rules), "xacmecorey") == "xzetacorey"
+    single = _repo(tmp_path / "single", {"src/lib.rs": "xacmecorey\n"})
+    check = check_target_keep_names(single, source, dest, rules, frozenset(), ("rust",))
+    assert check.undeclared == ()
 
 
 def test_cargo_rows_rename_crate_directory(tmp_path: Path) -> None:

@@ -1390,8 +1390,10 @@ def _normalize_rows(
         )
         # A cli_name or npm_name equal to a content-only field (owner, author)
         # keeps its own row, or merging would drop its path rename. A substring
-        # field keeps its own row beside a stricter Cargo owner for the same
-        # reason: merging would drop its opted-in glued matches.
+        # field keeps its own row beside a stricter Cargo owner, or merging
+        # would drop its glued matches at table level. A real press rewrites
+        # such a match only for a single-part value; the keep-names preflight
+        # refuses a glued token around a multi-part value.
         if (
             duplicate_index is None
             or (

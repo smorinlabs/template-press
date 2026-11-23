@@ -104,6 +104,45 @@ retained decision record does not require those files to remain present.
    Spec: [TypeScript and Bun
    targets](../superpowers/specs/2026-11-22-typescript-bun-targets-design.md).
 
+7. **Exact Cargo names (P15, approved 2026-11-22).** `cargo_names` is an
+   optional table of stable role to exact Cargo package, library, or binary
+   name, declared on both sides or neither (one side only is exit 2). Each role
+   rewrites its exact name and its underscore form, in content and paths, with
+   `[A-Za-z0-9_-]` boundaries. So `acme-core/serde`, `dep:acme-core`, and
+   `acme_core::hi` match, and the sibling `acme-core-extra` does not.
+   `package_name` must be the underscore form of one source value, and its
+   destination must be the underscore form of the same role's destination.
+
+   Rust is a `[rules] languages` value. A sole root `Cargo.toml` activates it.
+   A target with another identity manifest declares `["python", "rust"]` to
+   check both, or omits `"rust"` when `Cargo.toml` is tooling only. An
+   independent sibling crate is declared in `keep_names`.
+
+   A target with `cargo_names` and a tracked `Cargo.lock` must declare
+   regeneration, or the press exits 2 and prints the block:
+
+   ```toml
+   [rules]
+   extra_exclude_files = ["Cargo.lock"]
+
+   [[regenerate]]
+   file = "Cargo.lock"
+   command = ["cargo", "update", "--workspace", "--offline"]
+   ```
+
+   That command keeps locked third-party versions, which
+   `cargo generate-lockfile` would move. Its environment passes `HOME` but not
+   `CARGO_HOME`, so a custom Cargo home needs dependencies vendored or cached in
+   the default location.
+
+   Deliberate refusals before any write: a destination that extends a source
+   name or contains another field's source spelling (exit 2), a crate whose
+   Rust identifier would be left behind (exit 2), and a versioned string such
+   as `acme-core-0.1.0` (sibling preflight, exit 1, unless the exact token is in
+   `keep_names`). The verifier derives its Cargo hunts directly from `Identity`.
+   Spec: [Rust and Cargo
+   targets](../superpowers/specs/2026-11-22-rust-cargo-targets-design.md).
+
 ## Independence guardrail (P06 D2)
 
 The rendered substitution table introduced by design 0009 is the conservative
