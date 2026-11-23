@@ -9,6 +9,7 @@ reset and G2's bun.lock regeneration proven against the real repo (R1b).
 
 import dataclasses
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -41,6 +42,43 @@ def clone(url: str, dest: Path) -> Path:
         capture_output=True,
     )
     return dest
+
+
+def declare_blueprint_languages(target: Path) -> None:
+    """Declare ``languages`` in a disposable blueprint clone (upstream cannot
+    yet), committing only ``press/press-rules.toml``. No-op once declared."""
+    rules_path = target / "press" / "press-rules.toml"
+    text = rules_path.read_text(encoding="utf-8") if rules_path.is_file() else ""
+    if "languages" in tomllib.loads(text).get("rules", {}):
+        return
+    declaration = 'languages = ["python"]\n'
+    table = re.search(r"^\[rules\][ \t]*\r?\n?", text, flags=re.MULTILINE)
+    if table is None:
+        sep = "" if not text or text.endswith("\n") else "\n"
+        text = f"{text}{sep}[rules]\n{declaration}"
+    else:
+        end = table.end()
+        lead = "" if table.group().endswith("\n") else "\n"
+        text = f"{text[:end]}{lead}{declaration}{text[end:]}"
+    rules_path.parent.mkdir(exist_ok=True)
+    rules_path.write_text(text, encoding="utf-8", newline="")
+    rel = "press/press-rules.toml"
+    _git(target, "add", "--", rel)
+    _git(
+        target,
+        "-c",
+        "user.name=matrix",
+        "-c",
+        "user.email=matrix@example.test",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "-q",
+        "-m",
+        "test: declare languages",
+        "--",
+        rel,
+    )
 
 
 @pytest.mark.parametrize(
@@ -235,6 +273,7 @@ def test_r1a_undeclared_blueprint_refused_loudly(tmp_path: Path, capsys):
     strip the committed press/ config after cloning."""
     target = clone(BLUEPRINT, tmp_path / "plb")
     shutil.rmtree(target / "press")
+    declare_blueprint_languages(target)
     answers = write_answers_file(tmp_path, DEST)
     code = main(
         [
@@ -264,6 +303,7 @@ def test_r1b_declared_blueprint_presses_clean(tmp_path: Path):
     exactly what this acceptance run must prove. Its source declares
     display_name, so the answers must supply one."""
     target = clone(BLUEPRINT, tmp_path / "plb")
+    declare_blueprint_languages(target)
     answers = write_answers_file(
         tmp_path, dataclasses.replace(DEST, display_name="Potato Launcher")
     )
@@ -295,6 +335,7 @@ def test_r1b_declared_blueprint_presses_clean(tmp_path: Path):
 @pytest.mark.live
 def test_r2_mismatched_identity_fails_loudly(tmp_path: Path):
     target = clone(BLUEPRINT, tmp_path / "plb2")
+    declare_blueprint_languages(target)
     # The conformed blueprint ships press/ — overwrite its source config
     # with a mismatched identity in place.
     (target / "press").mkdir(exist_ok=True)
