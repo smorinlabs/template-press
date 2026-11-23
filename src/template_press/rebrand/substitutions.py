@@ -7,7 +7,7 @@ import os
 import re
 import stat
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -22,6 +22,7 @@ from template_press.rebrand.identity import (
     occurs,
     pair_renames_paths,
     replace_token,
+    token_pattern,
 )
 from template_press.rebrand.inventory import (
     SurfaceEntry,
@@ -32,6 +33,7 @@ from template_press.rebrand.inventory import (
     select_rename_entries,
     select_symlink_entries,
 )
+from template_press.rebrand.keep_names import disjoint_from_kept, kept_spans
 from template_press.rebrand.matcher import find_occurrences
 from template_press.rebrand.pathing import ROOT_CONTROL
 from template_press.rebrand.pipeline import (
@@ -188,6 +190,7 @@ class SubstitutionTable:
 
     rows: tuple[RenderedSubstitution, ...]
     rename_plan: RenamePlan
+    keep_names: tuple[str, ...] = ()
 
 
 def row_matches_scope(row: RenderedSubstitution, posix: str) -> bool:
@@ -214,11 +217,55 @@ def _rewrite_project_name(text: str, from_value: str, to_value: str) -> str:
     return text
 
 
-def rewrite_with_row(row: RenderedSubstitution, text: str) -> str:
+def _rewrite_outside_kept(
+    row: RenderedSubstitution, text: str, kept: Sequence[tuple[int, int]]
+) -> str:
+    """Replace only matches sharing no character with a kept span.
+
+    The pattern runs over the whole text, so boundaries see true neighbors.
+    A suppressed match advances one character, not past its end, so it cannot
+    shadow a disjoint occurrence that overlaps it.
+    """
+
+    if row.matcher.algorithm == "literal" or row.matcher.substring:
+        pattern = re.compile(re.escape(row.from_value))
+    elif row.matcher.algorithm != "conservative":
+        raise ValidationError(
+            f"rewrite row {row.row_id} uses non-rewrite matcher "
+            f"{row.matcher.algorithm!r}"
+        )
+    elif row.matcher.identity_field is None:
+        raise ValidationError(f"rewrite row {row.row_id} has no identity field")
+    else:
+        pattern = token_pattern(
+            row.matcher.identity_field, row.from_value
+        ) or re.compile(re.escape(row.from_value))
+    pieces: list[str] = []
+    copied = 0
+    position = 0
+    while (match := pattern.search(text, position)) is not None:
+        if disjoint_from_kept(match.span(), kept):
+            pieces += [text[copied : match.start()], row.to_value]
+            copied = position = match.end()
+        else:
+            position = match.start() + 1
+    pieces.append(text[copied:])
+    return "".join(pieces)
+
+
+def rewrite_with_row(
+    row: RenderedSubstitution,
+    text: str,
+    *,
+    keep_names: Sequence[str] = (),
+) -> str:
     """Apply one row's matcher without consulting source configuration."""
 
     if row.provenance[0].kind == "manifest_name":
         return _rewrite_project_name(text, row.from_value, row.to_value)
+    kept = kept_spans(text, keep_names) if keep_names else ()
+    if kept:
+        return _rewrite_outside_kept(row, text, kept)
     if row.matcher.algorithm == "literal" or row.matcher.substring:
         return text.replace(row.from_value, row.to_value)
     if row.matcher.algorithm != "conservative":
@@ -788,7 +835,9 @@ def _validate_visibility_projection(
                     if "content" in row.rewrite_surfaces and row_matches_scope(
                         row, rel
                     ):
-                        projected = rewrite_with_row(row, projected)
+                        projected = rewrite_with_row(
+                            row, projected, keep_names=rules.keep_names
+                        )
                 if projected != text:
                     raise SafetyError(
                         f"content rewrite would change Git visibility input "
@@ -1432,4 +1481,5 @@ def compile_substitution_table(
     return SubstitutionTable(
         rows=rows,
         rename_plan=rename_plan,
+        keep_names=rules.keep_names,
     )

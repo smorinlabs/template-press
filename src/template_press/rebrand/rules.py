@@ -275,6 +275,9 @@ class Rules:
     # Declared target languages ([rules] languages), appended last for the same
     # positional-safety reason; None means the target declared nothing.
     languages: tuple[str, ...] | None = None
+    # Exact names independent of the identity; every rewrite row leaves them
+    # unchanged. Appended last for positional safety.
+    keep_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -337,6 +340,7 @@ _RULES_KEYS = frozenset(
         "substring_rewrite_fields",
         "display_forms",
         "languages",
+        "keep_names",
     }
 )
 
@@ -1450,6 +1454,7 @@ def _parse_rules(target: Path) -> _ParsedRules:
             substring_rewrite_fields=substring_fields,
             display_forms=tuple(dict.fromkeys(display_forms_list)),
             languages=languages,
+            keep_names=tuple(dict.fromkeys(_str_list(table, "keep_names", []))),
         ),
         regenerate=regenerate,
         reset=reset,

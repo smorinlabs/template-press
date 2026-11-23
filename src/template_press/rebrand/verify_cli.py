@@ -68,6 +68,7 @@ from template_press.rebrand.inventory import (
     capture_surface_snapshot,
     core_excludes_from_snapshot,
 )
+from template_press.rebrand.keep_names import validate_keep_names
 from template_press.rebrand.languages import (
     check_target_languages,
     render_ignored_languages,
@@ -578,6 +579,7 @@ def verify_command(argv: list[str] | None = None) -> int:
     exempt: list[tuple[str, str]] = []
     try:
         synth = synthesize_dest(source)
+        validate_keep_names(rules.keep_names, source, synth, synthetic_dest=True)
         with owned_sandbox(target) as dest_root:
             sandbox = make_sandbox(target, dest_root)
             try:

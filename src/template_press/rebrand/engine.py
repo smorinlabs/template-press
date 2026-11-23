@@ -902,7 +902,7 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                     row, rel.as_posix()
                 ):
                     continue
-                rewritten = rewrite_with_row(row, preview)
+                rewritten = rewrite_with_row(row, preview, keep_names=table.keep_names)
                 if rewritten == preview:
                     continue
                 provenance = row.provenance[0]
@@ -1301,7 +1301,7 @@ def _apply_replacements(
         new_text = text
         for row in table.rows:
             if "content" in row.rewrite_surfaces and row_matches_scope(row, rel):
-                new_text = rewrite_with_row(row, new_text)
+                new_text = rewrite_with_row(row, new_text, keep_names=table.keep_names)
         if new_text != text:
             # Route through safe_write: its assert_under_root closes the
             # ancestor-symlink hole (a symlinked ancestor would write OUTSIDE

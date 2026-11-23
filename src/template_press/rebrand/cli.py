@@ -43,6 +43,7 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
 )
+from template_press.rebrand.keep_names import validate_keep_names
 from template_press.rebrand.languages import (
     check_target_languages,
     render_ignored_languages,
@@ -756,6 +757,7 @@ def main(argv: list[str] | None = None) -> int:
         # Pipeline stability, ambiguity, and termination are validated together
         # by build_plan before any write.  Keeping the target rules here ensures
         # the adapter preserves each field's effective substring posture.
+        validate_keep_names(rules.keep_names, source, dest)
         prior_removed = removed_files_from_receipt(receipt_text)
         removal_plan = plan_removals(
             target,
