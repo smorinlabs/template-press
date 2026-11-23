@@ -35,6 +35,7 @@ file by hand — see Conventions.
 | P11 | `[x]` | [Directory removals ([[remove]] dir) and removal phase](projects/P11-directory-removals.md) — frozen plan-time expansion, per-directory clean check, gitlink/symlink refusal, receipt/verify parity (E5c) |
 | P11A | `[x]` | [CI speed and cost optimization](projects/P11A-ci-speed-and-cost-optimization.md) — closeout effective on PR #124 merge; diagnostics and gate repairs, no performance adoption, Windows job splitting declined |
 | P12 | `[x]` | [Origin guard relaxation, closure diagnostics, warnings and docs](projects/P12-origin-guard-and-diagnostics.md) — base and four corrections merged; six follow-ups declined by owner on 2026-09-10 with limitations recorded |
+| P13 | `[~]` | [Hyphenated package-name false receipt](projects/P13-hyphenated-package-name-false-receipt.md) — no receipt while a hyphenated package name survives |
 
 ## Conventions
 

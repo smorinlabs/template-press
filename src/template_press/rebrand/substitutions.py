@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 import stat
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -15,6 +17,7 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
     display_forms,
+    distinct_hyphen_form,
     occurs,
     replace_token,
 )
@@ -52,7 +55,7 @@ from template_press.rebrand.safety import (
 Surface = Literal["content", "path", "symlink"]
 HuntConsumer = Literal["doctor", "reset_stub", "reset_path", "regeneration"]
 ScopeCoordinates = Literal["source", "current_or_source"]
-ProvenanceKind = Literal["identity", "display_form", "replace_rule"]
+ProvenanceKind = Literal["identity", "display_form", "replace_rule", "manifest_name"]
 
 RENAME_FIELDS: frozenset[str] = frozenset(
     {"package_name", "repo_name", "app_name", "app_name_upper"}
@@ -195,9 +198,29 @@ def row_matches_scope(row: RenderedSubstitution, posix: str) -> bool:
     return _scope_matches(row.scope, posix)
 
 
+def _project_name(text: str) -> object:
+    try:
+        return tomllib.loads(text).get("project", {}).get("name")
+    except (tomllib.TOMLDecodeError, AttributeError):
+        return None
+
+
+def _rewrite_project_name(text: str, from_value: str, to_value: str) -> str:
+    """Replace only the assignment that TOML resolves to ``[project].name``."""
+
+    before = _project_name(text)
+    for match in re.finditer(re.escape(from_value), text):
+        candidate = text[: match.start()] + to_value + text[match.end() :]
+        if _project_name(candidate) != before:
+            return candidate
+    return text
+
+
 def rewrite_with_row(row: RenderedSubstitution, text: str) -> str:
     """Apply one row's matcher without consulting source configuration."""
 
+    if row.provenance[0].kind == "manifest_name":
+        return _rewrite_project_name(text, row.from_value, row.to_value)
     if row.matcher.algorithm == "literal" or row.matcher.substring:
         return text.replace(row.from_value, row.to_value)
     if row.matcher.algorithm != "conservative":
@@ -1028,6 +1051,105 @@ def _identity_rows(
     return rows
 
 
+def _manifest_text(target: Path | None) -> tuple[str, str] | None:
+    """The root manifest's text and literal ``[project].name``, if readable."""
+
+    if target is None:
+        return None
+    try:
+        text = read_regular_nofollow(target / "pyproject.toml").decode("utf-8")
+        name = tomllib.loads(text).get("project", {}).get("name")
+    except (OSError, SafetyError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    return (text, name) if isinstance(name, str) else None
+
+
+def _hyphen_rows(
+    source: Identity,
+    destination: Identity,
+    target: Path | None,
+) -> list[RenderedSubstitution]:
+    """Rewrite a manifest-proven hyphen name; otherwise only hunt for it."""
+
+    hyphen = distinct_hyphen_form(source, destination)
+    if hyphen is None:
+        return []
+    field = "package_name_hyphen"
+    manifest = _manifest_text(target)
+    proven = manifest is not None and manifest[1] == hyphen
+    matcher = MatcherSpec("conservative", field, False)
+    return [
+        RenderedSubstitution(
+            row_id=f"identity:{field}",
+            provenance=(Provenance(kind="identity", name=field),),
+            matcher=matcher,
+            from_value=hyphen,
+            to_value=destination.package_name.replace("_", "-"),
+            rewrite_surfaces=(
+                frozenset({"content", "path"}) if proven else frozenset()
+            ),
+            hunts=(
+                _policy(
+                    "doctor",
+                    matcher,
+                    frozenset({"content", "path", "symlink"}),
+                    "current_or_source",
+                ),
+            ),
+            scope=Scope(),
+        )
+    ]
+
+
+def _manifest_name_rows(
+    source: Identity, destination: Identity, target: Path | None
+) -> list[RenderedSubstitution]:
+    """Keep ``[project].name`` on package_name when another field owns it."""
+
+    hyphen = source.package_name.replace("_", "-")
+    to_value = destination.package_name.replace("_", "-")
+    if (
+        hyphen == source.package_name
+        or hyphen == to_value
+        or distinct_hyphen_form(source, destination) is not None
+    ):
+        return []
+    manifest = _manifest_text(target)
+    if manifest is None or manifest[1] != hyphen:
+        return []
+    source_values = source.as_dict()
+    destination_values = destination.as_dict()
+    owners = [
+        name
+        for name, value in source_values.items()
+        if name != "package_name" and value == hyphen
+    ]
+    if owners and all(destination_values.get(name) == to_value for name in owners):
+        return []
+    text = manifest[0]
+    assignment = re.compile(
+        rf"(?m)^[ \t]*name[ \t]*=[ \t]*([\"']){re.escape(hyphen)}\1"
+    )
+    for line in assignment.finditer(text):
+        from_value = line.group(0).lstrip()
+        rewritten = from_value.replace(hyphen, to_value)
+        if _rewrite_project_name(text, from_value, rewritten) == text:
+            continue
+        return [
+            RenderedSubstitution(
+                row_id="manifest:name",
+                provenance=(Provenance(kind="manifest_name", name="package_name"),),
+                matcher=MatcherSpec("literal", None, False),
+                from_value=from_value,
+                to_value=rewritten,
+                rewrite_surfaces=frozenset({"content"}),
+                hunts=(),
+                scope=Scope(("pyproject.toml",)),
+            )
+        ]
+    return []
+
+
 def _merge_row_metadata(
     owner: RenderedSubstitution,
     additions: tuple[RenderedSubstitution, ...],
@@ -1253,8 +1375,17 @@ def compile_substitution_table(
     source.validate()
     destination.validate()
     rows = _normalize_rows(
-        _declared_rows(source, destination, rules),
-        _identity_rows(source, destination, rules),
+        [
+            *_manifest_name_rows(source, destination, target),
+            *_declared_rows(source, destination, rules),
+        ],
+        sorted(
+            [
+                *_identity_rows(source, destination, rules),
+                *_hyphen_rows(source, destination, target),
+            ],
+            key=lambda row: -len(row.from_value),
+        ),
         rules,
     )
     rename_snapshot = SurfaceSnapshot(
