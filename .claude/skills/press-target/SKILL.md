@@ -35,9 +35,12 @@ mismatch; a completed run is verified leak-free before a receipt is written.
    printed by the dry run; re-run with `--accept-discovery` only after the
    user confirms the identity is right.
 4. Apply: same command without `--dry-run`.
-5. Interpret exit codes: 0 = verified + receipt written; 1 = leaks found,
-   NO receipt (the target is already rewritten — restore it first:
-   `git -C <TARGET> checkout . && git clean -fd`; then fix the root cause,
+5. Interpret exit codes: 0 = verified + receipt written; 1 = NO receipt.
+   A pre-write preflight refusal (`nothing written, no receipt`) needs no
+   cleanup. A post-write failure (`rebrand is INCOMPLETE`) left the target
+   rewritten, so restore it first: run `git -C <TARGET> checkout .`, preview
+   untracked removals with `git -C <TARGET> clean -nd`, then run
+   `git -C <TARGET> clean -fd`. Then fix the root cause,
    or — for surviving identity that is VALID to keep, e.g. vendored code or
    historical docs — add its directory NAME to both `extra_exclude_dirs`
    (skips rewriting) and `verify_ignore` (skips the leak scan) in
@@ -94,7 +97,8 @@ owner = "janedev"
 valid `{app_name_upper}` placeholder in `[[replace]]` patterns (below).
 Declaring `display_name`, `npm_name`, or `cli_name` on only one side —
 source declares it, answers doesn't, or vice versa — is a precondition
-failure (exit 2); declare each on both or neither. When declared, it is rewritten as a CLOSED set of exact
+failure (exit 2); declare each on both or neither. When declared,
+`display_name` is rewritten as a CLOSED set of exact
 forms (spaced / PascalCase / camelCase), each replaced with the
 same-shaped form of the new name; narrow the set with
 `[rules] display_forms` in `press/press-rules.toml` (default: all three). See
@@ -204,6 +208,8 @@ receipt, and prints each token with the `keep_names` line that would keep it.
   and `observe-mode` are allowed. Otherwise a directly touching `-` or `_` or a
   camelCase tail is a sibling, so `tsc-helper`, `tscConfig`, `--tsc`, `_tsc_`,
   `_tsc`, and `tsc_` are refused.
+- Scoped basenames: an unscoped value that is the basename of another package
+  (`@vendor/tsc`) is a sibling, on content and path surfaces.
 - Exempt: a token that an applicable rewrite row or `[[replace]]` rule
   rewrites on that exact path and surface, and any file planned for
   `[[remove]]`.

@@ -17,7 +17,8 @@ changing any existing target's outcome.
   manifests declares `[rules] languages`.
 - Add optional exact `npm_name` and `cli_name` identity fields.
 - Add an explicit `keep_names` list honored by every rewrite and scan.
-- Refuse undeclared same-prefix names before any write, with a sibling preflight.
+- Refuse undeclared same-prefix names before any write, with a sibling preflight
+  over scanned UTF-8 surfaces. Non-UTF-8 files are scanned only by `press verify`.
 - Exempt declared `package-lock.json` and `pnpm-lock.yaml` regeneration from
   hermetic verify, and suggest declarations without running them.
 - Prove npm and Bun targets end to end with synthetic fixtures.
@@ -42,3 +43,7 @@ Prerequisites landed before this work: PR #152 and PR #156.
 - [x] [P14-T07] Handle npm, Bun, and pnpm lockfiles
 - [x] [P14-TS01] Prove npm, Bun, and pnpm targets end to end
 - [ ] [P14-T08] Update documentation and open the PR
+- [ ] [P14-T09] Remove the false refusal when a kept name directly abuts a
+      rewritten name: `@acme/widget-extra@acme/widget` with
+      `keep_names = ["@acme/widget-extra"]` exits 1 from `press verify` and
+      `press rebrand`, with no writes and no receipt

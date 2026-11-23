@@ -65,8 +65,11 @@ Before planning anything, the press cross-checks the committed
 `press/press-source.toml` (the **source** identity) against what the target
 actually shows — `pyproject.toml` (or a Node target's `package.json`), the `[project.scripts]` key, the package
 layout, and the `origin` remote's GitHub URL, from which `owner` and
-`repo_name` are read. Any disagreement is the silent-half-rebrand guard's
-business and exits `2` with nothing written.
+`repo_name` are read. A disagreement in these checks is the silent-half-rebrand
+guard's business and exits `2` with nothing written. For `package.json`, only a
+declared `npm_name` or `cli_name` mismatch is fatal; `author`, `email`, derived
+`package_name`, `bin` versus `app_name`, and `repository` disagreements print a
+`warning:` and do not stop the press.
 
 `origin` is the one input that legitimately runs ahead of the source-config:
 the usual bootstrap is `gh repo create --template …` (or a clone whose
@@ -706,10 +709,12 @@ If the pressed tree fails the check, the command exits `1`, writes no receipt,
 leaves `press/press-source.toml` unchanged, and prints how to restore the target.
 
 This press version supports `python` and `node`. `rust` is a reserved name, so
-listing it exits `2` with `not supported by this press version`. Discovery and
-cross-checks in `press rebrand` and `press verify` follow the declaration:
-`["python"]` does not read `package.json`, `["node"]` does not read
-`pyproject.toml`, and `["python", "node"]` reads both.
+listing it exits `2` with `not supported by this press version`. Language
+detection always reads the root `pyproject.toml`, `package.json`, and
+`Cargo.toml`, whatever the declaration says, and a malformed root manifest exits
+`2`. The declaration then selects which detected languages are checked:
+identity discovery and cross-checks in `press rebrand` and `press verify` use
+only the declared languages.
 
 This is a breaking change for multi-language targets that pressed cleanly
 before. To fix the refusal, add the supported languages under `[rules]`:
@@ -754,7 +759,8 @@ case and separator variants, exits `2`. Leading and trailing characters outside
 `[A-Za-z0-9@/_-]` are ignored first, then edge `/` and `@`, keeping the `@` of a
 scoped name. So `"acme-cli"`, `/acme-cli`, and `@acme` (for `owner = "acme"`)
 also exit `2`. An entry with an edge `-` or `_` (`--acme-cli`) is compared exactly
-and may be kept.
+and may be kept. A directory rename that would change a kept name in a path
+exits `2` before any write.
 
 ```toml
 [rules]
@@ -769,13 +775,16 @@ either side is a sibling. For a single-token value (`tsc`, `serve`), an
 alphanumeric character glued to either side means an unrelated word:
 `tsconfig`, `server`, `web-server`, and `observe-mode` pass. Otherwise a directly
 touching `-` or `_` or a camelCase tail is a sibling, so `tsc-helper`,
-`tscConfig`, `--tsc`, `_tsc_`, `_tsc`, and `tsc_` are refused. Tokens rewritten by an applicable row or
+`tscConfig`, `--tsc`, `_tsc_`, `_tsc`, and `tsc_` are refused. An unscoped value
+that is the basename of another scoped package (`@vendor/tsc`) is also a sibling,
+on content and path surfaces. Tokens rewritten by an applicable row or
 `[[replace]]` rule are exempt, and planned `[[remove]]` files are skipped.
 
 **Lockfiles.** `package-lock.json`, `bun.lock`, `uv.lock`, and `pnpm-lock.yaml`
 are exempt from hermetic `press verify` when a `[[regenerate]]` declares them.
 The press only suggests commands; it never runs an undeclared one. A pnpm
-target must also list `pnpm-lock.yaml` in `[rules] extra_exclude_files`. The
+target must also list `pnpm-lock.yaml` in `[rules] extra_exclude_files`, and the
+suggested pnpm block says so in a comment. The
 suggested blocks use `scan = "boundary"`:
 
 | Lockfile | Suggested `command` |
