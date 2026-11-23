@@ -39,6 +39,8 @@ _NAME_CHARS = frozenset(
 _REFUSED_CATEGORIES = frozenset({"Cc", "Zl", "Zp"})
 _NORMALIZED_AWAY = str.maketrans("", "", "-_. ")
 _REPORT_LIMIT = 20
+# The case-sensitive lower-to-upper tail of ``matcher.identity_pattern``.
+_CAMEL_TAIL = re.compile(r"[a-z][A-Z]")
 
 
 @dataclass(frozen=True)
@@ -307,7 +309,8 @@ def _sibling_tokens(
 ) -> list[str]:
     """Tokens joining ``value`` to another name part, unless a row rewrites them.
 
-    Only ``-`` and ``_`` join names, so ``tsconfig`` is no sibling of ``tsc``.
+    ``-``, ``_``, and a right-side lower-to-upper transition join names, so
+    ``tscConfig`` is a sibling of ``tsc`` and ``tsconfig`` is not.
     A glued token is still reported when it is exactly an identity form that no
     row rewrites on this surface, because that form would survive the press.
     """
@@ -330,6 +333,7 @@ def _sibling_tokens(
         if not (
             _joined(left, left[-1:])
             or _joined(right, right[:1])
+            or _CAMEL_TAIL.match(text, match.end() - 1) is not None
             or token in unrewritten
         ):
             continue

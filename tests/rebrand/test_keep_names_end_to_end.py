@@ -1063,3 +1063,54 @@ def test_non_applying_replace_rule_still_refuses(tmp_path, capsys, extra, files)
     code = _press(target, _answers(tmp_path))
     _assert_refused_clean(target, code)
     assert "acme-cli-helper" in capsys.readouterr().err
+
+
+def _cli_target(tmp_path: Path, cli_name: str, rules: str, text: str) -> Path:
+    source = replace(SOURCE, cli_name=cli_name)
+    target = _with_source(tmp_path, source, rules, {"docs/a.md": text})
+    manifest = json.loads((target / "package.json").read_text(encoding="utf-8"))
+    manifest["bin"] = {cli_name: "./bin/run.js"}
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "bin")
+    return target
+
+
+@pytest.mark.parametrize(
+    ("cli_name", "token"), [("acme-cli", "acme-cliFoo"), ("tsc", "tscConfig")]
+)
+def test_camel_case_tail_is_a_sibling(tmp_path, capsys, cli_name, token):
+    target = _cli_target(tmp_path, cli_name, LANGUAGES, f"see {token} here\n")
+    code = _press(target, _answers(tmp_path))
+    err = capsys.readouterr().err
+    _assert_refused_clean(target, code)
+    assert token in err
+    assert f"keep_names = {json.dumps([token])}" in err
+    assert _verify(target) == 1
+
+
+@pytest.mark.parametrize(
+    ("cli_name", "token"), [("acme-cli", "acme-cliFoo"), ("tsc", "tscConfig")]
+)
+def test_declared_camel_case_token_survives(tmp_path, cli_name, token):
+    text = f"see {token} here\n"
+    target = _cli_target(tmp_path, cli_name, _keep_rules([token]), text)
+    assert _verify(target) == 0
+    assert _press(target, _answers(tmp_path)) == 0
+    assert (target / "docs" / "a.md").read_text(encoding="utf-8") == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["tsconfig.json\n", "TSConfig\n", "TSCONFIG\n", "preTsc\n"],
+)
+def test_non_transition_glue_is_not_a_sibling(text):
+    source = replace(SOURCE, cli_name="tsc")
+    check = check_keep_surfaces([("a.md", "content", text)], source, ())
+    assert check.undeclared == ()
+
+
+def test_server_is_still_not_a_sibling_of_serve():
+    source = replace(SOURCE, cli_name="serve")
+    check = check_keep_surfaces([("a.md", "content", "the server\n")], source, ())
+    assert check.undeclared == ()
