@@ -379,6 +379,17 @@ def test_verify_scans_declared_new_fields(tmp_path, capsys):
     assert "quux-lib-extra" in report
 
 
+def test_verify_is_clean_when_new_fields_are_fully_rewritten(tmp_path):
+    target = _make_target(
+        tmp_path,
+        files={
+            "bin/acme-cli.js": "#!/usr/bin/env node\n",
+            "docs/note.md": "install @acme/widget-api/sub and run acme-cli\n",
+        },
+    )
+    assert verify_command(["--target", str(target)]) == 0
+
+
 def test_verify_flags_sibling_cli_name(tmp_path, capsys):
     source = replace(SOURCE, owner="zetalabs")
     target = _make_target(
