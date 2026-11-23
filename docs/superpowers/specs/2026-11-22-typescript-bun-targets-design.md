@@ -1,6 +1,6 @@
 # TypeScript and Bun targets: design
 
-- **Status:** Draft for owner review
+- **Status:** Implemented on `feat/typescript-targets`; behavior below matches the code
 - **Created:** 2026-11-22
 - **Branch:** `feat/typescript-targets`
 - **Applies to:** `src/template_press/rebrand/` (`discovery.py`, `identity.py`,
@@ -97,8 +97,10 @@ preserve that equality or the press exits 2. For example, `npm_name` equal to
   `@acme/widget/sub` rewrites its package prefix. `@acme/widget-extra` is not
   rewritten by the `npm_name` row.
 - A same-prefix sibling such as `@acme/widget-extra` fails loudly by default.
-  `press verify` and the regeneration scan report it as a source identity
-  occurrence unless the target declares it in `keep_names`.
+  A sibling preflight runs before any rewrite in `press rebrand` and
+  `press verify`: it exits 1 with no writes and no receipt and names each
+  token with the `keep_names` line that would keep it, unless the target has
+  declared it. See "Sibling preflight" below.
 - These rows run before the shorter identity rows, so `owner` or `repo_name`
   cannot rewrite part of a scoped name first.
 - `synthesize_dest` preserves shape. A scoped source yields a synthetic scoped
@@ -130,8 +132,11 @@ keep_names = ["@acme/widget-extra"]
   subtracts kept spans itself. It does not obtain them from the substitution
   table.
 - **Safety limits:** an entry equal to a source or destination identity value,
-  or to a rendered `display_name` form, exits 2 before any write. Empty entries,
-  control characters, and non-string entries also exit 2. A match that merely
+  or to a rendered `display_name` form, exits 2 before any write. Equality is
+  tested after case-folding and removing `-`, `_`, `.`, and spaces, so case and
+  separator variants are refused. An entry that starts or ends with `-` or `_`
+  (for example `--acme-cli`) is compared exactly, so it may be kept. Empty
+  entries, control characters, and non-string entries also exit 2. A match that merely
   overlaps a kept span, without lying wholly inside it, is still a leak.
 - **Visibility:** the dry-run plan and the receipt list the kept names. An entry
   with no occurrence produces a non-fatal stale-entry warning on stderr.
@@ -140,18 +145,37 @@ keep_names = ["@acme/widget-extra"]
 - **Failure guidance:** a leak inside a longer same-prefix token names that token
   and shows the `keep_names` line that would keep it, if it is truly independent.
 
+### Sibling preflight
+
+Before any rewrite, `press rebrand` and `press verify` scan the rewrite surface
+(content, paths, and symlink targets) for a token that joins a source
+`npm_name` or `cli_name` to another name part. A token is a sibling unless one
+`keep_names` entry wholly covers it. A finding exits 1, writes nothing, and
+writes no receipt.
+
+- **Multi-part values** (`acme-cli`, `@acme/widget`): any name character touching
+  either side makes a sibling, for example `acme-cli2`, `xacme-cli`, and
+  `acme-cli-helper`.
+- **Single-token values** (`tsc`, `serve`): both sides must be real boundaries
+  or joins, and at least one side must be a `-` or `_` join or a camelCase
+  tail. `tsconfig`, `server`, and `web-server` are allowed. `tsc-helper` and
+  `tscConfig` are refused.
+- **Exempt:** a token that an applicable rewrite row or `[[replace]]` rule
+  rewrites on that exact path and surface, and files planned for `[[remove]]`.
+- **Outside the preflight:** non-UTF-8 files are not scanned by the preflight or
+  the inline doctor; only `press verify` scans them.
+
 ### Discovery
 
 **Manifest selection.** Owner decision, 2026-11-22: this design no longer gives
 `pyproject.toml` precedence. When a target has more than one root manifest
-declaring a project identity, `press` exits 2 before any write unless the target
-declares which languages apply. That guard is owned by
-`feat/explicit-target-languages`, lands before this work, and defines the final
-key and values. The approved breaking change includes Python repositories with a
-named tooling `package.json`.
-
-This work keeps manifest selection in one function and rebases onto the guard. A
-`pyproject.toml` without `[project]` does not count as an identity manifest.
+declaring a project identity, `press` exits 2 before any write unless
+`[rules] languages` in `press/press-rules.toml` declares which languages apply.
+The supported values are `python` and `node`; `rust` is reserved. Discovery and
+cross-checks in `press rebrand` and `press verify` follow that declaration. The
+approved breaking change includes Python repositories with a named tooling
+`package.json`. A `pyproject.toml` without `[project]` does not count as an
+identity manifest.
 
 **Fields read from `package.json`:**
 
@@ -159,7 +183,7 @@ This work keeps manifest selection in one function and rebases onto the guard. A
 |---|---|---|
 | `name` | string | `npm_name`, and `package_name` from the unscoped part with `-` normalized to `_` |
 | `author` | `Name <email> (url)` or `{name, email}` | `author`, `email` |
-| `bin` | string or object | CLI names; a string uses the unscoped package name |
+| `bin` | string or object | CLI names; a string uses the unscoped package name and has no key of its own, so it never proposes `cli_name` |
 | `repository` | string or `{url}` | `owner` and `repo_name` only when git origin is unavailable |
 
 Absent or malformed values are undiscoverable. They are never guessed.
@@ -181,8 +205,11 @@ source config when every required field resolves:
 - `npm_name` is proposed only when the manifest name differs from both proposed
   `repo_name` and `package_name`.
 - `app_name` comes from the first `bin` key when it is a valid identifier.
-- A hyphenated first `bin` key sets `cli_name` and normalizes `-` to `_` for
-  `app_name`.
+- A hyphenated first object-form `bin` key sets `cli_name` and normalizes `-` to
+  `_` for `app_name`.
+- Several object-form `bin` keys that no other proposed value covers exit 2 and
+  require a hand-written source config that lists each independent CLI in
+  `keep_names`.
 - Missing `author`, `email`, or `bin` keeps the current exit 2 and names the
   manifest keys to add or the source config to write.
 
@@ -190,19 +217,35 @@ source config when every required field resolves:
 
 - `REGENERATE_EXEMPTIBLE` becomes `uv.lock`, `bun.lock`, `package-lock.json`, and
   `pnpm-lock.yaml`. An exemption still requires a declared `[[regenerate]]`.
+  The press only suggests commands and never runs an undeclared one.
 - The default `exclude_files` does not gain `pnpm-lock.yaml`. Adding it would make
   existing pnpm targets fail the excluded-file preflight. A pnpm target adds it
   through `extra_exclude_files` and declares regeneration.
-- When the preflight refuses an undeclared `bun.lock` or `package-lock.json`, the
-  error prints a paste-ready `[[regenerate]]` block. The press does not run it.
+- When the preflight refuses an undeclared `bun.lock`, `package-lock.json`, or
+  an opted-in `pnpm-lock.yaml`, the error prints a paste-ready `[[regenerate]]`
+  block with `scan = "boundary"`. The press does not run it.
 
 | Lockfile | Suggested command |
 |---|---|
 | `package-lock.json` | `npm install --package-lock-only --silent` |
-| `bun.lock` | `bun install --lockfile-only` |
+| `bun.lock` | `sh -c 'command -v bun >/dev/null 2>&1 \|\| exit 127; rm -f bun.lock && exec bun install --lockfile-only'` |
 | `pnpm-lock.yaml` | `pnpm install --lockfile-only` |
 
+The Bun command deletes and rebuilds the lock, because Bun keeps a stale
+workspace name in an existing lock. The `command -v` guard leaves the lock
+intact when `bun` is missing. The block is POSIX-only; Windows targets declare
+their own command.
+
 The real press still runs the post-command scan on each regenerated lockfile.
+
+### Known limits
+
+- Keeping an unscoped npm basename while changing `package_name` exits 1.
+- A scope-preserving press with a changed `owner` can exit 2 at press time while
+  `press verify` exits 0.
+- Non-UTF-8 files are outside the sibling preflight and the inline doctor and
+  are scanned only by `press verify`.
+- Workspace-member identity is out of scope.
 
 ### Compatibility
 

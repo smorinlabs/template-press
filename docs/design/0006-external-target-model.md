@@ -34,11 +34,17 @@ project template and ships no application. First target:
    `files` fnmatch globs, `paths`, `content`) and `substring_rewrite_fields`
    (a boundary-free, per-field opt-in). Identity itself is six required
    fields (`package_name`, `repo_name`, `app_name`, `author`, `email`,
-   `owner`) plus an optional 7th, `display_name` (humanized product name;
-   absent = feature off). Full field/rule semantics:
+   `owner`) plus three optional fields, each absent = feature off:
+   `display_name` (humanized product name), `npm_name` (exact root
+   `package.json` name, scope allowed), and `cli_name` (exact `bin` key).
+   A target-authored `[rules] keep_names` list declares names independent of
+   the identity, which every rewrite and scan honors; a sibling-name preflight
+   refuses undeclared same-prefix names before any write (design 0008). Full field/rule semantics:
    [design 0008](0008-identity-variants-and-replace-rules.md); rendering
    pipeline: [design 0009](0009-substitution-table.md); operator
    walkthrough: [`press-target`](../../.claude/skills/press-target/SKILL.md).
+   Node and Bun targets: [TypeScript and Bun targets
+   design](../superpowers/specs/2026-11-22-typescript-bun-targets-design.md).
 3. **Verify-then-mark**: after apply, a no-leak doctor pass scans the target
    for surviving source-identity tokens (changed fields only; the explicit
    `verify_ignore` list in `press/press-rules.toml` is the one sanctioned
@@ -74,7 +80,9 @@ project template and ships no application. First target:
 4. **Multi-language targets must declare their languages**: when a target has
    several root manifests that declare a package identity, `[rules] languages`
    in `press/press-rules.toml` names the languages to check; without it
-   `press rebrand` and `press verify` exit 2 and write nothing. Spec:
+   `press rebrand` and `press verify` exit 2 and write nothing. The press
+   supports `python` and `node`; discovery and cross-checks follow the
+   declaration. Spec:
    [P16](../superpowers/specs/2026-11-22-explicit-target-languages-design.md).
 5. **The tool never ships into the target** — no marker in the tool's tree,
    no self-prune, no self-commit.

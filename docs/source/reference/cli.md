@@ -63,7 +63,7 @@ The exit code is the contract — scripts and CI can branch on it:
 
 Before planning anything, the press cross-checks the committed
 `press/press-source.toml` (the **source** identity) against what the target
-actually shows — `pyproject.toml`, the `[project.scripts]` key, the package
+actually shows — `pyproject.toml` (or a Node target's `package.json`), the `[project.scripts]` key, the package
 layout, and the `origin` remote's GitHub URL, from which `owner` and
 `repo_name` are read. Any disagreement is the silent-half-rebrand guard's
 business and exits `2` with nothing written.
@@ -635,7 +635,7 @@ misreport it as stale.
 
 Hermetic `press verify` never runs declared commands, so a regenerated
 output cannot be certified in the sandbox. By default only the tool cap
-(`uv.lock`, `bun.lock`) is exempted from the leak scan; any other declared
+(`uv.lock`, `bun.lock`, `package-lock.json`, `pnpm-lock.yaml`) is exempted from the leak scan; any other declared
 output is scanned and will fail verify while it still carries source
 identity. A target may exempt such an output — loudly — by declaring it:
 
@@ -705,9 +705,11 @@ or when a root manifest is malformed, not UTF-8, or not a regular file.
 If the pressed tree fails the check, the command exits `1`, writes no receipt,
 leaves `press/press-source.toml` unchanged, and prints how to restore the target.
 
-`node` and `rust` are reserved names. This press version supports only
-`python`, so listing either exits `2` with `not supported by this press
-version`.
+This press version supports `python` and `node`. `rust` is a reserved name, so
+listing it exits `2` with `not supported by this press version`. Discovery and
+cross-checks in `press rebrand` and `press verify` follow the declaration:
+`["python"]` does not read `package.json`, `["node"]` does not read
+`pyproject.toml`, and `["python", "node"]` reads both.
 
 This is a breaking change for multi-language targets that pressed cleanly
 before. To fix the refusal, add the supported languages under `[rules]`:
@@ -716,6 +718,72 @@ before. To fix the refusal, add the supported languages under `[rules]`:
 [rules]
 languages = ["python"]
 ```
+
+### Node and Bun targets
+
+An npm or Bun repository is pressed through its root `package.json`. Workspace
+members are out of scope.
+
+**Optional identity fields.** `npm_name` is the exact `package.json` `name`
+(a scope such as `@acme/widget` is allowed; at most 214 characters).
+`cli_name` is the exact `bin` key (for example `acme-cli`). Declare each on
+both the source and the answers or on neither; one side only exits `2`. If a
+source `npm_name` or `cli_name` equals another source identity value, the
+answers must keep that equality. `cli_name` and an unscoped `npm_name` rename
+paths. A scoped `npm_name` rewrites content only, and a leftover scoped path is
+a leak.
+
+**Discovery.** The press reads `name`, `author` (string or `{name, email}`),
+`bin` (string or object), and `repository` (string or `{url}`, only when git
+`origin` is unavailable). With a source config, a declared `npm_name` that
+differs from the manifest `name`, or a declared `cli_name` that is not a `bin`
+key, exits `2`; every other disagreement is a `warning:` on stderr. With no
+source config, the dry run proposes one; if object-form `bin` lists several
+commands that no other proposed value covers, the press exits `2` and asks for
+a hand-written source config.
+
+**`[rules] keep_names`.** Exact, case-sensitive names that are independent of
+the template, such as a sibling package `@acme/widget-extra`. Every rewrite
+and every scan honors them. An entry equal to an identity value, including
+case and separator variants, exits `2`; an entry with an edge `-` or `_`
+(`--acme-cli`) is compared exactly and may be kept.
+
+```toml
+[rules]
+keep_names = ["@acme/widget-extra"]
+```
+
+**Sibling preflight.** Before any rewrite, `press rebrand` and `press verify`
+look for an undeclared name that joins a source `npm_name` or `cli_name` to
+another name part. A finding exits `1`, writes nothing, and writes no receipt.
+For a multi-part value (`acme-cli`, `@acme/widget`), any name character touching
+either side is a sibling. For a single-token value (`tsc`, `serve`), both sides
+must be real boundaries or joins and at least one must be a `-`/`_` join or a
+camelCase tail: `tsconfig`, `server`, and `web-server` pass, and `tsc-helper`
+and `tscConfig` are refused. Tokens rewritten by an applicable row or
+`[[replace]]` rule are exempt, and planned `[[remove]]` files are skipped.
+
+**Lockfiles.** `package-lock.json`, `bun.lock`, `uv.lock`, and `pnpm-lock.yaml`
+are exempt from hermetic `press verify` when a `[[regenerate]]` declares them.
+The press only suggests commands; it never runs an undeclared one. A pnpm
+target must also list `pnpm-lock.yaml` in `[rules] extra_exclude_files`. The
+suggested blocks use `scan = "boundary"`:
+
+| Lockfile | Suggested `command` |
+|----------|---------------------|
+| `package-lock.json` | `["npm", "install", "--package-lock-only", "--silent"]` |
+| `bun.lock` | `["sh", "-c", "command -v bun >/dev/null 2>&1 \|\| exit 127; rm -f bun.lock && exec bun install --lockfile-only"]` |
+| `pnpm-lock.yaml` | `["pnpm", "install", "--lockfile-only"]` |
+
+The Bun block deletes and rebuilds the lock because Bun keeps a stale workspace
+name in an existing lock. It is POSIX-only, and Windows targets declare their
+own command.
+
+**Known limits.** Keeping an unscoped npm basename while changing
+`package_name` exits `1`. A scope-preserving press with a changed `owner` can
+exit `2` at press time while `press verify` exits `0`. Non-UTF-8 files are
+outside the preflight and the inline doctor and are scanned only by
+`press verify`.
 
 ### After a successful press
 
@@ -747,7 +815,8 @@ press verify
 The exit code signals the result:
 - `0`: Clean over the scanned set — no source identity leaks survived the
   press in any scanned file. Files with a declared regeneration whose
-  basename is on the tool's exemptible list (`uv.lock`, `bun.lock`) are
+  basename is on the tool's exemptible list (`uv.lock`, `bun.lock`,
+  `package-lock.json`, `pnpm-lock.yaml`) are
   NOT scanned (the hermetic sandbox never runs commands, so only the real
   press's post-command scan can certify them); they are listed as exempt
   in the report and in the `exempt` field of `--json` output. A declared edit

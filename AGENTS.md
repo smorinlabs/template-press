@@ -128,12 +128,14 @@ identity validation → apply → verify → receipt). Command shape:
 `press rebrand --target <path> --config <press-answers.toml>` (in a dev checkout,
 `uv run press rebrand …`). The design contract is
 [`docs/design/0006-external-target-model.md`](docs/design/0006-external-target-model.md).
-The identity-field set (six required plus optional `display_name`) and the
-target-authored `press/press-rules.toml` mechanisms (`[[replace]]` exact
-rules, `substring_rewrite_fields`) are specified in
+The identity-field set (six required plus optional `display_name`, `npm_name`,
+and `cli_name`) and the target-authored `press/press-rules.toml` mechanisms
+(`[[replace]]` exact rules, `substring_rewrite_fields`, `keep_names`) are
+specified in
 [`docs/design/0008-identity-variants-and-replace-rules.md`](docs/design/0008-identity-variants-and-replace-rules.md).
 A target with several language manifests must declare `[rules] languages` in
-`press/press-rules.toml`, or `press rebrand` and `press verify` exit 2.
+`press/press-rules.toml`, or `press rebrand` and `press verify` exit 2. npm
+and Bun targets are covered in the `press-target` skill.
 `provision`/`status` verbs arrive with the M6 Provision phase.
 
 ## Single source of truth
