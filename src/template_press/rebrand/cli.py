@@ -608,11 +608,13 @@ def main(argv: list[str] | None = None) -> int:
 
         # Language guard: a multi-language target must declare which
         # languages the press checks. Runs before any source or answers work.
-        language_rules = load_selected_rules(target).rules
+        # This is the run's one platform selection and receipt read.
+        selected, receipt_text = _load_rules_and_removal_receipt(target)
+        rules = selected.rules
         languages = check_target_languages(
             target,
-            language_rules.languages,
-            [rule.file for rule in language_rules.remove],
+            rules.languages,
+            [rule.file for rule in rules.remove],
         )
 
         # The answers file is read BEFORE the guard so the guard can ask
@@ -668,8 +670,6 @@ def main(argv: list[str] | None = None) -> int:
         # Pipeline stability, ambiguity, and termination are validated together
         # by build_plan before any write.  Keeping the target rules here ensures
         # the adapter preserves each field's effective substring posture.
-        selected, receipt_text = _load_rules_and_removal_receipt(target)
-        rules = selected.rules
         prior_removed = removed_files_from_receipt(receipt_text)
         removal_plan = plan_removals(
             target,
