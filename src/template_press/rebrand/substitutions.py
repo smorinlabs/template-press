@@ -1525,6 +1525,14 @@ def _validate_rows(
     )
 
 
+def _stale_emission(row: RenderedSubstitution, output: str) -> ValidationError:
+    return ValidationError(
+        f"stale-source emission: {row.row_id} source {row.from_value!r} is still "
+        f"found in destination value {output!r}; press in two steps via an "
+        "intermediate identity"
+    )
+
+
 def _refuse_cargo_owner_stale_output(
     rows: tuple[RenderedSubstitution, ...], destination: Identity
 ) -> None:
@@ -1550,12 +1558,36 @@ def _refuse_cargo_owner_stale_output(
             candidates = outputs if policy.consumer == "doctor" else cargo_outputs
             for output in sorted(candidates):
                 if hunt_occurs(row, policy, output):
-                    raise ValidationError(
-                        f"stale-source emission: {row.row_id} source "
-                        f"{row.from_value!r} is still found in destination value "
-                        f"{output!r}; press in two steps via an intermediate "
-                        "identity"
-                    )
+                    raise _stale_emission(row, output)
+
+
+def _refuse_regenerated_cargo_leak(
+    rows: tuple[RenderedSubstitution, ...], destination: Identity, rules: Rules
+) -> None:
+    """Refuse a destination Cargo name that holds another field's source value.
+
+    A Cargo name lands in a regenerated ``Cargo.lock``, so ``acmerepo`` would
+    fail the paranoid ``repo_name`` ``acme-repo`` hunt after the writes. Runs
+    after pipeline validation, whose stability refusals are more specific.
+    """
+
+    cargo_outputs = sorted(set(cargo_field_values(destination).values()))
+    if not cargo_outputs:
+        return
+    regenerated = tuple(rule.file for rule in rules.regenerate) or ("Cargo.lock",)
+    for row in rows:
+        if is_cargo_field(row.provenance[0].name) or not any(
+            row_matches_scope(row, path) for path in regenerated
+        ):
+            continue
+        for policy in row.hunts:
+            if policy.consumer != "regeneration":
+                continue
+            for output in cargo_outputs:
+                if hunt_occurs(
+                    row, policy, output, kept_spans(output, rules.keep_names)
+                ):
+                    raise _stale_emission(row, output)
 
 
 def _compiled_rows(
@@ -1726,6 +1758,7 @@ def compile_substitution_table(
         pipeline_validator,
         tuple(source for _link, source, _destination in virtual_translations),
     )
+    _refuse_regenerated_cargo_leak(rows, destination, rules)
     rename_plan = _compile_rename_plan(rows, rename_snapshot, rules.keep_names)
     rename_plan = replace(
         rename_plan,

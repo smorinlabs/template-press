@@ -41,7 +41,11 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from template_press.rebrand.identity import CARGO_EXACT_PREFIX, Identity
+from template_press.rebrand.identity import (
+    CARGO_EXACT_PREFIX,
+    Identity,
+    cargo_ident,
+)
 from template_press.rebrand.inventory import (
     SurfaceSnapshot,
     _run_git,
@@ -510,6 +514,28 @@ def _changed_fields(
     return changed
 
 
+def _cargo_literals(
+    source: Identity, dest: Identity
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    """``(field, name, spellings)`` per changed Cargo name, longest name first.
+
+    A binary has no word boundaries, so a compiled symbol such as
+    ``_ZN11acme_widget4main`` needs a literal needle for each spelling. This
+    list includes names whose boundary hunt is covered by another field.
+    """
+    dest_names = dict(dest.cargo_names)
+    literals = [
+        (
+            f"{CARGO_EXACT_PREFIX}{role}",
+            name,
+            tuple(sorted({name, cargo_ident(name), name.replace("_", "-")})),
+        )
+        for role, name in source.cargo_names
+        if dest_names.get(role, name) != name
+    ]
+    return tuple(sorted(literals, key=lambda item: (-len(item[1]), item[0])))
+
+
 def _substring_occurrences(
     text: str, needle: str, kept: Sequence[tuple[int, int]] = ()
 ) -> list[tuple[int, int]]:
@@ -727,6 +753,7 @@ def _scan_binary(
     changed: list[tuple[str, str]],
     substring_fields: Collection[str],
     keep_names: Sequence[str] = (),
+    cargo_literals: Sequence[tuple[str, str, tuple[str, ...]]] = (),
 ) -> list[Finding]:
     """Byte-scan a non-UTF-8 file for surviving identity — VARIANT-aware.
 
@@ -781,6 +808,20 @@ def _scan_binary(
         findings.extend(
             Finding(posix, f, value, "binary", None, idx, "") for idx in sorted(offsets)
         )
+    seen = {finding.col for finding in findings}
+    for field, name, spellings in cargo_literals:
+        offsets = set()
+        for spelling in spellings:
+            raw = re.compile(re.escape(spelling))
+            offsets.update(
+                start for start, _end in matches_outside_kept(raw, latin1, kept)
+            )
+        offsets -= seen
+        seen |= offsets
+        findings.extend(
+            Finding(posix, field, name, "binary", None, idx, "")
+            for idx in sorted(offsets)
+        )
     return findings
 
 
@@ -793,6 +834,7 @@ def _scan_file(
     rule_specs: Sequence[_RuleScanSpec],
     renamed: list[tuple[str, str]],
     keep_names: Sequence[str],
+    cargo_literals: Sequence[tuple[str, str, tuple[str, ...]]] = (),
 ) -> list[Finding]:
     path = target / rel
     try:
@@ -817,7 +859,9 @@ def _scan_file(
         # more than it can via the token pass, so a rule-literal scan of
         # binary bytes is not attempted (mirrors `doctor.find_leaks`, which
         # only rule-scans `_read_for_scan`-returned TEXT).
-        return _scan_binary(data, posix, changed, substring_fields, keep_names)
+        return _scan_binary(
+            data, posix, changed, substring_fields, keep_names, cargo_literals
+        )
     return _scan_content(
         text, posix, changed, substring_fields, rule_specs, renamed, keep_names
     )
@@ -869,6 +913,7 @@ def scan(
     symlink, content, or binary evidence).
     """
     changed = _changed_fields(source, dest, fields, substring_fields)
+    cargo_literals = _cargo_literals(source, dest)
     renamed = renamed or []
     findings: list[Finding] = []
     # `renamed` also drives the regeneration exemption (P04 D3): declared
@@ -958,6 +1003,7 @@ def scan(
                 rule_specs,
                 renamed,
                 rules.keep_names,
+                cargo_literals,
             )
         )
     return attach_ignore_hints(target, findings, untracked, core_excludes)

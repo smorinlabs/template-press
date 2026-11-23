@@ -71,6 +71,7 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
     cargo_ident,
+    cargo_identity_problem,
     display_forms,
 )
 
@@ -125,7 +126,9 @@ def synthesize_dest(source: Identity) -> Identity:
     dest = _with_cargo_names(source, dest, variants)
 
     dest.validate()
-    _assert_equality_signature(source, dest)
+    # An invalid table is reported by cargo_identity_problem with its own text.
+    if cargo_identity_problem(source, source) is None:
+        _assert_equality_signature(source, dest)
     return dest
 
 
@@ -222,15 +225,40 @@ def _mint_cargo_name(
     )
 
 
+def _with_hyphens(name: str, ident: str) -> str:
+    """``ident`` with a hyphen wherever ``name`` has one, when lengths agree."""
+    if len(name) != len(ident):
+        return ident
+    return "".join(
+        "-" if theirs == "-" else ours for theirs, ours in zip(name, ident, strict=True)
+    )
+
+
+def _display_tied_name(name: str, source: Identity, dest: Identity) -> str | None:
+    """The destination display form a Cargo name must share, if any."""
+    if source.display_name is None or dest.display_name is None:
+        return None
+    source_forms = display_forms(source.display_name)
+    dest_forms = display_forms(dest.display_name)
+    for form in DISPLAY_FORM_NAMES:
+        if source_forms[form] == name:
+            return dest_forms[form]
+        if source_forms[form] == cargo_ident(name):
+            return _with_hyphens(name, dest_forms[form])
+    return None
+
+
 def _cargo_destinations(
     source: Identity, dest: Identity, variants: frozenset[str]
 ) -> dict[str, str]:
     """A synthetic Cargo name per role, shaped so both spellings stay coherent.
 
     The primary role carries the package destination, so its underscore form
-    is the destination ``package_name``. Other roles add a generated suffix,
-    never role text. A separator-free name tied to ``owner`` or ``repo_name``
-    is glued, because those fields cannot hold an underscore.
+    is the destination ``package_name``. A name equal to a display form or to
+    ``app_name_upper`` takes that slot's destination. Other roles add a
+    generated suffix, never role text. A separator-free name tied to a field
+    that cannot hold an underscore (``owner``, ``repo_name``, directly or
+    through ``app_name_upper``) is glued.
     """
     primary = next(
         (
@@ -240,20 +268,48 @@ def _cargo_destinations(
         ),
         None,
     )
-    base = _shaped_like(dest.package_name, primary[1]) if primary else dest.package_name
+    base = dest.package_name
+    if primary is not None:
+        base = _display_tied_name(primary[1], source, dest) or _shaped_like(
+            dest.package_name, primary[1]
+        )
     ident = cargo_ident(base)
     names: dict[str, str] = {primary[0]: base} if primary else {}
-    taken = {ident}
+    for role, name in source.cargo_names:
+        if (
+            role not in names
+            and (tied := _display_tied_name(name, source, dest)) is not None
+        ):
+            names[role] = tied
+    taken = {cargo_ident(name) for name in names.values()} | {ident}
+    no_underscore = (source.owner, source.repo_name)
+    upper_tied = source.app_name_upper in no_underscore
+    deferred: list[tuple[str, str]] = []
     for role, name in source.cargo_names:
         if role in names:
             continue
-        if "-" in name:
-            stem, separator = ident.replace("_", "-"), "-"
-        elif "_" not in name and name in (source.owner, source.repo_name):
-            stem, separator = ident.replace("_", ""), ""
+        if cargo_ident(name) == source.app_name_upper:
+            deferred.append((role, name))
+        elif "-" in name:
+            names[role] = _mint_cargo_name(
+                ident.replace("_", "-"), "-", taken, variants
+            )
+        elif "_" not in name and (
+            name in no_underscore or (name == source.app_name and upper_tied)
+        ):
+            names[role] = _mint_cargo_name(ident.replace("_", ""), "", taken, variants)
         else:
-            stem, separator = ident, "_"
-        names[role] = _mint_cargo_name(stem, separator, taken, variants)
+            names[role] = _mint_cargo_name(ident, "_", taken, variants)
+    app_dest = next(
+        (
+            cargo_ident(names[role])
+            for role, name in source.cargo_names
+            if role in names and cargo_ident(name) == source.app_name
+        ),
+        dest.app_name,
+    )
+    for role, name in deferred:
+        names[role] = _with_hyphens(name, app_dest.upper())
     return names
 
 
@@ -346,6 +402,15 @@ def _is_entangled(slots: list[str]) -> bool:
     return bool(derived) and len(slots) > 1
 
 
+def _signature_values(identity: Identity) -> dict[str, str]:
+    """Every rewrite slot plus both spellings of each Cargo name."""
+    values = _slot_values(identity)
+    for role, name in identity.cargo_names:
+        values[f"cargo_exact_{role}"] = name
+        values[f"cargo_ident_{role}"] = cargo_ident(name)
+    return values
+
+
 def _assert_equality_signature(source: Identity, dest: Identity) -> None:
     """Two-way equality-signature postcondition: for EVERY pair of emitted
     rewrite slots, source-equality and dest-equality must coincide.
@@ -359,7 +424,7 @@ def _assert_equality_signature(source: Identity, dest: Identity) -> None:
     `_synthesize_entangled`'s solver is designed to never produce one, so
     this is the unreachable backstop, not the primary correctness mechanism).
     """
-    src, dst = _slot_values(source), _slot_values(dest)
+    src, dst = _signature_values(source), _signature_values(dest)
     for left, right in itertools.combinations(src, 2):
         if (src[left] == src[right]) != (dst[left] == dst[right]):
             raise ValidationError(

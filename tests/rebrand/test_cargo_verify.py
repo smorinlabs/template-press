@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from template_press.rebrand.cli import main
 from template_press.rebrand.engine import build_plan
 from template_press.rebrand.identity import (
     Identity,
@@ -18,7 +19,11 @@ from template_press.rebrand.identity import (
     cargo_identity_problem,
 )
 from template_press.rebrand.rules import DEFAULT_RULES
-from template_press.rebrand.synthesize import _source_variants, synthesize_dest
+from template_press.rebrand.synthesize import (
+    _assert_equality_signature,
+    _source_variants,
+    synthesize_dest,
+)
 from template_press.rebrand.verifier import scan
 from template_press.rebrand.verify_cli import verify_command
 
@@ -284,6 +289,47 @@ def test_synthesis_avoids_a_short_source_value_in_the_role_suffix(
             {"cli_name": "acme-widget"},
         ),
         (
+            "display camel form equals a crate",
+            {
+                "display_name": "Gadget",
+                "cargo_names": (("core", "acme-core"), ("gadget", "gadget")),
+            },
+        ),
+        (
+            "multi-word camel form equals a crate",
+            {
+                "display_name": "Acme Tool",
+                "cargo_names": (("core", "acme-core"), ("tool", "acmeTool")),
+            },
+        ),
+        (
+            "display equals the primary crate",
+            {"display_name": "acme-core"},
+        ),
+        (
+            "display equals a crate's underscore form",
+            {
+                "display_name": "acme_tool",
+                "cargo_names": (("core", "acme-core"), ("tool", "acme-tool")),
+            },
+        ),
+        (
+            "uppercase owner ties a crate through app_name",
+            {
+                "package_name": "acme_core",
+                "app_name": "acme",
+                "owner": "ACME",
+                "cargo_names": (("brand", "acme"), ("core", "acme-core")),
+            },
+        ),
+        (
+            "crate equals app_name_upper",
+            {
+                "app_name": "acme",
+                "cargo_names": (("core", "acme-core"), ("loud", "ACME")),
+            },
+        ),
+        (
             "repeated separators",
             {
                 "package_name": "acme__core",
@@ -301,6 +347,13 @@ def test_synthesized_table_compiles_when_names_share_values(
     assert cargo_identity_problem(source, dest) is None, label
     target = _repo(tmp_path, {"notes.txt": "placeholder\n"})
     build_plan(target, source, dest, DEFAULT_RULES)
+
+
+def test_equality_signature_covers_cargo_values() -> None:
+    source = replace(SOURCE, repo_name="acme-widget")
+    dest = replace(synthesize_dest(source), repo_name="unrelated-repo")
+    with pytest.raises(ValidationError, match="equality signature"):
+        _assert_equality_signature(source, dest)
 
 
 def test_invalid_source_table_reports_the_table_problem(tmp_path) -> None:
@@ -382,3 +435,76 @@ def test_verify_fails_on_a_non_primary_leak_in_binary_content(
     assert verify_command(["--target", str(target), "--json"]) == 1
     report = json.loads(capsys.readouterr().out)
     assert {f["field"] for f in report["surviving"]} == {"cargo_exact_widget"}
+
+
+@pytest.mark.parametrize(
+    ("payload", "field"),
+    [
+        (b"_ZN11acme_widget4main17h0E", "cargo_exact_widget"),
+        (b"xacme_widgety", "cargo_exact_widget"),
+        (b"xacme-corey", "cargo_exact_core"),
+    ],
+)
+def test_verify_finds_glued_cargo_spellings_in_binary_content(
+    tmp_path, capsys, payload, field
+) -> None:
+    target = _cargo_target(tmp_path, {"data.bin": b"\xff\xfe" + payload + b"\n"})
+    assert verify_command(["--target", str(target), "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert [f["field"] for f in report["surviving"]] == [field]
+
+
+def test_binary_scan_keeps_one_finding_per_offset(tmp_path, capsys) -> None:
+    target = _cargo_target(tmp_path, {"data.bin": b"\xff\xfe xacme_corey\n"})
+    assert verify_command(["--target", str(target), "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    cargo = [f for f in report["surviving"] if f["field"].startswith("cargo_")]
+    assert cargo == []
+    assert len({f["col"] for f in report["surviving"]}) == 1
+
+
+@pytest.mark.parametrize(
+    "destination",
+    ["acme_repo_gadget", "acmerepo", "acme_org_gadget", "acmeorg", "ada-example"],
+)
+def test_cargo_destination_holding_another_source_field_is_refused(
+    tmp_path, capsys, destination
+) -> None:
+    rules = (
+        '[rules]\nextra_exclude_files = ["Cargo.lock"]\n\n[[regenerate]]\n'
+        'file = "Cargo.lock"\n'
+        'command = ["cargo", "update", "--workspace", "--offline"]\n'
+        'verify_exempt = true\nreason = "regenerated lockfile"\n'
+    )
+    target = _cargo_target(
+        tmp_path,
+        {
+            "press/press-rules.toml": rules,
+            "Cargo.lock": 'version = 4\n\n[[package]]\nname = "acme-core"\n',
+        },
+    )
+    answers = tmp_path / "answers.toml"
+    answers.write_text(
+        "[answers]\n"
+        'package_name = "zeta_core"\n'
+        'repo_name = "zeta-repo"\n'
+        'app_name = "zeta_core"\n'
+        'author = "Zed Example"\n'
+        'email = "zed@example.test"\n'
+        'owner = "zeta-org"\n\n'
+        "[answers.cargo_names]\n"
+        'core = "zeta-core"\n'
+        f'widget = "{destination}"\n',
+        encoding="utf-8",
+    )
+    code = main(["--target", str(target), "--config", str(answers)])
+    err = capsys.readouterr().err
+    assert code == 2, err
+    assert "stale-source emission" in err
+    status = subprocess.run(  # noqa: S603
+        ["git", "-C", str(target), "status", "--porcelain"],  # noqa: S607
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert status.stdout == ""
