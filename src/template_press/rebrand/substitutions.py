@@ -1497,6 +1497,27 @@ def _validate_rows(
     )
 
 
+def _compiled_rows(
+    source: Identity, destination: Identity, target: Path | None, rules: Rules
+) -> tuple[RenderedSubstitution, ...]:
+    """The normalized rewrite rows, shared by the table and the keep preflight."""
+
+    return _normalize_rows(
+        [
+            *_manifest_name_rows(source, destination, target, rules),
+            *_declared_rows(source, destination, rules),
+        ],
+        sorted(
+            [
+                *_identity_rows(source, destination, rules),
+                *_hyphen_rows(source, destination, target, rules),
+            ],
+            key=lambda row: -len(row.from_value),
+        ),
+        rules,
+    )
+
+
 def _identity_row_pattern(row: RenderedSubstitution) -> re.Pattern[str]:
     """The matcher one compiled identity row rewrites with."""
 
@@ -1522,20 +1543,7 @@ def check_target_keep_names(
     )
     # Equal-valued fields collapse to one owner row, so only the compiled rows
     # prove which matcher really rewrites an occurrence.
-    compiled = _normalize_rows(
-        [
-            *_manifest_name_rows(source, destination, target, rules),
-            *_declared_rows(source, destination, rules),
-        ],
-        sorted(
-            [
-                *_identity_rows(source, destination, rules),
-                *_hyphen_rows(source, destination, target, rules),
-            ],
-            key=lambda row: -len(row.from_value),
-        ),
-        rules,
-    )
+    compiled = _compiled_rows(source, destination, target, rules)
 
     def rewritten(path: str, where: str, text: str) -> RewrittenForms:
         scope_path = path
@@ -1599,20 +1607,7 @@ def compile_substitution_table(
 
     source.validate()
     destination.validate()
-    rows = _normalize_rows(
-        [
-            *_manifest_name_rows(source, destination, target, rules),
-            *_declared_rows(source, destination, rules),
-        ],
-        sorted(
-            [
-                *_identity_rows(source, destination, rules),
-                *_hyphen_rows(source, destination, target, rules),
-            ],
-            key=lambda row: -len(row.from_value),
-        ),
-        rules,
-    )
+    rows = _compiled_rows(source, destination, target, rules)
     rename_snapshot = SurfaceSnapshot(
         entries=select_rename_entries(
             snapshot,
