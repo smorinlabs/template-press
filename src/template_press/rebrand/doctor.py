@@ -247,6 +247,15 @@ def _find_table_leaks(
                             "path",
                         )
                     )
+        # A scoped npm_name spans two components, so no component scan sees it.
+        for row, policy in scoped_hunts:
+            if (
+                policy.matcher.identity_field == "npm_name"
+                and "path" in policy.surfaces
+                and "/" in row.from_value
+                and hunt_occurs(row, policy, posix)
+            ):
+                leaks.append(Leak(posix, "npm_name", row.from_value, "path"))
         if entry.index_kind == "gitlink" and entry.worktree_kind in (
             "directory",
             "missing",
@@ -414,6 +423,14 @@ def find_leaks(
             for _rule, frm in path_rules:
                 if frm in component:
                     leaks.append(Leak(rel_posix, "replace_rule", frm, "path"))
+        # A scoped npm_name spans two components, so no component scan sees it.
+        npm_name = fields.get("npm_name")
+        if (
+            npm_name is not None
+            and "/" in npm_name
+            and occurs(rel_posix, "npm_name", npm_name, substring_fields)
+        ):
+            leaks.append(Leak(rel_posix, "npm_name", npm_name, "path"))
         if entry.index_kind == "gitlink" and entry.worktree_kind in (
             "directory",
             "missing",

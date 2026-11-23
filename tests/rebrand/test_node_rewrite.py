@@ -246,12 +246,118 @@ def test_cli_name_equal_to_owner_still_renames_file(tmp_path):
     assert not (target / "bin/acme-cli.js").exists()
 
 
-def test_scoped_npm_name_has_no_path_surface(tmp_path):
+def test_scoped_npm_name_is_not_rewritten_in_paths_but_is_hunted(tmp_path):
     target = _make_target(tmp_path)
     row = _row(_table(target, SOURCE, DEST), "npm_name")
     assert "path" not in row.rewrite_surfaces
     doctor = next(hunt for hunt in row.hunts if hunt.consumer == "doctor")
-    assert "path" not in doctor.surfaces
+    assert "path" in doctor.surfaces
+
+
+@pytest.mark.parametrize("owner", ["zetalabs", "acme"])
+def test_scoped_npm_directory_blocks_verify_and_receipt(tmp_path, capsys, owner):
+    source = replace(SOURCE, owner=owner)
+    leftover = "packages/@acme/widget-api/index.js"
+    target = _make_target(tmp_path, source, {leftover: "module.exports = 1;\n"})
+
+    assert verify_command(["--target", str(target), "--json"]) == 1
+    assert "npm_name" in capsys.readouterr().out
+
+    answers = tmp_path / "answers.toml"
+    answers.write_text(_toml_identity(DEST, "answers"), encoding="utf-8")
+    assert main(["--target", str(target), "--config", str(answers)]) == 1
+    assert "npm_name" in capsys.readouterr().err
+    assert not (target / RECEIPT_REL).exists()
+    assert (target / leftover).exists()
+
+
+@pytest.mark.parametrize(
+    ("leftover", "where"),
+    [
+        ("packages/@acme/widget-api/index.js", "dirname"),
+        ("packages/@acme/widget-api", "filename"),
+    ],
+)
+def test_scoped_npm_path_found_by_every_scanner(tmp_path, leftover, where):
+    source = replace(SOURCE, owner="zetalabs")
+    target = _make_target(tmp_path, source)
+    table = _press(target, source, DEST)
+    planted = target / leftover
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_text("clean content\n", encoding="utf-8")
+
+    for leaks in (
+        find_leaks(target, source, DEFAULT_RULES, DEST, table=table),
+        find_leaks(target, source, DEFAULT_RULES, DEST),
+    ):
+        assert any(
+            leak.path == leftover and leak.field == "npm_name" and leak.where == "path"
+            for leak in leaks
+        )
+    findings = scan(
+        target,
+        source,
+        DEST,
+        fields=(*VERIFY_FIELDS, "npm_name"),
+        substring_fields=frozenset(),
+        rules=DEFAULT_RULES,
+    )
+    assert any(
+        item.path == leftover and item.field == "npm_name" and item.where == where
+        for item in findings
+    )
+
+
+def test_unrelated_scoped_path_is_not_a_leak(tmp_path):
+    source = replace(SOURCE, owner="zetalabs")
+    other = "packages/@other/widget-api/index.js"
+    target = _make_target(tmp_path, source, {other: "clean content\n"})
+    table = _press(target, source, DEST)
+    for leaks in (
+        find_leaks(target, source, DEFAULT_RULES, DEST, table=table),
+        find_leaks(target, source, DEFAULT_RULES, DEST),
+    ):
+        assert not [leak for leak in leaks if leak.path == other]
+    findings = scan(
+        target,
+        source,
+        DEST,
+        fields=(*VERIFY_FIELDS, "npm_name"),
+        substring_fields=frozenset(),
+        rules=DEFAULT_RULES,
+    )
+    assert not [item for item in findings if item.path == other]
+
+
+@requires_symlink
+def test_scoped_npm_symlink_target_found_by_every_scanner(tmp_path):
+    source = replace(SOURCE, owner="zetalabs")
+    target = _make_target(tmp_path, source)
+    table = _press(target, source, DEST)
+    os.symlink("vendor/@acme/widget-api/index.js", target / "entry")
+
+    for leaks in (
+        find_leaks(target, source, DEFAULT_RULES, DEST, table=table),
+        find_leaks(target, source, DEFAULT_RULES, DEST),
+    ):
+        assert any(
+            leak.path == "entry"
+            and leak.field == "npm_name"
+            and leak.where == "symlink"
+            for leak in leaks
+        )
+    findings = scan(
+        target,
+        source,
+        DEST,
+        fields=(*VERIFY_FIELDS, "npm_name"),
+        substring_fields=frozenset(),
+        rules=DEFAULT_RULES,
+    )
+    assert any(
+        item.path == "entry" and item.field == "npm_name" and item.where == "symlink"
+        for item in findings
+    )
 
 
 def test_unscoped_to_scoped_is_content_only_and_keeps_path_hunt(tmp_path):

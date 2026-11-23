@@ -552,6 +552,15 @@ def _scan_path_components(
     findings: list[Finding] = []
     last_index = len(rel.parts) - 1
     path_rules = _rule_path_matches(posix, rule_specs, renamed, paths=True)
+    # A scoped npm_name spans two components, so no component scan sees it.
+    name_start = len(posix) - len(rel.name)
+    for f, value in changed:
+        if f != "npm_name" or "/" not in value:
+            continue
+        substring = f in substring_fields
+        for _start, end in find_occurrences(posix, f, value, substring=substring):
+            where = "filename" if end > name_start else "dirname"
+            findings.append(Finding(posix, f, value, where, None, None, posix))
     for i, comp in enumerate(rel.parts):
         if is_root_press(rel, i):
             continue

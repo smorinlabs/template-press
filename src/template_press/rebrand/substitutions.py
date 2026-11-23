@@ -885,7 +885,9 @@ def _identity_hunts(
     hunts: list[HuntPolicy] = []
     if not disabled_display_form:
         doctor_surfaces: set[Surface] = {"content", "symlink"}
-        if renames_paths or enabled_display_form:
+        # A scoped npm_name is never rewritten in paths, but the doctor still
+        # hunts it across the whole relative path.
+        if renames_paths or enabled_display_form or field == "npm_name":
             doctor_surfaces.add("path")
         hunts.append(
             _policy(
