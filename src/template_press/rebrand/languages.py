@@ -18,7 +18,7 @@ KNOWN_LANGUAGES: tuple[str, ...] = ("python", "node", "rust")
 SUPPORTED_LANGUAGES: frozenset[str] = frozenset({"python"})
 
 # Root manifest that identifies each language, in ``KNOWN_LANGUAGES`` order.
-_MANIFESTS: dict[str, str] = {
+LANGUAGE_MANIFESTS: dict[str, str] = {
     "python": "pyproject.toml",
     "node": "package.json",
     "rust": "Cargo.toml",
@@ -71,17 +71,11 @@ def _detect_one(target: Path, language: str, manifest: str) -> bool:
     except (OSError, SafetyError) as exc:
         raise ValidationError(f"cannot read {manifest}: {exc}") from exc
     try:
-        text = raw.decode("utf-8")
         if language == "node":
-            data: Any = json.loads(text)
+            data: Any = json.loads(raw.decode("utf-8-sig"))
         else:
-            data = tomllib.loads(text)
-    except (
-        UnicodeDecodeError,
-        tomllib.TOMLDecodeError,
-        json.JSONDecodeError,
-        RecursionError,
-    ) as exc:
+            data = tomllib.loads(raw.decode("utf-8"))
+    except (ValueError, RecursionError) as exc:
         raise ValidationError(f"cannot parse {manifest}: {exc}") from exc
     return _declares_identity(language, manifest, data)
 
@@ -90,9 +84,9 @@ def detect_languages(target: Path) -> tuple[DetectedLanguage, ...]:
     """Detect languages from root manifests, ordered as ``KNOWN_LANGUAGES``."""
 
     return tuple(
-        DetectedLanguage(language, _MANIFESTS[language])
+        DetectedLanguage(language, LANGUAGE_MANIFESTS[language])
         for language in KNOWN_LANGUAGES
-        if _detect_one(target, language, _MANIFESTS[language])
+        if _detect_one(target, language, LANGUAGE_MANIFESTS[language])
     )
 
 
@@ -130,7 +124,7 @@ def check_target_languages(
     removed = {r.rstrip(" .").casefold() for r in removed_files}
     for language in declared:
         found = by_language.get(language)
-        manifest = _MANIFESTS[language]
+        manifest = LANGUAGE_MANIFESTS[language]
         if found is None:
             raise ValidationError(
                 f"[rules] languages declares {language} but the target has no "
@@ -139,7 +133,7 @@ def check_target_languages(
         if manifest.casefold() in removed:
             raise ValidationError(
                 f"[rules] languages declares {language} but {manifest} is "
-                "listed in remove_files"
+                "a [[remove]] target"
             )
     ignored = tuple(d for d in detected if d.language not in declared)
     return LanguageDecision(declared, ignored)

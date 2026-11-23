@@ -76,7 +76,7 @@ def discover(target: Path) -> Discovered:
             app_names = tuple(str(k) for k in scripts)
             app_name = app_names[0]  # first key — display/back-compat
         authors = project.get("authors", [])
-        if authors and isinstance(authors[0], dict):
+        if isinstance(authors, list) and authors and isinstance(authors[0], dict):
             author = authors[0].get("name")
             email = authors[0].get("email")
     owner, repo_name = _origin(target)

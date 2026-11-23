@@ -17,7 +17,7 @@ from template_press.rebrand.languages import (
     detect_languages,
     render_ignored_languages,
 )
-from template_press.rebrand.rules import load_rules
+from template_press.rebrand.rules import load_rules, load_selected_rules
 
 from .conftest import posix_only
 
@@ -111,6 +111,13 @@ def test_detect_ignores_non_identity_manifests(tmp_path: Path) -> None:
         ("package.json", '{"name": ""}'),
         ("package.json", "[" * 100000),
         ("pyproject.toml", "a = " + "[" * 100000),
+        pytest.param(
+            "package.json", '{"version": ' + "1" * 5000 + "}", id="json-huge-int"
+        ),
+        pytest.param("Cargo.toml", "a = " + "1" * 5000 + "\n", id="cargo-huge-int"),
+        pytest.param(
+            "pyproject.toml", "a = " + "1" * 5000 + "\n", id="pyproject-huge-int"
+        ),
     ],
 )
 def test_detect_refuses_malformed(tmp_path: Path, name: str, body: str | bytes) -> None:
@@ -200,5 +207,39 @@ def test_declared_without_manifest_refused(tmp_path: Path) -> None:
 )
 def test_declared_manifest_removed_refused(tmp_path: Path, removed: str) -> None:
     _write(tmp_path, "pyproject.toml", '[project]\nname = "a"\n')
-    with pytest.raises(ValidationError, match=r"python.*pyproject\.toml"):
+    with pytest.raises(
+        ValidationError, match=r"python.*pyproject\.toml.*\[\[remove\]\] target"
+    ):
         check_target_languages(tmp_path, ("python",), [removed])
+
+
+@pytest.mark.parametrize(
+    "removed", ["pyproject.toml", "PYPROJECT.TOML", "pyproject.toml. "]
+)
+def test_declared_manifest_remove_refused_on_any_platform(
+    tmp_path: Path, removed: str
+) -> None:
+    target = _write_rules(
+        tmp_path,
+        '[rules]\nlanguages = ["python"]\n\n'
+        f'[[remove]]\nfile = "{removed}"\nreason = "not shipped"\n'
+        'platforms = ["linux"]\n',
+    )
+    with pytest.raises(
+        ValidationError, match=r"python.*pyproject\.toml.*\[\[remove\]\] target"
+    ):
+        load_selected_rules(target, platform="darwin")
+
+
+def test_undeclared_language_manifest_may_be_removed(tmp_path: Path) -> None:
+    target = _write_rules(
+        tmp_path,
+        '[rules]\nlanguages = ["python"]\n\n'
+        '[[remove]]\nfile = "package.json"\nreason = "template tooling"\n',
+    )
+    assert load_rules(target).languages == ("python",)
+
+
+def test_detect_accepts_utf8_bom_package_json(tmp_path: Path) -> None:
+    _write(tmp_path, "package.json", b'\xef\xbb\xbf{"name": "a"}')
+    assert detect_languages(tmp_path) == (DetectedLanguage("node", "package.json"),)

@@ -23,7 +23,11 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
 )
-from template_press.rebrand.languages import KNOWN_LANGUAGES, SUPPORTED_LANGUAGES
+from template_press.rebrand.languages import (
+    KNOWN_LANGUAGES,
+    LANGUAGE_MANIFESTS,
+    SUPPORTED_LANGUAGES,
+)
 from template_press.rebrand.safety import SafeRelPath, UnsafePathError
 
 RULES_REL = Path("press") / "press-rules.toml"
@@ -1421,6 +1425,18 @@ def _parse_rules(target: Path) -> _ParsedRules:
     clean = tuple(_parse_clean(e) for e in raw_clean)
     _validate_writer_overlaps(regenerate, reset, remove, edit)
     _validate_exclude_membership(regenerate, reset, edit, exclude_files, exclude_dirs)
+    languages = _parse_languages(table)
+    for language in languages or ():
+        manifest = LANGUAGE_MANIFESTS[language]
+        for declaration in remove:
+            if isinstance(declaration.rule, RemoveRule) and _control_alias_key(
+                declaration.rule.file
+            ) == _control_alias_key(manifest):
+                raise ValidationError(
+                    f"{RULES_REL}: [rules] languages declares {language} but "
+                    f"{manifest} is a [[remove]] target"
+                    f"{_filesystem_alias_note(declaration.rule.file, manifest)}"
+                )
     return _ParsedRules(
         rules=Rules(
             exclude_dirs=exclude_dirs,
@@ -1431,7 +1447,7 @@ def _parse_rules(target: Path) -> _ParsedRules:
             replace=tuple(_parse_replace(e) for e in raw_replace),
             substring_rewrite_fields=substring_fields,
             display_forms=tuple(dict.fromkeys(display_forms_list)),
-            languages=_parse_languages(table),
+            languages=languages,
         ),
         regenerate=regenerate,
         reset=reset,

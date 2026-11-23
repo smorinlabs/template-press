@@ -1194,6 +1194,9 @@ def _press(
             return PressOutcome(
                 True, report.renamed, report.regenerated, env_error=None
             )
+        # A reset, edit, regeneration, or rename can change a root manifest,
+        # so the pressed tree must still pass the guard `press verify` applies.
+        check_target_languages(target, rules.languages, ())
         write_control(target, SOURCE_CONFIG_REL, render_source_config(dest))
         # The receipt is the LAST write of a successful press (P12 fix
         # round 1): it means "this rebrand completed and was verified" and it
