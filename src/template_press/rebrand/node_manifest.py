@@ -12,14 +12,16 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from template_press.rebrand.safety import SafetyError, read_regular_nofollow
+
 _ORIGIN_RE = re.compile(
     r"^(?:https?://github\.com/|git@github\.com:)"
     r"(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
 )
-# npm's "Name <email> (url)" author string; every part after the name is optional.
-_AUTHOR_RE = re.compile(
-    r"^\s*(?P<name>[^<(]*?)\s*(?:<(?P<email>[^>]*)>)?\s*(?:\([^)]*\))?\s*$"
-)
+_AUTHOR_EMAIL_RE = re.compile(r"<([^<>]*)>")
+_AUTHOR_NAME_END_RE = re.compile(r"[<(]")
+# A longer author string is undiscoverable, never truncated into a guess.
+_AUTHOR_MAX_CHARS = 1024
 
 
 @dataclass(frozen=True)
@@ -47,11 +49,35 @@ def unscoped(name: str) -> str:
 def _author(raw: object) -> tuple[str | None, str | None]:
     if isinstance(raw, dict):
         return _text(raw.get("name")), _text(raw.get("email"))
-    if isinstance(raw, str):
-        m = _AUTHOR_RE.match(raw)
-        if m:
-            return _text(m["name"]), _text(m["email"])
+    if isinstance(raw, str) and len(raw) <= _AUTHOR_MAX_CHARS:
+        return _author_string(raw)
     return None, None
+
+
+def _author_string(raw: str) -> tuple[str | None, str | None]:
+    """Parse npm's ``Name <email> (url)``; each part after the name is optional.
+
+    Each step scans forward once, so hostile input stays linear. A string with
+    any other shape is undiscoverable.
+    """
+    end = _AUTHOR_NAME_END_RE.search(raw)
+    name = raw[: end.start()] if end else raw
+    rest = raw[len(name) :].strip()
+    email: str | None = None
+    if rest.startswith("<"):
+        found = _AUTHOR_EMAIL_RE.match(rest)
+        if found is None:
+            return None, None
+        email = found[1]
+        rest = rest[found.end() :].lstrip()
+    if rest.startswith("("):
+        close = rest.find(")")
+        if close == -1:
+            return None, None
+        rest = rest[close + 1 :].strip()
+    if rest:
+        return None, None
+    return _text(name), _text(email)
 
 
 def _bins(raw: object, name: str | None) -> tuple[str, ...]:
@@ -74,12 +100,11 @@ def _repository(raw: object) -> tuple[str | None, str | None]:
 
 def read_node_manifest(target: Path) -> NodeManifest | None:
     """The root ``package.json`` identity keys, or ``None`` when unreadable."""
-    path = target / "package.json"
+    # Only the manifest leaf is untrusted; the target path may use symlinks.
+    path = target.resolve() / "package.json"
     try:
-        if path.is_symlink() or not path.is_file():
-            return None
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        data = json.loads(read_regular_nofollow(path).decode("utf-8-sig"))
+    except (OSError, SafetyError, ValueError, RecursionError):
         return None
     if not isinstance(data, dict):
         return None

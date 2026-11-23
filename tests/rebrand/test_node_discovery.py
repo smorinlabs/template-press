@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tomllib
 from dataclasses import replace
 from pathlib import Path
@@ -446,3 +447,91 @@ def test_invalid_proposed_names_exit_2_cleanly(tmp_path: Path, capsys):
 def test_deeply_nested_manifest_is_undiscoverable(tmp_path: Path):
     (tmp_path / "package.json").write_text("[" * 200000, encoding="utf-8")
     assert read_node_manifest(tmp_path) is None
+
+
+_PARSE_AUTHOR = """
+import sys
+from pathlib import Path
+from template_press.rebrand.node_manifest import read_node_manifest
+manifest = read_node_manifest(Path(sys.argv[1]))
+assert manifest is not None
+print(manifest.author, manifest.email)
+"""
+
+
+@pytest.mark.parametrize(
+    "author",
+    [" " * 300 + "<", " " * 5000 + "<", "a " * 3000 + "<", "<" * 5000, "(" * 5000],
+    ids=["spaces-300", "spaces-5000", "words-3000", "angle-5000", "paren-5000"],
+)
+def test_hostile_author_string_parses_in_bounded_time(tmp_path: Path, author: str):
+    _node(tmp_path, author=author)
+    done = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _PARSE_AUTHOR, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Ann Lee", ("Ann Lee", None)),
+        ("Ann Lee <ann@example.test>", ("Ann Lee", "ann@example.test")),
+        (
+            "Ann Lee <ann@example.test> (https://example.test)",
+            ("Ann Lee", "ann@example.test"),
+        ),
+        ("Ann Lee (https://example.test)", ("Ann Lee", None)),
+        ("  Ann   <ann@example.test>  ", ("Ann", "ann@example.test")),
+        ("<ann@example.test>", (None, "ann@example.test")),
+        ("Ann <>", ("Ann", None)),
+        ("Ann <ann@example.test", (None, None)),
+        ("Ann (https://example.test) <ann@example.test>", (None, None)),
+        ("Ann <a@example.test> <b@example.test>", (None, None)),
+        ("x" * 1025, (None, None)),
+    ],
+    ids=[
+        "name",
+        "name-email",
+        "name-email-url",
+        "name-url",
+        "padded",
+        "email-only",
+        "empty-email",
+        "unclosed-email",
+        "url-before-email",
+        "two-emails",
+        "over-cap",
+    ],
+)
+def test_author_string_forms(tmp_path: Path, raw: str, expected: tuple):
+    m = read_node_manifest(_node(tmp_path, author=raw))
+    assert m is not None
+    assert (m.author, m.email) == expected
+
+
+def test_manifest_with_bom_is_read(tmp_path: Path):
+    (tmp_path / "package.json").write_bytes(b"\xef\xbb\xbf" + b'{"name": "pkg"}')
+    m = read_node_manifest(tmp_path)
+    assert m is not None
+    assert m.name == "pkg"
+
+
+def test_manifest_directory_is_undiscoverable(tmp_path: Path):
+    (tmp_path / "package.json").mkdir()
+    assert read_node_manifest(tmp_path) is None
+
+
+@requires_symlink
+def test_target_reached_through_a_symlinked_parent_is_read(tmp_path: Path):
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "package.json").write_text('{"name": "pkg"}', encoding="utf-8")
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    m = read_node_manifest(link)
+    assert m is not None
+    assert m.name == "pkg"
