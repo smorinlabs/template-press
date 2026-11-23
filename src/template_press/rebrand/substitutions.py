@@ -43,6 +43,7 @@ from template_press.rebrand.keep_names import (
     disjoint_matches,
     find_outside_kept,
     kept_spans,
+    loses_kept_name,
     matches_outside_kept,
     splice_outside_kept,
 )
@@ -602,7 +603,14 @@ def _compile_rename_plan(
                 ):
                     continue
                 suffix = current[len(step.old_prefix) :]
-                current_by_source[source] = f"{step.new_prefix}{suffix}"
+                moved = f"{step.new_prefix}{suffix}"
+                if loses_kept_name(current, moved, keep_names):
+                    raise ValidationError(
+                        f"keep_names: moving {step.old_prefix!r} to "
+                        f"{step.new_prefix!r} would change a kept name in "
+                        f"{current!r}"
+                    )
+                current_by_source[source] = moved
                 prior_step_ids_by_source.setdefault(source, []).append(step.step_id)
         steps.extend(pass_steps)
 

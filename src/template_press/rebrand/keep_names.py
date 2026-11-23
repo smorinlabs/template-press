@@ -199,6 +199,14 @@ def disjoint_matches(
     return spans
 
 
+def loses_kept_name(before: str, after: str, names: Sequence[str]) -> bool:
+    """Whether a path move leaves fewer occurrences of any kept name."""
+    return any(
+        len(kept_spans(after, (name,))) < len(kept_spans(before, (name,)))
+        for name in names
+    )
+
+
 def splice_outside_kept(
     text: str,
     spans: Sequence[Span],

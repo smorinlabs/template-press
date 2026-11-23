@@ -22,6 +22,7 @@ from template_press.rebrand.identity import (
     ValidationError,
     token_pattern,
 )
+from template_press.rebrand.inventory import capture_surface_snapshot
 from template_press.rebrand.keep_names import (
     RewrittenForms,
     check_keep_surfaces,
@@ -39,6 +40,7 @@ from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.regen import scan_regenerated_output
 from template_press.rebrand.reset import scan_reset_path, scan_stub_text
 from template_press.rebrand.rules import load_rules
+from template_press.rebrand.substitutions import compile_substitution_table
 from template_press.rebrand.synthesize import synthesize_dest
 from template_press.rebrand.verifier import scan
 from template_press.rebrand.verify_cli import verify_command
@@ -1804,3 +1806,57 @@ def test_own_scoped_name_with_equal_cli_basename_stays_allowed(tmp_path):
     assert _press(target, _answers(tmp_path, dest)) == 0
     text = (target / "docs" / "a.md").read_text(encoding="utf-8")
     assert text == "install @new/ocli\n"
+
+
+# A parent move must not change a kept path
+
+PARENT_SOURCE = replace(SOURCE, repo_name="acme", owner="zeta")
+PARENT_DEST = replace(DEST, repo_name="other-owner")
+PARENT_FILES = {"@acme/widget-extra/a.ts": "k\n", "@acme/other/b.ts": "b\n"}
+
+
+def test_parent_move_of_kept_path_exits_2_before_writes(tmp_path, capsys):
+    target = _with_source(tmp_path, PARENT_SOURCE, _keep_rules([KEPT]), PARENT_FILES)
+    assert _verify(target) == 2
+    assert _press(target, _answers(tmp_path, PARENT_DEST)) == 2
+    assert KEPT in capsys.readouterr().err
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
+
+
+def test_pipeline_refuses_parent_move_of_kept_path():
+    row = PipelineCandidate(
+        row_id="identity:repo_name",
+        from_value="acme",
+        to_value="other-owner",
+        rewrite_surfaces=frozenset({"path"}),
+        matcher=MatcherSpec("conservative", "repo_name", False),
+    )
+    paths = ("@acme/widget-extra/a.ts", "@acme/other/b.ts")
+    with pytest.raises(ValidationError, match="keep_names"):
+        validate_pipeline((row,), initial_paths=paths, keep_names=(KEPT,))
+
+
+def test_rename_plan_refuses_parent_move_of_kept_path(tmp_path):
+    target = _with_source(tmp_path, PARENT_SOURCE, _keep_rules([KEPT]), PARENT_FILES)
+    with pytest.raises(ValidationError, match="keep_names"):
+        compile_substitution_table(
+            PARENT_SOURCE,
+            PARENT_DEST,
+            load_rules(target),
+            capture_surface_snapshot(target),
+            target=target,
+            pipeline_validator=lambda *_args, **_kwargs: (),
+        )
+
+
+def test_parent_move_that_preserves_a_kept_name_stays_allowed():
+    row = PipelineCandidate(
+        row_id="identity:repo_name",
+        from_value="acme-repo",
+        to_value="other-repo",
+        rewrite_surfaces=frozenset({"path"}),
+        matcher=MatcherSpec("conservative", "repo_name", False),
+    )
+    paths = ("acme-repo/@acme/widget-extra/a.ts", "acme-repo/b.ts")
+    validate_pipeline((row,), initial_paths=paths, keep_names=(KEPT,))

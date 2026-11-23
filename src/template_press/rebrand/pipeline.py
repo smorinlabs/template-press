@@ -25,6 +25,7 @@ from template_press.rebrand.keep_names import (
     Span,
     component_kept_spans,
     disjoint_matches,
+    loses_kept_name,
     splice_outside_kept,
 )
 
@@ -680,7 +681,14 @@ def _validate_target_paths(
                 ):
                     continue
                 suffix = current[len(source_prefix) :]
-                current_by_initial[initial] = f"{destination_prefix}{suffix}"
+                moved = f"{destination_prefix}{suffix}"
+                if loses_kept_name(current, moved, keep_names):
+                    raise ValidationError(
+                        f"keep_names: moving {source_prefix!r} to "
+                        f"{destination_prefix!r} would change a kept name in "
+                        f"{current!r}"
+                    )
+                current_by_initial[initial] = moved
                 for row in move_rows:
                     if all(
                         item.row_id != row.row_id for item in movers_by_initial[initial]
