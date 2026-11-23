@@ -61,6 +61,13 @@ jobs:
         with:
           bun-version: '1.3.14'
 
+      # The npm and Bun fixtures in test_node_targets.py need npm
+      # (required: CI fails rather than skips); pnpm is optional and skips.
+      - name: Install Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '22'
+
       - name: Sync locked dev env
         run: uv sync --locked --group dev
 

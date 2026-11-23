@@ -6,3 +6,6 @@ cd "$(git rev-parse --show-toplevel)"
 
 echo "== R1 + R2 + native R3 acceptance =="
 uv run pytest tests/rebrand/test_matrix.py -m live -q
+
+echo "== npm, Bun, and pnpm end-to-end targets =="
+uv run pytest tests/rebrand/test_node_targets.py -m live -q
