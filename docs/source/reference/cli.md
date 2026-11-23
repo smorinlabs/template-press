@@ -751,8 +751,9 @@ key because its command name follows the package name, so it proposes no
 the template, such as a sibling package `@acme/widget-extra`. Every rewrite
 and every scan honors them. An entry equal to an identity value, including
 case and separator variants, exits `2`. Leading and trailing characters outside
-`[A-Za-z0-9@/_-]` are ignored first, so `"acme-cli"` with literal quotes also
-exits `2`. An entry with an edge `-` or `_` (`--acme-cli`) is compared exactly
+`[A-Za-z0-9@/_-]` are ignored first, then edge `/` and `@`, keeping the `@` of a
+scoped name. So `"acme-cli"`, `/acme-cli`, and `@acme` (for `owner = "acme"`)
+also exit `2`. An entry with an edge `-` or `_` (`--acme-cli`) is compared exactly
 and may be kept.
 
 ```toml

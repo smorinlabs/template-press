@@ -31,7 +31,7 @@ is not eligible for the verifier exemption.
 - Monorepo or workspace-member identity. Only the root `package.json` is read.
 - Choosing or running a package manager without a target declaration.
 - Rust or other ecosystems.
-- Provisioning, publishing, or Cloudflare resources.
+- Provisioning, publishing, or hosting-provider resources.
 
 ## Anti-goals
 
@@ -135,7 +135,8 @@ keep_names = ["@acme/widget-extra"]
   or to a rendered `display_name` form, exits 2 before any write. Equality is
   tested after case-folding and removing `-`, `_`, `.`, and spaces, so case and
   separator variants are refused. Leading and trailing characters outside
-  `[A-Za-z0-9@/_-]` are ignored first, so a quoted identity value is refused.
+  `[A-Za-z0-9@/_-]` are ignored first, then edge `/` and `@`, keeping the `@` of
+  a scoped name. So `"acme-cli"`, `/acme-cli`, and `@acme` are refused.
   An entry that starts or ends with `-` or `_`
   (for example `--acme-cli`) is compared exactly, so it may be kept. Empty
   entries, control characters, and non-string entries also exit 2. A match that merely

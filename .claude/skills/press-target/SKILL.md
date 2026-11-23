@@ -182,7 +182,8 @@ wholly inside it. A match that only overlaps a kept span is still a leak.
   includes case and separator variants (`Acme_CLI` for `acme-cli`) and
   rendered `display_name` forms.
   Leading and trailing characters outside `[A-Za-z0-9@/_-]` are ignored
-  first, so `"acme-cli"` with literal quotes also exits 2.
+  first, then edge `/` and `@`, keeping the `@` of a scoped name. So
+  `"acme-cli"`, `/acme-cli`, and `@acme` (for `owner = "acme"`) also exit 2.
   An entry with an edge `-` or `_` is compared exactly, so `--acme-cli`
   (a flag spelling) may be kept.
 - Empty, control-character, and non-string entries exit 2.

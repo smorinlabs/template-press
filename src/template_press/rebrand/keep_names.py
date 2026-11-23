@@ -244,16 +244,34 @@ def _without_edge_punctuation(name: str) -> str:
     return name[start:end]
 
 
+def _without_edge_scope_marks(core: str) -> str:
+    """``core`` without edge ``/`` or ``@``; a scoped name keeps its one ``@``.
+
+    ``@acme`` reduces to ``acme``. ``@acme/widget/`` reduces to ``@acme/widget``,
+    never to ``acme/widget``, so a scope cannot be mistaken for another value.
+    """
+    bare = core.strip("/@")
+    if "/" in bare and core.lstrip("/").startswith("@"):
+        return f"@{bare}"
+    return bare
+
+
 def _is_identity_spelling(name: str, forms: frozenset[str]) -> bool:
     """Exact form, or a normalized match for a name with no edge ``-`` or ``_``.
 
-    Surrounding punctuation is ignored first, because a kept span containing
-    ``"acme-cli"`` would shield the identity value inside the quotes. An edge
-    separator makes a distinct token: ``--acme-cli`` is not ``acme-cli``.
+    Surrounding punctuation and edge ``/`` or ``@`` are ignored first, because
+    a kept span containing ``"acme-cli"`` or ``@acme`` would shield the identity
+    value inside it. An edge separator makes a distinct token: ``--acme-cli`` is
+    not ``acme-cli``.
     """
     if name in forms:
         return True
     core = _without_edge_punctuation(name)
+    if not core:
+        return False
+    if core in forms:
+        return True
+    core = _without_edge_scope_marks(core)
     if not core:
         return False
     if core in forms:
@@ -272,8 +290,8 @@ def validate_keep_names(
 ) -> None:
     """Refuse an entry that is malformed or is a spelling of an identity value.
 
-    Leading and trailing characters outside ``[A-Za-z0-9@/_-]`` are ignored.
-    Entries and identity forms are then compared after case-folding and
+    Leading and trailing characters outside ``[A-Za-z0-9@/_-]`` are ignored,
+    then edge ``/`` and ``@``, keeping the ``@`` of a scoped name. Entries and identity forms are then compared after case-folding and
     removing ``-``, ``_``, ``.``, and spaces, unless the entry starts or ends
     with ``-`` or ``_``; such an entry is refused only on exact equality.
     ``synthetic_dest`` is for ``press verify``. Its destination is generated, so the user cannot choose around

@@ -82,7 +82,8 @@ retained decision record does not require those files to remain present.
    scan ignores a match wholly inside it; an overlap is still a leak. An entry
    equal to a source or destination identity value (including case and
    separator variants and display forms) exits 2, after ignoring leading and
-   trailing characters outside `[A-Za-z0-9@/_-]`. An entry with an edge `-` or
+   trailing characters outside `[A-Za-z0-9@/_-]` and then edge `/` and `@`
+   (a scoped name keeps its `@`). An entry with an edge `-` or
    `_` (`--acme-cli`) is compared exactly and may be kept.
 
    Before any rewrite, `press rebrand` and `press verify` run a sibling

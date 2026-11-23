@@ -1590,3 +1590,68 @@ def test_long_punctuation_entry_validates_in_bounded_time():
         timeout=10,
     )
     assert done.returncode == 0, done.stderr
+
+
+# Edge slash and at-sign around an identity value
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "/acme-cli",
+        "acme-cli/",
+        "@acme-cli",
+        "/acme-cli/",
+        "@acme",
+        "@acme/",
+        "/@acme",
+        "@acme/widget/",
+        "/@acme/widget",
+        "@@acme/widget",
+        '"@acme-cli"',
+    ],
+)
+def test_slash_or_at_wrapped_identity_value_is_refused(entry):
+    with pytest.raises(ValidationError, match="source identity"):
+        validate_keep_names([entry], SOURCE, DEST)
+    with pytest.raises(ValidationError, match="source identity"):
+        validate_keep_names([entry], SOURCE, DEST, synthetic_dest=True)
+
+
+@pytest.mark.parametrize("entry", ["/acme-cli", "acme-cli/", "@acme-cli", "@acme"])
+def test_slash_or_at_wrapped_identity_exits_2_before_writes(tmp_path, capsys, entry):
+    target = _make_target(
+        tmp_path, _keep_rules([entry]), {"docs/a.md": f"run {entry} now\n"}
+    )
+    assert _verify(target) == 2
+    assert _press(target, _answers(tmp_path)) == 2
+    capsys.readouterr()
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
+
+
+@pytest.mark.parametrize(
+    "entry",
+    ["--acme-cli", "acme-cli-", "_acme-cli_", "@acme/widget-", "@acme/widget-extra"],
+)
+def test_edge_separator_and_true_sibling_stay_keepable(entry):
+    validate_keep_names([entry], SOURCE, DEST)
+    validate_keep_names([entry], SOURCE, DEST, synthetic_dest=True)
+
+
+@pytest.mark.parametrize("entry", ["@acme/widget", "acme/widget", "@widget/acme"])
+def test_scoped_entry_is_not_reduced_to_an_unrelated_identity_value(entry):
+    source = replace(SOURCE, owner="widget", npm_name="@zeta/core", display_name=None)
+    dest = replace(DEST, display_name=None)
+    validate_keep_names([entry], source, dest)
+
+
+def test_long_slash_entry_validates_in_bounded_time():
+    code = _VALIDATE_LONG_ENTRY.replace('"!" * 200_000', '"/" * 200_000')
+    done = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert done.returncode == 0, done.stderr
