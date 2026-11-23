@@ -370,7 +370,7 @@ def test_accept_discovery_writes_parseable_source_config(tmp_path: Path):
             "bin": {"acme-cli": "cli.js"},
         },
         origin=True,
-        answers_extra='npm_name = "@new/widget-api"\ncli_name = "new-cli"\n',
+        answers_extra='npm_name = "@new/new-widget"\ncli_name = "new-cli"\n',
     )
     code = main(
         ["--target", str(target), "--config", str(answers), "--accept-discovery"]
@@ -393,7 +393,7 @@ def test_accept_discovery_writes_parseable_source_config(tmp_path: Path):
     }
     written = load_source_config(target, None)
     assert written is not None
-    assert (written.npm_name, written.cli_name) == ("@new/widget-api", "new-cli")
+    assert (written.npm_name, written.cli_name) == ("@new/new-widget", "new-cli")
 
 
 def test_origin_wins_over_manifest_repository(tmp_path: Path, capsys):

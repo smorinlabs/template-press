@@ -189,14 +189,16 @@ makes `press rebrand` and `press verify` exit 2 (nothing written) until
 - One detected language needs no declaration.
 - Listed languages are checked; detected languages not listed are ignored
   and printed to stderr.
-- `node` and `rust` are reserved names: this press version supports only
-  `python`, so listing either exits 2 with "not supported by this press
-  version".
+- This press version supports `python` and `node`. `rust` is a reserved name,
+  so listing it exits 2 with "not supported by this press version".
+- Each listed language's manifest is cross-checked against the source config:
+  `["python"]` leaves `package.json` unchecked, `["node"]` does not check
+  `pyproject.toml`, and `["python", "node"]` checks both.
 - Declaring a language with no such manifest, or whose manifest is a
   `[[remove]]` target, exits 2. A malformed, non-UTF-8, or non-regular root
   manifest also exits 2.
 - Breaking change for existing multi-language targets: add
-  `languages = ["python"]` (or the supported languages that apply) under
+  `languages = ["python"]`, `["node"]`, or `["python", "node"]` under
   `[rules]`.
 
 ### Gotcha: `files` glob semantics

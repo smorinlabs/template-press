@@ -12,11 +12,13 @@ from __future__ import annotations
 import re
 import subprocess  # nosec B404 — reads git origin of the target
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from template_press.rebrand.identity import PYTHON_IDENTIFIER_RE, Identity
+from template_press.rebrand.languages import KNOWN_LANGUAGES
 from template_press.rebrand.node_manifest import (
     NodeManifest,
     read_node_manifest,
@@ -40,10 +42,13 @@ class Discovered:
     email: str | None
     layout: str | None  # "src" | "flat" | None
     app_names: tuple[str, ...] = ()  # ALL [project.scripts] keys, insertion order
-    # "python" (pyproject [project]), "node" (package.json), or None. For a
-    # node source the fatal-check fields above stay None: the manifest values
-    # below feed only the two declared-field checks and non-fatal warnings.
+    # The first checked language in KNOWN_LANGUAGES order, or None. It selects
+    # the source-config proposal. When python is not checked, the fatal-check
+    # fields above stay None.
     source_kind: str | None = None
+    # package.json was checked: the manifest values below feed the two
+    # declared-field checks and the non-fatal warnings.
+    node_checked: bool = False
     npm_name: str | None = None
     cli_names: tuple[str, ...] = ()  # package.json bin keys, manifest order
     manifest_package_name: str | None = None  # derived from npm_name
@@ -78,31 +83,38 @@ def _origin(target: Path) -> tuple[str | None, str | None]:
     return (m["owner"], m["repo"]) if m else (None, None)
 
 
-def _select_manifest(
-    target: Path,
-) -> tuple[str | None, dict[str, Any] | None, NodeManifest | None]:
-    """Pick the root manifest that declares the target's identity.
-
-    The one place manifest precedence lives. A ``pyproject.toml`` with a
-    ``[project]`` table selects "python"; otherwise a readable
-    ``package.json`` selects "node"; otherwise nothing is selected.
-    """
+def _python_project(target: Path) -> dict[str, Any] | None:
+    """The ``[project]`` table of the root ``pyproject.toml``, if it has one."""
     pyproject_path = target / "pyproject.toml"
-    if pyproject_path.is_file():
-        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-        project = data.get("project")
-        if isinstance(project, dict):
-            return "python", project, None
-    manifest = read_node_manifest(target)
-    if manifest is not None:
-        return "node", None, manifest
-    return None, None, None
+    if not pyproject_path.is_file():
+        return None
+    project = tomllib.loads(pyproject_path.read_text(encoding="utf-8")).get("project")
+    return project if isinstance(project, dict) else None
 
 
-def discover(target: Path) -> Discovered:
+def discover(target: Path, languages: Sequence[str] | None = None) -> Discovered:
+    """Read identity from the manifests of ``languages``.
+
+    The CLI passes the language guard's ``LanguageDecision.checked``. ``None``
+    means no guard decision exists, so every readable manifest is read.
+    """
     package_name = app_name = author = email = None
     app_names: tuple[str, ...] = ()
-    source_kind, project, manifest = _select_manifest(target)
+    project = (
+        _python_project(target) if languages is None or "python" in languages else None
+    )
+    manifest = (
+        read_node_manifest(target) if languages is None or "node" in languages else None
+    )
+    if languages is None:
+        checked = {
+            language
+            for language, value in (("python", project), ("node", manifest))
+            if value is not None
+        }
+    else:
+        checked = set(languages)
+    source_kind = next((name for name in KNOWN_LANGUAGES if name in checked), None)
     if project is not None:
         raw_name = project.get("name")
         if isinstance(raw_name, str):
@@ -137,6 +149,7 @@ def discover(target: Path) -> Discovered:
         return found
     return replace(
         found,
+        node_checked=True,
         npm_name=manifest.name,
         cli_names=manifest.bins,
         manifest_package_name=(
@@ -209,7 +222,7 @@ def mismatches(source: Identity, found: Discovered) -> list[str]:
             f"app_name: source-config says {declared['app_name']!r} but "
             f"target [project.scripts] exposes {list(found.app_names)!r}"
         )
-    if found.source_kind == "node":
+    if found.node_checked:
         out.extend(_node_mismatches(declared, found))
     if found.package_name is not None and found.layout is None:
         out.append(
@@ -239,7 +252,7 @@ def _node_mismatches(declared: dict[str, str], found: Discovered) -> list[str]:
 
 def manifest_warnings(source: Identity, found: Discovered) -> list[str]:
     """Non-fatal package.json disagreements, one stderr line each."""
-    if found.source_kind != "node":
+    if not found.node_checked:
         return []
     declared = source.as_dict()
     out: list[str] = []

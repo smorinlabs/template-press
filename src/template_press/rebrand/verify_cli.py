@@ -265,6 +265,7 @@ def _preflight(
     scan_fields: Sequence[str],
     substring_fields: frozenset[str],
     accepted_origin: dict[str, str],
+    languages: Sequence[str],
 ) -> tuple[list[str], dict[str, str]]:
     """Consistency + presence check against the REAL target; problems -> 2.
 
@@ -287,7 +288,7 @@ def _preflight(
     ``--accept-origin-mismatch`` press; the second return value names the
     fields whose mismatch it waived (see ``_honor_accepted_origin``).
     """
-    found = discover(target)
+    found = discover(target, languages)
     for warning in manifest_warnings(source, found):
         print(warning, file=sys.stderr)
     problems, honored = _honor_accepted_origin(
@@ -534,7 +535,13 @@ def verify_command(argv: list[str] | None = None) -> int:
         accepted_origin = {} if unbound is not None else recorded
         recorded_but_unbound = unbound is not None and bool(recorded)
         problems, honored_origin = _preflight(
-            target, source, rules, scan_fields, scan_substring, accepted_origin
+            target,
+            source,
+            rules,
+            scan_fields,
+            scan_substring,
+            accepted_origin,
+            languages.checked,
         )
     except _CONFIG_ERRORS as exc:
         return _fail(f"preflight failed: {exc}")

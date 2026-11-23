@@ -408,6 +408,7 @@ def _resolve_source(
     accept_discovery: bool,
     dest: Identity | None,
     accept_origin_mismatch: bool,
+    languages: Sequence[str],
 ) -> tuple[Identity, bool, OriginDecision, Discovered] | int:
     """Resolve the FROM identity; second element = write source-config later.
 
@@ -418,7 +419,7 @@ def _resolve_source(
     """
     write_pending = False
     source = load_source_config(target, override)
-    found = discover(target)
+    found = discover(target, languages)
     if source is None:
         proposal: dict[str, str | None]
         if found.source_kind == "node":
@@ -715,6 +716,7 @@ def main(argv: list[str] | None = None) -> int:
             args.accept_discovery,
             dest,
             args.accept_origin_mismatch,
+            languages.checked,
         )
         if isinstance(resolved, int):
             return resolved

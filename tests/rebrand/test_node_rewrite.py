@@ -81,6 +81,9 @@ def _make_target(
     (target / "press" / "press-source.toml").write_text(
         _toml_identity(source, "identity"), encoding="utf-8"
     )
+    (target / "press" / "press-rules.toml").write_text(
+        '[rules]\nlanguages = ["python", "node"]\n', encoding="utf-8"
+    )
     (target / "pyproject.toml").write_text(
         "[project]\n"
         f'name = "{source.repo_name}"\n'
@@ -193,6 +196,10 @@ def test_sort_key_leaves_rows_unchanged_without_npm(tmp_path):
     dest = replace(DEST, npm_name=None, cli_name=None)
     target = _make_target(tmp_path, source)
     rows = _table(target, source, dest).rows
+    # The [project].name row runs first by design (main's hyphen fix); only
+    # identity rows are ordered longest-first.
+    assert rows[0].provenance[0].kind == "manifest_name"
+    rows = rows[1:]
     lengths = [len(row.from_value) for row in rows]
     assert lengths == sorted(lengths, reverse=True)
     fields = [row.provenance[0].name for row in rows]

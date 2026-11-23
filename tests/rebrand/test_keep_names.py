@@ -25,6 +25,7 @@ from template_press.rebrand.keep_names import (
 from template_press.rebrand.pipeline import MatcherSpec
 from template_press.rebrand.rules import DEFAULT_RULES, Rules, load_rules
 from template_press.rebrand.substitutions import (
+    Provenance,
     RenderedSubstitution,
     Scope,
     SubstitutionTable,
@@ -34,6 +35,7 @@ from template_press.rebrand.synthesize import synthesize_dest
 from template_press.rebrand.verify_cli import verify_command
 
 KEPT = "@acme/widget-extra"
+LANGUAGES = '[rules]\nlanguages = ["python", "node"]\n'
 SOURCE = Identity(
     package_name="acme_core",
     repo_name="acme-repo",
@@ -125,7 +127,7 @@ def _make_target(
 
 
 def _keep_rules(names: list[str], extra: str = "") -> str:
-    return f"[rules]\nkeep_names = {json.dumps(names)}\n{extra}"
+    return f"{LANGUAGES}keep_names = {json.dumps(names)}\n{extra}"
 
 
 def _answers(tmp_path: Path, dest: Identity = DEST) -> Path:
@@ -144,7 +146,7 @@ def _row(
 ) -> RenderedSubstitution:
     return RenderedSubstitution(
         row_id="row",
-        provenance=(),
+        provenance=(Provenance(kind="identity", name=field or "replace"),),
         matcher=MatcherSpec(algorithm, field, substring),  # type: ignore[arg-type]
         from_value=from_value,
         to_value=to_value,
@@ -361,7 +363,7 @@ def test_verify_refuses_the_same_entries(tmp_path, capsys, label):
 
 @pytest.mark.parametrize("raw", ["[1]", '["ok", 2]', '"not-a-list"'])
 def test_non_string_keep_names_exit_2(tmp_path, capsys, raw):
-    target = _make_target(tmp_path, f"[rules]\nkeep_names = {raw}\n")
+    target = _make_target(tmp_path, f"{LANGUAGES}keep_names = {raw}\n")
     code = main(["--target", str(target), "--config", str(_answers(tmp_path))])
     assert code == 2
     assert "keep_names" in _output(capsys)
