@@ -225,3 +225,125 @@ def test_symlinked_root_manifest_raises_validation_error(tmp_path: Path) -> None
     (tmp_path / "Cargo.toml").symlink_to(real)
     with pytest.raises(ValidationError):
         read_cargo_facts(tmp_path)
+
+
+# --- Final review: agreement with `cargo metadata --no-deps --offline` -------
+
+_WS = '[workspace]\nresolver = "2"\nmembers = ["crates/a"]\n'
+
+
+def _crates(root: Path, manifests: dict[str, str]) -> None:
+    for rel, text in manifests.items():
+        _write(root / rel / "Cargo.toml", text)
+        _write(root / rel / "src" / "lib.rs", "pub fn hi() {}\n")
+
+
+def test_path_dependency_under_root_is_a_member(tmp_path: Path) -> None:
+    _write(tmp_path / "Cargo.toml", _WS)
+    _crates(
+        tmp_path,
+        {
+            "crates/a": _pkg("a", '[dependencies]\nb = { path = "../b" }\n'),
+            "crates/b": _pkg("b", '[dev-dependencies]\nc = { path = "../c" }\n'),
+            "crates/c": _pkg(
+                "c",
+                "[target.'cfg(unix)'.build-dependencies]\nd = { path = \"../d\" }\n",
+            ),
+            "crates/d": _pkg("d"),
+        },
+    )
+    assert read_cargo_facts(tmp_path).names == ("a", "b", "c", "d")
+
+
+def test_inherited_path_dependency_is_a_member_only_when_used(tmp_path: Path) -> None:
+    root = _WS + '[workspace.dependencies]\nb = { path = "crates/b" }\n'
+    _write(tmp_path / "Cargo.toml", root)
+    _crates(tmp_path, {"crates/a": _pkg("a"), "crates/b": _pkg("b")})
+    assert read_cargo_facts(tmp_path).names == ("a",)
+    _write(
+        tmp_path / "crates/a/Cargo.toml",
+        _pkg("a", "[dependencies]\nb = { workspace = true }\n"),
+    )
+    assert read_cargo_facts(tmp_path).names == ("a", "b")
+
+
+def test_path_dependency_needs_a_workspace_root(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "Cargo.toml",
+        _pkg("root", '[dependencies]\nb = { path = "crates/b" }\n'),
+    )
+    _crates(tmp_path, {"crates/b": _pkg("b")})
+    assert read_cargo_facts(tmp_path).names == ("root",)
+
+
+def test_path_dependency_outside_root_is_skipped_not_refused(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    _write(root / "Cargo.toml", _WS)
+    _crates(
+        root, {"crates/a": _pkg("a", '[dependencies]\nz = { path = "../../../z" }\n')}
+    )
+    _crates(tmp_path, {"z": _pkg("z")})
+    assert read_cargo_facts(root).names == ("a",)
+
+
+def test_excluded_path_dependency_is_not_a_member(tmp_path: Path) -> None:
+    _write(tmp_path / "Cargo.toml", _WS + 'exclude = ["crates/b"]\n')
+    _crates(
+        tmp_path,
+        {
+            "crates/a": _pkg("a", '[dependencies]\nb = { path = "../b" }\n'),
+            "crates/b": _pkg("b"),
+        },
+    )
+    assert read_cargo_facts(tmp_path).names == ("a",)
+
+
+def test_path_dependency_symlink_leaving_root_is_refused(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    _write(root / "Cargo.toml", _WS)
+    _crates(root, {"crates/a": _pkg("a", '[dependencies]\nb = { path = "../b" }\n')})
+    _crates(tmp_path, {"outside": _pkg("outside")})
+    (root / "crates" / "b").symlink_to(tmp_path / "outside")
+    with pytest.raises(ValidationError):
+        read_cargo_facts(root)
+
+
+@pytest.mark.parametrize(
+    ("members", "exclude", "expected"),
+    [
+        ("tools/*", "tools/x*", ("xtask", "y")),
+        ("tools/*", "tools/xtask", ("y",)),
+        ("tools/*", "tools", ()),
+        ("tools/xtask", "tools/xtask", ("xtask",)),
+    ],
+)
+def test_exclude_matches_cargo(tmp_path: Path, members, exclude, expected) -> None:
+    _write(
+        tmp_path / "Cargo.toml",
+        f'[workspace]\nresolver = "2"\nmembers = ["{members}"]\n'
+        f'exclude = ["{exclude}"]\n',
+    )
+    _crates(tmp_path, {"tools/xtask": _pkg("xtask"), "tools/y": _pkg("y")})
+    assert read_cargo_facts(tmp_path).names == expected
+
+
+@pytest.mark.parametrize(
+    ("path", "rel"),
+    [
+        ("src/bin/tool.rs", "src/bin/tool.rs"),
+        ("./src/bin/tool.rs", "src/bin/tool.rs"),
+        ("src/bin/tool/main.rs", "src/bin/tool/main.rs"),
+        ("src/main.rs", "src/main.rs"),
+    ],
+)
+def test_file_claimed_by_a_bin_is_not_auto_discovered(
+    tmp_path: Path, path: str, rel: str
+) -> None:
+    _write(
+        tmp_path / "Cargo.toml",
+        _pkg("pkg", f'[[bin]]\nname = "acme"\npath = "{path}"\n'),
+    )
+    _write(tmp_path / rel, "fn main() {}\n")
+    facts = read_cargo_facts(tmp_path)
+    assert facts.bins == ("acme",)
+    assert facts.names == ("acme", "pkg")

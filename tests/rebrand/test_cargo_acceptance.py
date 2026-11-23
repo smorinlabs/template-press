@@ -370,3 +370,103 @@ def test_press_keeps_locked_third_party_version(tmp_path: Path, cargo_or_skip) -
     assert locked["padkit"] == "1.0.0"
     assert {"zeta-core", "zeta-gadget"} <= set(locked)
     assert not {"acme-core", "acme-widget"} & set(locked)
+
+
+def _commit_unmapped(
+    target: Path, files: dict[str, str], identity: dict[str, str]
+) -> None:
+    _write(
+        target,
+        {
+            **files,
+            ".gitignore": "target/\nCargo.lock\n",
+            "press/press-source.toml": _table("identity", identity),
+        },
+    )
+    _git(target, "init", "-q", "-b", "main")
+    _git(target, "config", "user.email", "t@example.test")
+    _git(target, "config", "user.name", "t")
+    url = f"https://github.com/{identity['owner']}/{identity['repo_name']}.git"
+    _git(target, "remote", "add", "origin", url)
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "seed")
+
+
+def _prefix_workspace() -> dict[str, str]:
+    package = '[package]\nname = "{}"\nversion = "0.1.0"\nedition = "2021"\n'
+    return {
+        "Cargo.toml": '[workspace]\nresolver = "2"\nmembers = ["crates/*"]\n',
+        "crates/acme/Cargo.toml": package.format("acme")
+        + '[dependencies]\nacme-core = { path = "../acme-core" }\n',
+        "crates/acme/src/main.rs": "fn main() {\n    acme_core::hi();\n}\n",
+        "crates/acme-core/Cargo.toml": package.format("acme-core"),
+        "crates/acme-core/src/lib.rs": "pub fn hi() {}\n",
+    }
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize(
+    ("source", "dest"),
+    [
+        (
+            {"package_name": "acme", "repo_name": "acme", "app_name": "acme"},
+            {"package_name": "zeta", "repo_name": "zeta", "app_name": "zeta"},
+        ),
+        (
+            {"package_name": "other_pkg", "repo_name": "acme", "app_name": "other"},
+            {"package_name": "zeta_pkg", "repo_name": "zeta", "app_name": "zother"},
+        ),
+    ],
+    ids=["all_fields_prefix", "repo_only_prefix"],
+)
+def test_tableless_prefix_workspace_builds_after_press(
+    source: dict[str, str], dest: dict[str, str], tmp_path: Path, cargo_or_skip
+) -> None:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    identity = {**ACME, **source}
+    destination = {**ZETA, **dest}
+    readme = f"{identity['package_name']} {identity['app_name']}\n"
+    _commit_unmapped(target, {**_prefix_workspace(), "README.md": readme}, identity)
+    answers = tmp_path / "answers.toml"
+    answers.write_text(_table("answers", destination), encoding="utf-8")
+
+    assert main(["--target", str(target), "--config", str(answers)]) == 0
+    assert (target / RECEIPT_REL).is_file()
+    _assert_cargo(target, "check", "--offline")
+    _set_origin(target, destination)
+    assert verify_command(["--target", str(target)]) == 0
+    _assert_tokens_absent(target, ("acme",))
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_bin_env_token_compiles_after_press(tmp_path: Path, cargo_or_skip) -> None:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    files = {
+        "Cargo.toml": (
+            '[package]\nname = "acme-core"\nversion = "0.1.0"\n'
+            f'edition = "2021"\n{AUTHOR_LINE}repository = "{REPOSITORY}"\n\n'
+            '[[bin]]\nname = "acme-cli"\npath = "src/main.rs"\n'
+        ),
+        "src/main.rs": 'fn main() {\n    println!("hello");\n}\n',
+        "tests/cli.rs": (
+            "#[test]\nfn runs_the_binary() {\n"
+            '    let bin = env!("CARGO_BIN_EXE_acme-cli");\n'
+            "    let done = std::process::Command::new(bin).output().unwrap();\n"
+            "    assert!(done.status.success());\n}\n"
+        ),
+    }
+    _commit_fixture(target, files, {"cli": "acme-cli", "core": "acme-core"})
+    answers = _answers(
+        tmp_path, "zeta.toml", ZETA, {"cli": "zeta-cli", "core": "zeta-core"}
+    )
+
+    _press_and_verify(target, answers, ZETA)
+
+    assert "CARGO_BIN_EXE_zeta-cli" in (target / "tests/cli.rs").read_text()
+    _assert_tokens_absent(target, ("acme", "Acme"))

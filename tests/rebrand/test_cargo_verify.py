@@ -454,13 +454,44 @@ def test_verify_finds_glued_cargo_spellings_in_binary_content(
     assert [f["field"] for f in report["surviving"]] == [field]
 
 
-def test_binary_scan_keeps_one_finding_per_offset(tmp_path, capsys) -> None:
+def test_binary_scan_keeps_one_finding_per_field_and_offset(tmp_path, capsys) -> None:
     target = _cargo_target(tmp_path, {"data.bin": b"\xff\xfe xacme_corey\n"})
     assert verify_command(["--target", str(target), "--json"]) == 1
-    report = json.loads(capsys.readouterr().out)
-    cargo = [f for f in report["surviving"] if f["field"].startswith("cargo_")]
-    assert cargo == []
-    assert len({f["col"] for f in report["surviving"]}) == 1
+    surviving = json.loads(capsys.readouterr().out)["surviving"]
+    assert {f["field"] for f in surviving} >= {"package_name", "cargo_exact_core"}
+    keys = [(f["field"], f["col"]) for f in surviving]
+    assert len(keys) == len(set(keys))
+
+
+def test_ignoring_a_shorter_field_does_not_hide_a_binary_crate_name(
+    tmp_path, capsys
+) -> None:
+    source = (
+        "[identity]\n"
+        'package_name = "acme_core"\n'
+        'repo_name = "acme-repo"\n'
+        'app_name = "acme"\n'
+        'author = "Ada Example"\n'
+        'email = "ada@example.test"\n'
+        'owner = "acme-org"\n\n'
+        "[identity.cargo_names]\n"
+        'core = "acme-core"\n'
+        'widget = "acme-widget"\n'
+    )
+    rules = (
+        '[[verify.ignore]]\nfield = "app_name"\nfile = "data.bin"\nreason = "fixture"\n'
+    )
+    target = _cargo_target(
+        tmp_path,
+        {
+            "press/press-source.toml": source,
+            "press/press-rules.toml": rules,
+            "data.bin": b"\xff\xfe_ZN11acme_widget4main",
+        },
+    )
+    assert verify_command(["--target", str(target), "--json"]) == 1
+    surviving = json.loads(capsys.readouterr().out)["surviving"]
+    assert {f["field"] for f in surviving} == {"cargo_exact_widget"}
 
 
 @pytest.mark.parametrize(

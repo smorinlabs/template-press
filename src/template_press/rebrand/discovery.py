@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import subprocess  # nosec B404 — reads git origin of the target
 import tomllib
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -21,10 +21,11 @@ from template_press.rebrand.cargo_manifest import CargoFacts, read_cargo_facts
 from template_press.rebrand.config import toml_string
 from template_press.rebrand.identity import (
     CARGO_IDENT_PREFIX,
+    CARGO_NAME_RE,
+    CARGO_ROLE_RE,
     PYTHON_IDENTIFIER_RE,
     Identity,
     cargo_ident,
-    distinct_hyphen_form,
     occurs,
     token_occurs,
 )
@@ -42,10 +43,14 @@ from template_press.rebrand.node_manifest import (
 from template_press.rebrand.pathing import ROOT_CONTROL
 from template_press.rebrand.rules import regenerate_suggestion
 from template_press.rebrand.safety import git_hardening_args, scrubbed_git_env
+from template_press.rebrand.substitutions import identity_row_rewriter
 
 if TYPE_CHECKING:
     from template_press.rebrand.rules import Rules
 
+# What Cargo accepts as a package or target name, which is wider than the
+# cargo_names value regex: a maturin library is commonly `_name`.
+_CARGO_USABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _ORIGIN_RE = re.compile(
     r"^(?:https?://github\.com/|git@github\.com:)"
     r"(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
@@ -249,8 +254,29 @@ def cargo_role_table(facts: CargoFacts) -> dict[str, str]:
     return table
 
 
+def _unloadable_names(facts: CargoFacts) -> list[str]:
+    """Names a ``cargo_names`` table cannot hold under its validators."""
+    return [
+        name
+        for role, name in sorted(cargo_role_table(facts).items())
+        if not (CARGO_ROLE_RE.fullmatch(role) and CARGO_NAME_RE.fullmatch(name))
+    ]
+
+
+def _table_limit(names: Sequence[str]) -> str:
+    return (
+        f"A cargo_names table cannot represent {list(names)!r}: its values must "
+        f"match {CARGO_NAME_RE.pattern}. Choose identity fields whose rewrite "
+        "keeps the package and Rust spellings of that name consistent, or "
+        "rename it."
+    )
+
+
 def cargo_table_hint(facts: CargoFacts) -> str:
-    """A paste-ready ``cargo_names`` table for both identity files."""
+    """A paste-ready ``cargo_names`` table, or why no loadable table exists."""
+    unloadable = _unloadable_names(facts)
+    if unloadable:
+        return _table_limit(unloadable)
     rows = [
         f"{role} = {toml_string(name)}"
         for role, name in sorted(cargo_role_table(facts).items())
@@ -292,18 +318,6 @@ def cargo_proposal(
     }
 
 
-def _rewritten_whole_by_python_row(
-    name: str, source: Identity, rules: Rules, target: Path
-) -> bool:
-    """Whether the proven hyphen row rewrites ``name``: a declared Python manifest."""
-    if name != source.package_name.replace("_", "-"):
-        return False
-    if rules.languages is None or "python" not in rules.languages:
-        return False
-    project = _python_project(target)
-    return project is not None and project.get("name") == name
-
-
 def _unmapped_name_is_related(
     name: str, changing: dict[str, str], rules: Rules
 ) -> bool:
@@ -341,35 +355,27 @@ def _identifier_on_surface(target: Path, ident: str, rules: Rules) -> bool:
 
 
 def _unmapped_name_is_broken(
-    name: str, target: Path, source: Identity, dest: Identity, rules: Rules
+    name: str,
+    target: Path,
+    rewrite: Callable[[str], str],
+    changing: dict[str, str],
+    rules: Rules,
 ) -> bool:
-    """Whether a press without a table would leave ``name`` half rewritten."""
-    if name in rules.keep_names:
+    """Whether the press's own rows would leave ``name`` inconsistent."""
+    if name in rules.keep_names or not _unmapped_name_is_related(name, changing, rules):
         return False
-    wanted = dest.as_dict()
-    changing = _changing_values(source, dest)
-    if not _unmapped_name_is_related(name, changing, rules):
-        return False
-    whole = next((f for f, value in changing.items() if value == name), None)
-    if whole is None:
-        return not (
-            "package_name" in changing
-            and distinct_hyphen_form(source, dest) is not None
-            and _rewritten_whole_by_python_row(name, source, rules, target)
-        )
     ident = cargo_ident(name)
-    if ident == name or whole not in wanted:
+    new_name, new_ident = rewrite(name), rewrite(ident)
+    if (new_name, new_ident) == (name, ident):
         return False
-    # The Rust identifier must follow the package spelling, or code that names
-    # the crate (`acme_widget::hi()`) no longer resolves after the press.
-    expected = cargo_ident(wanted[whole])
-    if expected == ident:
+    if not _CARGO_USABLE_RE.fullmatch(new_name):
+        return True
+    if cargo_ident(new_name) == new_ident:
         return False
-    if any(
-        value == ident and wanted.get(field) == expected
-        for field, value in changing.items()
-    ):
-        return False
+    if new_name == name:
+        return True  # the identifier moved and the package spelling did not
+    # The package moved without its identifier, which matters only where code
+    # names the crate (`acme_widget::hi()`).
     return _identifier_on_surface(target, ident, rules)
 
 
@@ -400,19 +406,20 @@ def cargo_problems(
     if not source.cargo_names:
         if dest is None:
             return []
-        real_dest = dest
+        rewrite = identity_row_rewriter(source, dest, target, rules)
+        changing = _changing_values(source, dest)
         broken = [
             name
             for name in facts.names
-            if _unmapped_name_is_broken(name, target, source, real_dest, rules)
+            if _unmapped_name_is_broken(name, target, rewrite, changing, rules)
         ]
         if not broken:
             return []
+        remedy = "" if _unloadable_names(facts) else "Declare the table:\n"
         return [
-            f"cargo_names: crate name(s) {broken!r} contain a changing identity "
-            "value that no identity row rewrites whole, so the press would "
-            "leave a broken crate name. Declare the table:\n"
-            f"{cargo_table_hint(facts)}"
+            f"cargo_names: the identity rows would rewrite crate name(s) "
+            f"{broken!r} inconsistently, so the press would leave a broken "
+            f"crate name. {remedy}{cargo_table_hint(facts)}"
         ]
     declared = {cargo_ident(name) for _role, name in source.cargo_names}
     out: list[str] = []
@@ -427,6 +434,9 @@ def cargo_problems(
             "not source cargo_names values; add a role for each (a name that "
             "must not change uses the same value in both files)"
         )
+        unloadable = [n for n in undeclared if not CARGO_NAME_RE.fullmatch(n)]
+        if unloadable:
+            out.append(f"cargo_names: {_table_limit(unloadable)}")
     missing = [n for _r, n in source.cargo_names if cargo_ident(n) not in discovered]
     if missing:
         out.append(
@@ -442,6 +452,19 @@ def cargo_problems(
             "declared source name; rewriting it would point at a different "
             "registry crate"
         )
+    if dest is not None:
+        destinations = {cargo_ident(name) for _role, name in dest.cargo_names}
+        collisions = [
+            name
+            for name in facts.external_dependencies
+            if cargo_ident(name) in destinations - declared
+        ]
+        if collisions:
+            out.append(
+                f"cargo_names: non-local dependency {collisions!r} has the same "
+                "name as a destination crate, so Cargo could not tell them "
+                "apart after the press; choose another destination name"
+            )
     return out
 
 

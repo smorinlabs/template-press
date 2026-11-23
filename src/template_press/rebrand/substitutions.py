@@ -14,9 +14,11 @@ from typing import Literal
 
 from template_press.rebrand.cargo_manifest import read_cargo_facts
 from template_press.rebrand.identity import (
+    CARGO_BIN_ENV_TAG,
     DISPLAY_FORM_NAMES,
     Identity,
     ValidationError,
+    cargo_bin_env_pairs,
     cargo_field_values,
     cargo_name_pairs,
     display_forms,
@@ -1158,7 +1160,10 @@ def _identity_rows(
 
     values.extend(
         (tag, from_value, to_value, False, False)
-        for tag, from_value, to_value in cargo_name_pairs(source, destination)
+        for tag, from_value, to_value in (
+            *cargo_name_pairs(source, destination),
+            *cargo_bin_env_pairs(source, destination),
+        )
     )
     values.sort(key=lambda item: (-len(item[1]), exact_name_rank(item[0])))
     rows: list[RenderedSubstitution] = []
@@ -1552,7 +1557,12 @@ def _refuse_cargo_owner_stale_output(
     """
 
     cargo_outputs = set(cargo_field_values(destination).values())
-    outputs = {row.to_value for row in rows if row.rewrite_surfaces} | cargo_outputs
+    outputs = {
+        row.to_value
+        for row in rows
+        if row.rewrite_surfaces
+        and not row.provenance[0].name.startswith(CARGO_BIN_ENV_TAG)
+    } | cargo_outputs
     for row in rows:
         if not is_cargo_field(row.provenance[0].name):
             continue
@@ -1611,6 +1621,32 @@ def _compiled_rows(
         ),
         rules,
     )
+
+
+def identity_row_rewriter(
+    source: Identity, destination: Identity, target: Path | None, rules: Rules
+) -> Callable[[str], str]:
+    """Apply the identity rows a press would really run on content, in order."""
+
+    rows = _normalize_rows(
+        [],
+        sorted(
+            [
+                *_identity_rows(source, destination, rules),
+                *_hyphen_rows(source, destination, target, rules),
+            ],
+            key=lambda row: -len(row.from_value),
+        ),
+        rules,
+    )
+    active = tuple(row for row in rows if "content" in row.rewrite_surfaces)
+
+    def rewrite(text: str) -> str:
+        for row in active:
+            text = rewrite_with_row(row, text)
+        return text
+
+    return rewrite
 
 
 def _identity_row_pattern(row: RenderedSubstitution) -> re.Pattern[str]:

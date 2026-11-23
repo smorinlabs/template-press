@@ -20,6 +20,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 from template_press.rebrand.identity import (
+    CARGO_BIN_EXE_PREFIX,
     Identity,
     ValidationError,
     cargo_field_values,
@@ -303,6 +304,11 @@ def _contained_source_name(name: str, source: Identity) -> tuple[str, str] | Non
     An unscoped value that is the basename of ``@scope/value`` is not contained:
     that spelling names a different package and may be kept.
     """
+    core = _identity_core(name)
+    if core.startswith(CARGO_BIN_EXE_PREFIX):
+        for field, value in cargo_field_values(source).items():
+            if core == f"{CARGO_BIN_EXE_PREFIX}{value}":
+                return field, value
     candidates = (
         *((field, getattr(source, field)) for field in ("npm_name", "cli_name")),
         *cargo_field_values(source).items(),
@@ -438,6 +444,8 @@ def _sibling_tokens(
     identity_forms: frozenset[str],
     rewritten: RewrittenForms,
     kept: Sequence[Span],
+    *,
+    exempt_other_case: bool = False,
 ) -> list[str]:
     """Tokens joining ``value`` to another name part, unless a row rewrites them.
 
@@ -452,7 +460,9 @@ def _sibling_tokens(
     A glued token is still reported when it is exactly an identity form that no
     row rewrites on this surface, because that form would survive the press.
     An unscoped value that is the basename of ``@scope/value`` is a sibling too:
-    it names a different package.
+    it names a different package. With ``exempt_other_case``, a spelling in
+    another case (``ACME`` for ``acme``) is exempt when a row rewrites exactly
+    that span, because a Cargo name row is case-sensitive and cannot own it.
     """
     tokens: list[str] = []
     occupied: list[Span] | None = None
@@ -488,6 +498,12 @@ def _sibling_tokens(
                 not multi_part
                 and not is_join
                 and not inside_word
+                and _row_rewrites(rewritten.patterns, text, match.span())
+            ):
+                continue
+            if (
+                exempt_other_case
+                and match.group() != value
                 and _row_rewrites(rewritten.patterns, text, match.span())
             ):
                 continue
@@ -587,6 +603,10 @@ def check_keep_surfaces(
     if not values and not names:
         return KeepCheck((), ())
     forms = _identity_forms(source)
+    bin_env_tokens = {
+        f"{CARGO_BIN_EXE_PREFIX}{value}"
+        for value in cargo_field_values(source).values()
+    }
     undeclared: dict[tuple[str, str, str], UndeclaredName] = {}
     unseen = dict.fromkeys(names)
     for path, where, text in surfaces:
@@ -598,7 +618,16 @@ def check_keep_surfaces(
             rewritten(path, where, text) if rewritten is not None else RewrittenForms()
         )
         for field, value in values:
-            for token in _sibling_tokens(text, value, forms, subject, kept):
+            for token in _sibling_tokens(
+                text,
+                value,
+                forms,
+                subject,
+                kept,
+                exempt_other_case=is_cargo_field(field),
+            ):
+                if token in bin_env_tokens:
+                    continue  # rewritten by its own row, or its name is unchanged
                 undeclared.setdefault(
                     (path, where, token), UndeclaredName(path, where, field, token)
                 )

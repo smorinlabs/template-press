@@ -20,6 +20,7 @@ from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
     Identity,
     ValidationError,
+    cargo_bin_env_pairs,
     cargo_field_values,
     cargo_name_pairs,
     display_forms,
@@ -492,6 +493,7 @@ def _raw_replacement_pairs(
             if sf[form] != df[form]:
                 pairs.append((f"display_name_{form}", sf[form], df[form]))
     pairs.extend(cargo_name_pairs(source, dest))
+    pairs.extend(cargo_bin_env_pairs(source, dest))
     display_seen: set[str] = set()
     coalesced: list[tuple[str, str, str]] = []
     for tag, cur, repl in pairs:

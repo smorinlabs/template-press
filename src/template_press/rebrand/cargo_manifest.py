@@ -75,13 +75,32 @@ def _inherited_or_own(
     return workspace_package.get(key) if _is_inherited(value) else value
 
 
+def _within(key: str, prefix: str) -> bool:
+    """Whether normalized relative path ``key`` is ``prefix`` or below it."""
+    return prefix == "." or key == prefix or key.startswith(f"{prefix}{os.sep}")
+
+
+def _is_excluded(key: str, workspace: Table) -> bool:
+    """Cargo's rule: a literal path prefix, unless a member literal also covers it.
+
+    Cargo does not expand globs in ``exclude`` (verified with cargo 1.100.0).
+    """
+    excluded = any(
+        _within(key, os.path.normpath(_relative_pattern(pattern)))
+        for pattern in _strings(workspace.get("exclude"))
+    )
+    return excluded and not any(
+        _within(key, os.path.normpath(pattern))
+        for pattern in _strings(workspace.get("members"))
+    )
+
+
 def _member_dirs(root: Path, workspace: Table) -> list[Path]:
-    excluded = _excluded(root, _strings(workspace.get("exclude")))
     found: dict[str, Path] = {}
     for pattern in _strings(workspace.get("members")):
         for directory in _expand(root, pattern):
             key = os.path.normpath(os.path.relpath(directory, root))
-            if key not in excluded:
+            if not _is_excluded(key, workspace):
                 found.setdefault(key, directory)
     return list(found.values())
 
@@ -90,18 +109,6 @@ def _relative_pattern(pattern: str) -> str:
     if not pattern or PurePath(pattern).is_absolute():
         raise ValidationError(f"workspace member pattern must be relative: {pattern!r}")
     return pattern
-
-
-def _excluded(root: Path, patterns: list[str]) -> set[str]:
-    keys: set[str] = set()
-    for pattern in patterns:
-        keys.add(os.path.normpath(_relative_pattern(pattern)))
-        if _GLOB_CHARS & set(pattern):
-            keys.update(
-                os.path.normpath(os.path.relpath(match, root))
-                for match in root.glob(pattern)
-            )
-    return keys
 
 
 def _expand(root: Path, pattern: str) -> list[Path]:
@@ -126,7 +133,7 @@ def _member_manifest(root: Path, directory: Path) -> Table:
     return _load(manifest)
 
 
-def _auto_bins(directory: Path) -> list[str]:
+def _auto_bins(directory: Path, claimed: set[str]) -> list[str]:
     bin_dir = directory / "src" / "bin"
     stems: list[str] = []
     try:
@@ -137,8 +144,13 @@ def _auto_bins(directory: Path) -> list[str]:
         if entry.is_symlink():
             continue
         if entry.is_file() and entry.name.endswith(".rs"):
-            stems.append(entry.name[: -len(".rs")])
-        elif entry.is_dir() and (Path(entry.path) / "main.rs").is_file():
+            if os.path.join("src", "bin", entry.name) not in claimed:
+                stems.append(entry.name[: -len(".rs")])
+        elif (
+            entry.is_dir()
+            and (Path(entry.path) / "main.rs").is_file()
+            and os.path.join("src", "bin", entry.name, "main.rs") not in claimed
+        ):
             stems.append(entry.name)
     return stems
 
@@ -150,15 +162,20 @@ def _has_main(directory: Path) -> bool:
 
 def _package_bins(directory: Path, data: Table, package: Table, name: str) -> list[str]:
     declared = data.get("bin")
+    entries = [e for e in (declared if isinstance(declared, list) else []) if _table(e)]
     bins = [
-        value
-        for entry in (declared if isinstance(declared, list) else [])
-        if isinstance(entry, dict) and (value := _text(entry.get("name"))) is not None
+        value for entry in entries if (value := _text(entry.get("name"))) is not None
     ]
+    # A file a [[bin]] claims by path is that binary, not another discovered one.
+    claimed = {
+        os.path.normpath(path)
+        for entry in entries
+        if isinstance(path := entry.get("path"), str)
+    }
     if package.get("autobins") is not False:
-        if _has_main(directory):
+        if _has_main(directory) and os.path.join("src", "main.rs") not in claimed:
             bins.append(name)
-        bins.extend(_auto_bins(directory))
+        bins.extend(_auto_bins(directory, claimed))
     return bins
 
 
@@ -207,6 +224,58 @@ def _external_dependencies(manifests: list[Table], workspace_deps: Table) -> lis
     return sorted({name for name in resolved if name is not None})
 
 
+def _path_dependency_dirs(
+    directory: Path, data: Table, workspace_deps: Table, root: Path
+) -> list[Path]:
+    """Directories of this manifest's path dependencies, lexically normalized."""
+    found: list[Path] = []
+    for table in _dependency_tables(data):
+        for key, spec in table.items():
+            base, entry = directory, _table(spec)
+            if entry.get("workspace") is True:
+                base, entry = root, _table(workspace_deps.get(key))
+            path = entry.get("path")
+            if isinstance(path, str):
+                found.append(Path(os.path.normpath(base / path)))
+    return found
+
+
+def _workspace_manifests(
+    root: Path, root_data: Table, workspace: Table, workspace_deps: Table
+) -> list[tuple[Path, Table]]:
+    """The root, its members, and path dependencies Cargo makes members.
+
+    Only a ``[workspace]`` root gains members this way. A dependency outside the
+    root, excluded, or without a manifest is not a member.
+    """
+    manifests: list[tuple[Path, Table]] = [(root, root_data)]
+    seen = {"."}
+    for directory in _member_dirs(root, workspace):
+        key = os.path.normpath(os.path.relpath(directory, root))
+        if key not in seen:
+            seen.add(key)
+            manifests.append((directory, _member_manifest(root, directory)))
+    if "workspace" not in root_data:
+        return manifests
+    index = 0
+    while index < len(manifests):
+        directory, data = manifests[index]
+        index += 1
+        for dependency in _path_dependency_dirs(directory, data, workspace_deps, root):
+            key = os.path.relpath(dependency, root)
+            if (
+                key in seen
+                or key == os.pardir
+                or key.startswith(f"{os.pardir}{os.sep}")
+                or _is_excluded(key, workspace)
+                or not os.path.lexists(dependency / _MANIFEST)
+            ):
+                continue
+            seen.add(key)
+            manifests.append((dependency, _member_manifest(root, dependency)))
+    return manifests
+
+
 def read_cargo_facts(target: Path) -> CargoFacts:
     """Identity facts from the root ``Cargo.toml`` and its workspace members."""
     # Only the manifest leaves are untrusted; the target path may use symlinks.
@@ -216,11 +285,7 @@ def read_cargo_facts(target: Path) -> CargoFacts:
     workspace_package = _table(workspace.get("package"))
     workspace_deps = _table(workspace.get("dependencies"))
 
-    manifests: list[tuple[Path, Table]] = [(root, root_data)]
-    for directory in _member_dirs(root, workspace):
-        if os.path.normpath(os.path.relpath(directory, root)) == ".":
-            continue
-        manifests.append((directory, _member_manifest(root, directory)))
+    manifests = _workspace_manifests(root, root_data, workspace, workspace_deps)
 
     packages: list[str] = []
     names: set[str] = set()

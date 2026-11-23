@@ -808,7 +808,9 @@ def _scan_binary(
         findings.extend(
             Finding(posix, f, value, "binary", None, idx, "") for idx in sorted(offsets)
         )
-    seen = {finding.col for finding in findings}
+    reported: dict[str, set[int | None]] = {}
+    for finding in findings:
+        reported.setdefault(finding.field, set()).add(finding.col)
     for field, name, spellings in cargo_literals:
         offsets = set()
         for spelling in spellings:
@@ -816,8 +818,10 @@ def _scan_binary(
             offsets.update(
                 start for start, _end in matches_outside_kept(raw, latin1, kept)
             )
-        offsets -= seen
-        seen |= offsets
+        # A shorter field at this offset must not hide the crate name: that
+        # field can be ignored on its own, which would turn the scan clean.
+        offsets -= reported.get(field, set())
+        reported.setdefault(field, set()).update(offsets)
         findings.extend(
             Finding(posix, field, name, "binary", None, idx, "")
             for idx in sorted(offsets)

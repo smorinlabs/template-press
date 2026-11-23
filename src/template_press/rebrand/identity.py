@@ -23,6 +23,9 @@ CARGO_ROLE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 CARGO_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 CARGO_EXACT_PREFIX = "cargo_exact_"
 CARGO_IDENT_PREFIX = "cargo_ident_"
+CARGO_BIN_ENV_TAG = "cargo_binenv_"
+# Cargo defines this prefix exactly for integration tests of each binary.
+CARGO_BIN_EXE_PREFIX = "CARGO_BIN_EXE_"
 
 # Whole values that are filesystem path traversal segments rather than names.
 # Only the free-form fields (author, display_name) can hold them — every other
@@ -328,6 +331,8 @@ def field_renames_paths(field: str, value: str) -> bool:
     """
     if field == "npm_name":
         return "/" not in value
+    if field.startswith(CARGO_BIN_ENV_TAG):
+        return False  # an environment variable name, never a path component
     return field == "cli_name" or field in RENAME_FIELDS or is_cargo_field(field)
 
 
@@ -398,7 +403,7 @@ def cargo_ident(name: str) -> str:
 
 
 def is_cargo_field(field: str) -> bool:
-    return field.startswith((CARGO_EXACT_PREFIX, CARGO_IDENT_PREFIX))
+    return field.startswith((CARGO_EXACT_PREFIX, CARGO_IDENT_PREFIX, CARGO_BIN_ENV_TAG))
 
 
 def exact_name_rank(field: str) -> int:
@@ -442,6 +447,21 @@ def cargo_name_pairs(source: Identity, dest: Identity) -> list[tuple[str, str, s
         key=lambda p: (-len(p[1]), not p[0].startswith(CARGO_EXACT_PREFIX), p[0])
     )
     return pairs
+
+
+def cargo_bin_env_pairs(source: Identity, dest: Identity) -> list[tuple[str, str, str]]:
+    """``(tag, from, to)`` pairs for ``CARGO_BIN_EXE_<name>`` of each changed name.
+
+    The Cargo row's left boundary excludes ``_``, so it cannot reach this token.
+    """
+    return [
+        (
+            f"{CARGO_BIN_ENV_TAG}{tag}",
+            f"{CARGO_BIN_EXE_PREFIX}{old}",
+            f"{CARGO_BIN_EXE_PREFIX}{new}",
+        )
+        for tag, old, new in cargo_name_pairs(source, dest)
+    ]
 
 
 def _cargo_forms(name: str) -> set[str]:

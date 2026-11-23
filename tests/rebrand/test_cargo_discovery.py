@@ -17,8 +17,16 @@ from template_press.rebrand.discovery import (
     cargo_warnings,
     discover,
 )
-from template_press.rebrand.identity import Identity, cargo_identity_problem
-from template_press.rebrand.keep_names import check_keep_surfaces
+from template_press.rebrand.identity import (
+    Identity,
+    ValidationError,
+    cargo_identity_problem,
+)
+from template_press.rebrand.keep_names import (
+    check_keep_surfaces,
+    sibling_guidance,
+    validate_keep_names,
+)
 from template_press.rebrand.languages import SUPPORTED_LANGUAGES
 from template_press.rebrand.rules import load_rules
 from template_press.rebrand.substitutions import check_target_keep_names
@@ -215,11 +223,11 @@ def test_no_map_python_hyphen_row_counts_only_when_package_changes(tmp_path) -> 
         repo_name="acme-repo",
     )
     rules = load_rules(target)
-    source = _identity(repo_name="acme-repo", owner="acme")
+    source = _identity(repo_name="acme-repo")
     moved = Identity.from_mapping(_dest_values(repo_name="zeta-repo"))
     assert cargo_problems(target, source, moved, rules) == []
     kept = Identity.from_mapping(
-        _dest_values(package_name="acme_core", repo_name="zeta-repo", owner="zeta")
+        _dest_values(package_name="acme_core", repo_name="zeta-repo")
     )
     assert cargo_problems(target, source, kept, rules) != []
 
@@ -933,3 +941,286 @@ def test_rename_keeping_rust_identifier_continues(tmp_path, field) -> None:
     assert main(["--target", str(target), "--config", str(answers)]) == 0
     assert 'name = "acme_core"' in (target / "Cargo.toml").read_text()
     assert "acme_core::hi()" in (target / "src" / "main.rs").read_text()
+
+
+# --- Final review: judge rows, unloadable hints, env-prefix spans ------------
+
+WORKSPACE_ROOT = '[workspace]\nresolver = "2"\nmembers = ["crates/*"]\n'
+ROOT_PACKAGE = (
+    '[package]\nname = "acme-root"\nversion = "0.1.0"\n'
+    f'{AUTHOR}\n[workspace]\nmembers = ["crates/*"]\n'
+)
+
+
+def _prefix_files(root: str, **source: str) -> dict[str, str]:
+    files = {
+        "Cargo.toml": root,
+        "crates/acme/Cargo.toml": _crate(
+            "acme", '\n[dependencies]\nacme-core = { path = "../acme-core" }\n'
+        ),
+        "crates/acme/src/main.rs": "fn main() { acme_core::hi(); }\n",
+        "crates/acme-core/Cargo.toml": _crate("acme-core"),
+        "crates/acme-core/src/lib.rs": "pub fn hi() {}\n",
+        "press/press-source.toml": _source_config(**source),
+    }
+    if root == ROOT_PACKAGE:
+        files["src/lib.rs"] = "pub fn root() {}\n"
+    return files
+
+
+@pytest.mark.parametrize("root", [WORKSPACE_ROOT, ROOT_PACKAGE])
+def test_no_map_prefix_workspace_continues(tmp_path, root) -> None:
+    target = _repo(
+        tmp_path,
+        _prefix_files(root, package_name="acme", repo_name="acme", app_name="acme"),
+        repo_name="acme",
+    )
+    answers = _answers(tmp_path, package_name="zeta", repo_name="zeta", app_name="zeta")
+    assert _press(target, answers) == 0
+
+
+def test_no_map_repo_only_prefix_continues(tmp_path) -> None:
+    target = _repo(
+        tmp_path,
+        _prefix_files(
+            WORKSPACE_ROOT,
+            package_name="other_pkg",
+            repo_name="acme",
+            app_name="tool_app",
+        ),
+        repo_name="acme",
+    )
+    answers = _answers(
+        tmp_path, package_name="zeta_pkg", repo_name="zeta", app_name="zeta_app"
+    )
+    assert _press(target, answers) == 0
+
+
+def test_no_map_app_only_prefix_splits_the_spellings_and_exits_2(
+    tmp_path, capsys
+) -> None:
+    target = _repo(
+        tmp_path,
+        _prefix_files(
+            WORKSPACE_ROOT,
+            package_name="other_pkg",
+            repo_name="other-repo",
+            app_name="acme",
+        ),
+        repo_name="other-repo",
+    )
+    answers = _answers(
+        tmp_path, package_name="zeta_pkg", repo_name="zeta-repo", app_name="zeta"
+    )
+    assert _press(target, answers) == 2
+    assert "acme-core" in capsys.readouterr().out
+    assert _clean(target)
+
+
+def test_no_map_rewrite_cargo_cannot_use_exits_2(tmp_path, capsys) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("acme-tools"),
+            "src/lib.rs": "pub fn hi() {}\n",
+            "press/press-source.toml": _source_config(
+                package_name="other_pkg",
+                repo_name="other-repo",
+                app_name="tool_app",
+                owner="acme",
+            ),
+        },
+        repo_name="other-repo",
+        owner="acme",
+    )
+    answers = _answers(
+        tmp_path,
+        package_name="zeta_pkg",
+        repo_name="zeta-repo",
+        app_name="zeta_app",
+        owner="9zeta",
+    )
+    assert _press(target, answers) == 2
+    assert "acme-tools" in capsys.readouterr().out
+    assert _clean(target)
+
+
+def _maturin_files(source: str) -> dict[str, str]:
+    return {
+        "Cargo.toml": _crate("acme-widget", '[lib]\nname = "_acme_widget"\n'),
+        "pyproject.toml": '[project]\nname = "acme-widget"\nversion = "0.1.0"\n',
+        "src/lib.rs": "pub fn hi() {}\n",
+        "src/acme_widget/__init__.py": "",
+        "press/press-rules.toml": '[rules]\nlanguages = ["python", "rust"]\n',
+        "press/press-source.toml": source,
+    }
+
+
+def test_no_map_leading_underscore_lib_continues(tmp_path) -> None:
+    target = _repo(
+        tmp_path,
+        _maturin_files(
+            _source_config(package_name="acme_widget", repo_name="acme-widget")
+        ),
+        repo_name="acme-widget",
+    )
+    answers = _answers(tmp_path, package_name="zeta_widget", repo_name="zeta-widget")
+    assert _press(target, answers) == 0
+
+
+def test_table_hint_never_prints_an_unloadable_table(tmp_path) -> None:
+    target = _repo(tmp_path, _maturin_files(_source_config()))
+    hint = cargo_table_hint(read_cargo_facts(target))
+    assert "[identity.cargo_names]" not in hint
+    assert "_acme_widget" in hint
+    assert "cannot represent" in hint
+
+
+def test_declared_table_refusal_names_the_underscore_limit(tmp_path, capsys) -> None:
+    target = _repo(
+        tmp_path,
+        _maturin_files(
+            _source_config(
+                {"widget": "acme-widget"},
+                package_name="acme_widget",
+                repo_name="acme-widget",
+            )
+        ),
+        repo_name="acme-widget",
+    )
+    answers = _answers(
+        tmp_path,
+        {"widget": "zeta-widget"},
+        package_name="zeta_widget",
+        repo_name="zeta-widget",
+    )
+    assert _press(target, answers) == 2
+    out = capsys.readouterr().out
+    assert "_acme_widget" in out
+    assert "cannot represent" in out
+    assert _clean(target)
+
+
+def test_role_equal_to_app_name_keeps_env_prefix(tmp_path) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("acme"),
+            "src/main.rs": 'fn main() { let _ = std::env::var("ACME_HOME"); }\n',
+            "press/press-source.toml": _source_config(
+                {"acme": "acme"},
+                package_name="acme",
+                repo_name="acme",
+                app_name="acme",
+            ),
+        },
+        repo_name="acme",
+    )
+    answers = _answers(
+        tmp_path,
+        {"acme": "zeta"},
+        package_name="zeta",
+        repo_name="zeta",
+        app_name="zeta",
+    )
+    assert main(["--target", str(target), "--config", str(answers)]) == 0
+    assert "ZETA_HOME" in (target / "src/main.rs").read_text()
+    _git(target, "remote", "set-url", "origin", "https://github.com/zeta-org/zeta")
+    assert verify_command(["--target", str(target)]) == 0
+
+
+def test_accepted_discovery_with_bin_equal_to_app_keeps_env_prefix(tmp_path) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate(
+                "acme-widget", '\n[[bin]]\nname = "acme"\npath = "src/main.rs"\n'
+            ),
+            "src/main.rs": 'fn main() { let _ = std::env::var("ACME_TOKEN"); }\n',
+        },
+        repo_name="acme-repo",
+    )
+    answers = _answers(
+        tmp_path,
+        {"acme": "zeta", "acme_widget": "zeta-widget"},
+        package_name="zeta_widget",
+        repo_name="zeta-repo",
+        app_name="zeta",
+    )
+    argv = ["--target", str(target), "--config", str(answers), "--accept-discovery"]
+    assert main(argv) == 0
+    assert "ZETA_TOKEN" in (target / "src/main.rs").read_text()
+
+
+def test_real_sibling_of_a_role_is_still_refused(tmp_path, capsys) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("acme-core"),
+            "src/main.rs": 'fn main() { let _ = std::env::var("ACME_CORE_HOME"); }\n',
+            "press/press-source.toml": _source_config(CORE_MAP, app_name="acme"),
+        },
+    )
+    answers = _answers(tmp_path, ZETA_MAP, app_name="zeta")
+    assert main(["--target", str(target), "--config", str(answers)]) == 1
+    assert "ACME_CORE_HOME" in capsys.readouterr().err
+    assert _clean(target)
+
+
+def test_destination_equal_to_third_party_dependency_exits_2(tmp_path, capsys) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("acme-core", '\n[dependencies]\npadkit = "1"\n'),
+            "src/lib.rs": "pub fn hi() {}\n",
+            "press/press-source.toml": _source_config(CORE_MAP),
+        },
+    )
+    answers = _answers(tmp_path, {"core": "padkit"}, package_name="padkit")
+    assert main(["--target", str(target), "--config", str(answers)]) == 2
+    assert "padkit" in capsys.readouterr().out
+    assert _clean(target)
+
+
+def _bin_env_target(tmp_path: Path, cargo: dict[str, str]) -> Path:
+    return _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate(
+                "acme-core", '\n[[bin]]\nname = "acme-cli"\npath = "src/main.rs"\n'
+            ),
+            "src/main.rs": "fn main() {}\n",
+            "tests/cli.rs": 'const BIN: &str = env!("CARGO_BIN_EXE_acme-cli");\n',
+            "press/press-source.toml": _source_config(cargo),
+        },
+    )
+
+
+def test_bin_env_token_follows_a_changed_name(tmp_path) -> None:
+    target = _bin_env_target(tmp_path, {"cli": "acme-cli", **CORE_MAP})
+    answers = _answers(tmp_path, {"cli": "zeta-cli", **ZETA_MAP})
+    assert main(["--target", str(target), "--config", str(answers)]) == 0
+    assert "CARGO_BIN_EXE_zeta-cli" in (target / "tests/cli.rs").read_text()
+
+
+def test_bin_env_token_of_an_unchanged_name_needs_no_keep_entry(tmp_path) -> None:
+    target = _bin_env_target(tmp_path, {"cli": "acme-cli", **CORE_MAP})
+    answers = _answers(tmp_path, {"cli": "acme-cli", **ZETA_MAP})
+    assert main(["--target", str(target), "--config", str(answers)]) == 0
+    assert "CARGO_BIN_EXE_acme-cli" in (target / "tests/cli.rs").read_text()
+
+
+@pytest.mark.parametrize("entry", ["CARGO_BIN_EXE_acme-cli", "CARGO_BIN_EXE_acme_cli"])
+def test_bin_env_token_of_a_declared_name_cannot_be_kept(entry) -> None:
+    cargo = {"cli": "acme-cli", **CORE_MAP}
+    source = _identity(cargo)
+    dest = Identity.from_mapping(_dest_values(), {"cli": "zeta-cli", **ZETA_MAP})
+    with pytest.raises(ValidationError, match="CARGO_BIN_EXE"):
+        validate_keep_names([entry], source, dest)
+    assert sibling_guidance(entry, (0, 5), source) is None
+
+
+def test_bin_env_keep_entry_stays_valid_without_a_table() -> None:
+    source = _identity()
+    dest = Identity.from_mapping(_dest_values())
+    validate_keep_names(["CARGO_BIN_EXE_acme-cli"], source, dest)
