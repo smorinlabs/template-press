@@ -737,16 +737,23 @@ a leak.
 `bin` (string or object), and `repository` (string or `{url}`, only when git
 `origin` is unavailable). With a source config, a declared `npm_name` that
 differs from the manifest `name`, or a declared `cli_name` that is not a `bin`
-key, exits `2`; every other disagreement is a `warning:` on stderr. With no
-source config, the dry run proposes one; if object-form `bin` lists several
-commands that no other proposed value covers, the press exits `2` and asks for
-a hand-written source config.
+key, exits `2`; every other disagreement is a `warning:` on stderr. Without a
+source config and without `--accept-discovery`, any run, with or without
+`--dry-run`, prints a proposed source config and exits `2`. If object-form `bin`
+lists several commands that no other proposed value covers, the press exits `2`
+and asks for a hand-written source config.
+
+Only an object-form `bin` key can propose `cli_name`. A string-form `bin` has no
+key because its command name follows the package name, so it proposes no
+`cli_name`.
 
 **`[rules] keep_names`.** Exact, case-sensitive names that are independent of
 the template, such as a sibling package `@acme/widget-extra`. Every rewrite
 and every scan honors them. An entry equal to an identity value, including
-case and separator variants, exits `2`; an entry with an edge `-` or `_`
-(`--acme-cli`) is compared exactly and may be kept.
+case and separator variants, exits `2`. Leading and trailing characters outside
+`[A-Za-z0-9@/_-]` are ignored first, so `"acme-cli"` with literal quotes also
+exits `2`. An entry with an edge `-` or `_` (`--acme-cli`) is compared exactly
+and may be kept.
 
 ```toml
 [rules]
@@ -757,10 +764,11 @@ keep_names = ["@acme/widget-extra"]
 look for an undeclared name that joins a source `npm_name` or `cli_name` to
 another name part. A finding exits `1`, writes nothing, and writes no receipt.
 For a multi-part value (`acme-cli`, `@acme/widget`), any name character touching
-either side is a sibling. For a single-token value (`tsc`, `serve`), both sides
-must be real boundaries or joins and at least one must be a `-`/`_` join or a
-camelCase tail: `tsconfig`, `server`, and `web-server` pass, and `tsc-helper`
-and `tscConfig` are refused. Tokens rewritten by an applicable row or
+either side is a sibling. For a single-token value (`tsc`, `serve`), an
+alphanumeric character glued to either side means an unrelated word:
+`tsconfig`, `server`, `web-server`, and `observe-mode` pass. Otherwise a directly
+touching `-` or `_` or a camelCase tail is a sibling, so `tsc-helper`,
+`tscConfig`, `--tsc`, `_tsc_`, `_tsc`, and `tsc_` are refused. Tokens rewritten by an applicable row or
 `[[replace]]` rule are exempt, and planned `[[remove]]` files are skipped.
 
 **Lockfiles.** `package-lock.json`, `bun.lock`, `uv.lock`, and `pnpm-lock.yaml`
@@ -779,8 +787,17 @@ The Bun block deletes and rebuilds the lock because Bun keeps a stale workspace
 name in an existing lock. It is POSIX-only, and Windows targets declare their
 own command.
 
-**Known limits.** Keeping an unscoped npm basename while changing
-`package_name` exits `1`. A scope-preserving press with a changed `owner` can
+**Known limits.** These outcomes apply when `package_name` changes and its
+hyphen form is `ledger-kit`:
+
+| Configuration | Outcome |
+|---------------|---------|
+| Six-field config, and `package.json` `name` is `ledger-kit` | `press rebrand` exits `1` |
+| Scoped `npm_name` whose basename stays `ledger-kit` | `press rebrand` exits `1` after rewriting; `press verify` exits `0` |
+| Declared unscoped `npm_name = "ledger-kit"`, left unchanged | Exits `0` legitimately |
+| `keep_names = ["ledger-kit"]` | Exits `2` |
+
+A scope-preserving press with a changed `owner` can
 exit `2` at press time while `press verify` exits `0`. Non-UTF-8 files are
 outside the preflight and the inline doctor and are scanned only by
 `press verify`.
@@ -835,6 +852,17 @@ press verify [--target PATH] [--json]
 |--------|---------|
 | `--target PATH` | The target repository to verify (default: `.` the current directory). |
 | `--json` | Output structured JSON instead of human text. |
+
+When the sibling preflight refuses a target, `--json` prints one object with
+`verified: false` and exits `1`. Its `undeclared_names` array holds one object
+per finding, with these keys:
+
+| Key | Meaning |
+|-----|---------|
+| `path` | Target-relative path of the finding. |
+| `where` | Surface: `content`, `path`, or `symlink`. |
+| `field` | Declared field the token contains: `npm_name` or `cli_name`. |
+| `token` | The exact undeclared token. |
 
 ### Configuration: `[verify]` table
 

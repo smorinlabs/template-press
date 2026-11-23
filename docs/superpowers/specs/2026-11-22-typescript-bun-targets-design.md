@@ -134,7 +134,9 @@ keep_names = ["@acme/widget-extra"]
 - **Safety limits:** an entry equal to a source or destination identity value,
   or to a rendered `display_name` form, exits 2 before any write. Equality is
   tested after case-folding and removing `-`, `_`, `.`, and spaces, so case and
-  separator variants are refused. An entry that starts or ends with `-` or `_`
+  separator variants are refused. Leading and trailing characters outside
+  `[A-Za-z0-9@/_-]` are ignored first, so a quoted identity value is refused.
+  An entry that starts or ends with `-` or `_`
   (for example `--acme-cli`) is compared exactly, so it may be kept. Empty
   entries, control characters, and non-string entries also exit 2. A match that merely
   overlaps a kept span, without lying wholly inside it, is still a leak.
@@ -156,10 +158,11 @@ writes no receipt.
 - **Multi-part values** (`acme-cli`, `@acme/widget`): any name character touching
   either side makes a sibling, for example `acme-cli2`, `xacme-cli`, and
   `acme-cli-helper`.
-- **Single-token values** (`tsc`, `serve`): both sides must be real boundaries
-  or joins, and at least one side must be a `-` or `_` join or a camelCase
-  tail. `tsconfig`, `server`, and `web-server` are allowed. `tsc-helper` and
-  `tscConfig` are refused.
+- **Single-token values** (`tsc`, `serve`): an alphanumeric character glued to
+  either side means an unrelated word, so `tsconfig`, `server`, `web-server`,
+  and `observe-mode` are allowed. Otherwise a directly touching `-` or `_` or a
+  camelCase tail is a sibling, so `tsc-helper`, `tscConfig`, `--tsc`, `_tsc_`,
+  `_tsc`, and `tsc_` are refused.
 - **Exempt:** a token that an applicable rewrite row or `[[replace]]` rule
   rewrites on that exact path and surface, and files planned for `[[remove]]`.
 - **Outside the preflight:** non-UTF-8 files are not scanned by the preflight or
@@ -240,7 +243,11 @@ The real press still runs the post-command scan on each regenerated lockfile.
 
 ### Known limits
 
-- Keeping an unscoped npm basename while changing `package_name` exits 1.
+- When `package_name` changes: a six-field config whose `package.json` name
+  equals the hyphen form exits 1. A scoped `npm_name` whose basename stays that
+  hyphen form exits 1 from `press rebrand` after rewriting, while `press verify`
+  exits 0. A declared unscoped `npm_name` left unchanged exits 0 legitimately.
+  `keep_names = ["<that hyphen form>"]` exits 2.
 - A scope-preserving press with a changed `owner` can exit 2 at press time while
   `press verify` exits 0.
 - Non-UTF-8 files are outside the sibling preflight and the inline doctor and
@@ -272,9 +279,9 @@ follows the guard's final behavior after the rebase.
   not join the repository's declared 10-tool developer toolchain.
 - A pnpm fixture runs the same flow when `pnpm` is available.
 - `just check` and `just matrix` must pass.
-- Before pushing, the owner-provided private acceptance target is pressed in a
-  scratch copy and checked with `npm ci`, `npm test`, `npm run typecheck`, and
-  `npx wrangler deploy --dry-run`. Its identity must not appear in this repository.
+- Before pushing, the owner's real-world acceptance target is pressed in a
+  scratch copy and passes its own install, test, typecheck, and build checks.
+  Its identity must not appear in this repository.
 
 ## Left to the builder
 

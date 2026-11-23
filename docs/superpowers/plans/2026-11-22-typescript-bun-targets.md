@@ -459,13 +459,13 @@ Document `npm_name`, `cli_name`, `keep_names`, `package.json` discovery and prec
 Run: `make check && just check && just matrix && uv run ruff format --check .`
 Expected: all exit 0.
 
-- [ ] **Step 3: Run private acceptance in a scratch copy only**
+- [ ] **Step 3: Run real-world acceptance in a scratch copy only**
 
-Clone the private target named in the session handoff over HTTPS into the session scratchpad. Press it, then run `npm ci`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `press verify`. Expected: all exit 0. Never push to it. Report any needed config change in the final message.
+Clone the owner's real-world acceptance target over HTTPS into the session scratchpad. Press it, then run its install, test, typecheck, and build checks and `press verify`. Expected: all exit 0. Never push to it. Report any needed config change in the final message.
 
 - [ ] **Step 4: Run the privacy gate**
 
-Search `git diff origin/main...HEAD` for the private target's name, app name, and hostnames from the session handoff. Keep that search pattern out of the repository.
+Search `git diff origin/main...HEAD` for the acceptance target's identifying values from the session handoff. Keep that search pattern out of the repository.
 Expected: no matches.
 
 - [ ] **Step 5: Commit docs and project state**

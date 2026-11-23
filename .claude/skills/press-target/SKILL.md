@@ -153,8 +153,10 @@ package name.
   a `bin` key. Every other disagreement (`author`, `email`, derived
   `package_name`, `bin` versus `app_name`, `repository` versus `origin`)
   prints a `warning:` on stderr and does not fail.
-- With no source config, the dry run proposes one. A first object-form `bin`
-  key containing `-` proposes `cli_name` and a `_` form for `app_name`.
+- With no source config and no `--accept-discovery`, any run (dry or not)
+  prints a proposed source config and exits 2. A first object-form `bin` key
+  containing `-` proposes `cli_name` and a `_` form for `app_name`. A
+  string-form `bin` has no key, so it never proposes `cli_name`.
   When object-form `bin` declares several commands that no other proposed
   value covers, the press exits 2 and asks for a hand-written source config
   listing each independent CLI in `[rules] keep_names`.
@@ -179,6 +181,8 @@ wholly inside it. A match that only overlaps a kept span is still a leak.
 - Entries equal to a source or destination identity value exit 2. That
   includes case and separator variants (`Acme_CLI` for `acme-cli`) and
   rendered `display_name` forms.
+  Leading and trailing characters outside `[A-Za-z0-9@/_-]` are ignored
+  first, so `"acme-cli"` with literal quotes also exits 2.
   An entry with an edge `-` or `_` is compared exactly, so `--acme-cli`
   (a flag spelling) may be kept.
 - Empty, control-character, and non-string entries exit 2.
@@ -194,10 +198,11 @@ receipt, and prints each token with the `keep_names` line that would keep it.
 
 - Multi-part values (`acme-cli`, `@acme/widget`): any name character touching
   either side is a sibling (`acme-cli2`, `xacme-cli`, `acme-cli-helper`).
-- Single-token values (`tsc`, `serve`): both sides must be real boundaries or
-  joins, with at least one `-` or `_` join or a camelCase tail. So `tsconfig`,
-  `server`, and `web-server` are allowed, and `tsc-helper` and `tscConfig`
-  are refused.
+- Single-token values (`tsc`, `serve`): an alphanumeric character glued to
+  either side means an unrelated word, so `tsconfig`, `server`, `web-server`,
+  and `observe-mode` are allowed. Otherwise a directly touching `-` or `_` or a
+  camelCase tail is a sibling, so `tsc-helper`, `tscConfig`, `--tsc`, `_tsc_`,
+  `_tsc`, and `tsc_` are refused.
 - Exempt: a token that an applicable rewrite row or `[[replace]]` rule
   rewrites on that exact path and surface, and any file planned for
   `[[remove]]`.
@@ -240,7 +245,11 @@ scan = "boundary"
 
 ### Known limits
 
-- Keeping an unscoped npm basename while changing `package_name` exits 1.
+- When `package_name` changes: a six-field config whose `package.json` name
+  equals the hyphen form exits 1. A scoped `npm_name` whose basename stays that
+  hyphen form exits 1 from `press rebrand` after rewriting, while `press verify`
+  exits 0. A declared unscoped `npm_name` left unchanged exits 0 legitimately.
+  `keep_names = ["<that hyphen form>"]` exits 2.
 - A scope-preserving press with a changed `owner` can exit 2 at press time
   while `press verify` exits 0.
 - Non-UTF-8 files are outside the sibling preflight and the inline doctor;

@@ -81,19 +81,24 @@ retained decision record does not require those files to remain present.
    of the identity. A kept occurrence survives every rewrite row, and every
    scan ignores a match wholly inside it; an overlap is still a leak. An entry
    equal to a source or destination identity value (including case and
-   separator variants and display forms) exits 2, except that an entry with an
-   edge `-` or `_` (`--acme-cli`) is compared exactly and may be kept.
+   separator variants and display forms) exits 2, after ignoring leading and
+   trailing characters outside `[A-Za-z0-9@/_-]`. An entry with an edge `-` or
+   `_` (`--acme-cli`) is compared exactly and may be kept.
 
    Before any rewrite, `press rebrand` and `press verify` run a sibling
    preflight and exit 1 with no writes and no receipt on an undeclared name
-   joining a source `npm_name` or `cli_name` to another name part. A
-   multi-part value treats any touching name character as a sibling. A
-   single-token value (`tsc`) needs both sides to be real boundaries or joins
-   with a `-`/`_` join or camelCase tail, so `tsconfig` and `web-server` pass
-   and `tsc-helper` and `tscConfig` fail. Tokens a row or `[[replace]]`
-   rewrites are exempt, as are planned `[[remove]]` files. Known limits:
-   keeping an unscoped npm basename while changing `package_name` exits 1; a
-   scope-preserving press with a changed `owner` can exit 2 at press time while
+   joining a source `npm_name` or `cli_name` to another name part or touching
+   a bare separator. A multi-part value treats any touching name character as
+   a sibling. For a single-token value (`tsc`), a glued alphanumeric means an
+   unrelated word, so `tsconfig` and `web-server` pass; otherwise a touching
+   `-`, `_`, or camelCase tail fails, including `tsc-helper`, `tscConfig`,
+   `--tsc`, and `_tsc_`. Tokens a row or `[[replace]]` rewrites are exempt, as
+   are planned `[[remove]]` files. Known limits when `package_name` changes: a
+   six-field config whose `package.json` name equals the hyphen form exits 1;
+   a scoped `npm_name` whose basename stays that form exits 1 from
+   `press rebrand` after rewriting while `press verify` exits 0; a declared
+   unscoped `npm_name` left unchanged exits 0; `keep_names` holding that form
+   exits 2. Separately, a scope-preserving press with a changed `owner` can exit 2 at press time while
    `press verify` exits 0; non-UTF-8 files are scanned only by `press verify`.
    Spec: [TypeScript and Bun
    targets](../superpowers/specs/2026-11-22-typescript-bun-targets-design.md).
