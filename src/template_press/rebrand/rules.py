@@ -330,10 +330,23 @@ DEFAULT_RULES = Rules(
 # the target did not declare. scan = "boundary" for all three: each format
 # embeds sha512 integrity hashes, which false-positive a short substring-mode
 # identity value under the strict content scan (see RegenerateRule.scan).
+# bun never rewrites an existing lock's workspace name, so the Bun command
+# removes the lock first, after a guard that keeps it intact when bun is
+# missing. That block is POSIX-only; Windows targets declare their own.
 _LOCKFILE_COMMANDS: dict[str, tuple[str, ...]] = {
     "package-lock.json": ("npm", "install", "--package-lock-only", "--silent"),
-    "bun.lock": ("bun", "install", "--lockfile-only"),
+    "bun.lock": (
+        "sh",
+        "-c",
+        "command -v bun >/dev/null 2>&1 || exit 127; "
+        "rm -f bun.lock && exec bun install --lockfile-only",
+    ),
     "pnpm-lock.yaml": ("pnpm", "install", "--lockfile-only"),
+}
+
+
+_SUGGESTION_NOTES: dict[str, str] = {
+    "bun.lock": "# POSIX-only; Windows targets declare their own command.\n",
 }
 
 
@@ -348,7 +361,8 @@ def regenerate_suggestion(file: str) -> str | None:
     if command is None:
         return None
     argv = ", ".join(f'"{part}"' for part in command)
-    return f'[[regenerate]]\nfile = "{file}"\ncommand = [{argv}]\nscan = "boundary"\n'
+    note = _SUGGESTION_NOTES.get(file, "")
+    return f'{note}[[regenerate]]\nfile = "{file}"\ncommand = [{argv}]\nscan = "boundary"\n'
 
 
 _COMPONENT_KEYS = frozenset({"extra_exclude_dirs", "verify_ignore"})

@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 from typing import Literal
 
@@ -23,6 +24,7 @@ import pytest
 from template_press.rebrand.cli import main
 from template_press.rebrand.identity import Identity
 from template_press.rebrand.receipt import RECEIPT_REL
+from template_press.rebrand.rules import regenerate_suggestion
 from template_press.rebrand.verify_cli import verify_command
 
 from .conftest import _git, posix_only, write_answers_file
@@ -62,12 +64,19 @@ OLD_TOKENS = (
 )
 
 LOCKFILE = {"npm": "package-lock.json", "bun": "bun.lock", "pnpm": "pnpm-lock.yaml"}
-# Bun keeps a stale workspace name in an existing lock, so the declared Bun
-# command removes the lock first (the suggested plain `bun install
-# --lockfile-only` leaves the old identity and the press refuses; reported).
+
+
+# The Bun command is the exact block `press` suggests (rules.py), so the
+# printed suggestion is what is proven end to end.
+def _suggested_command(file: str) -> list[str]:
+    suggestion = regenerate_suggestion(file)
+    assert suggestion is not None
+    return list(tomllib.loads(suggestion)["regenerate"][0]["command"])
+
+
 LOCK_COMMAND = {
     "npm": ["npm", "install", "--package-lock-only", "--silent"],
-    "bun": ["sh", "-c", "rm -f bun.lock && bun install --lockfile-only"],
+    "bun": _suggested_command("bun.lock"),
     "pnpm": ["pnpm", "install", "--lockfile-only"],
 }
 FROZEN_COMMAND = {

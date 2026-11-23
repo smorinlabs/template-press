@@ -8,6 +8,7 @@ undeclared one and never runs it.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -25,13 +26,16 @@ from template_press.rebrand.rules import (
     regenerate_suggestion,
 )
 
-from .conftest import DEST, SOURCE, write_answers_file
+from .conftest import DEST, SOURCE, posix_only, write_answers_file
 
 PY = sys.executable
 
 _COMMANDS = {
     "package-lock.json": '["npm", "install", "--package-lock-only", "--silent"]',
-    "bun.lock": '["bun", "install", "--lockfile-only"]',
+    "bun.lock": (
+        '["sh", "-c", "command -v bun >/dev/null 2>&1 || exit 127; '
+        'rm -f bun.lock && exec bun install --lockfile-only"]'
+    ),
     "pnpm-lock.yaml": '["pnpm", "install", "--lockfile-only"]',
 }
 
@@ -224,3 +228,29 @@ def test_leftover_identity_in_regenerated_lockfile_fails_without_receipt(
     answers = write_answers_file(tmp_path, DEST)
     assert main(["--target", str(src_target), "--config", str(answers)]) == 1
     assert not (src_target / RECEIPT_REL).exists()
+
+
+@posix_only
+def test_bun_suggestion_leaves_lock_intact_when_bun_is_missing(
+    tmp_path: Path,
+) -> None:
+    suggestion = regenerate_suggestion("bun.lock")
+    assert suggestion is not None
+    argv = tomllib.loads(suggestion)["regenerate"][0]["command"]
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "bun.lock").write_text("keep\n", encoding="utf-8")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    sh = shutil.which("sh")
+    assert sh is not None
+    result = subprocess.run(  # noqa: S603
+        [sh, *argv[1:]],
+        cwd=work,
+        env={"PATH": str(empty)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 127
+    assert (work / "bun.lock").read_text(encoding="utf-8") == "keep\n"
