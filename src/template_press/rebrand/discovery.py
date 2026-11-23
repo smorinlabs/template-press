@@ -14,7 +14,7 @@ import subprocess  # nosec B404 — reads git origin of the target
 import tomllib
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from template_press.rebrand.cargo_manifest import CargoFacts, read_cargo_facts
@@ -32,6 +32,7 @@ from template_press.rebrand.identity import (
 from template_press.rebrand.inventory import (
     capture_surface_snapshot,
     rewrite_surface_texts,
+    select_rename_entries,
     tracked_path_strings,
 )
 from template_press.rebrand.languages import KNOWN_LANGUAGES, SUPPORTED_LANGUAGES
@@ -379,6 +380,56 @@ def _unmapped_name_is_broken(
     return _identifier_on_surface(target, ident, rules)
 
 
+def _cargo_path_components(target: Path, rules: Rules) -> set[tuple[str, bool]]:
+    """Crate directories and ``src/bin`` stems, each with whether it can rename."""
+    snapshot = capture_surface_snapshot(target)
+    renamable = {
+        entry.rel.as_posix()
+        for entry in select_rename_entries(
+            snapshot,
+            exclude_files=rules.exclude_files,
+            exclude_dirs=rules.exclude_dirs,
+            root_control=ROOT_CONTROL,
+        )
+    }
+    removed_files = {str(rule.file) for rule in rules.remove}
+    removed_dirs = tuple(f"{rule.dir}/" for rule in rules.remove_dirs)
+    components: set[tuple[str, bool]] = set()
+    for rel in tracked_path_strings(snapshot):
+        if rel in removed_files or rel.startswith(removed_dirs):
+            continue
+        parts = PurePosixPath(rel).parts
+        names: tuple[str, ...] = ()
+        if parts[-1] == "Cargo.toml":
+            names = parts[:-1]
+        else:
+            for index in range(len(parts) - 2):
+                if parts[index : index + 2] == ("src", "bin"):
+                    names = (parts[index + 2].removesuffix(".rs"),)
+                    break
+        components.update((name, rel in renamable) for name in names)
+    return components
+
+
+def _crate_paths_split(
+    target: Path,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    rewrite: Callable[[str], str],
+) -> bool:
+    """Whether manifests would name a crate path that the press does not rename.
+
+    A content-only row such as ``owner`` rewrites ``path = "../acme-core"`` but
+    leaves the directory ``crates/acme-core`` in place.
+    """
+    rename = identity_row_rewriter(source, dest, target, rules, surface="path")
+    return any(
+        rewrite(name) != (rename(name) if renamable else name)
+        for name, renamable in _cargo_path_components(target, rules)
+    )
+
+
 def _undeclared_lock_problem(target: Path, rules: Rules) -> str | None:
     """Refuse a tracked root ``Cargo.lock`` that no ``[[regenerate]]`` rebuilds."""
     if any(rule.file == "Cargo.lock" for rule in rules.regenerate):
@@ -413,6 +464,14 @@ def cargo_problems(
             for name in facts.names
             if _unmapped_name_is_broken(name, target, rewrite, changing, rules)
         ]
+        if not broken:
+            moved = [
+                name
+                for name in facts.names
+                if name not in rules.keep_names and rewrite(name) != name
+            ]
+            if moved and _crate_paths_split(target, source, dest, rules, rewrite):
+                broken = moved
         if not broken:
             return []
         remedy = "" if _unloadable_names(facts) else "Declare the table:\n"

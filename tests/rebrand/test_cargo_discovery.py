@@ -1224,3 +1224,62 @@ def test_bin_env_keep_entry_stays_valid_without_a_table() -> None:
     source = _identity()
     dest = Identity.from_mapping(_dest_values())
     validate_keep_names(["CARGO_BIN_EXE_acme-cli"], source, dest)
+
+
+# --- Final review: a content-only row must not split a crate from its path ---
+
+_OWNER_ONLY = {
+    "package_name": "other_pkg",
+    "repo_name": "other-repo",
+    "app_name": "tool_app",
+    "owner": "acme",
+}
+_OWNER_ONLY_DEST = {
+    "package_name": "zeta_pkg",
+    "repo_name": "zeta-repo",
+    "app_name": "zeta_app",
+    "owner": "zeta",
+}
+
+
+def test_no_map_content_only_row_cannot_split_crate_directory(tmp_path, capsys) -> None:
+    target = _repo(
+        tmp_path,
+        _prefix_files(WORKSPACE_ROOT, **_OWNER_ONLY),
+        repo_name="other-repo",
+        owner="acme",
+    )
+    assert _press(target, _answers(tmp_path, **_OWNER_ONLY_DEST)) == 2
+    assert "acme-core" in capsys.readouterr().out
+    assert _clean(target)
+
+
+def test_no_map_content_only_row_cannot_split_claimed_bin(tmp_path, capsys) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate(
+                "tool-pkg",
+                '\n[[bin]]\nname = "acme-cli"\npath = "src/bin/acme-cli.rs"\n',
+            ),
+            "src/bin/acme-cli.rs": "fn main() {}\n",
+            "press/press-source.toml": _source_config(**_OWNER_ONLY),
+        },
+        repo_name="other-repo",
+        owner="acme",
+    )
+    assert _press(target, _answers(tmp_path, **_OWNER_ONLY_DEST)) == 2
+    assert "acme-cli" in capsys.readouterr().out
+    assert _clean(target)
+
+
+def test_no_map_owner_merged_into_a_path_row_still_continues(tmp_path) -> None:
+    source = {**_OWNER_ONLY, "repo_name": "acme"}
+    target = _repo(
+        tmp_path,
+        _prefix_files(WORKSPACE_ROOT, **source),
+        repo_name="acme",
+        owner="acme",
+    )
+    answers = _answers(tmp_path, **{**_OWNER_ONLY_DEST, "repo_name": "zeta"})
+    assert _press(target, answers) == 0

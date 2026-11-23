@@ -1624,9 +1624,13 @@ def _compiled_rows(
 
 
 def identity_row_rewriter(
-    source: Identity, destination: Identity, target: Path | None, rules: Rules
+    source: Identity,
+    destination: Identity,
+    target: Path | None,
+    rules: Rules,
+    surface: Surface = "content",
 ) -> Callable[[str], str]:
-    """Apply the identity rows a press would really run on content, in order."""
+    """Apply the identity rows a press would really run on ``surface``, in order."""
 
     rows = _normalize_rows(
         [],
@@ -1639,7 +1643,7 @@ def identity_row_rewriter(
         ),
         rules,
     )
-    active = tuple(row for row in rows if "content" in row.rewrite_surfaces)
+    active = tuple(row for row in rows if surface in row.rewrite_surfaces)
 
     def rewrite(text: str) -> str:
         for row in active:
