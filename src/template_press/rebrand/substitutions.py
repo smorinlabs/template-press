@@ -1497,6 +1497,15 @@ def _validate_rows(
     )
 
 
+def _identity_row_pattern(row: RenderedSubstitution) -> re.Pattern[str]:
+    """The matcher one compiled identity row rewrites with."""
+
+    field = row.matcher.identity_field
+    if row.matcher.substring or field is None:
+        return re.compile(re.escape(row.from_value))
+    return token_pattern(field, row.from_value) or re.compile(re.escape(row.from_value))
+
+
 def check_target_keep_names(
     target: Path,
     source: Identity,
@@ -1510,6 +1519,22 @@ def check_target_keep_names(
         *_declared_rows(source, destination, rules),
         *_identity_rows(source, destination, rules),
         *_hyphen_rows(source, destination, target, rules),
+    )
+    # Equal-valued fields collapse to one owner row, so only the compiled rows
+    # prove which matcher really rewrites an occurrence.
+    compiled = _normalize_rows(
+        [
+            *_manifest_name_rows(source, destination, target, rules),
+            *_declared_rows(source, destination, rules),
+        ],
+        sorted(
+            [
+                *_identity_rows(source, destination, rules),
+                *_hyphen_rows(source, destination, target, rules),
+            ],
+            key=lambda row: -len(row.from_value),
+        ),
+        rules,
     )
 
     def rewritten(path: str, where: str, text: str) -> RewrittenForms:
@@ -1535,6 +1560,13 @@ def check_target_keep_names(
                 row.from_value
                 for row in applying
                 if row.provenance[0].kind == "replace_rule"
+            ),
+            patterns=tuple(
+                _identity_row_pattern(row)
+                for row in compiled
+                if row.provenance[0].kind not in ("replace_rule", "manifest_name")
+                and surface in row.rewrite_surfaces
+                and row_matches_scope(row, scope_path)
             ),
         )
 

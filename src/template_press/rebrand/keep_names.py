@@ -66,11 +66,14 @@ class RewrittenForms:
     """What the compiled rows actually rewrite on one surface subject.
 
     ``tokens`` are identity values, matched with name boundaries. ``literals``
-    are rendered ``[[replace]]`` sources, matched exactly.
+    are rendered ``[[replace]]`` sources, matched exactly. ``patterns`` are the
+    compiled identity rows' own matchers, which prove that one occurrence
+    touching a bare ``-`` or ``_`` is really rewritten.
     """
 
     tokens: frozenset[str] = frozenset()
     literals: frozenset[str] = frozenset()
+    patterns: tuple[re.Pattern[str], ...] = ()
 
 
 # Called with (path, where, text) for one surface row.
@@ -310,6 +313,15 @@ def _joined(part: str, separator: str) -> bool:
     return separator in ("-", "_") and any(ch not in "-_" for ch in part)
 
 
+def _row_rewrites(patterns: Iterable[re.Pattern[str]], text: str, span: Span) -> bool:
+    """Whether one row's matcher replaces exactly this occurrence."""
+    for pattern in patterns:
+        found = pattern.match(text, span[0])
+        if found is not None and found.end() == span[1]:
+            return True
+    return False
+
+
 def _sibling_tokens(
     text: str,
     value: str,
@@ -322,6 +334,9 @@ def _sibling_tokens(
     ``-``, ``_``, and a right-side lower-to-upper transition join names, so
     ``tscConfig`` is a sibling of ``tsc``. An alphanumeric glued to either side
     puts the match inside an unrelated word, so ``vite-tsconfig-paths`` is not.
+    Any other directly touching ``-`` or ``_`` is a sibling, even with no name
+    part after it (``--tsc``, ``_tsc_``), because the exact-name rewrite skips
+    it. Such a bare spelling is exempt only when a row rewrites that occurrence.
     A multi-part value (holding ``-``, ``_``, or ``/``) is not word-like, so any
     name character touching it makes a sibling: ``acme-cli2``, ``xacme-cli``.
     A glued token is still reported when it is exactly an identity form that no
@@ -349,7 +364,14 @@ def _sibling_tokens(
             text[match.end() : match.end() + 1].isalnum() and not camel_tail
         )
         is_join = _joined(left, left[-1:]) or _joined(right, right[:1]) or camel_tail
-        if not (multi_part or (is_join and not inside_word) or token in unrewritten):
+        if not (multi_part or not inside_word or token in unrewritten):
+            continue
+        if (
+            not multi_part
+            and not is_join
+            and not inside_word
+            and _row_rewrites(rewritten.patterns, text, match.span())
+        ):
             continue
         if not outside_kept(((start, end),), kept):
             continue

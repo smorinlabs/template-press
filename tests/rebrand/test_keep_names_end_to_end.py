@@ -15,7 +15,11 @@ from template_press.rebrand import verifier as verifier_module
 from template_press.rebrand.cli import main
 from template_press.rebrand.doctor import find_leaks
 from template_press.rebrand.engine import build_plan
-from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.identity import (
+    Identity,
+    ValidationError,
+    token_pattern,
+)
 from template_press.rebrand.keep_names import (
     RewrittenForms,
     check_keep_surfaces,
@@ -940,12 +944,12 @@ def test_glued_and_dotted_names_are_not_siblings(tmp_path, cli_name, rel, text):
     assert _press(target, _answers(tmp_path), "--dry-run") == 0
 
 
-def test_bare_separator_is_not_a_join_for_a_single_token_value():
+def test_bare_separator_touching_a_single_token_value_is_a_sibling():
     source = replace(SOURCE, cli_name="tsc")
     check = check_keep_surfaces(
         [("a.md", "content", "pass --tsc or tsc-\n")], source, ()
     )
-    assert check.undeclared == ()
+    assert [item.token for item in check.undeclared] == ["--tsc", "tsc-"]
 
 
 def test_bare_separator_touching_a_multi_part_value_is_a_sibling():
@@ -1365,3 +1369,117 @@ def test_declared_edge_separator_does_not_cover_a_longer_token(tmp_path, capsys)
     _assert_refused_clean(target, code)
     assert 'keep_names = ["--acme-cli-extra"]' in err
     assert _verify(target) == 1
+
+
+# Single-token values touching a bare separator
+
+BARE_TOKENS = ("__ledgerkit__", "_ledgerkit_", "--zcli", "_zcli_", "_zcli", "zcli_")
+BARE_TEXT = (
+    "Use __ledgerkit__ and _ledgerkit_ daily.\n"
+    "Flag --zcli and _zcli_ and _zcli and zcli_ here.\n"
+    "Plain ledgerkit and zcli.\n"
+)
+SINGLE_SOURCE = replace(SOURCE, npm_name="ledgerkit", cli_name="zcli")
+SINGLE_DEST = replace(DEST, npm_name="vaultkit", cli_name="ocli")
+
+
+def _single_token_target(tmp_path: Path, rules: str) -> Path:
+    target = _with_source(tmp_path, SINGLE_SOURCE, rules, {"docs/guide.md": BARE_TEXT})
+    manifest = {"name": "ledgerkit", "version": "0.1.0", "bin": {"zcli": "./run.js"}}
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "single-token manifest")
+    return target
+
+
+def test_bare_separator_tokens_refuse_press_and_verify(tmp_path, capsys):
+    target = _single_token_target(tmp_path, LANGUAGES)
+    assert _verify(target) == 1
+    capsys.readouterr()
+    code = _press(target, _answers(tmp_path, SINGLE_DEST))
+    err = capsys.readouterr().err
+    _assert_refused_clean(target, code)
+    for token in BARE_TOKENS:
+        assert f"keep_names = {json.dumps([token])}" in err
+
+
+def test_declared_bare_separator_tokens_pass_and_survive(tmp_path, capsys):
+    target = _single_token_target(tmp_path, _keep_rules(list(BARE_TOKENS)))
+    assert _verify(target) == 0
+    assert _press(target, _answers(tmp_path, SINGLE_DEST)) == 0
+    capsys.readouterr()
+    text = (target / "docs" / "guide.md").read_text(encoding="utf-8")
+    assert text == BARE_TEXT.replace(
+        "Plain ledgerkit and zcli.", "Plain vaultkit and ocli."
+    )
+    assert (target / RECEIPT_REL).exists()
+
+
+@pytest.mark.parametrize(
+    ("value", "text"),
+    [
+        ("tsc", "tsconfig.json"),
+        ("serve", "server"),
+        ("serve", "web-server"),
+        ("serve", "observe-mode"),
+        ("tsc", "vite-tsconfig-paths"),
+    ],
+)
+def test_single_token_inside_an_unrelated_word_is_allowed(value, text):
+    source = replace(SOURCE, cli_name=value)
+    check = check_keep_surfaces([("a.md", "content", f"{text}\n")], source, ())
+    assert check.undeclared == ()
+
+
+@pytest.mark.parametrize("token", ["tscConfig", "tsc-helper"])
+def test_single_token_joined_to_a_name_part_stays_refused(token):
+    source = replace(SOURCE, cli_name="tsc")
+    check = check_keep_surfaces([("a.md", "content", f"{token}\n")], source, ())
+    assert [item.token for item in check.undeclared] == [token]
+
+
+def test_bare_separator_token_rewritten_by_another_row_is_not_refused(tmp_path):
+    source = replace(SOURCE, cli_name="zcli", repo_name="zcli")
+    dest = replace(DEST, cli_name="ocli", repo_name="ocli")
+    target = _with_source(
+        tmp_path, source, LANGUAGES, {"docs/a.md": "see _zcli_ here\n"}
+    )
+    manifest = json.loads((target / "package.json").read_text(encoding="utf-8"))
+    manifest["bin"] = {"zcli": "./run.js"}
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "bin")
+    assert _press(target, _answers(tmp_path, dest)) == 0
+    text = (target / "docs" / "a.md").read_text(encoding="utf-8")
+    assert text == "see _ocli_ here\n"
+
+
+def test_exemption_needs_the_row_to_match_that_occurrence():
+    source = replace(SOURCE, cli_name="zcli", app_name="zcli")
+    forms = RewrittenForms(
+        tokens=frozenset({"zcli"}),
+        patterns=(token_pattern("app_name", "zcli"),),
+    )
+    check = check_keep_surfaces(
+        [("a.md", "content", "zcli_ and _zcli\n")],
+        source,
+        (),
+        rewritten=lambda _path, _where, _text: forms,
+    )
+    assert [item.token for item in check.undeclared] == ["_zcli"]
+
+
+def test_equal_npm_and_repo_bare_token_refuses_before_writing(tmp_path, capsys):
+    source = replace(SOURCE, npm_name="ledgerkit", repo_name="ledgerkit")
+    dest = replace(DEST, npm_name="vaultkit", repo_name="vaultkit")
+    target = _with_source(
+        tmp_path, source, LANGUAGES, {"docs/a.md": "see _ledgerkit_ here\n"}
+    )
+    manifest = json.loads((target / "package.json").read_text(encoding="utf-8"))
+    manifest["name"] = "ledgerkit"
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "name")
+    code = _press(target, _answers(tmp_path, dest))
+    _assert_refused_clean(target, code)
+    assert 'keep_names = ["_ledgerkit_"]' in capsys.readouterr().err
