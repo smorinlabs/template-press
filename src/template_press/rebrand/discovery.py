@@ -16,7 +16,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from template_press.rebrand.identity import Identity
+from template_press.rebrand.identity import PYTHON_IDENTIFIER_RE, Identity
 from template_press.rebrand.node_manifest import (
     NodeManifest,
     read_node_manifest,
@@ -147,6 +147,38 @@ def discover(target: Path) -> Discovered:
         manifest_owner=manifest.owner,
         manifest_repo_name=manifest.repo_name,
     )
+
+
+def node_proposal(
+    manifest: NodeManifest, owner: str | None, repo_name: str | None
+) -> dict[str, str | None]:
+    """Propose source-config values from ``package.json``; gaps stay ``None``.
+
+    ``owner`` and ``repo_name`` arrive already resolved (git origin first, the
+    manifest ``repository`` only as a fallback). Nothing absent is guessed.
+    """
+    name = manifest.name
+    package_name = unscoped(name).replace("-", "_") if name else None
+    app_name: str | None = None
+    cli_name: str | None = None
+    if manifest.bins:
+        first = manifest.bins[0]
+        if PYTHON_IDENTIFIER_RE.fullmatch(first):
+            app_name = first
+        elif "-" in first:
+            app_name, cli_name = first.replace("-", "_"), first
+        else:
+            app_name = first  # not derivable: validation rejects it cleanly
+    return {
+        "package_name": package_name,
+        "repo_name": repo_name,
+        "app_name": app_name,
+        "author": manifest.author,
+        "email": manifest.email,
+        "owner": owner,
+        "npm_name": name if name not in (None, repo_name, package_name) else None,
+        "cli_name": cli_name,
+    }
 
 
 def mismatches(source: Identity, found: Discovered) -> list[str]:

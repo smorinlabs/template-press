@@ -76,7 +76,7 @@ def read_node_manifest(target: Path) -> NodeManifest | None:
         if path.is_symlink() or not path.is_file():
             return None
         data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return None
     if not isinstance(data, dict):
         return None

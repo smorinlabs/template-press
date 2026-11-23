@@ -29,6 +29,7 @@ from template_press.rebrand.discovery import (
     discover,
     manifest_warnings,
     mismatches,
+    node_proposal,
 )
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import (
@@ -46,6 +47,7 @@ from template_press.rebrand.languages import (
     check_target_languages,
     render_ignored_languages,
 )
+from template_press.rebrand.node_manifest import NodeManifest
 from template_press.rebrand.receipt import (
     RECEIPT_REL,
     OriginDecision,
@@ -388,6 +390,17 @@ def _render_origin_mismatch_warnings(
     ]
 
 
+# Required proposal field -> the package.json key (or origin) that supplies it.
+_NODE_PROPOSAL_KEYS: dict[str, str] = {
+    "package_name": "name",
+    "app_name": "bin",
+    "author": "author",
+    "email": "author (with an <email>)",
+    "owner": "repository (or a git origin)",
+    "repo_name": "repository (or a git origin)",
+}
+
+
 def _resolve_source(
     target: Path,
     override: Path | None,
@@ -406,21 +419,50 @@ def _resolve_source(
     source = load_source_config(target, override)
     found = discover(target)
     if source is None:
-        proposal = {
-            "package_name": found.package_name,
-            "repo_name": found.repo_name,
-            "app_name": found.app_name,
-            "author": found.author,
-            "email": found.email,
-            "owner": found.owner,
-        }
-        unresolved = [k for k, v in proposal.items() if v is None]
-        if unresolved:
-            return _fail(
-                f"no source-config at {SOURCE_CONFIG_REL} and discovery "
-                f"could not resolve: {', '.join(unresolved)}. Write the "
-                f"source-config by hand."
+        proposal: dict[str, str | None]
+        if found.source_kind == "node":
+            manifest = NodeManifest(
+                name=found.npm_name,
+                author=found.manifest_author,
+                email=found.manifest_email,
+                bins=found.cli_names,
+                owner=found.manifest_owner,
+                repo_name=found.manifest_repo_name,
             )
+            if found.owner is not None:  # git origin wins over the manifest
+                proposal = node_proposal(manifest, found.owner, found.repo_name)
+            else:
+                proposal = node_proposal(manifest, manifest.owner, manifest.repo_name)
+            unresolved = list(
+                dict.fromkeys(
+                    _NODE_PROPOSAL_KEYS[k]
+                    for k in _NODE_PROPOSAL_KEYS
+                    if proposal[k] is None
+                )
+            )
+            if unresolved:
+                return _fail(
+                    f"no source-config at {SOURCE_CONFIG_REL} and package.json "
+                    f"could not resolve: {', '.join(unresolved)}. Add the "
+                    f"missing keys to package.json or write the source-config "
+                    f"by hand."
+                )
+        else:
+            proposal = {
+                "package_name": found.package_name,
+                "repo_name": found.repo_name,
+                "app_name": found.app_name,
+                "author": found.author,
+                "email": found.email,
+                "owner": found.owner,
+            }
+            unresolved = [k for k, v in proposal.items() if v is None]
+            if unresolved:
+                return _fail(
+                    f"no source-config at {SOURCE_CONFIG_REL} and discovery "
+                    f"could not resolve: {', '.join(unresolved)}. Write the "
+                    f"source-config by hand."
+                )
         try:
             candidate = Identity.from_mapping(
                 {k: v for k, v in proposal.items() if v is not None}

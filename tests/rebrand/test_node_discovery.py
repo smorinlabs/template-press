@@ -9,8 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.discovery import discover, manifest_warnings, mismatches
-from template_press.rebrand.node_manifest import read_node_manifest
+from template_press.rebrand.cli import main
+from template_press.rebrand.discovery import (
+    discover,
+    manifest_warnings,
+    mismatches,
+    node_proposal,
+)
+from template_press.rebrand.node_manifest import NodeManifest, read_node_manifest
 
 from .conftest import SOURCE, requires_symlink
 
@@ -227,3 +233,172 @@ def test_rebrand_and_verify_print_warnings_to_stderr(tmp_path: Path, capsys):
     captured = capsys.readouterr()
     assert "warning: author:" in captured.err
     assert "warning:" not in captured.out
+
+
+# --- proposal from package.json (no source config) ---------------------------
+
+
+def _proposal(
+    name: str | None = "@acme/widget-api",
+    bins: tuple[str, ...] = ("acme",),
+    repo_name: str | None = "acme-widget",
+) -> dict[str, str | None]:
+    manifest = NodeManifest(
+        name=name,
+        author="Ann Lee",
+        email="ann@example.test",
+        bins=bins,
+        owner=None,
+        repo_name=None,
+    )
+    return node_proposal(manifest, "example-org", repo_name)
+
+
+def test_proposal_derives_package_from_unscoped_name():
+    p = _proposal()
+    assert p["package_name"] == "widget_api"
+    assert (p["owner"], p["repo_name"]) == ("example-org", "acme-widget")
+    assert (p["author"], p["email"]) == ("Ann Lee", "ann@example.test")
+
+
+def test_proposal_omits_npm_name_equal_to_repo_name():
+    assert _proposal(name="acme-widget")["npm_name"] is None
+
+
+def test_proposal_omits_npm_name_equal_to_package_name():
+    assert _proposal(name="widget_api")["npm_name"] is None
+
+
+def test_proposal_keeps_scoped_npm_name():
+    assert _proposal()["npm_name"] == "@acme/widget-api"
+
+
+def test_proposal_hyphenated_bin_sets_cli_name():
+    p = _proposal(bins=("acme-cli",))
+    assert (p["app_name"], p["cli_name"]) == ("acme_cli", "acme-cli")
+
+
+def test_proposal_identifier_bin_needs_no_cli_name():
+    p = _proposal(bins=("acme",))
+    assert (p["app_name"], p["cli_name"]) == ("acme", None)
+
+
+def test_proposal_without_bin_or_name_leaves_gaps():
+    p = _proposal(name=None, bins=())
+    assert (p["package_name"], p["app_name"], p["npm_name"]) == (None, None, None)
+
+
+def _node_cli(tmp_path: Path, manifest: dict[str, object], origin: bool = False):
+    target = tmp_path / "t"
+    target.mkdir()
+    _write(target, manifest)
+    subprocess.run(["git", "init", "-q"], cwd=target, check=True)  # noqa: S607
+    for args in (
+        ("config", "user.email", "t@example.com"),
+        ("config", "user.name", "t"),
+    ):
+        subprocess.run(["git", "-C", str(target), *args], check=True)  # noqa: S603,S607
+    if origin:
+        subprocess.run(  # noqa: S603
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(target),
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/example-org/acme-widget.git",
+            ],
+            check=True,
+        )
+    subprocess.run(["git", "-C", str(target), "add", "-A"], check=True)  # noqa: S603,S607
+    subprocess.run(["git", "-C", str(target), "commit", "-qm", "seed"], check=True)  # noqa: S603,S607
+    answers = tmp_path / "answers.toml"
+    answers.write_text(
+        "[answers]\n"
+        'package_name = "new_widget"\nrepo_name = "new-widget"\n'
+        'app_name = "newapp"\nauthor = "New Author"\n'
+        'email = "new@example.test"\nowner = "newlabs"\n',
+        encoding="utf-8",
+    )
+    return target, answers
+
+
+def test_sparse_manifest_exit_2_names_missing_keys(tmp_path: Path, capsys):
+    target, answers = _node_cli(tmp_path, {"name": "@acme/widget-api"})
+    code = main(["--target", str(target), "--config", str(answers)])
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
+    assert code == 2
+    assert "author" in out and "bin" in out
+    assert not (target / "press" / "press-source.toml").exists()
+
+
+def test_full_manifest_proposes_source_config(tmp_path: Path, capsys):
+    target, answers = _node_cli(
+        tmp_path,
+        {
+            "name": "@acme/widget-api",
+            "author": "Ann Lee <ann@example.test>",
+            "bin": {"acme-cli": "cli.js"},
+        },
+        origin=True,
+    )
+    code = main(["--target", str(target), "--config", str(answers)])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert 'package_name = "widget_api"' in out
+    assert 'npm_name = "@acme/widget-api"' in out or "@acme/widget-api" in out
+    assert "acme-cli" in out
+    assert not (target / "press" / "press-source.toml").exists()
+
+
+def test_origin_wins_over_manifest_repository(tmp_path: Path, capsys):
+    target, answers = _node_cli(
+        tmp_path,
+        {
+            "name": "widget-api",
+            "author": "Ann Lee <ann@example.test>",
+            "bin": {"acme": "cli.js"},
+            "repository": "https://github.com/other-org/other-repo",
+        },
+        origin=True,
+    )
+    main(["--target", str(target), "--config", str(answers)])
+    out = capsys.readouterr().out
+    assert 'owner = "example-org"' in out and 'repo_name = "acme-widget"' in out
+
+
+def test_manifest_repository_is_fallback_without_origin(tmp_path: Path, capsys):
+    target, answers = _node_cli(
+        tmp_path,
+        {
+            "name": "widget-api",
+            "author": "Ann Lee <ann@example.test>",
+            "bin": {"acme": "cli.js"},
+            "repository": "https://github.com/other-org/other-repo",
+        },
+    )
+    main(["--target", str(target), "--config", str(answers)])
+    out = capsys.readouterr().out
+    assert 'owner = "other-org"' in out and 'repo_name = "other-repo"' in out
+
+
+def test_invalid_proposed_names_exit_2_cleanly(tmp_path: Path, capsys):
+    target, answers = _node_cli(
+        tmp_path,
+        {
+            "name": "9widget",
+            "author": "Ann Lee <ann@example.test>",
+            "bin": {"Acme.CLI": "cli.js"},
+        },
+        origin=True,
+    )
+    code = main(["--target", str(target), "--config", str(answers)])
+    assert code == 2
+    assert "invalid" in capsys.readouterr().err
+
+
+def test_deeply_nested_manifest_is_undiscoverable(tmp_path: Path):
+    (tmp_path / "package.json").write_text("[" * 200000, encoding="utf-8")
+    assert read_node_manifest(tmp_path) is None
