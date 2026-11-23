@@ -19,7 +19,11 @@ from pathlib import Path
 
 from template_press.rebrand.engine import rendered_replace_rules, translate_path
 from template_press.rebrand.identity import Identity, ValidationError
-from template_press.rebrand.matcher import find_occurrences
+from template_press.rebrand.keep_names import (
+    find_outside_kept,
+    kept_spans,
+    literal_occurs,
+)
 from template_press.rebrand.regen import (
     changed_identity_pairs,
     has_uncommitted_changes,
@@ -136,11 +140,12 @@ def scan_stub_text(
                 )
                 continue
             field = policy.matcher.identity_field or row.provenance[0].name
-            spans = find_occurrences(
+            spans = find_outside_kept(
                 text,
                 field,
                 row.from_value,
                 substring=policy.matcher.substring,
+                kept=kept_spans(text, table.keep_names),
             )
             problems.append(
                 f"stub for {rel} contains source {field} {row.from_value!r} "
@@ -148,9 +153,14 @@ def scan_stub_text(
                 f"identity its reset removes"
             )
         return problems
+    kept = kept_spans(text, rules.keep_names)
     for field, value in changed_identity_pairs(source, dest):
-        spans = find_occurrences(
-            text, field, value, substring=field in rules.substring_rewrite_fields
+        spans = find_outside_kept(
+            text,
+            field,
+            value,
+            substring=field in rules.substring_rewrite_fields,
+            kept=kept,
         )
         if spans:
             problems.append(
@@ -168,7 +178,7 @@ def scan_stub_text(
             continue
         if not rule_matches_path(replace_rule, rel):
             continue
-        if frm in text:
+        if literal_occurs(text, frm, kept):
             problems.append(
                 f"stub for {rel} contains rendered [[replace]] literal "
                 f"{frm!r} ({replace_rule.reason})"
@@ -218,12 +228,14 @@ def scan_reset_path(
                 f"rename the file or route it through verify_ignore"
             )
         return problems
+    kept = kept_spans(translated, rules.keep_names)
     for field, value in changed_identity_pairs(source, dest):
-        spans = find_occurrences(
+        spans = find_outside_kept(
             translated,
             field,
             value,
             substring=field in rules.substring_rewrite_fields,
+            kept=kept,
         )
         if spans:
             problems.append(
@@ -241,7 +253,7 @@ def scan_reset_path(
         if (
             replace_rule.paths
             and rule_matches_path(replace_rule, rel)
-            and frm in translated
+            and literal_occurs(translated, frm, kept)
         ):
             problems.append(
                 f"reset {rel}: its path after this press ({translated}) "

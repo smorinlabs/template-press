@@ -67,13 +67,21 @@ from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_
 from template_press.rebrand.inventory import (
     capture_surface_snapshot,
     core_excludes_from_snapshot,
+    rewrite_surface_texts,
 )
-from template_press.rebrand.keep_names import validate_keep_names
+from template_press.rebrand.keep_names import (
+    check_keep_surfaces,
+    render_stale,
+    render_undeclared,
+    sibling_guidance,
+    validate_keep_names,
+)
 from template_press.rebrand.languages import (
     check_target_languages,
     render_ignored_languages,
 )
 from template_press.rebrand.matcher import find_occurrences
+from template_press.rebrand.pathing import ROOT_CONTROL
 from template_press.rebrand.receipt import (
     accepted_origin_from_receipt,
     receipt_binding_problem,
@@ -444,6 +452,10 @@ def _report(
         for f in by_file[path]:
             where = f.where if f.line is None else f"{f.where} L{f.line}:C{f.col}"
             print(f"    [{where}] {f.field}={f.value!r}", file=sys.stderr)
+            if f.where == "content" and f.col is not None:
+                guidance = sibling_guidance(f.context, (f.col, f.col + len(f.value)))
+                if guidance is not None:
+                    print(f"      if independent: {guidance}", file=sys.stderr)
             if f.note is not None:
                 print(f"      note: {f.note}", file=sys.stderr)
     for ignore in stale:
@@ -587,6 +599,38 @@ def verify_command(argv: list[str] | None = None) -> int:
     try:
         synth = synthesize_dest(source)
         validate_keep_names(rules.keep_names, source, synth, synthetic_dest=True)
+        keep_check = check_keep_surfaces(
+            rewrite_surface_texts(
+                target,
+                exclude_files=rules.exclude_files,
+                exclude_dirs=rules.exclude_dirs,
+                root_control=ROOT_CONTROL,
+            ),
+            source,
+            rules.keep_names,
+        )
+        if keep_check.undeclared:
+            if args.as_json:
+                print(
+                    json.dumps(
+                        {
+                            "verified": False,
+                            "surviving": [],
+                            "stale_ignores": [],
+                            "unavailable_submodules": [],
+                            "equal_fields_collision": None,
+                            "exempt": [],
+                            "undeclared_names": [
+                                dataclasses.asdict(item)
+                                for item in keep_check.undeclared
+                            ],
+                        }
+                    )
+                )
+            print(render_undeclared(keep_check.undeclared), file=sys.stderr)
+            return 1
+        for line in render_stale(keep_check.stale):
+            print(line, file=sys.stderr)
         with owned_sandbox(target) as dest_root:
             sandbox = make_sandbox(target, dest_root)
             try:

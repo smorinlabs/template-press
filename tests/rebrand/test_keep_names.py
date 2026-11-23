@@ -378,7 +378,7 @@ def test_synthesized_destination_never_refuses_in_verify(tmp_path, capsys, field
     entry = getattr(synthesize_dest(SOURCE), field)
     target = _make_target(tmp_path, _keep_rules([entry]))
     code = verify_command(["--target", str(target)])
-    assert "keep_names" not in _output(capsys)
+    assert "cannot be kept" not in _output(capsys)
     assert code == 0
 
 

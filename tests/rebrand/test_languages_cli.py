@@ -399,8 +399,8 @@ def test_no_source_config_with_both_languages_proposes_distinct_npm_name(
     src_target: Path, tmp_path: Path
 ) -> None:
     target = _declared_target(src_target, BOTH, source_config=False)
-    # The proposal never derives cli_name here, so the answers omit it too.
-    answers = write_answers_file(tmp_path, replace(NODE_DEST, cli_name=None))
+    # The distinct package.json bin is proposed, so the answers must rename it.
+    answers = write_answers_file(tmp_path, NODE_DEST)
     code = main(
         ["--target", str(target), "--config", str(answers), "--accept-discovery"]
     )
@@ -409,6 +409,7 @@ def test_no_source_config_with_both_languages_proposes_distinct_npm_name(
     assert receipt["press"]["from"]["package_name"] == "demo_widget"
     assert receipt["press"]["from"]["app_name"] == "press"
     assert receipt["press"]["from"]["npm_name"] == NODE_NAME
+    assert receipt["press"]["from"]["cli_name"] == "demo-cli"
     pressed = json.loads((target / "package.json").read_text(encoding="utf-8"))
     assert pressed["name"] == NODE_DEST.npm_name
 

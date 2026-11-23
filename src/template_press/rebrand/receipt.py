@@ -165,6 +165,7 @@ def write_receipt(
     origin: OriginDecision | None = None,
     clean: Sequence[Sequence[str]] = (),
     remove_dirs: Sequence[DirectoryRemoval] = (),
+    keep_names: Sequence[str] = (),
 ) -> Path:
     text = _render_receipt(
         source,
@@ -180,6 +181,7 @@ def write_receipt(
         origin=origin,
         clean=clean,
         remove_dirs=remove_dirs,
+        keep_names=keep_names,
     )
     return write_control(target, RECEIPT_REL, text)
 
@@ -202,6 +204,7 @@ def preflight_receipt(
     origin: OriginDecision | None = None,
     clean: Sequence[Sequence[str]] = (),
     remove_dirs: Sequence[DirectoryRemoval] = (),
+    keep_names: Sequence[str] = (),
     renames: Mapping[str, str] | None = None,
 ) -> int | None:
     """Bound complete output before writes; file-only receipts remain uncapped.
@@ -234,6 +237,7 @@ def preflight_receipt(
         origin=origin,
         clean=clean,
         remove_dirs=remove_dirs,
+        keep_names=keep_names,
     )
     rename_map = renames or {}
     _validate_current_path_text_limits(remove_dirs, rename_map)
@@ -387,6 +391,7 @@ def _render_receipt(
     origin: OriginDecision | None = None,
     clean: Sequence[Sequence[str]] = (),
     remove_dirs: Sequence[DirectoryRemoval] = (),
+    keep_names: Sequence[str] = (),
 ) -> str:
     """Render once for preflight and output; report=None budgets list widths."""
     if remove_dirs:
@@ -424,6 +429,16 @@ def _render_receipt(
         *([f"platform = {toml_string(platform)}"] if platform is not None else []),
         f'completed_at = "{stamp}"',
         *origin_lines,
+        # Absent when empty, so a target without the key keeps its exact bytes.
+        *(
+            [
+                "keep_names = ["
+                + ", ".join(toml_string(name) for name in keep_names)
+                + "]"
+            ]
+            if keep_names
+            else []
+        ),
         "",
         *_identity_table("from", source),
         "",

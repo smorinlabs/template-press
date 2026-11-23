@@ -43,12 +43,19 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
 )
-from template_press.rebrand.keep_names import validate_keep_names
+from template_press.rebrand.inventory import rewrite_surface_texts
+from template_press.rebrand.keep_names import (
+    check_keep_surfaces,
+    render_stale,
+    render_undeclared,
+    validate_keep_names,
+)
 from template_press.rebrand.languages import (
     check_target_languages,
     render_ignored_languages,
 )
 from template_press.rebrand.node_manifest import NodeManifest
+from template_press.rebrand.pathing import ROOT_CONTROL
 from template_press.rebrand.receipt import (
     RECEIPT_REL,
     OriginDecision,
@@ -471,6 +478,18 @@ def _resolve_source(
                 found.package_name,
             ):
                 proposal["npm_name"] = found.npm_name
+            if found.node_checked:
+                # Without a declared cli_name, a distinct bin would survive
+                # the press unchanged and still earn a clean exit.
+                claimed = {found.app_name, found.repo_name, found.package_name}
+                proposal["cli_name"] = next(
+                    (
+                        name
+                        for name in found.cli_names
+                        if name not in claimed and name != found.npm_name
+                    ),
+                    None,
+                )
         try:
             candidate = Identity.from_mapping(
                 {k: v for k, v in proposal.items() if v is not None}
@@ -644,6 +663,7 @@ def _preflight_directory_receipt(
         clean=[rule.paths for rule in rules.clean],
         remove_dirs=directories,
         renames=renames,
+        keep_names=rules.keep_names,
     )
 
 
@@ -766,6 +786,19 @@ def main(argv: list[str] | None = None) -> int:
         # by build_plan before any write.  Keeping the target rules here ensures
         # the adapter preserves each field's effective substring posture.
         validate_keep_names(rules.keep_names, source, dest)
+        keep_check = check_keep_surfaces(
+            rewrite_surface_texts(
+                target,
+                exclude_files=rules.exclude_files,
+                exclude_dirs=rules.exclude_dirs,
+                root_control=ROOT_CONTROL,
+            ),
+            source,
+            rules.keep_names,
+        )
+        if keep_check.undeclared:
+            print(render_undeclared(keep_check.undeclared), file=sys.stderr)
+            return 1
         prior_removed = removed_files_from_receipt(receipt_text)
         removal_plan = plan_removals(
             target,
@@ -893,12 +926,16 @@ def main(argv: list[str] | None = None) -> int:
         # stream.
         for line in render_ignored_languages(languages):
             print(line, file=sys.stderr)
+        for line in render_stale(keep_check.stale):
+            print(line, file=sys.stderr)
         for notice in _render_origin_notices(origin, source, dest):
             print(notice)
         for warning in _render_origin_mismatch_warnings(origin, source, dest, found):
             print(warning)
         print(f"Platform: {selected.platform}")
         print(plan.render())
+        if rules.keep_names:
+            print(f"Kept names (keep_names): {', '.join(rules.keep_names)}")
         # Phase order (E4): every edit runs before every regeneration, so the
         # plan the operator approves reads in the order execution will take.
         if edit_plans:
@@ -1272,6 +1309,7 @@ def _press(
             exclude_files=DEFAULT_RULES.exclude_files,
             regenerate=rules.regenerate,
             verify_ignore=rules.verify_ignore,
+            keep_names=rules.keep_names,
         )
         leaks = find_leaks(
             target,
@@ -1344,6 +1382,7 @@ def _press(
             removals=removals,
             remove_dirs=all_directories,
             exempt=phases.exempt,
+            keep_names=rules.keep_names,
         )
         # The receipt is the durable completion boundary. Interruptions during
         # the success-reporting prints below must not advise rolling back a

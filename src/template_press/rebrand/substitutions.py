@@ -33,8 +33,16 @@ from template_press.rebrand.inventory import (
     select_rename_entries,
     select_symlink_entries,
 )
-from template_press.rebrand.keep_names import disjoint_from_kept, kept_spans
-from template_press.rebrand.matcher import find_occurrences
+from template_press.rebrand.keep_names import (
+    component_kept_spans,
+    disjoint_from_kept,
+    disjoint_matches,
+    find_outside_kept,
+    kept_spans,
+    matches_outside_kept,
+    splice_outside_kept,
+)
+from template_press.rebrand.matcher import find_occurrences, identity_pattern
 from template_press.rebrand.pathing import ROOT_CONTROL
 from template_press.rebrand.pipeline import (
     MAX_RENAME_PASSES,
@@ -234,8 +242,7 @@ def _rewrite_outside_kept(
     """Replace matches disjoint from ``kept``; return text and shifted spans.
 
     The pattern runs over the whole current text, so boundaries see true
-    neighbors. A suppressed match advances one character, not past its end,
-    so it cannot shadow a disjoint occurrence that overlaps it.
+    neighbors.
     """
 
     replaced: list[tuple[int, int]] = []
@@ -257,26 +264,8 @@ def _rewrite_outside_kept(
             pattern = token_pattern(
                 row.matcher.identity_field, row.from_value
             ) or re.compile(re.escape(row.from_value))
-        position = 0
-        while (match := pattern.search(text, position)) is not None:
-            if disjoint_from_kept(match.span(), kept):
-                replaced.append(match.span())
-                position = match.end()
-            else:
-                position = match.start() + 1
-    pieces: list[str] = []
-    copied = 0
-    for start, end in replaced:
-        pieces += [text[copied:start], row.to_value]
-        copied = end
-    pieces.append(text[copied:])
-    growth = len(row.to_value) - len(row.from_value)
-    shifted = tuple(
-        (low + delta, high + delta)
-        for low, high in kept
-        for delta in (growth * sum(end <= low for _, end in replaced),)
-    )
-    return "".join(pieces), shifted
+        replaced = disjoint_matches(pattern, text, kept)
+    return splice_outside_kept(text, replaced, row.to_value, kept)
 
 
 def rewrite_file(
@@ -323,14 +312,34 @@ def rewrite_with_row(row: RenderedSubstitution, text: str) -> str:
     return replace_token(text, field, row.from_value, row.to_value)
 
 
+def _hunt_pattern(row: RenderedSubstitution, matcher: MatcherSpec) -> re.Pattern[str]:
+    """The regular expression equivalent of one compiled hunt matcher."""
+
+    if matcher.algorithm == "literal":
+        return re.compile(re.escape(row.from_value))
+    field = matcher.identity_field
+    if field is None:
+        raise ValidationError(f"hunt for row {row.row_id} has no identity field")
+    if matcher.algorithm == "paranoid":
+        if matcher.substring:
+            return re.compile(re.escape(row.from_value), re.IGNORECASE)
+        return identity_pattern(field, row.from_value)
+    if matcher.substring:
+        return re.compile(re.escape(row.from_value))
+    return token_pattern(field, row.from_value) or re.compile(re.escape(row.from_value))
+
+
 def hunt_occurs(
     row: RenderedSubstitution,
     policy: HuntPolicy,
     text: str,
+    kept: Sequence[tuple[int, int]] = (),
 ) -> bool:
-    """Apply one compiled consumer hunt to text."""
+    """Apply one compiled consumer hunt to text, outside ``kept`` spans."""
 
     matcher = policy.matcher
+    if kept:
+        return bool(matches_outside_kept(_hunt_pattern(row, matcher), text, kept))
     if matcher.algorithm == "literal":
         return row.from_value in text
     field = matcher.identity_field
@@ -372,6 +381,7 @@ def matching_hunts(
     matcher yet a real leak of ``demo_widget``.
     """
 
+    kept = kept_spans(text, table.keep_names)
     matches: list[tuple[RenderedSubstitution, HuntPolicy]] = []
     for row in table.rows:
         if not row_matches_scope(row, source_scope_path):
@@ -386,15 +396,16 @@ def matching_hunts(
                 and policy.matcher.identity_field is not None
             ):
                 occurs_here = bool(
-                    find_occurrences(
+                    find_outside_kept(
                         text,
                         policy.matcher.identity_field,
                         row.from_value,
                         substring=False,
+                        kept=kept,
                     )
                 )
             else:
-                occurs_here = hunt_occurs(row, policy, text)
+                occurs_here = hunt_occurs(row, policy, text, kept)
             if occurs_here:
                 matches.append((row, policy))
     return tuple(matches)
@@ -453,7 +464,9 @@ def _rewrite_component(row: RenderedSubstitution, component: str) -> str:
 
 
 def _rewritten_path(
-    posix: str, path_rows: tuple[RenderedSubstitution, ...]
+    posix: str,
+    path_rows: tuple[RenderedSubstitution, ...],
+    keep_names: Sequence[str] = (),
 ) -> tuple[str, dict[int, tuple[str, ...]]]:
     rel = Path(posix)
     parts: list[str] = []
@@ -463,10 +476,14 @@ def _rewritten_path(
             parts.append(component)
             continue
         rewritten = component
+        kept = component_kept_spans(rel.parts, component_index, keep_names)
         for row in path_rows:
             if not _scope_matches(row.scope, posix):
                 continue
-            updated = _rewrite_component(row, rewritten)
+            if kept:
+                updated, kept = _rewrite_outside_kept(row, rewritten, kept)
+            else:
+                updated = _rewrite_component(row, rewritten)
             if updated != rewritten:
                 row_ids_by_component.setdefault(component_index, []).append(row.row_id)
                 rewritten = updated
@@ -487,7 +504,9 @@ def _rewritten_path(
 
 
 def _compile_rename_plan(
-    rows: tuple[RenderedSubstitution, ...], snapshot: SurfaceSnapshot
+    rows: tuple[RenderedSubstitution, ...],
+    snapshot: SurfaceSnapshot,
+    keep_names: Sequence[str] = (),
 ) -> RenamePlan:
     path_rows = tuple(row for row in rows if "path" in row.rewrite_surfaces)
     current_by_source = {
@@ -502,7 +521,9 @@ def _compile_rename_plan(
     for pass_number in range(1, MAX_RENAME_PASSES + 1):
         grouped: dict[str, tuple[str, set[str], set[str]]] = {}
         for source, current in current_by_source.items():
-            rewritten, row_ids_by_component = _rewritten_path(current, path_rows)
+            rewritten, row_ids_by_component = _rewritten_path(
+                current, path_rows, keep_names
+            )
             if rewritten == current:
                 continue
             current_parts = Path(current).parts
@@ -742,10 +763,11 @@ def revalidate_rename_plan(target: Path, plan: RenamePlan) -> None:
 def _virtual_path_translation(
     posix: str,
     path_rows: tuple[RenderedSubstitution, ...],
+    keep_names: Sequence[str] = (),
 ) -> str:
     current = posix
     for _ in range(MAX_RENAME_PASSES):
-        rewritten, _row_ids = _rewritten_path(current, path_rows)
+        rewritten, _row_ids = _rewritten_path(current, path_rows, keep_names)
         if rewritten == current:
             return current
         current = rewritten
@@ -778,6 +800,7 @@ def _compile_virtual_translations(
     target: Path | None,
     rows: tuple[RenderedSubstitution, ...],
     snapshot: SurfaceSnapshot,
+    keep_names: Sequence[str] = (),
 ) -> tuple[tuple[str, str, str], ...]:
     if target is None:
         return ()
@@ -800,11 +823,11 @@ def _compile_virtual_translations(
             if (
                 occupied_prefix == target_posix
                 or not is_symlink
-                or _virtual_path_translation(occupied_prefix, path_rows)
+                or _virtual_path_translation(occupied_prefix, path_rows, keep_names)
                 != occupied_prefix
             ):
                 continue
-        translated = _virtual_path_translation(target_posix, path_rows)
+        translated = _virtual_path_translation(target_posix, path_rows, keep_names)
         if translated != target_posix:
             translations.append((entry.rel.as_posix(), target_posix, translated))
     return tuple(translations)
@@ -1442,8 +1465,10 @@ def _validate_rows(
                 for form in rules.display_forms
             }
         )
+    keep_arguments = {"keep_names": rules.keep_names} if rules.keep_names else {}
     pipeline_validator(
         tuple(candidates),
+        **keep_arguments,
         initial_paths=tuple(
             dict.fromkeys(
                 (
@@ -1506,7 +1531,9 @@ def compile_substitution_table(
         ),
         visibility_inputs=snapshot.visibility_inputs,
     )
-    virtual_translations = _compile_virtual_translations(target, rows, snapshot)
+    virtual_translations = _compile_virtual_translations(
+        target, rows, snapshot, rules.keep_names
+    )
     _validate_rows(
         rows,
         destination,
@@ -1515,7 +1542,7 @@ def compile_substitution_table(
         pipeline_validator,
         tuple(source for _link, source, _destination in virtual_translations),
     )
-    rename_plan = _compile_rename_plan(rows, rename_snapshot)
+    rename_plan = _compile_rename_plan(rows, rename_snapshot, rules.keep_names)
     rename_plan = replace(
         rename_plan,
         virtual_translations=virtual_translations,

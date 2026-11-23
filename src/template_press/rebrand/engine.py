@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import stat
 from collections import Counter
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -37,6 +37,7 @@ from template_press.rebrand.inventory import (
     select_verifier_entries,
     tracked_path_strings,
 )
+from template_press.rebrand.keep_names import kept_spans, outside_kept
 from template_press.rebrand.matcher import classify_occurrence
 from template_press.rebrand.pathing import (
     REGENERATE_EXEMPTIBLE as REGENERATE_EXEMPTIBLE,
@@ -895,7 +896,9 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
         text = _read_text(path, expected_kind=entry.worktree_kind)
         if text is not None:
             if entry.tracked:
-                _tally_prefix_occurrences(text, prefix_fields, prefix_counts)
+                _tally_prefix_occurrences(
+                    text, prefix_fields, prefix_counts, table.keep_names
+                )
             _, changed_rows = rewrite_file(
                 (
                     row
@@ -1120,6 +1123,7 @@ def _tally_prefix_occurrences(
     text: str,
     fields: Mapping[str, str],
     counts: Mapping[str, _PrefixCounts],
+    keep_names: Sequence[str] = (),
 ) -> None:
     """Classify every occurrence of every checked field's value in `text`.
 
@@ -1134,15 +1138,18 @@ def _tally_prefix_occurrences(
     that share the same letters with different separators. `token_pattern`
     matches only the field's own literal value, so a hyphen right after it
     is exactly the boundary the rewriter itself would happily cross —
-    which is the E9(b) signal.
+    which is the E9(b) signal. A declared kept name is not a stale prefix.
     """
 
+    kept = kept_spans(text, keep_names)
     for field_name, value in fields.items():
         tally = counts[field_name]
         pattern = token_pattern(field_name, value)
         if pattern is None:  # every field currently returns a pattern
             continue
         for match in pattern.finditer(text):
+            if kept and not outside_kept((match.span(),), kept):
+                continue
             kind, token = classify_occurrence(text, match.span())
             if kind == "prefix":
                 tally.prefix_tokens[token] += 1

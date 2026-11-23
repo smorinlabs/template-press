@@ -39,7 +39,11 @@ from template_press.rebrand.inventory import (
     capture_surface_snapshot,
     tracked_path_strings,
 )
-from template_press.rebrand.matcher import find_occurrences
+from template_press.rebrand.keep_names import (
+    find_outside_kept,
+    kept_spans,
+    literal_occurs,
+)
 from template_press.rebrand.rules import (
     EditRule,
     RegenerateRule,
@@ -847,11 +851,12 @@ def scan_regenerated_output(
             else:
                 field = policy.matcher.identity_field or row.provenance[0].name
                 substring = policy.matcher.substring and scan_mode != "boundary"
-                spans = find_occurrences(
+                spans = find_outside_kept(
                     text,
                     field,
                     row.from_value,
                     substring=substring,
+                    kept=kept_spans(text, table.keep_names),
                 )
                 if not spans:
                     continue
@@ -879,16 +884,22 @@ def scan_regenerated_output(
                     f"at an excluded filename"
                 )
         return problems
+    text_kept = kept_spans(text, rules.keep_names)
+    path_kept = kept_spans(translated_rel, rules.keep_names)
     for field, value in changed_identity_pairs(source, dest):
         substring = field in rules.substring_rewrite_fields
         content_substring = substring and scan_mode != "boundary"
-        spans = find_occurrences(text, field, value, substring=content_substring)
+        spans = find_outside_kept(
+            text, field, value, substring=content_substring, kept=text_kept
+        )
         if spans:
             problems.append(
                 f"output still carries source {field} {value!r} "
                 f"({len(spans)} occurrence(s))"
             )
-        if find_occurrences(translated_rel, field, value, substring=substring):
+        if find_outside_kept(
+            translated_rel, field, value, substring=substring, kept=path_kept
+        ):
             problems.append(
                 f"its path ({translated_rel}) carries source {field} "
                 f"{value!r} — downstream inventories never look at an "
@@ -900,14 +911,18 @@ def scan_regenerated_output(
         else rendered_rules
     )
     for rule, frm, _to in effective_rules:
-        if rule.content and rule_matches_path(rule, source_scope) and frm in text:
+        if (
+            rule.content
+            and rule_matches_path(rule, source_scope)
+            and literal_occurs(text, frm, text_kept)
+        ):
             problems.append(
                 f"output contains rendered [[replace]] literal {frm!r} ({rule.reason})"
             )
         if (
             rule.paths
             and rule_matches_path(rule, source_scope)
-            and frm in translated_rel
+            and literal_occurs(translated_rel, frm, path_kept)
         ):
             problems.append(
                 f"its path ({translated_rel}) carries rendered [[replace]] "
