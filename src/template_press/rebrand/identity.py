@@ -209,6 +209,25 @@ def token_pattern(field: str, value: str) -> re.Pattern[str] | None:
     return re.compile(rf"(?<![A-Za-z0-9]){re.escape(value)}(?![A-Za-z0-9])")
 
 
+def distinct_hyphen_form(source: Identity, dest: Identity) -> str | None:
+    """The hyphenated package name, when no other identity value claims it.
+
+    ``None`` means there is nothing separate to rewrite or hunt: the name has
+    no underscore, the package is unchanged, or the spelling is another
+    source or destination value (commonly ``repo_name``).
+    """
+    hyphen = source.package_name.replace("_", "-")
+    if hyphen == source.package_name or source.package_name == dest.package_name:
+        return None
+    claimed = {
+        value
+        for identity in (source, dest)
+        for field, value in identity.as_dict().items()
+        if field != "package_name"
+    }
+    return None if hyphen in claimed else hyphen
+
+
 def token_occurs(text: str, field: str, value: str) -> bool:
     pattern = token_pattern(field, value)
     if pattern is not None:

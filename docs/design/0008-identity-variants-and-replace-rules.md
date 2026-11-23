@@ -53,6 +53,21 @@ retained decision record does not require those files to remain present.
    dedicated path-only rename rule. New guard: a substitution that would
    empty a path component fails loud (cookiecutter #1518 class).
 
+5. **Hyphenated package names (P13, approved 2026-11-22).** The hyphenated
+   form of `package_name` is handled by evidence, not by assumption:
+
+   | Target | Result |
+   |---|---|
+   | `[project].name` is the hyphenated form | Rewritten in content and paths |
+   | Manifest does not prove it, and the form survives | Text unchanged, exit 1, no receipt |
+   | Another identity value equals the form | That field's row owns it; `[project].name` still follows `package_name` |
+
+   A word-like name such as `well_known` is why an unproven form is never
+   rewritten: `a well-known API` is prose. To accept an unproven mention, list
+   the file in `[rules] verify_ignore`. To preserve a whole historical file
+   when the manifest does prove the form, list its path in
+   `extra_exclude_files` and its name in `verify_ignore`.
+
 ## Independence guardrail (P06 D2)
 
 The rendered substitution table introduced by design 0009 is the conservative

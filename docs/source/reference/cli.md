@@ -314,6 +314,30 @@ entry, the report attaches a note identifying the exact `.gitignore` line and
 naming the fix: drop the trailing slash, remove the entry, or list its name
 under `verify_ignore`.
 
+### Hyphenated package names
+
+When `[project].name` is the hyphenated form of `package_name`, the press
+rewrites that form in file content and paths. For example, `acme-widget`
+becomes `zeta-gadget` when `package_name` changes from `acme_widget` to
+`zeta_gadget`. When the manifest does not use that spelling, the press leaves a
+hyphenated mention unchanged, reports it as a leak, exits 1, and writes no
+receipt. This protects prose such as `a well-known API` for a package named
+`well_known`.
+
+To accept such a mention, list the file's name under `verify_ignore`. To keep
+a whole historical file unchanged while the rest of the target is rewritten,
+exclude it from rewriting and from the leak scan:
+
+```toml
+[rules]
+extra_exclude_files = ["docs/history.md"]
+verify_ignore = ["history.md"]
+```
+
+These rules keep every identity value in that file, not only the hyphenated
+name. Do not apply them to `pyproject.toml`: a stale manifest name makes the
+next press and `press verify` refuse.
+
 ### Platform-conditional declared mutations
 
 `[[edit]]`, `[[regenerate]]`, `[[remove]]`, and `[[reset]]` declarations may
