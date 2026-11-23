@@ -458,11 +458,17 @@ def _resolve_source(
                 proposal = node_proposal(manifest, found.owner, found.repo_name)
             else:
                 proposal = node_proposal(manifest, manifest.owner, manifest.repo_name)
-            bins = _distinct_bins(
-                found, proposal["repo_name"], proposal["package_name"]
-            )
-            if len(bins) > 1:
-                return _several_bins_refusal(bins)
+            # The first bin becomes app_name (and cli_name when hyphenated). Any
+            # bin no proposed value covers would survive the press unchanged.
+            covered = {
+                found.npm_name,
+                *(
+                    proposal[key]
+                    for key in ("app_name", "cli_name", "repo_name", "package_name")
+                ),
+            }
+            if any(name not in covered for name in found.named_cli_names):
+                return _several_bins_refusal(found.named_cli_names)
             unresolved = list(
                 dict.fromkeys(
                     _NODE_PROPOSAL_KEYS[k]

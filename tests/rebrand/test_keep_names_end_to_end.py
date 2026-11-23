@@ -1114,3 +1114,120 @@ def test_server_is_still_not_a_sibling_of_serve():
     source = replace(SOURCE, cli_name="serve")
     check = check_keep_surfaces([("a.md", "content", "the server\n")], source, ())
     assert check.undeclared == ()
+
+
+@pytest.mark.parametrize(
+    ("cli_name", "text"),
+    [
+        ("serve", "a web-server here\n"),
+        ("serve", "observe-mode\n"),
+        ("tsc", "vite-tsconfig-paths\n"),
+        ("tsc", "tsconfig\n"),
+        ("serve", "server\n"),
+        ("acme-cli", "bin/acme-cli.js\n"),
+        ("tsc", "x-Atsc-y\n"),
+        ("tsc", "x-tsc9-y\n"),
+    ],
+)
+def test_match_inside_an_unrelated_word_is_not_a_sibling(cli_name, text):
+    source = replace(SOURCE, cli_name=cli_name)
+    check = check_keep_surfaces([("a.md", "content", text)], source, ())
+    assert check.undeclared == ()
+
+
+@pytest.mark.parametrize(
+    ("cli_name", "text"),
+    [
+        ("serve", "a web-server here\n"),
+        ("serve", "observe-mode\n"),
+        ("tsc", "vite-tsconfig-paths\n"),
+    ],
+)
+def test_unrelated_hyphenated_words_pass_press_and_verify(tmp_path, cli_name, text):
+    target = _cli_target(tmp_path, cli_name, LANGUAGES, text)
+    assert _verify(target) == 0
+    assert _press(target, _answers(tmp_path)) == 0
+    assert (target / "docs" / "a.md").read_text(encoding="utf-8") == text
+
+
+@pytest.mark.parametrize(
+    ("npm_name", "cli_name", "text", "token"),
+    [
+        ("@acme/widget", "acme-cli", "acme-cli-helper", "acme-cli-helper"),
+        ("@acme/widget", "acme-cli", "pre-acme-cli", "pre-acme-cli"),
+        ("@acme/widget-api", "acme-cli", "x-@acme/widget-api", "x-@acme/widget-api"),
+        ("@acme/widget", "acme-cli", "@acme/widget-extra", "@acme/widget-extra"),
+        (
+            "@acme/widget-api",
+            "acme-cli",
+            "packages/@acme/widget-api-extra/",
+            "@acme/widget-api-extra",
+        ),
+        ("@acme/widget", "acme-cli", "acme-cliFoo", "acme-cliFoo"),
+        ("@acme/widget", "tsc", "tscConfig", "tscConfig"),
+    ],
+)
+def test_required_siblings_stay_refused(npm_name, cli_name, text, token):
+    source = replace(SOURCE, npm_name=npm_name, cli_name=cli_name)
+    check = check_keep_surfaces([("a.md", "content", f"{text}\n")], source, ())
+    assert [item.token for item in check.undeclared] == [token]
+
+
+def _pure_node_target(tmp_path: Path, name: str, bins: dict[str, str]) -> Path:
+    target = _make_target(tmp_path, "", {"README.md": "run web-cli now\n"})
+    (target / "press" / "press-source.toml").unlink()
+    (target / "pyproject.toml").unlink()
+    manifest = json.loads((target / "package.json").read_text(encoding="utf-8"))
+    manifest.update(name=name, author="Acme Author <author@example.test>", bin=bins)
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "node")
+    return target
+
+
+@pytest.mark.parametrize(
+    ("name", "bins"),
+    [
+        ("acme-repo", {"acme_repo": "./a.js", "web-cli": "./b.js"}),
+        ("@acme/tool", {"tool": "./a.js", "web-cli": "./b.js"}),
+    ],
+    ids=["unscoped", "scoped"],
+)
+def test_pure_node_uncovered_bin_exits_2(tmp_path, capsys, name, bins):
+    target = _pure_node_target(tmp_path, name, bins)
+    answers = _answers(tmp_path, replace(DEST, display_name=None, cli_name=None))
+    code = main(
+        ["--target", str(target), "--config", str(answers), "--accept-discovery"]
+    )
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "web-cli" in err
+    assert "keep_names" in err
+    assert not (target / RECEIPT_REL).exists()
+    assert not (target / "press" / "press-source.toml").exists()
+    assert _status(target) == ""
+
+
+def test_pure_node_single_covered_bin_still_proposes(tmp_path, capsys):
+    target = _pure_node_target(tmp_path, "acme-repo", {"acme-repo": "./a.js"})
+    assert main(["--target", str(target)]) == 2
+    captured = capsys.readouterr()
+    assert 'app_name = "acme_repo"' in captured.out.replace("  ", " ")
+
+
+def test_python_node_second_bin_becomes_cli_name(tmp_path, capsys):
+    target = _make_target(tmp_path, LANGUAGES, {"README.md": "run web-cli now\n"})
+    (target / "press" / "press-source.toml").unlink()
+    manifest = json.loads((target / "package.json").read_text(encoding="utf-8"))
+    manifest["bin"] = {SOURCE.package_name: "./a.js", "web-cli": "./b.js"}
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "bins")
+    answers = _answers(tmp_path, replace(DEST, display_name=None))
+    code = main(
+        ["--target", str(target), "--config", str(answers), "--accept-discovery"]
+    )
+    assert code == 0, capsys.readouterr().err
+    pressed = json.loads((target / "package.json").read_text(encoding="utf-8"))
+    assert "web-cli" not in pressed["bin"]
+    assert (target / "README.md").read_text(encoding="utf-8") == "run new-cli now\n"
