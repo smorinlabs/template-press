@@ -16,9 +16,13 @@ from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
     Identity,
     ValidationError,
+    cargo_field_values,
+    cargo_name_pairs,
     display_forms,
     distinct_hyphen_form,
+    exact_name_rank,
     field_renames_paths,
+    is_cargo_field,
     occurs,
     pair_renames_paths,
     replace_token,
@@ -1151,7 +1155,11 @@ def _identity_rows(
                 )
             )
 
-    values.sort(key=lambda item: (-len(item[1]), item[0] != "npm_name"))
+    values.extend(
+        (tag, from_value, to_value, False, False)
+        for tag, from_value, to_value in cargo_name_pairs(source, destination)
+    )
+    values.sort(key=lambda item: (-len(item[1]), exact_name_rank(item[0])))
     rows: list[RenderedSubstitution] = []
     for field, from_value, to_value, enabled_display, disabled_display in values:
         display = field.startswith("display_name_")
@@ -1380,11 +1388,20 @@ def _normalize_rows(
             None,
         )
         # A cli_name or npm_name equal to a content-only field (owner, author)
-        # keeps its own row, or merging would drop its path rename.
-        if duplicate_index is None or (
-            row.provenance[0].name in ("npm_name", "cli_name")
-            and "path" in row.rewrite_surfaces
-            and "path" not in identity_owners[duplicate_index].rewrite_surfaces
+        # keeps its own row, or merging would drop its path rename. A substring
+        # field keeps its own row beside a stricter Cargo owner for the same
+        # reason: merging would drop its opted-in glued matches.
+        if (
+            duplicate_index is None
+            or (
+                row.provenance[0].name in ("npm_name", "cli_name")
+                and "path" in row.rewrite_surfaces
+                and "path" not in identity_owners[duplicate_index].rewrite_surfaces
+            )
+            or (
+                row.matcher.substring
+                and is_cargo_field(identity_owners[duplicate_index].provenance[0].name)
+            )
         ):
             identity_owners.append(row)
             continue
@@ -1478,6 +1495,7 @@ def _validate_rows(
                 for form in rules.display_forms
             }
         )
+    destination_sinks.update(cargo_field_values(destination))
     keep_arguments = {"keep_names": rules.keep_names} if rules.keep_names else {}
     pipeline_validator(
         tuple(candidates),
@@ -1504,6 +1522,33 @@ def _validate_rows(
             for field, value in destination_sinks.items()
         ),
     )
+
+
+def _refuse_cargo_owner_stale_output(
+    rows: tuple[RenderedSubstitution, ...], destination: Identity
+) -> None:
+    """Refuse output that a field merged into a Cargo row would report as a leak.
+
+    A merged field keeps its looser doctor hunt, so ``acme_core_next`` would be
+    written by the Cargo row and then fail on ``package_name`` ``acme_core``.
+    """
+
+    outputs = {row.to_value for row in rows if row.rewrite_surfaces}
+    outputs.update(cargo_field_values(destination).values())
+    for row in rows:
+        if not is_cargo_field(row.provenance[0].name):
+            continue
+        for policy in row.hunts:
+            if policy.consumer != "doctor":
+                continue
+            for output in sorted(outputs):
+                if hunt_occurs(row, policy, output):
+                    raise ValidationError(
+                        f"stale-source emission: {row.row_id} source "
+                        f"{row.from_value!r} is still found in destination value "
+                        f"{output!r}; press in two steps via an intermediate "
+                        "identity"
+                    )
 
 
 def _compiled_rows(
@@ -1631,6 +1676,7 @@ def compile_substitution_table(
     source.validate()
     destination.validate()
     rows = _compiled_rows(source, destination, target, rules)
+    _refuse_cargo_owner_stale_output(rows, destination)
     rename_snapshot = SurfaceSnapshot(
         entries=select_rename_entries(
             snapshot,

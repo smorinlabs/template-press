@@ -22,7 +22,9 @@ from dataclasses import dataclass
 from template_press.rebrand.identity import (
     Identity,
     ValidationError,
+    cargo_field_values,
     display_forms,
+    is_cargo_field,
     token_pattern,
 )
 from template_press.rebrand.matcher import (
@@ -51,7 +53,7 @@ class UndeclaredName:
 
     path: str
     where: str  # "content" | "path" | "symlink"
-    field: str  # "npm_name" | "cli_name"
+    field: str  # "npm_name" | "cli_name" | a ``cargo_*`` row tag
     token: str
 
 
@@ -235,6 +237,7 @@ def _identity_forms(identity: Identity) -> frozenset[str]:
     forms.add(identity.package_name.replace("_", "-"))
     if identity.display_name is not None:
         forms.update(display_forms(identity.display_name).values())
+    forms.update(cargo_field_values(identity).values())
     return frozenset(forms)
 
 
@@ -294,13 +297,16 @@ def _complete_name_pattern(field: str, value: str) -> re.Pattern[str]:
 
 
 def _contained_source_name(name: str, source: Identity) -> tuple[str, str] | None:
-    """The source ``npm_name`` or ``cli_name`` complete inside ``name``, if any.
+    """The source ``npm_name``, ``cli_name``, or Cargo name inside ``name``, if any.
 
     An unscoped value that is the basename of ``@scope/value`` is not contained:
     that spelling names a different package and may be kept.
     """
-    for field in ("npm_name", "cli_name"):
-        value = getattr(source, field)
+    candidates = (
+        *((field, getattr(source, field)) for field in ("npm_name", "cli_name")),
+        *cargo_field_values(source).items(),
+    )
+    for field, value in candidates:
         if value is None:
             continue
         for match in _complete_name_pattern(field, value).finditer(name):
@@ -536,13 +542,16 @@ def check_keep_surfaces(
     dependency keys: only that evidence separates the package ``name.extra``
     from an ordinary file such as ``name.js``.
     """
-    values = tuple(
-        (field, value)
-        for field, value in (
-            ("npm_name", source.npm_name),
-            ("cli_name", source.cli_name),
-        )
-        if value is not None
+    values = (
+        *(
+            (field, value)
+            for field, value in (
+                ("npm_name", source.npm_name),
+                ("cli_name", source.cli_name),
+            )
+            if value is not None
+        ),
+        *cargo_field_values(source).items(),
     )
     if not values and not names:
         return KeepCheck((), ())
@@ -567,8 +576,9 @@ def check_keep_surfaces(
         if rewritten is not None and dependency_names
         else RewrittenForms()
     )
+    node_values = tuple(item for item in values if not is_cargo_field(item[0]))
     for item in _extended_dependencies(
-        dependency_names, values, names, manifest_subject
+        dependency_names, node_values, names, manifest_subject
     ):
         undeclared.setdefault((item.path, item.where, item.token), item)
     return KeepCheck(tuple(undeclared.values()), tuple(unseen))
@@ -577,9 +587,14 @@ def check_keep_surfaces(
 def render_undeclared(findings: Sequence[UndeclaredName], source: Identity) -> str:
     """The exit-1 refusal: each exact token and the line that would keep it."""
     identity = _identity_forms(source)
+    declared = (
+        "npm_name, cli_name, or Cargo name"
+        if any(is_cargo_field(item.field) for item in findings)
+        else "npm_name or cli_name"
+    )
     lines = [
-        f"error: {len(findings)} undeclared name(s) contain a declared npm_name "
-        "or cli_name; nothing written, no receipt.",
+        f"error: {len(findings)} undeclared name(s) contain a declared "
+        f"{declared}; nothing written, no receipt.",
     ]
     for item in findings[:_REPORT_LIMIT]:
         path = item.path if item.path.isprintable() else repr(item.path)

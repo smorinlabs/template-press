@@ -20,7 +20,10 @@ from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
     Identity,
     ValidationError,
+    cargo_field_values,
+    cargo_name_pairs,
     display_forms,
+    exact_name_rank,
     pair_renames_paths,
     replace_token,
     token_pattern,
@@ -488,6 +491,7 @@ def _raw_replacement_pairs(
         for form in display_form_names:
             if sf[form] != df[form]:
                 pairs.append((f"display_name_{form}", sf[form], df[form]))
+    pairs.extend(cargo_name_pairs(source, dest))
     display_seen: set[str] = set()
     coalesced: list[tuple[str, str, str]] = []
     for tag, cur, repl in pairs:
@@ -514,7 +518,7 @@ def _raw_replacement_pairs(
             continue
         seen[cur] = (tag, repl)
         deduped.append((tag, cur, repl))
-    deduped.sort(key=lambda t: (-len(t[1]), t[0] != "npm_name"))
+    deduped.sort(key=lambda t: (-len(t[1]), exact_name_rank(t[0])))
     return deduped
 
 
@@ -690,6 +694,7 @@ def _validated_replacements(
                 for form in rules.display_forms
             }
         )
+    destination_values.update(cargo_field_values(dest))
     stability_sinks = tuple(
         StabilitySink(
             sink_id=f"destination:{field}",

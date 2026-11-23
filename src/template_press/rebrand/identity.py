@@ -292,7 +292,7 @@ def token_pattern(field: str, value: str) -> re.Pattern[str] | None:
         return re.compile(rf"(?<![A-Za-z0-9_-]){re.escape(value)}(?![A-Za-z0-9-])")
     if field == "app_name_upper":
         return re.compile(rf"(?<![A-Za-z0-9-]){re.escape(value)}(?![A-Za-z-])")
-    if field in ("npm_name", "cli_name"):
+    if field in ("npm_name", "cli_name") or is_cargo_field(field):
         # Exact names: a same-prefix sibling (@acme/widget-extra) is a different
         # package, while a subpath (@acme/widget/sub) still rewrites its prefix.
         return re.compile(rf"(?<![A-Za-z0-9_-]){re.escape(value)}(?![A-Za-z0-9_-])")
@@ -315,6 +315,9 @@ def distinct_hyphen_form(source: Identity, dest: Identity) -> str | None:
         for field, value in identity.as_dict().items()
         if field != "package_name"
     }
+    claimed.update(
+        name for identity in (source, dest) for _role, name in identity.cargo_names
+    )
     return None if hyphen in claimed else hyphen
 
 
@@ -325,7 +328,7 @@ def field_renames_paths(field: str, value: str) -> bool:
     """
     if field == "npm_name":
         return "/" not in value
-    return field == "cli_name" or field in RENAME_FIELDS
+    return field == "cli_name" or field in RENAME_FIELDS or is_cargo_field(field)
 
 
 def pair_renames_paths(field: str, current: str, replacement: str) -> bool:
@@ -396,6 +399,23 @@ def cargo_ident(name: str) -> str:
 
 def is_cargo_field(field: str) -> bool:
     return field.startswith((CARGO_EXACT_PREFIX, CARGO_IDENT_PREFIX))
+
+
+def exact_name_rank(field: str) -> int:
+    """Equal-length tie order: Cargo names, then ``npm_name``, then the rest."""
+    if is_cargo_field(field):
+        return 0
+    return 1 if field == "npm_name" else 2
+
+
+def cargo_field_values(identity: Identity) -> dict[str, str]:
+    """Each Cargo spelling by row tag; an identical underscore form is omitted."""
+    values: dict[str, str] = {}
+    for role, name in identity.cargo_names:
+        values[f"{CARGO_EXACT_PREFIX}{role}"] = name
+        if cargo_ident(name) != name:
+            values[f"{CARGO_IDENT_PREFIX}{role}"] = cargo_ident(name)
+    return values
 
 
 def cargo_name_pairs(source: Identity, dest: Identity) -> list[tuple[str, str, str]]:
