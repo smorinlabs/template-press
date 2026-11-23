@@ -158,7 +158,7 @@ def make_node_target(base: Path, manager: Manager) -> Path:
         "description": f"{SOURCE.app_name} by {SOURCE.owner}",
         "bin": {SOURCE.cli_name: f"./bin/{SOURCE.cli_name}.js"},
         "scripts": {
-            "test": "node --test test/",
+            "test": "node --test test/cli.test.js",
             "typecheck": "tsc --noEmit -p .",
         },
         "devDependencies": {"typescript": TYPESCRIPT_VERSION},
