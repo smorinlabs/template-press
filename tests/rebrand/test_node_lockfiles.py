@@ -63,9 +63,9 @@ def _lock_target(src_target: Path, file: str, rules_body: str) -> Path:
     return src_target
 
 
-def test_exemptible_cap_names_all_four_lockfiles() -> None:
+def test_exemptible_cap_names_every_lockfile() -> None:
     assert REGENERATE_EXEMPTIBLE == frozenset(
-        {"uv.lock", "bun.lock", "package-lock.json", "pnpm-lock.yaml"}
+        {"uv.lock", "bun.lock", "package-lock.json", "pnpm-lock.yaml", "Cargo.lock"}
     )
     assert "CHANGELOG.md" not in REGENERATE_EXEMPTIBLE
 

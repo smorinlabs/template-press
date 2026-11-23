@@ -351,6 +351,16 @@ _SUGGESTION_NOTES: dict[str, str] = {
 }
 
 
+_CARGO_LOCK = "Cargo.lock"
+# `cargo update --workspace` keeps locked dependency versions and rewrites only
+# the workspace members, which `generate-lockfile` would re-resolve.
+_CARGO_LOCK_SUGGESTION = (
+    '[rules]\nextra_exclude_files = ["Cargo.lock"]\n\n'
+    '[[regenerate]]\nfile = "Cargo.lock"\n'
+    'command = ["cargo", "update", "--workspace", "--offline"]\n'
+)
+
+
 def regenerate_suggestion(file: str) -> str | None:
     """A paste-ready [[regenerate]] block for a known root lockfile, else None.
 
@@ -358,6 +368,8 @@ def regenerate_suggestion(file: str) -> str | None:
     root and could not rebuild a lockfile in a subdirectory.
     """
 
+    if file == _CARGO_LOCK:
+        return _CARGO_LOCK_SUGGESTION
     command = _LOCKFILE_COMMANDS.get(file)
     if command is None:
         return None

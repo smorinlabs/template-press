@@ -28,7 +28,11 @@ from template_press.rebrand.identity import (
     occurs,
     token_occurs,
 )
-from template_press.rebrand.inventory import rewrite_surface_texts
+from template_press.rebrand.inventory import (
+    capture_surface_snapshot,
+    rewrite_surface_texts,
+    tracked_path_strings,
+)
 from template_press.rebrand.languages import KNOWN_LANGUAGES, SUPPORTED_LANGUAGES
 from template_press.rebrand.node_manifest import (
     NodeManifest,
@@ -36,6 +40,7 @@ from template_press.rebrand.node_manifest import (
     unscoped,
 )
 from template_press.rebrand.pathing import ROOT_CONTROL
+from template_press.rebrand.rules import regenerate_suggestion
 from template_press.rebrand.safety import git_hardening_args, scrubbed_git_env
 
 if TYPE_CHECKING:
@@ -368,6 +373,20 @@ def _unmapped_name_is_broken(
     return _identifier_on_surface(target, ident, rules)
 
 
+def _undeclared_lock_problem(target: Path, rules: Rules) -> str | None:
+    """Refuse a tracked root ``Cargo.lock`` that no ``[[regenerate]]`` rebuilds."""
+    if any(rule.file == "Cargo.lock" for rule in rules.regenerate):
+        return None
+    if "Cargo.lock" not in tracked_path_strings(capture_surface_snapshot(target)):
+        return None
+    return (
+        "cargo_names: tracked Cargo.lock has no [[regenerate]] declaration, so "
+        "it would keep the source crate names. Add this block to "
+        "press/press-rules.toml (press does not run it; review the command "
+        "first):\n" + (regenerate_suggestion("Cargo.lock") or "")
+    )
+
+
 def cargo_problems(
     target: Path, source: Identity, dest: Identity | None, rules: Rules
 ) -> list[str]:
@@ -396,8 +415,11 @@ def cargo_problems(
             f"{cargo_table_hint(facts)}"
         ]
     declared = {cargo_ident(name) for _role, name in source.cargo_names}
-    discovered = {cargo_ident(name) for name in facts.names}
     out: list[str] = []
+    lock_problem = _undeclared_lock_problem(target, rules)
+    if lock_problem is not None:
+        out.append(lock_problem)
+    discovered = {cargo_ident(name) for name in facts.names}
     undeclared = [n for n in facts.names if cargo_ident(n) not in declared]
     if undeclared:
         out.append(

@@ -18,7 +18,7 @@ ROOT_CONTROL: frozenset[str] = frozenset(
     }
 )
 REGENERATE_EXEMPTIBLE: frozenset[str] = frozenset(
-    {"uv.lock", "bun.lock", "package-lock.json", "pnpm-lock.yaml"}
+    {"uv.lock", "bun.lock", "package-lock.json", "pnpm-lock.yaml", "Cargo.lock"}
 )
 
 
