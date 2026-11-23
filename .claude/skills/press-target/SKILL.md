@@ -189,7 +189,8 @@ wholly inside it. A match that only overlaps a kept span is still a leak.
   first, then edge `/` and `@`, keeping the `@` of a scoped name. So
   `"acme-cli"`, `/acme-cli`, and `@acme` (for `owner = "acme"`) also exit 2.
   An entry with an edge `-` or `_` is compared exactly, so `--acme-cli`
-  (a flag spelling) may be kept.
+  (a flag spelling) may be kept. An entry holding a complete source
+  `npm_name` or `cli_name` (`widget-extra@acme/widget`) exits 2; rename it.
 - Empty, control-character, and non-string entries exit 2.
 - An entry that occurs nowhere on the rewrite surface prints a stale-entry
   warning on stderr. The dry-run plan and the receipt list the kept names.

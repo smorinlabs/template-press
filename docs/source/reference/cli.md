@@ -759,7 +759,9 @@ case and separator variants, exits `2`. Leading and trailing characters outside
 `[A-Za-z0-9@/_-]` are ignored first, then edge `/` and `@`, keeping the `@` of a
 scoped name. So `"acme-cli"`, `/acme-cli`, and `@acme` (for `owner = "acme"`)
 also exit `2`. An entry with an edge `-` or `_` (`--acme-cli`) is compared exactly
-and may be kept. A directory rename that would change a kept name in a path
+and may be kept. An entry that holds a complete source `npm_name` or `cli_name`,
+such as `widget-extra@acme/widget`, exits `2`; the preflight prints rename
+guidance for such a token. A directory rename that would change a kept name in a path
 exits `2` before any write.
 
 ```toml

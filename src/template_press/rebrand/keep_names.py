@@ -278,6 +278,35 @@ def _is_identity_spelling(name: str, forms: frozenset[str]) -> bool:
     return _normalized(core) in {_normalized(form) for form in forms}
 
 
+def _complete_name_pattern(field: str, value: str) -> re.Pattern[str]:
+    """Where ``value`` stands as a complete name inside a ``keep_names`` entry.
+
+    A scoped value starts at its ``@``, so a glued alphanumeric does not extend
+    it: ``widget-extra@acme/widget`` holds ``@acme/widget``. A touching ``-`` or
+    ``_`` is still an edge separator, as in ``x-@acme/widget``.
+    """
+    if value.startswith("@"):
+        return re.compile(rf"(?<![_-]){re.escape(value)}(?![A-Za-z0-9_-])")
+    pattern = token_pattern(field, value)
+    return pattern if pattern is not None else re.compile(re.escape(value))
+
+
+def _contained_source_name(name: str, source: Identity) -> tuple[str, str] | None:
+    """The source ``npm_name`` or ``cli_name`` complete inside ``name``, if any.
+
+    An unscoped value that is the basename of ``@scope/value`` is not contained:
+    that spelling names a different package and may be kept.
+    """
+    for field in ("npm_name", "cli_name"):
+        value = getattr(source, field)
+        if value is None:
+            continue
+        for match in _complete_name_pattern(field, value).finditer(name):
+            if "/" in value or _scoped_start(name, *match.span()) is None:
+                return field, value
+    return None
+
+
 def validate_keep_names(
     names: Sequence[str],
     source: Identity,
@@ -293,7 +322,8 @@ def validate_keep_names(
     unless the entry starts or ends with ``-`` or ``_``; such an entry is
     refused only on exact equality. ``synthetic_dest`` is for ``press verify``.
     Its destination is generated, so the user cannot choose around an equality
-    with it, and that comparison is skipped. Shape and source
+    with it, and that comparison is skipped. An entry holding a complete source
+    ``npm_name`` or ``cli_name`` is also refused. Shape and source
     checks are identical in both commands.
     """
     source_forms = _identity_forms(source)
@@ -317,21 +347,39 @@ def validate_keep_names(
                 f"keep_names entry {name!r} equals a destination identity value; "
                 f"an identity value cannot be kept"
             )
+        contained = _contained_source_name(name, source)
+        if contained is not None:
+            raise ValidationError(
+                f"keep_names entry {name!r} contains the source {contained[0]} "
+                f"{contained[1]!r} as a complete name, so it cannot be kept; "
+                "rename it"
+            )
 
 
 def _keep_line(token: str) -> str:
     return f"keep_names = {json.dumps([token])}"
 
 
-def sibling_guidance(text: str, span: Span) -> str | None:
-    """The ``keep_names`` line for a match that prefixes a longer name."""
+def sibling_guidance(
+    text: str, span: Span, source: Identity | None = None
+) -> str | None:
+    """The ``keep_names`` line for a match that prefixes a longer name.
+
+    With ``source``, a token that validation would refuse gets no line.
+    """
     kind, _token = classify_occurrence(text, span)
     if kind != "prefix":
         return None
     start, end = span
     while end < len(text) and text[end] in _NAME_CHARS:
         end += 1
-    return _keep_line(text[start:end])
+    token = text[start:end]
+    if source is not None and (
+        _is_identity_spelling(token, _identity_forms(source))
+        or _contained_source_name(token, source) is not None
+    ):
+        return None
+    return _keep_line(token)
 
 
 def _literal_spans(text: str, literals: Iterable[str]) -> list[Span]:
@@ -507,6 +555,11 @@ def render_undeclared(findings: Sequence[UndeclaredName], source: Identity) -> s
                 "    this spelling is a source identity value that no row "
                 "rewrites here, so it cannot be kept; rename it or change "
                 "that field in the press"
+            )
+        elif (contained := _contained_source_name(item.token, source)) is not None:
+            lines.append(
+                f"    this token contains the source {contained[0]} "
+                f"{contained[1]!r}, so it cannot be kept; rename it"
             )
         else:
             lines.append(f"    {_keep_line(item.token)}")

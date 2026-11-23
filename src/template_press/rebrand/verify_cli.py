@@ -436,6 +436,7 @@ def _report(
     stale: list[Ignore],
     unavailable: tuple[str, ...],
     equal_collision: tuple[str, str] | None,
+    source: Identity,
 ) -> None:
     """Human, grouped-by-file failure report to stderr."""
     print(
@@ -451,7 +452,9 @@ def _report(
             where = f.where if f.line is None else f"{f.where} L{f.line}:C{f.col}"
             print(f"    [{where}] {f.field}={f.value!r}", file=sys.stderr)
             if f.where == "content" and f.col is not None:
-                guidance = sibling_guidance(f.context, (f.col, f.col + len(f.value)))
+                guidance = sibling_guidance(
+                    f.context, (f.col, f.col + len(f.value)), source
+                )
                 if guidance is not None:
                     print(f"      if independent: {guidance}", file=sys.stderr)
             if f.note is not None:
@@ -764,7 +767,7 @@ def verify_command(argv: list[str] | None = None) -> int:
             print(f"not verified (exempt): {file} — {reason}")
     if failed:
         if not args.as_json:
-            _report(surviving, stale, unavailable, equal_collision)
+            _report(surviving, stale, unavailable, equal_collision, source)
         return 1
     if not args.as_json:
         print(

@@ -1860,3 +1860,74 @@ def test_parent_move_that_preserves_a_kept_name_stays_allowed():
     )
     paths = ("acme-repo/@acme/widget-extra/a.ts", "acme-repo/b.ts")
     validate_pipeline((row,), initial_paths=paths, keep_names=(KEPT,))
+
+
+# Composite entries holding a complete source name
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "widget-extra@acme/widget",
+        "@acme/widget-extra@acme/widget",
+        "@acme/widget/sub",
+        "bin/acme-cli",
+        "acme-cli.js",
+        "run acme-cli now",
+    ],
+)
+def test_entry_holding_a_complete_source_name_is_refused(entry):
+    with pytest.raises(ValidationError, match="contains the source"):
+        validate_keep_names([entry], SOURCE, DEST)
+    with pytest.raises(ValidationError, match="contains the source"):
+        validate_keep_names([entry], SOURCE, DEST, synthetic_dest=True)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "@acme/widget-extra",
+        "--acme-cli",
+        "acme-cli-",
+        "_acme-cli_",
+        "@acme/widget-",
+        "x-@acme/widget",
+        "@vendor/acme-cli",
+        "acme-cli-helper",
+    ],
+)
+def test_entry_without_a_complete_source_name_stays_keepable(entry):
+    validate_keep_names([entry], SOURCE, DEST)
+
+
+COMPOSITE_TEXT = "@acme/widget-extra@acme/widget\n"
+
+
+def test_composite_token_gets_rename_guidance(tmp_path, capsys):
+    target = _make_target(tmp_path, _keep_rules([KEPT]), {"docs/a.md": COMPOSITE_TEXT})
+    assert _verify(target) == 1
+    verify_err = capsys.readouterr().err
+    code = _press(target, _answers(tmp_path))
+    press_err = capsys.readouterr().err
+    _assert_refused_clean(target, code)
+    for err in (verify_err, press_err):
+        assert "widget-extra@acme/widget" in err
+        assert 'keep_names = ["widget-extra@acme/widget"]' not in err
+        assert "rename it" in err
+
+
+def test_declaring_the_composite_token_exits_2_before_writes(tmp_path, capsys):
+    rules = _keep_rules([KEPT, "widget-extra@acme/widget"])
+    target = _make_target(tmp_path, rules, {"docs/a.md": COMPOSITE_TEXT})
+    assert _verify(target) == 2
+    assert _press(target, _answers(tmp_path)) == 2
+    capsys.readouterr()
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
+
+
+def test_sibling_guidance_never_suggests_a_refused_entry():
+    text = "see acme-cli-x"
+    source = replace(SOURCE, repo_name="acme-cli-x")
+    assert sibling_guidance(text, (4, 12), source) is None
+    assert sibling_guidance(text, (4, 12), SOURCE) is not None
