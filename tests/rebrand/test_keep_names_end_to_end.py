@@ -1655,3 +1655,82 @@ def test_long_slash_entry_validates_in_bounded_time():
         timeout=10,
     )
     assert done.returncode == 0, done.stderr
+
+
+# Rewrite boundaries are ASCII, so a non-ASCII neighbor is not word glue
+
+
+@pytest.mark.parametrize(
+    ("text", "token"),
+    [
+        ("使用--zcli命令", "--zcli"),
+        ("_zcli设置", "_zcli"),
+        ("--zcliñ", "--zcli"),
+        ("zcli_é", "zcli_"),
+        ("ñzcli_", "zcli_"),
+    ],
+)
+def test_non_ascii_neighbor_does_not_hide_a_bare_separator(text, token):
+    check = check_keep_surfaces([("a.md", "content", f"{text}\n")], SINGLE_SOURCE, ())
+    assert [item.token for item in check.undeclared] == [token]
+
+
+@pytest.mark.parametrize("text", ["使用--zcli命令", "_zcli设置", "--zcliñ"])
+def test_non_ascii_neighbor_refuses_press_and_verify(tmp_path, capsys, text):
+    target = _with_source(
+        tmp_path, SINGLE_SOURCE, LANGUAGES, {"docs/guide.md": f"{text}\n"}
+    )
+    manifest = {"name": "ledgerkit", "version": "0.1.0", "bin": {"zcli": "./run.js"}}
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "single-token manifest")
+    assert _verify(target) == 1
+    code = _press(target, _answers(tmp_path, SINGLE_DEST))
+    capsys.readouterr()
+    _assert_refused_clean(target, code)
+
+
+@pytest.mark.parametrize(
+    ("value", "text"),
+    [
+        ("tsc", "tsconfig"),
+        ("tsc", "web-tsc2"),
+        ("tsc", "vite-tsconfig-paths"),
+        ("tsc", "使用tsc命令"),
+    ],
+)
+def test_ascii_glue_and_plain_non_ascii_text_stay_allowed(value, text):
+    source = replace(SOURCE, cli_name=value)
+    check = check_keep_surfaces([("a.md", "content", f"{text}\n")], source, ())
+    assert check.undeclared == ()
+
+
+# Punctuation interleaved with an edge slash or at-sign
+
+INTERLEAVED = (
+    '/"acme-cli"',
+    '"acme-cli"/',
+    "@`acme-cli`",
+    "/(acme-cli)",
+    '@"acme-cli"',
+)
+
+
+@pytest.mark.parametrize("entry", [*INTERLEAVED, '/"@acme/widget"', '@"acme/widget"'])
+def test_interleaved_edge_wrappers_are_refused(entry):
+    with pytest.raises(ValidationError, match="source identity"):
+        validate_keep_names([entry], SOURCE, DEST)
+    with pytest.raises(ValidationError, match="source identity"):
+        validate_keep_names([entry], SOURCE, DEST, synthetic_dest=True)
+
+
+@pytest.mark.parametrize("entry", INTERLEAVED)
+def test_interleaved_edge_wrappers_exit_2_before_writes(tmp_path, capsys, entry):
+    target = _make_target(
+        tmp_path, _keep_rules([entry]), {"docs/a.md": f"run {entry} now\n"}
+    )
+    assert _verify(target) == 2
+    assert _press(target, _answers(tmp_path)) == 2
+    capsys.readouterr()
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""

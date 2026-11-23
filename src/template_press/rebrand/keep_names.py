@@ -41,7 +41,7 @@ _NORMALIZED_AWAY = str.maketrans("", "", "-_. ")
 _REPORT_LIMIT = 20
 # The case-sensitive lower-to-upper tail of ``matcher.identity_pattern``.
 _CAMEL_TAIL = re.compile(r"[a-z][A-Z]")
-_ENTRY_CORE_CHARS = _NAME_CHARS | {"@", "/"}
+_ASCII_ALNUM = _NAME_CHARS - {"_", "-"}
 
 
 @dataclass(frozen=True)
@@ -233,27 +233,20 @@ def _normalized(value: str) -> str:
     return value.casefold().translate(_NORMALIZED_AWAY)
 
 
-def _without_edge_punctuation(name: str) -> str:
-    """``name`` without edge characters outside ``[A-Za-z0-9@/_-]``, in linear time."""
-    start = 0
-    end = len(name)
-    while start < end and name[start] not in _ENTRY_CORE_CHARS:
-        start += 1
-    while end > start and name[end - 1] not in _ENTRY_CORE_CHARS:
-        end -= 1
-    return name[start:end]
+def _identity_core(name: str) -> str:
+    """``name`` without edge characters outside ``[A-Za-z0-9_-]``, in linear time.
 
-
-def _without_edge_scope_marks(core: str) -> str:
-    """``core`` without edge ``/`` or ``@``; a scoped name keeps its one ``@``.
-
-    ``@acme`` reduces to ``acme``. ``@acme/widget/`` reduces to ``@acme/widget``,
+    A scoped name keeps one ``@``: ``/"@acme/widget"`` reduces to ``@acme/widget``,
     never to ``acme/widget``, so a scope cannot be mistaken for another value.
     """
-    bare = core.strip("/@")
-    if "/" in bare and core.lstrip("/").startswith("@"):
-        return f"@{bare}"
-    return bare
+    start = 0
+    end = len(name)
+    while start < end and name[start] not in _NAME_CHARS:
+        start += 1
+    while end > start and name[end - 1] not in _NAME_CHARS:
+        end -= 1
+    core = name[start:end]
+    return f"@{core}" if "/" in core and "@" in name[:start] else core
 
 
 def _is_identity_spelling(name: str, forms: frozenset[str]) -> bool:
@@ -266,12 +259,7 @@ def _is_identity_spelling(name: str, forms: frozenset[str]) -> bool:
     """
     if name in forms:
         return True
-    core = _without_edge_punctuation(name)
-    if not core:
-        return False
-    if core in forms:
-        return True
-    core = _without_edge_scope_marks(core)
+    core = _identity_core(name)
     if not core:
         return False
     if core in forms:
@@ -290,12 +278,13 @@ def validate_keep_names(
 ) -> None:
     """Refuse an entry that is malformed or is a spelling of an identity value.
 
-    Leading and trailing characters outside ``[A-Za-z0-9@/_-]`` are ignored,
-    then edge ``/`` and ``@``, keeping the ``@`` of a scoped name. Entries and identity forms are then compared after case-folding and
-    removing ``-``, ``_``, ``.``, and spaces, unless the entry starts or ends
-    with ``-`` or ``_``; such an entry is refused only on exact equality.
-    ``synthetic_dest`` is for ``press verify``. Its destination is generated, so the user cannot choose around
-    an equality with it, and that comparison is skipped. Shape and source
+    Leading and trailing characters outside ``[A-Za-z0-9_-]`` are ignored,
+    keeping the ``@`` of a scoped name. Entries and identity forms are then
+    compared after case-folding and removing ``-``, ``_``, ``.``, and spaces,
+    unless the entry starts or ends with ``-`` or ``_``; such an entry is
+    refused only on exact equality. ``synthetic_dest`` is for ``press verify``.
+    Its destination is generated, so the user cannot choose around an equality
+    with it, and that comparison is skipped. Shape and source
     checks are identical in both commands.
     """
     source_forms = _identity_forms(source)
@@ -398,8 +387,9 @@ def _sibling_tokens(
         left, right = text[start : match.start()], text[match.end() : end]
         token = text[start:end]
         camel_tail = _CAMEL_TAIL.match(text, match.end() - 1) is not None
-        inside_word = text[match.start() - 1 : match.start()].isalnum() or (
-            text[match.end() : match.end() + 1].isalnum() and not camel_tail
+        # ASCII only, matching the rewrite boundaries in ``identity.token_pattern``.
+        inside_word = text[match.start() - 1 : match.start()] in _ASCII_ALNUM or (
+            text[match.end() : match.end() + 1] in _ASCII_ALNUM and not camel_tail
         )
         is_join = _joined(left, left[-1:]) or _joined(right, right[:1]) or camel_tail
         if not (multi_part or not inside_word or token in unrewritten):
