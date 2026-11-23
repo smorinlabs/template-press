@@ -1,0 +1,265 @@
+"""Read the identity-bearing facts of a target's Cargo manifests.
+
+The manifests are attacker-controlled input (they ship inside the target), so
+every file is read as a regular, non-symlinked UTF-8 file and every workspace
+member is checked for containment before it is read. A manifest that is
+malformed, symlinked, or outside the target root raises ``ValidationError``.
+Names are kept exactly as authored; hyphens are never normalized.
+"""
+
+from __future__ import annotations
+
+import os
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path, PurePath
+
+from template_press.rebrand.identity import ValidationError
+from template_press.rebrand.safety import (
+    SafetyError,
+    assert_under_root,
+    read_regular_nofollow,
+)
+
+_MANIFEST = "Cargo.toml"
+_DEPENDENCY_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
+_GLOB_CHARS = frozenset("*?[")
+# A longer author entry is undiscoverable, never truncated into a guess.
+_AUTHOR_MAX_CHARS = 1024
+
+Table = dict[str, object]
+
+
+@dataclass(frozen=True)
+class CargoFacts:
+    names: tuple[str, ...]  # package, lib, and bin names, sorted, unique
+    packages: tuple[str, ...]  # package names in manifest order
+    bins: tuple[str, ...]  # sorted, unique
+    primary: str | None  # root package; None for a virtual manifest
+    author: str | None
+    email: str | None
+    repository: str | None
+    external_dependencies: tuple[str, ...]  # resolved package names, non-local
+
+
+def _table(value: object) -> Table:
+    return value if isinstance(value, dict) else {}
+
+
+def _text(value: object) -> str | None:
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def _strings(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _load(path: Path) -> Table:
+    try:
+        raw = read_regular_nofollow(path).decode("utf-8")
+        return tomllib.loads(raw)
+    except (OSError, SafetyError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ValidationError(f"cannot read Cargo manifest {path}: {exc}") from exc
+
+
+def _is_inherited(value: object) -> bool:
+    return isinstance(value, dict) and value.get("workspace") is True
+
+
+def _inherited_or_own(
+    package: Table, workspace_package: Table, key: str
+) -> object | None:
+    value = package.get(key)
+    return workspace_package.get(key) if _is_inherited(value) else value
+
+
+def _member_dirs(root: Path, workspace: Table) -> list[Path]:
+    excluded = _excluded(root, _strings(workspace.get("exclude")))
+    found: dict[str, Path] = {}
+    for pattern in _strings(workspace.get("members")):
+        for directory in _expand(root, pattern):
+            key = os.path.normpath(os.path.relpath(directory, root))
+            if key not in excluded:
+                found.setdefault(key, directory)
+    return list(found.values())
+
+
+def _relative_pattern(pattern: str) -> str:
+    if not pattern or PurePath(pattern).is_absolute():
+        raise ValidationError(f"workspace member pattern must be relative: {pattern!r}")
+    return pattern
+
+
+def _excluded(root: Path, patterns: list[str]) -> set[str]:
+    keys: set[str] = set()
+    for pattern in patterns:
+        keys.add(os.path.normpath(_relative_pattern(pattern)))
+        if _GLOB_CHARS & set(pattern):
+            keys.update(
+                os.path.normpath(os.path.relpath(match, root))
+                for match in root.glob(pattern)
+            )
+    return keys
+
+
+def _expand(root: Path, pattern: str) -> list[Path]:
+    _relative_pattern(pattern)
+    if not _GLOB_CHARS & set(pattern):
+        literal = root / pattern
+        if not literal.is_dir():
+            raise ValidationError(f"workspace member is not a directory: {pattern!r}")
+        return [literal]
+    # Cargo skips files a glob matches but errors on a matched directory
+    # that lacks a manifest (verified with cargo 1.100.0).
+    return sorted(match for match in root.glob(pattern) if match.is_dir())
+
+
+def _member_manifest(root: Path, directory: Path) -> Table:
+    manifest = directory / _MANIFEST
+    try:
+        assert_under_root(directory, root)
+        assert_under_root(manifest, root)
+    except SafetyError as exc:
+        raise ValidationError(f"workspace member outside the root: {exc}") from exc
+    return _load(manifest)
+
+
+def _auto_bins(directory: Path) -> list[str]:
+    bin_dir = directory / "src" / "bin"
+    stems: list[str] = []
+    try:
+        entries = sorted(os.scandir(bin_dir), key=lambda entry: entry.name)
+    except OSError:
+        return stems
+    for entry in entries:
+        if entry.is_symlink():
+            continue
+        if entry.is_file() and entry.name.endswith(".rs"):
+            stems.append(entry.name[: -len(".rs")])
+        elif entry.is_dir() and (Path(entry.path) / "main.rs").is_file():
+            stems.append(entry.name)
+    return stems
+
+
+def _has_main(directory: Path) -> bool:
+    main = directory / "src" / "main.rs"
+    return main.is_file() and not main.is_symlink()
+
+
+def _package_bins(directory: Path, data: Table, package: Table, name: str) -> list[str]:
+    declared = data.get("bin")
+    bins = [
+        value
+        for entry in (declared if isinstance(declared, list) else [])
+        if isinstance(entry, dict) and (value := _text(entry.get("name"))) is not None
+    ]
+    if package.get("autobins") is not False:
+        if _has_main(directory):
+            bins.append(name)
+        bins.extend(_auto_bins(directory))
+    return bins
+
+
+def _author(raw: object) -> tuple[str | None, str | None]:
+    """Parse the first ``Name <email>`` entry; either part may be absent."""
+    entries = raw if isinstance(raw, list) else []
+    first = next((e for e in entries if isinstance(e, str)), None)
+    if first is None or len(first) > _AUTHOR_MAX_CHARS:
+        return None, None
+    name, opener, rest = first.partition("<")
+    email = rest.partition(">")[0] if opener else None
+    return _text(name), _text(email)
+
+
+def _dependency_tables(data: Table) -> list[Table]:
+    tables = [_table(data.get(section)) for section in _DEPENDENCY_SECTIONS]
+    for target_entry in _table(data.get("target")).values():
+        tables.extend(
+            _table(_table(target_entry).get(section))
+            for section in _DEPENDENCY_SECTIONS
+        )
+    return tables
+
+
+def _resolved_dependency(key: str, spec: object, workspace_deps: Table) -> str | None:
+    """The registry package name an entry points at, or ``None`` when local."""
+    if isinstance(spec, str):
+        return key
+    if not isinstance(spec, dict) or "path" in spec:
+        return None
+    if spec.get("workspace") is True:
+        inherited = workspace_deps.get(key)
+        return None if inherited is None else _resolved_dependency(key, inherited, {})
+    return _text(spec.get("package")) or key
+
+
+def _external_dependencies(manifests: list[Table], workspace_deps: Table) -> list[str]:
+    tables = [workspace_deps]
+    for data in manifests:
+        tables.extend(_dependency_tables(data))
+    resolved = (
+        _resolved_dependency(key, spec, workspace_deps)
+        for table in tables
+        for key, spec in table.items()
+    )
+    return sorted({name for name in resolved if name is not None})
+
+
+def read_cargo_facts(target: Path) -> CargoFacts:
+    """Identity facts from the root ``Cargo.toml`` and its workspace members."""
+    # Only the manifest leaves are untrusted; the target path may use symlinks.
+    root = target.resolve()
+    root_data = _load(root / _MANIFEST)
+    workspace = _table(root_data.get("workspace"))
+    workspace_package = _table(workspace.get("package"))
+    workspace_deps = _table(workspace.get("dependencies"))
+
+    manifests: list[tuple[Path, Table]] = [(root, root_data)]
+    for directory in _member_dirs(root, workspace):
+        if os.path.normpath(os.path.relpath(directory, root)) == ".":
+            continue
+        manifests.append((directory, _member_manifest(root, directory)))
+
+    packages: list[str] = []
+    names: set[str] = set()
+    bins: set[str] = set()
+    author: tuple[str | None, str | None] = (None, None)
+    repository: str | None = None
+    primary: str | None = None
+    for directory, data in manifests:
+        package = _table(data.get("package"))
+        if not package:
+            continue
+        name = _text(package.get("name"))
+        if name is None:
+            raise ValidationError(f"Cargo package has no name: {directory}")
+        packages.append(name)
+        names.add(name)
+        if directory == root:
+            primary = name
+        if (lib := _text(_table(data.get("lib")).get("name"))) is not None:
+            names.add(lib)
+        bins.update(_package_bins(directory, data, package, name))
+        if author == (None, None):
+            author = _author(_inherited_or_own(package, workspace_package, "authors"))
+        repository = repository or _text(
+            _inherited_or_own(package, workspace_package, "repository")
+        )
+    if author == (None, None):
+        author = _author(workspace_package.get("authors"))
+    repository = repository or _text(workspace_package.get("repository"))
+
+    return CargoFacts(
+        names=tuple(sorted(names | bins)),
+        packages=tuple(packages),
+        bins=tuple(sorted(bins)),
+        primary=primary,
+        author=author[0],
+        email=author[1],
+        repository=repository,
+        external_dependencies=tuple(
+            _external_dependencies([data for _, data in manifests], workspace_deps)
+        ),
+    )
