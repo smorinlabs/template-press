@@ -5,6 +5,8 @@ from __future__ import annotations
 import ast
 import json
 import os
+import subprocess
+import sys
 import tomllib
 from dataclasses import replace
 from pathlib import Path
@@ -1569,3 +1571,22 @@ def test_identity_form_ending_in_punctuation_stays_refused():
 @pytest.mark.parametrize("entry", ["...", '""', "``"])
 def test_punctuation_only_entry_does_not_crash_validation(entry):
     validate_keep_names([entry], SOURCE, DEST)
+
+
+_VALIDATE_LONG_ENTRY = """
+from template_press.rebrand.identity import Identity
+from template_press.rebrand.keep_names import validate_keep_names
+source = Identity("a_core", "a-repo", "aapp", "A", "a@example.test", "aorg")
+dest = Identity("b_core", "b-repo", "bapp", "B", "b@example.test", "borg")
+validate_keep_names(["x" + "!" * 200_000 + "x"], source, dest)
+"""
+
+
+def test_long_punctuation_entry_validates_in_bounded_time():
+    done = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _VALIDATE_LONG_ENTRY],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert done.returncode == 0, done.stderr

@@ -41,7 +41,7 @@ _NORMALIZED_AWAY = str.maketrans("", "", "-_. ")
 _REPORT_LIMIT = 20
 # The case-sensitive lower-to-upper tail of ``matcher.identity_pattern``.
 _CAMEL_TAIL = re.compile(r"[a-z][A-Z]")
-_EDGE_PUNCTUATION = re.compile(r"^[^A-Za-z0-9@/_-]+|[^A-Za-z0-9@/_-]+$")
+_ENTRY_CORE_CHARS = _NAME_CHARS | {"@", "/"}
 
 
 @dataclass(frozen=True)
@@ -233,6 +233,17 @@ def _normalized(value: str) -> str:
     return value.casefold().translate(_NORMALIZED_AWAY)
 
 
+def _without_edge_punctuation(name: str) -> str:
+    """``name`` without edge characters outside ``[A-Za-z0-9@/_-]``, in linear time."""
+    start = 0
+    end = len(name)
+    while start < end and name[start] not in _ENTRY_CORE_CHARS:
+        start += 1
+    while end > start and name[end - 1] not in _ENTRY_CORE_CHARS:
+        end -= 1
+    return name[start:end]
+
+
 def _is_identity_spelling(name: str, forms: frozenset[str]) -> bool:
     """Exact form, or a normalized match for a name with no edge ``-`` or ``_``.
 
@@ -242,7 +253,7 @@ def _is_identity_spelling(name: str, forms: frozenset[str]) -> bool:
     """
     if name in forms:
         return True
-    core = _EDGE_PUNCTUATION.sub("", name)
+    core = _without_edge_punctuation(name)
     if not core:
         return False
     if core in forms:
