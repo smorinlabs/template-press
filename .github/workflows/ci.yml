@@ -166,8 +166,8 @@ jobs:
           --junitxml=ci-results/preflight.xml
       - name: Run tests with coverage
         # Default skips slow/live markers (ITM-046 addopts); CI runs everything.
-        # -n auto: pytest-xdist workers, CI only (local runs stay serial, and
-        # syrupy `--snapshot-update` must run WITHOUT -n).
+        # -n auto: pytest-xdist workers, as in `just check`. `just test` stays
+        # serial, and syrupy `--snapshot-update` must run WITHOUT -n.
         timeout-minutes: 15
         run: >-
           uv run --no-sync python scripts/ci_run_pytest.py ci-results/full --
