@@ -492,6 +492,14 @@ def verify_command(argv: list[str] | None = None) -> int:
             # codesign sec-05: a declared display name is scanned as its own
             # field — the only coverage when its words diverge from the slug.
             scan_fields = (*scan_fields, "display_name")
+        # Declared exact names are identity the press rewrites, so they are
+        # always scanned: a leftover must never produce a clean verify.
+        for field_name in ("npm_name", "cli_name"):
+            if (
+                getattr(source, field_name) is not None
+                and field_name not in scan_fields
+            ):
+                scan_fields = (*scan_fields, field_name)
         # A field the SANDBOX PRESS rewrites substring-wide (`[rules]
         # substring_rewrite_fields`) must be SCANNED at all (Fix F2) — a field
         # absent from DEFAULT_FIELDS (e.g. app_name_upper) is otherwise never

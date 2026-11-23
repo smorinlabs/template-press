@@ -22,6 +22,7 @@ from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
     Identity,
     display_forms,
+    field_renames_paths,
     occurs,
 )
 from template_press.rebrand.inventory import (
@@ -49,13 +50,6 @@ from template_press.rebrand.substitutions import (
     row_matches_scope,
 )
 from template_press.rebrand.verifier import ignore_near_miss
-
-PATH_FIELDS: tuple[str, ...] = (
-    "package_name",
-    "repo_name",
-    "app_name",
-    "app_name_upper",
-)
 
 
 @dataclass(frozen=True)
@@ -379,9 +373,9 @@ def find_leaks(
     # doctor already expands display_name into its exact forms for the
     # content/symlink scans above, but a leftover PyLaunchBlueprint/ dir
     # would otherwise pass the path-component loops below, which iterated
-    # PATH_FIELDS only.
+    # path-renaming fields only.
     path_fields = (
-        *PATH_FIELDS,
+        *(f for f, v in fields.items() if field_renames_paths(f, v)),
         *(f"display_name_{form}" for form in display_form_names),
     )
     snapshot = capture_surface_snapshot(target)

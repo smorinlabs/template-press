@@ -18,7 +18,9 @@ from template_press.rebrand.identity import (
     ValidationError,
     display_forms,
     distinct_hyphen_form,
+    field_renames_paths,
     occurs,
+    pair_renames_paths,
     replace_token,
 )
 from template_press.rebrand.inventory import (
@@ -56,10 +58,6 @@ Surface = Literal["content", "path", "symlink"]
 HuntConsumer = Literal["doctor", "reset_stub", "reset_path", "regeneration"]
 ScopeCoordinates = Literal["source", "current_or_source"]
 ProvenanceKind = Literal["identity", "display_form", "replace_rule", "manifest_name"]
-
-RENAME_FIELDS: frozenset[str] = frozenset(
-    {"package_name", "repo_name", "app_name", "app_name_upper"}
-)
 
 
 @dataclass(frozen=True)
@@ -879,6 +877,7 @@ def _identity_hunts(
     field: str,
     matcher: MatcherSpec,
     *,
+    renames_paths: bool,
     enabled_display_form: bool = False,
     disabled_display_form: bool = False,
 ) -> tuple[HuntPolicy, ...]:
@@ -886,7 +885,7 @@ def _identity_hunts(
     hunts: list[HuntPolicy] = []
     if not disabled_display_form:
         doctor_surfaces: set[Surface] = {"content", "symlink"}
-        if field in RENAME_FIELDS or enabled_display_form:
+        if renames_paths or enabled_display_form:
             doctor_surfaces.add("path")
         hunts.append(
             _policy(
@@ -1019,7 +1018,7 @@ def _identity_rows(
                 )
             )
 
-    values.sort(key=lambda item: -len(item[1]))
+    values.sort(key=lambda item: (-len(item[1]), item[0] != "npm_name"))
     rows: list[RenderedSubstitution] = []
     for field, from_value, to_value, enabled_display, disabled_display in values:
         display = field.startswith("display_name_")
@@ -1028,7 +1027,7 @@ def _identity_rows(
         rewrite_surfaces: set[Surface] = set()
         if not disabled_display:
             rewrite_surfaces.add("content")
-            if field in RENAME_FIELDS:
+            if pair_renames_paths(field, from_value, to_value):
                 rewrite_surfaces.add("path")
         kind: ProvenanceKind = "display_form" if display else "identity"
         rows.append(
@@ -1042,6 +1041,7 @@ def _identity_rows(
                 hunts=_identity_hunts(
                     field,
                     matcher,
+                    renames_paths=field_renames_paths(field, from_value),
                     enabled_display_form=enabled_display,
                     disabled_display_form=disabled_display,
                 ),
@@ -1240,7 +1240,13 @@ def _normalize_rows(
             ),
             None,
         )
-        if duplicate_index is None:
+        # A cli_name or npm_name equal to a content-only field (owner, author)
+        # keeps its own row, or merging would drop its path rename.
+        if duplicate_index is None or (
+            row.provenance[0].name in ("npm_name", "cli_name")
+            and "path" in row.rewrite_surfaces
+            and "path" not in identity_owners[duplicate_index].rewrite_surfaces
+        ):
             identity_owners.append(row)
             continue
         identity_owners[duplicate_index] = _merge_row_metadata(

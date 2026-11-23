@@ -154,6 +154,12 @@ REQUIRED_FIELDS: tuple[str, ...] = (
 # 6-field press-source.toml files stay valid (codesign sec-01/sec-06).
 OPTIONAL_FIELDS: tuple[str, ...] = ("display_name", "npm_name", "cli_name")
 
+# Fields whose value is one path component, so a press renames paths with it.
+# `field_renames_paths` adds cli_name and an unscoped npm_name.
+RENAME_FIELDS: frozenset[str] = frozenset(
+    {"package_name", "repo_name", "app_name", "app_name_upper"}
+)
+
 # The closed set of exact display-name rewrite forms (codesign sec-04).
 DISPLAY_FORM_NAMES: tuple[str, ...] = ("spaced", "pascal", "camel")
 
@@ -240,6 +246,10 @@ def token_pattern(field: str, value: str) -> re.Pattern[str] | None:
         return re.compile(rf"(?<![A-Za-z0-9_-]){re.escape(value)}(?![A-Za-z0-9-])")
     if field == "app_name_upper":
         return re.compile(rf"(?<![A-Za-z0-9-]){re.escape(value)}(?![A-Za-z-])")
+    if field in ("npm_name", "cli_name"):
+        # Exact names: a same-prefix sibling (@acme/widget-extra) is a different
+        # package, while a subpath (@acme/widget/sub) still rewrites its prefix.
+        return re.compile(rf"(?<![A-Za-z0-9_-]){re.escape(value)}(?![A-Za-z0-9_-])")
     return re.compile(rf"(?<![A-Za-z0-9]){re.escape(value)}(?![A-Za-z0-9])")
 
 
@@ -260,6 +270,28 @@ def distinct_hyphen_form(source: Identity, dest: Identity) -> str | None:
         if field != "package_name"
     }
     return None if hyphen in claimed else hyphen
+
+
+def field_renames_paths(field: str, value: str) -> bool:
+    """True when ``value`` of ``field`` is one renameable path component.
+
+    A scoped ``npm_name`` contains ``/``, so it can never be one component.
+    """
+    if field == "npm_name":
+        return "/" not in value
+    return field == "cli_name" or field in RENAME_FIELDS
+
+
+def pair_renames_paths(field: str, current: str, replacement: str) -> bool:
+    """True when a rewrite may rename paths: both sides must be one component.
+
+    An unscoped source pressed to a scoped destination is content-only. The
+    doctor and verifier still hunt the source value in paths, so a file that
+    keeps the old name is reported as a leak.
+    """
+    return field_renames_paths(field, current) and field_renames_paths(
+        field, replacement
+    )
 
 
 def token_occurs(text: str, field: str, value: str) -> bool:

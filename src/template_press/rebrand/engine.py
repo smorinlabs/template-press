@@ -20,6 +20,7 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
     display_forms,
+    pair_renames_paths,
     replace_token,
     token_pattern,
 )
@@ -88,13 +89,6 @@ from template_press.rebrand.substitutions import (
     revalidate_substitution_table,
     rewrite_with_row,
     row_matches_scope,
-)
-
-RENAME_FIELDS: tuple[str, ...] = (
-    "package_name",
-    "repo_name",
-    "app_name",
-    "app_name_upper",
 )
 
 # Marker files that identify a press/ directory as THIS tool's control dir
@@ -517,7 +511,7 @@ def _raw_replacement_pairs(
             continue
         seen[cur] = (tag, repl)
         deduped.append((tag, cur, repl))
-    deduped.sort(key=lambda t: -len(t[1]))
+    deduped.sort(key=lambda t: (-len(t[1]), t[0] != "npm_name"))
     return deduped
 
 
@@ -652,7 +646,7 @@ def _pipeline_inputs(
         row_id = f"identity:{index}:{tag}"
         pair_by_id[row_id] = pair
         identity_surfaces = {"content"}
-        if tag in RENAME_FIELDS:
+        if pair_renames_paths(tag, cur, repl):
             identity_surfaces.add("path")
         if not tag.startswith("display_name_"):
             identity_surfaces.add("symlink")
@@ -816,7 +810,7 @@ def _renamed_rel(
             if rule.paths and rule_matches_path(rule, posix):
                 new = new.replace(frm, to)
         for f, cur, repl in pairs:
-            if f in RENAME_FIELDS:
+            if pair_renames_paths(f, cur, repl):
                 if f in substring_fields:
                     new = new.replace(cur, repl)
                 else:

@@ -60,6 +60,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 
 from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
@@ -114,6 +115,7 @@ def synthesize_dest(source: Identity) -> Identity:
         dest = _synthesize_entangled(values, display, classes, prefix, variants)
     else:
         dest = _synthesize_plain(values, display, prefix, variants)
+    dest = _with_exact_names(source, dest, prefix, variants)
 
     dest.validate()
     _assert_equality_signature(source, dest)
@@ -147,6 +149,37 @@ def _synthesize_plain(
     )
 
 
+def _with_exact_names(
+    source: Identity, dest: Identity, prefix: str, variants: frozenset[str]
+) -> Identity:
+    """Add npm_name and cli_name, preserving equality and scoped shape.
+
+    Runs after every other slot is solved, so a source without these fields
+    keeps its exact synthetic identity. A value shared with a solved slot
+    reuses that slot's destination; any other value is minted fresh.
+    """
+    solved_source = _slot_values(replace(source, npm_name=None, cli_name=None))
+    solved_dest = _slot_values(dest)
+    by_value = {solved_source[slot]: solved_dest[slot] for slot in solved_source}
+    used = set(by_value.values())
+    names: dict[str, str] = {}
+    for field in ("npm_name", "cli_name"):
+        value = getattr(source, field)
+        if value is None:
+            continue
+        if value not in by_value:
+            minted = _synth_value(value, [field], prefix, used, variants)
+            if value.startswith("@"):
+                scope = _synth_value(
+                    f"{value}\x00scope", [field], prefix, used, variants
+                )
+                minted = f"@{scope}/{minted}"
+            by_value[value] = minted
+            used.add(minted)
+        names[field] = by_value[value]
+    return replace(dest, **names)
+
+
 # --- #46: equality-signature preservation across derived slots -------------
 #
 # `_synthesize_plain`'s equality classes cover REQUIRED_FIELDS only.
@@ -172,6 +205,10 @@ def _slot_values(identity: Identity) -> dict[str, str]:
         forms = display_forms(identity.display_name)
         for form in DISPLAY_FORM_NAMES:
             values[f"display_{form}"] = forms[form]
+    if identity.npm_name is not None:
+        values["npm_name"] = identity.npm_name
+    if identity.cli_name is not None:
+        values["cli_name"] = identity.cli_name
     return values
 
 
@@ -231,7 +268,7 @@ def _upper_tie_check(
         if upper in used or _collides(upper, variants):
             return False
         for slot in upper_slots:
-            if slot in REQUIRED_FIELDS:
+            if slot in VALIDATORS:
                 try:
                     VALIDATORS[slot](upper)
                 except ValidationError:
@@ -534,7 +571,7 @@ def _check_display_candidate(
     # 4. Every REQUIRED_FIELD tied into a proposed class must validate it.
     for class_value, dest_value in proposal.items():
         for slot in classes[class_value]:
-            if slot in REQUIRED_FIELDS:
+            if slot in VALIDATORS:
                 try:
                     VALIDATORS[slot](dest_value)
                 except ValidationError:
