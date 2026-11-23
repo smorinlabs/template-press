@@ -347,6 +347,7 @@ _LOCKFILE_COMMANDS: dict[str, tuple[str, ...]] = {
 
 _SUGGESTION_NOTES: dict[str, str] = {
     "bun.lock": "# POSIX-only; Windows targets declare their own command.\n",
+    "pnpm-lock.yaml": ('# Also add "pnpm-lock.yaml" to [rules] extra_exclude_files.\n'),
 }
 
 

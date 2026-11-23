@@ -254,3 +254,17 @@ def test_bun_suggestion_leaves_lock_intact_when_bun_is_missing(
     )
     assert result.returncode == 127
     assert (work / "bun.lock").read_text(encoding="utf-8") == "keep\n"
+
+
+def test_pnpm_suggestion_names_the_required_exclude_and_loads(
+    src_target: Path,
+) -> None:
+    suggestion = regenerate_suggestion("pnpm-lock.yaml")
+    assert suggestion is not None
+    assert '"pnpm-lock.yaml"' in suggestion.splitlines()[0]
+    assert "[rules] extra_exclude_files" in suggestion.splitlines()[0]
+    body = '[rules]\nextra_exclude_files = ["pnpm-lock.yaml"]\n\n' + suggestion
+    _lock_target(src_target, "pnpm-lock.yaml", body)
+    rules = load_rules(src_target)
+    assert [rule.file for rule in rules.regenerate] == ["pnpm-lock.yaml"]
+    assert "pnpm-lock.yaml" not in _rels(src_target)
