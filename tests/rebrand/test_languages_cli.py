@@ -14,7 +14,10 @@ from template_press.rebrand.cli import main
 from template_press.rebrand.config import SOURCE_CONFIG_REL
 from template_press.rebrand.discovery import discover
 from template_press.rebrand.identity import Identity
+from template_press.rebrand.inventory import capture_surface_snapshot
 from template_press.rebrand.receipt import RECEIPT_REL
+from template_press.rebrand.rules import DEFAULT_RULES
+from template_press.rebrand.substitutions import compile_substitution_table
 from template_press.rebrand.verify_cli import verify_command
 
 from .conftest import DEST, SOURCE, _git, write_answers_file
@@ -350,7 +353,8 @@ def test_verify_checks_only_declared_manifests(
         (NODE, "node", False, True),
         (BOTH, "python", True, True),
         (["node", "python"], "python", True, True),
-        ((), None, False, False),
+        ((), "python", True, True),
+        (("rust",), "python", True, True),
     ],
 )
 def test_discover_follows_checked_languages(
@@ -391,11 +395,12 @@ def test_pressed_tree_failing_node_guard_exits_1_without_receipt(
     assert not (target / RECEIPT_REL).exists()
 
 
-def test_no_source_config_with_both_languages_uses_python_proposal(
+def test_no_source_config_with_both_languages_proposes_distinct_npm_name(
     src_target: Path, tmp_path: Path
 ) -> None:
     target = _declared_target(src_target, BOTH, source_config=False)
-    answers = write_answers_file(tmp_path, DEST)
+    # The proposal never derives cli_name here, so the answers omit it too.
+    answers = write_answers_file(tmp_path, replace(NODE_DEST, cli_name=None))
     code = main(
         ["--target", str(target), "--config", str(answers), "--accept-discovery"]
     )
@@ -403,4 +408,100 @@ def test_no_source_config_with_both_languages_uses_python_proposal(
     receipt = tomllib.loads((target / RECEIPT_REL).read_text(encoding="utf-8"))
     assert receipt["press"]["from"]["package_name"] == "demo_widget"
     assert receipt["press"]["from"]["app_name"] == "press"
+    assert receipt["press"]["from"]["npm_name"] == NODE_NAME
+    pressed = json.loads((target / "package.json").read_text(encoding="utf-8"))
+    assert pressed["name"] == NODE_DEST.npm_name
+
+
+@pytest.mark.parametrize("name", ["demo-widget", "demo_widget"])
+def test_no_source_config_omits_npm_name_equal_to_proposed_names(
+    src_target: Path, tmp_path: Path, name: str
+) -> None:
+    target = _declared_target(src_target, BOTH, source_config=False)
+    (target / "package.json").write_text(json.dumps({"name": name}), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "name equals identity")
+    answers = write_answers_file(tmp_path, DEST)
+    code = main(
+        ["--target", str(target), "--config", str(answers), "--accept-discovery"]
+    )
+    assert code == 0
+    receipt = tomllib.loads((target / RECEIPT_REL).read_text(encoding="utf-8"))
     assert "npm_name" not in receipt["press"]["from"]
+
+
+def _nameless_node_target(base: Path) -> Path:
+    target = base / "demo-widget"
+    (target / "press").mkdir(parents=True)
+    (target / "press" / "press-source.toml").write_text(
+        _toml_identity(replace(SOURCE, cli_name="acme-cli"), "identity"),
+        encoding="utf-8",
+    )
+    (target / "package.json").write_text(
+        '{"version":"1.0.0","bin":{"other-cli":"./c.js"}}', encoding="utf-8"
+    )
+    (target / "README.md").write_text(
+        "demo_widget demo-widget press demolabs acme-cli\n", encoding="utf-8"
+    )
+    _git(target, "init", "-q", "-b", "main")
+    _git(target, "config", "user.email", "t@example.test")
+    _git(target, "config", "user.name", "t")
+    _git(
+        target, "remote", "add", "origin", "https://github.com/demolabs/demo-widget.git"
+    )
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "seed")
+    return target
+
+
+def test_rebrand_keeps_cli_check_for_nameless_manifest(tmp_path, capsys) -> None:
+    target = _nameless_node_target(tmp_path)
+    answers = tmp_path / "answers.toml"
+    answers.write_text(
+        _toml_identity(replace(DEST, cli_name="new-cli"), "answers"), encoding="utf-8"
+    )
+    code = main(["--target", str(target), "--config", str(answers), "--dry-run"])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "cli_name" in captured.out + captured.err
+    assert _status(target) == ""
+
+
+def test_verify_keeps_cli_check_for_nameless_manifest(tmp_path, capsys) -> None:
+    target = _nameless_node_target(tmp_path)
+    assert verify_command(["--target", str(target)]) == 2
+    assert "cli_name" in capsys.readouterr().err
+    assert _status(target) == ""
+
+
+def _manifest_rows(target: Path, source, dest, languages):
+    rules = replace(DEFAULT_RULES, languages=languages)
+    table = compile_substitution_table(
+        source, dest, rules, capture_surface_snapshot(target), target=target
+    )
+    return {row.row_id: row for row in table.rows}
+
+
+@pytest.mark.parametrize(
+    ("languages", "present"),
+    [(None, True), (("python",), True), (("python", "node"), True), (("node",), False)],
+)
+def test_manifest_rows_read_pyproject_only_for_python(
+    src_target: Path, languages, present: bool
+) -> None:
+    pyproject = src_target / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8").replace(
+            'name = "demo_widget"', 'name = "demo-widget"'
+        ),
+        encoding="utf-8",
+    )
+    named = _manifest_rows(
+        src_target, SOURCE, replace(DEST, repo_name="other-repo"), languages
+    )
+    assert ("manifest:name" in named) is present
+    hyphen = _manifest_rows(
+        src_target, replace(SOURCE, repo_name="elsewhere"), DEST, languages
+    )["identity:package_name_hyphen"]
+    assert bool(hyphen.rewrite_surfaces) is present
+    assert hyphen.hunts

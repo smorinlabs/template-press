@@ -87,7 +87,7 @@ from template_press.rebrand.substitutions import (
     compile_substitution_table,
     declared_rule_triples,
     revalidate_substitution_table,
-    rewrite_with_row,
+    rewrite_file,
     row_matches_scope,
 )
 
@@ -896,15 +896,17 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
         if text is not None:
             if entry.tracked:
                 _tally_prefix_occurrences(text, prefix_fields, prefix_counts)
-            preview = text
-            for row in table.rows:
-                if "content" not in row.rewrite_surfaces or not row_matches_scope(
-                    row, rel.as_posix()
-                ):
-                    continue
-                rewritten = rewrite_with_row(row, preview, keep_names=table.keep_names)
-                if rewritten == preview:
-                    continue
+            _, changed_rows = rewrite_file(
+                (
+                    row
+                    for row in table.rows
+                    if "content" in row.rewrite_surfaces
+                    and row_matches_scope(row, rel.as_posix())
+                ),
+                text,
+                table.keep_names,
+            )
+            for row in changed_rows:
                 provenance = row.provenance[0]
                 detail = (
                     f"rule {row.from_value!r} -> {row.to_value!r}"
@@ -912,7 +914,6 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                     else f"fields={[provenance.name]}"
                 )
                 plan.items.append(PlanItem("replace", rel.as_posix(), detail))
-                preview = rewritten
     plan.prefix_warnings = prefix_only_warnings(prefix_counts)
     for step in table.rename_plan.steps:
         plan.items.append(PlanItem("rename", step.old_prefix, f"→ {step.new_prefix}"))
@@ -1298,10 +1299,15 @@ def _apply_replacements(
             kind = "symlink" if path.is_symlink() else "binary"
             report.skipped.append(f"replace {rel} ({kind})")
             continue
-        new_text = text
-        for row in table.rows:
-            if "content" in row.rewrite_surfaces and row_matches_scope(row, rel):
-                new_text = rewrite_with_row(row, new_text, keep_names=table.keep_names)
+        new_text, _ = rewrite_file(
+            (
+                row
+                for row in table.rows
+                if "content" in row.rewrite_surfaces and row_matches_scope(row, rel)
+            ),
+            text,
+            table.keep_names,
+        )
         if new_text != text:
             # Route through safe_write: its assert_under_root closes the
             # ancestor-symlink hole (a symlinked ancestor would write OUTSIDE

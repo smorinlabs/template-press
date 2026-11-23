@@ -465,6 +465,12 @@ def _resolve_source(
                     f"could not resolve: {', '.join(unresolved)}. Write the "
                     f"source-config by hand."
                 )
+            if found.node_checked and found.npm_name not in (
+                None,
+                found.repo_name,
+                found.package_name,
+            ):
+                proposal["npm_name"] = found.npm_name
         try:
             candidate = Identity.from_mapping(
                 {k: v for k, v in proposal.items() if v is not None}

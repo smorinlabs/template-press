@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from template_press.rebrand.identity import PYTHON_IDENTIFIER_RE, Identity
-from template_press.rebrand.languages import KNOWN_LANGUAGES
+from template_press.rebrand.languages import KNOWN_LANGUAGES, SUPPORTED_LANGUAGES
 from template_press.rebrand.node_manifest import (
     NodeManifest,
     read_node_manifest,
@@ -95,25 +95,22 @@ def _python_project(target: Path) -> dict[str, Any] | None:
 def discover(target: Path, languages: Sequence[str] | None = None) -> Discovered:
     """Read identity from the manifests of ``languages``.
 
-    The CLI passes the language guard's ``LanguageDecision.checked``. ``None``
-    means no guard decision exists, so every readable manifest is read.
+    The CLI passes the language guard's ``LanguageDecision.checked``. When it
+    selects no supported language, every readable manifest is read, so a
+    ``package.json`` without ``name`` keeps its declared-field checks.
     """
     package_name = app_name = author = email = None
     app_names: tuple[str, ...] = ()
-    project = (
-        _python_project(target) if languages is None or "python" in languages else None
-    )
+    selected = SUPPORTED_LANGUAGES.intersection(languages or ())
+    project = _python_project(target) if not selected or "python" in selected else None
     manifest = (
-        read_node_manifest(target) if languages is None or "node" in languages else None
+        read_node_manifest(target) if not selected or "node" in selected else None
     )
-    if languages is None:
-        checked = {
-            language
-            for language, value in (("python", project), ("node", manifest))
-            if value is not None
-        }
-    else:
-        checked = set(languages)
+    checked = selected or {
+        language
+        for language, value in (("python", project), ("node", manifest))
+        if value is not None
+    }
     source_kind = next((name for name in KNOWN_LANGUAGES if name in checked), None)
     if project is not None:
         raw_name = project.get("name")

@@ -7,7 +7,7 @@ import os
 import re
 import stat
 import tomllib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -206,66 +206,110 @@ def _project_name(text: str) -> object:
         return None
 
 
-def _rewrite_project_name(text: str, from_value: str, to_value: str) -> str:
-    """Replace only the assignment that TOML resolves to ``[project].name``."""
+def _project_name_span(
+    text: str, from_value: str, to_value: str
+) -> tuple[int, int] | None:
+    """The occurrence of ``from_value`` that TOML resolves to ``[project].name``."""
 
     before = _project_name(text)
     for match in re.finditer(re.escape(from_value), text):
         candidate = text[: match.start()] + to_value + text[match.end() :]
         if _project_name(candidate) != before:
-            return candidate
-    return text
+            return match.span()
+    return None
+
+
+def _rewrite_project_name(text: str, from_value: str, to_value: str) -> str:
+    """Replace only the assignment that TOML resolves to ``[project].name``."""
+
+    span = _project_name_span(text, from_value, to_value)
+    if span is None:
+        return text
+    return text[: span[0]] + to_value + text[span[1] :]
 
 
 def _rewrite_outside_kept(
     row: RenderedSubstitution, text: str, kept: Sequence[tuple[int, int]]
-) -> str:
-    """Replace only matches sharing no character with a kept span.
+) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """Replace matches disjoint from ``kept``; return text and shifted spans.
 
-    The pattern runs over the whole text, so boundaries see true neighbors.
-    A suppressed match advances one character, not past its end, so it cannot
-    shadow a disjoint occurrence that overlaps it.
+    The pattern runs over the whole current text, so boundaries see true
+    neighbors. A suppressed match advances one character, not past its end,
+    so it cannot shadow a disjoint occurrence that overlaps it.
     """
 
-    if row.matcher.algorithm == "literal" or row.matcher.substring:
-        pattern = re.compile(re.escape(row.from_value))
-    elif row.matcher.algorithm != "conservative":
-        raise ValidationError(
-            f"rewrite row {row.row_id} uses non-rewrite matcher "
-            f"{row.matcher.algorithm!r}"
-        )
-    elif row.matcher.identity_field is None:
-        raise ValidationError(f"rewrite row {row.row_id} has no identity field")
+    replaced: list[tuple[int, int]] = []
+    if row.provenance[0].kind == "manifest_name":
+        span = _project_name_span(text, row.from_value, row.to_value)
+        if span is not None and disjoint_from_kept(span, kept):
+            replaced.append(span)
     else:
-        pattern = token_pattern(
-            row.matcher.identity_field, row.from_value
-        ) or re.compile(re.escape(row.from_value))
+        if row.matcher.algorithm == "literal" or row.matcher.substring:
+            pattern = re.compile(re.escape(row.from_value))
+        elif row.matcher.algorithm != "conservative":
+            raise ValidationError(
+                f"rewrite row {row.row_id} uses non-rewrite matcher "
+                f"{row.matcher.algorithm!r}"
+            )
+        elif row.matcher.identity_field is None:
+            raise ValidationError(f"rewrite row {row.row_id} has no identity field")
+        else:
+            pattern = token_pattern(
+                row.matcher.identity_field, row.from_value
+            ) or re.compile(re.escape(row.from_value))
+        position = 0
+        while (match := pattern.search(text, position)) is not None:
+            if disjoint_from_kept(match.span(), kept):
+                replaced.append(match.span())
+                position = match.end()
+            else:
+                position = match.start() + 1
     pieces: list[str] = []
     copied = 0
-    position = 0
-    while (match := pattern.search(text, position)) is not None:
-        if disjoint_from_kept(match.span(), kept):
-            pieces += [text[copied : match.start()], row.to_value]
-            copied = position = match.end()
-        else:
-            position = match.start() + 1
+    for start, end in replaced:
+        pieces += [text[copied:start], row.to_value]
+        copied = end
     pieces.append(text[copied:])
-    return "".join(pieces)
+    growth = len(row.to_value) - len(row.from_value)
+    shifted = tuple(
+        (low + delta, high + delta)
+        for low, high in kept
+        for delta in (growth * sum(end <= low for _, end in replaced),)
+    )
+    return "".join(pieces), shifted
 
 
-def rewrite_with_row(
-    row: RenderedSubstitution,
+def rewrite_file(
+    rows: Iterable[RenderedSubstitution],
     text: str,
-    *,
     keep_names: Sequence[str] = (),
-) -> str:
+) -> tuple[str, tuple[RenderedSubstitution, ...]]:
+    """Apply ``rows`` in order; return the text and the rows that changed it.
+
+    Kept spans come from the ORIGINAL text and are carried through every row.
+    An earlier row can therefore neither expose a kept name to a later row by
+    changing its neighbor nor create a new kept name.
+    """
+
+    kept = kept_spans(text, keep_names) if keep_names else ()
+    current = text
+    changed: list[RenderedSubstitution] = []
+    for row in rows:
+        if kept:
+            updated, kept = _rewrite_outside_kept(row, current, kept)
+        else:
+            updated = rewrite_with_row(row, current)
+        if updated != current:
+            changed.append(row)
+            current = updated
+    return current, tuple(changed)
+
+
+def rewrite_with_row(row: RenderedSubstitution, text: str) -> str:
     """Apply one row's matcher without consulting source configuration."""
 
     if row.provenance[0].kind == "manifest_name":
         return _rewrite_project_name(text, row.from_value, row.to_value)
-    kept = kept_spans(text, keep_names) if keep_names else ()
-    if kept:
-        return _rewrite_outside_kept(row, text, kept)
     if row.matcher.algorithm == "literal" or row.matcher.substring:
         return text.replace(row.from_value, row.to_value)
     if row.matcher.algorithm != "conservative":
@@ -830,14 +874,16 @@ def _validate_visibility_projection(
             except UnicodeDecodeError:
                 text = None
             if text is not None:
-                projected = text
-                for row in rows:
-                    if "content" in row.rewrite_surfaces and row_matches_scope(
-                        row, rel
-                    ):
-                        projected = rewrite_with_row(
-                            row, projected, keep_names=rules.keep_names
-                        )
+                projected, _ = rewrite_file(
+                    (
+                        row
+                        for row in rows
+                        if "content" in row.rewrite_surfaces
+                        and row_matches_scope(row, rel)
+                    ),
+                    text,
+                    rules.keep_names,
+                )
                 if projected != text:
                     raise SafetyError(
                         f"content rewrite would change Git visibility input "
@@ -1102,10 +1148,15 @@ def _identity_rows(
     return rows
 
 
-def _manifest_text(target: Path | None) -> tuple[str, str] | None:
-    """The root manifest's text and literal ``[project].name``, if readable."""
+def _manifest_text(target: Path | None, rules: Rules) -> tuple[str, str] | None:
+    """The root manifest's text and literal ``[project].name``, if readable.
 
-    if target is None:
+    A declaration that excludes python leaves ``pyproject.toml`` unread.
+    """
+
+    if target is None or (
+        rules.languages is not None and "python" not in rules.languages
+    ):
         return None
     try:
         text = read_regular_nofollow(target / "pyproject.toml").decode("utf-8")
@@ -1119,6 +1170,7 @@ def _hyphen_rows(
     source: Identity,
     destination: Identity,
     target: Path | None,
+    rules: Rules,
 ) -> list[RenderedSubstitution]:
     """Rewrite a manifest-proven hyphen name; otherwise only hunt for it."""
 
@@ -1126,7 +1178,7 @@ def _hyphen_rows(
     if hyphen is None:
         return []
     field = "package_name_hyphen"
-    manifest = _manifest_text(target)
+    manifest = _manifest_text(target, rules)
     proven = manifest is not None and manifest[1] == hyphen
     matcher = MatcherSpec("conservative", field, False)
     return [
@@ -1153,7 +1205,7 @@ def _hyphen_rows(
 
 
 def _manifest_name_rows(
-    source: Identity, destination: Identity, target: Path | None
+    source: Identity, destination: Identity, target: Path | None, rules: Rules
 ) -> list[RenderedSubstitution]:
     """Keep ``[project].name`` on package_name when another field owns it."""
 
@@ -1165,7 +1217,7 @@ def _manifest_name_rows(
         or distinct_hyphen_form(source, destination) is not None
     ):
         return []
-    manifest = _manifest_text(target)
+    manifest = _manifest_text(target, rules)
     if manifest is None or manifest[1] != hyphen:
         return []
     source_values = source.as_dict()
@@ -1433,13 +1485,13 @@ def compile_substitution_table(
     destination.validate()
     rows = _normalize_rows(
         [
-            *_manifest_name_rows(source, destination, target),
+            *_manifest_name_rows(source, destination, target, rules),
             *_declared_rows(source, destination, rules),
         ],
         sorted(
             [
                 *_identity_rows(source, destination, rules),
-                *_hyphen_rows(source, destination, target),
+                *_hyphen_rows(source, destination, target, rules),
             ],
             key=lambda row: -len(row.from_value),
         ),

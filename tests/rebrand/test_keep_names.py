@@ -29,6 +29,7 @@ from template_press.rebrand.substitutions import (
     RenderedSubstitution,
     Scope,
     SubstitutionTable,
+    rewrite_file,
     rewrite_with_row,
 )
 from template_press.rebrand.synthesize import synthesize_dest
@@ -156,6 +157,10 @@ def _row(
     )
 
 
+def _kept_rewrite(row: RenderedSubstitution, text: str, names: list[str]) -> str:
+    return rewrite_file((row,), text, names)[0]
+
+
 ROW_KINDS = {
     "owner": _row("acme", "other"),
     "repo_name": _row("widget", "thing", field="repo_name"),
@@ -215,44 +220,42 @@ def test_component_spans_use_true_neighbors():
 @pytest.mark.parametrize("kind", sorted(ROW_KINDS))
 def test_rewrite_preserves_kept_for_owner_repo_substring_and_replace_rows(kind):
     text = f"use {KEPT}/sub here"
-    assert rewrite_with_row(ROW_KINDS[kind], text, keep_names=[KEPT]) == text
+    assert _kept_rewrite(ROW_KINDS[kind], text, [KEPT]) == text
 
 
 def test_rewrite_still_changes_adjacent_identity():
     row = _row("@acme/widget", "@new/x", field="npm_name")
-    out = rewrite_with_row(row, f"@acme/widget {KEPT}", keep_names=[KEPT])
+    out = _kept_rewrite(row, f"@acme/widget {KEPT}", [KEPT])
     assert out == "@new/x @acme/widget-extra"
 
 
 def test_rewrite_near_miss_name_is_not_kept():
-    out = rewrite_with_row(_row("acme", "other"), f"{KEPT}-2", keep_names=[KEPT])
+    out = _kept_rewrite(_row("acme", "other"), f"{KEPT}-2", [KEPT])
     assert out == "@other/widget-extra-2"
 
 
 def test_rewrite_leaves_partial_overlap_for_the_leak_scan():
     row = _row("x/@acme", "gone", algorithm="literal", field=None)
     text = f"x/{KEPT}"
-    assert rewrite_with_row(row, text, keep_names=[KEPT]) == text
+    assert _kept_rewrite(row, text, [KEPT]) == text
 
 
 def test_rewrite_finds_a_match_hidden_behind_a_suppressed_overlap():
     row = _row("a.a", "Z", algorithm="literal", field=None)
     # (2, 5) overlaps kept (0, 3) and is suppressed; it must not shadow (4, 7).
-    assert rewrite_with_row(row, "x.a.a.a", keep_names=["x.a"]) == "x.a.Z"
+    assert _kept_rewrite(row, "x.a.a.a", ["x.a"]) == "x.a.Z"
 
 
 def test_rewrite_boundary_sees_text_before_a_suppressed_match():
     row = _row("a.a", "Z", field="npm_name")
     # After suppressing (2, 5), the candidate at (4, 7) has a true left neighbor.
-    assert rewrite_with_row(row, "x.a.a.a", keep_names=["x.a"]) == "x.a.Z"
-    assert rewrite_with_row(row, "x.a.b-a.a", keep_names=["x.a"]) == "x.a.b-a.a"
+    assert _kept_rewrite(row, "x.a.a.a", ["x.a"]) == "x.a.Z"
+    assert _kept_rewrite(row, "x.a.b-a.a", ["x.a"]) == "x.a.b-a.a"
 
 
 def test_rewrite_keeps_replacement_literal():
     row = _row("acme", r"\1\g<0>")
-    assert (
-        rewrite_with_row(row, f"acme {KEPT}", keep_names=[KEPT]) == rf"\1\g<0> {KEPT}"
-    )
+    assert _kept_rewrite(row, f"acme {KEPT}", [KEPT]) == rf"\1\g<0> {KEPT}"
 
 
 @pytest.mark.parametrize("kind", sorted(ROW_KINDS))
@@ -262,7 +265,7 @@ def test_rewrite_without_kept_occurrence_equals_legacy(kind):
     text = f"acme/widget acme-x xacme acme_y widget acme/widgets {unrelated}"
     row = ROW_KINDS[kind]
     expected = rewrite_with_row(row, text)
-    assert rewrite_with_row(row, text, keep_names=[unrelated]) == expected
+    assert _kept_rewrite(row, text, [unrelated]) == expected
 
 
 def test_rules_default_to_no_keep_names():
@@ -408,3 +411,33 @@ def test_module_imports_only_stdlib_identity_and_matcher():
             modules.add(node.module or "")
     for module in modules - allowed:
         assert module.split(".")[0] in sys.stdlib_module_names, module
+
+
+def _pressed_text(target, source, dest) -> str:
+    rules = load_rules(target)
+    plan = build_plan(target, source, dest, rules)
+    apply(target, source, dest, rules, table=plan.table)
+    return (target / "notes.md").read_text(encoding="utf-8")
+
+
+def test_kept_name_survives_losing_its_right_boundary(tmp_path):
+    extra = '[[replace]]\npattern = "{npm_name}"\nreason = "exact name"\n'
+    files = {"notes.md": f"{KEPT}@acme/widget"}
+    target = _make_target(tmp_path, _keep_rules([KEPT], extra), files)
+    dest = replace(DEST, npm_name="plain-x")
+    assert _pressed_text(target, SOURCE, dest) == f"{KEPT}plain-x"
+
+
+@pytest.mark.parametrize("entry", ["@new/widget-extra", "@zzz/unrelated"])
+def test_name_created_by_an_earlier_row_is_not_kept(tmp_path, entry):
+    files = {"notes.md": "@acme-labs/widget-extra"}
+    target = _make_target(tmp_path, _keep_rules([entry]), files)
+    source = replace(SOURCE, owner="acme-labs", repo_name="widget", npm_name=None)
+    dest = replace(DEST, owner="new", repo_name="thing", npm_name=None)
+    assert _pressed_text(target, source, dest) == "@new/thing-extra"
+
+
+def test_plan_and_apply_agree_when_offsets_shift(tmp_path):
+    files = {"notes.md": f"@acme/widget {KEPT} @acme/widget {KEPT}"}
+    target = _make_target(tmp_path, _keep_rules([KEPT]), files)
+    assert _pressed_text(target, SOURCE, DEST) == f"@new/x {KEPT} @new/x {KEPT}"
