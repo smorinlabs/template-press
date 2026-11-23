@@ -697,8 +697,13 @@ A root manifest counts as a language only when it declares a package identity:
 | any | lists languages | the listed languages are checked; detected languages not listed are ignored and printed to stderr as `ignored <language> (<manifest>): not declared in [rules] languages` |
 
 Exit `2` also results when a listed language has no manifest that declares a
-package identity, when its manifest is a `[[remove]]` target, or when a root
-manifest is malformed, not UTF-8, or not a regular file.
+package identity, when its manifest is a `[[remove]]` target on any platform,
+or when a root manifest is malformed, not UTF-8, or not a regular file.
+
+`press rebrand` repeats this check on the pressed tree, because a declared
+`[[reset]]`, `[[edit]]`, `[[regenerate]]`, or rename can change a root manifest.
+If the pressed tree fails the check, the command exits `1`, writes no receipt,
+leaves `press/press-source.toml` unchanged, and prints how to restore the target.
 
 `node` and `rust` are reserved names. This press version supports only
 `python`, so listing either exits `2` with `not supported by this press

@@ -17,19 +17,19 @@ target has several languages and declares none in `[rules] languages`.
 - Publishing, or any push to `py-launch-blueprint`
 
 ### Tests & Tasks
-- [ ] [P16-T01] Parse and validate `[rules] languages`
-- [ ] [P16-T02] Detect root manifests and resolve declarations
-- [ ] [P16-T03] Guard `press rebrand` and `press verify`; declare this repository
-- [ ] [P16-T04] Declare languages in disposable blueprint matrix clones
-- [ ] [P16-T05] Document the guard and open the PR
-- [ ] [P16-TS01] Unit tests in `tests/rebrand/test_languages.py`
-- [ ] [P16-TS02] CLI tests in `tests/rebrand/test_languages_cli.py`
-- [ ] [P16-TS03] `just check` and `just matrix`
+- [x] [P16-T01] Parse and validate `[rules] languages`
+- [x] [P16-T02] Detect root manifests and resolve declarations
+- [x] [P16-T03] Guard `press rebrand` and `press verify`; declare this repository
+- [x] [P16-T04] Declare languages in disposable blueprint matrix clones
+- [~] [P16-T05] Document the guard and open the PR
+- [x] [P16-TS01] Unit tests in `tests/rebrand/test_languages.py`
+- [x] [P16-TS02] CLI tests in `tests/rebrand/test_languages_cli.py`
+- [~] [P16-TS03] `just check` and `just matrix`
 
 ### Deliverable
 ```text
 $ press rebrand --target <python-and-node-repo> --config answers.toml
-error: target has multiple languages and declares none — nothing written
+error: target has several language manifests (pyproject.toml, package.json) and [rules] languages is not declared; add this to press/press-rules.toml under [rules]: languages = ["python"]
 ```
 
 ### Automated Verification
