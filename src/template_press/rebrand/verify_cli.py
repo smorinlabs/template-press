@@ -49,7 +49,12 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from template_press.rebrand.config import SOURCE_CONFIG_REL, load_source_config
-from template_press.rebrand.discovery import Discovered, discover, mismatches
+from template_press.rebrand.discovery import (
+    Discovered,
+    discover,
+    manifest_warnings,
+    mismatches,
+)
 from template_press.rebrand.engine import (
     apply,
     build_plan,
@@ -282,6 +287,8 @@ def _preflight(
     fields whose mismatch it waived (see ``_honor_accepted_origin``).
     """
     found = discover(target)
+    for warning in manifest_warnings(source, found):
+        print(warning, file=sys.stderr)
     problems, honored = _honor_accepted_origin(
         list(mismatches(source, found)), found, accepted_origin
     )

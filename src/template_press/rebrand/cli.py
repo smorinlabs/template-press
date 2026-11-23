@@ -24,7 +24,12 @@ from template_press.rebrand.config import (
     load_source_config,
     render_source_config,
 )
-from template_press.rebrand.discovery import Discovered, discover, mismatches
+from template_press.rebrand.discovery import (
+    Discovered,
+    discover,
+    manifest_warnings,
+    mismatches,
+)
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import (
     RenamePreflight,
@@ -671,6 +676,8 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(resolved, int):
             return resolved
         source, write_pending, origin, found = resolved
+        for warning in manifest_warnings(source, found):
+            print(warning, file=sys.stderr)
         if write_pending and not args.accept_discovery:
             print(
                 f"no source-config found at {SOURCE_CONFIG_REL}.\n"
