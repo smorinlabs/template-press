@@ -159,6 +159,8 @@ def test_undeclared_multi_language_refused(tmp_path: Path) -> None:
     message = str(exc.value)
     assert "pyproject.toml" in message
     assert "package.json" in message
+    assert 'languages = ["python"]' in message
+    assert "tooling" in message
     assert 'languages = ["python", "node"]' in message
 
 

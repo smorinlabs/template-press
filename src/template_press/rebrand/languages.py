@@ -95,11 +95,17 @@ def _undeclared_refusal(detected: tuple[DetectedLanguage, ...]) -> ValidationErr
     supported = [d.language for d in detected if d.language in SUPPORTED_LANGUAGES]
     # Only rust is unsupported, so two detected languages always list one.
     listed = ", ".join(f'"{language}"' for language in supported)
-    return ValidationError(
+    prefix = (
         f"target has several language manifests ({manifests}) and "
         "[rules] languages is not declared; add this to press/press-rules.toml "
-        f"under [rules]: languages = [{listed}]"
+        "under [rules]: "
     )
+    if supported == ["python", "node"]:
+        return ValidationError(
+            f'{prefix}languages = ["python"] when package.json is tooling only, '
+            f"or languages = [{listed}] when both manifests carry this identity"
+        )
+    return ValidationError(f"{prefix}languages = [{listed}]")
 
 
 def check_target_languages(
