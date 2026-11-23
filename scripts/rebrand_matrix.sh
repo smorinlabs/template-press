@@ -5,7 +5,10 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 echo "== R1 + R2 + native R3 acceptance =="
-uv run pytest tests/rebrand/test_matrix.py -m live -q
+# loadgroup keeps tests marked xdist_group on one worker. R1b and R3 share the
+# user's uv and bun caches, so they must not regenerate lockfiles concurrently.
+uv run pytest tests/rebrand/test_matrix.py -m live -q -n auto --dist loadgroup
 
 echo "== npm, Bun, and pnpm end-to-end targets =="
-uv run pytest tests/rebrand/test_node_targets.py -m live -q
+# Each test keeps its package-manager cache inside its own tmp_path.
+uv run pytest tests/rebrand/test_node_targets.py -m live -q -n auto --dist loadgroup
