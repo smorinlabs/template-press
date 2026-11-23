@@ -1483,3 +1483,41 @@ def test_equal_npm_and_repo_bare_token_refuses_before_writing(tmp_path, capsys):
     code = _press(target, _answers(tmp_path, dest))
     _assert_refused_clean(target, code)
     assert 'keep_names = ["_ledgerkit_"]' in capsys.readouterr().err
+
+
+# String-form bin on a pure-Node target
+
+
+def test_pure_node_string_bin_is_not_proposed_and_verify_passes(tmp_path, capsys):
+    target = _make_target(tmp_path, "[rules]\n")
+    (target / "press" / "press-source.toml").unlink()
+    (target / "pyproject.toml").unlink()
+    (target / "src" / SOURCE.package_name / "__init__.py").unlink()
+    manifest = {
+        "name": "@zeta-org/ledger-kit",
+        "version": "0.1.0",
+        "bin": "./cli.js",
+        "author": f"{SOURCE.author} <{SOURCE.email}>",
+    }
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (target / "cli.js").write_text("// ledger_kit entry point\n", encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "pure node string bin")
+    assert main(["--target", str(target)]) == 2
+    assert "cli_name" not in capsys.readouterr().out
+    dest = replace(DEST, app_name=DEST.package_name, cli_name=None, display_name=None)
+    answers = _answers(tmp_path, dest)
+    code = main(
+        ["--target", str(target), "--config", str(answers), "--accept-discovery"]
+    )
+    assert code == 0, capsys.readouterr().err
+    _git(
+        target,
+        "remote",
+        "set-url",
+        "origin",
+        f"https://github.com/{DEST.owner}/{DEST.repo_name}.git",
+    )
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "pressed")
+    assert _verify(target) == 0

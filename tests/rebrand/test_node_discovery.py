@@ -252,6 +252,7 @@ def _proposal(
         bins=bins,
         owner=None,
         repo_name=None,
+        named_bins=bins,
     )
     return node_proposal(manifest, "example-org", repo_name)
 

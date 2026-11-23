@@ -453,6 +453,7 @@ def _resolve_source(
                 bins=found.cli_names,
                 owner=found.manifest_owner,
                 repo_name=found.manifest_repo_name,
+                named_bins=found.named_cli_names,
             )
             if found.owner is not None:  # git origin wins over the manifest
                 proposal = node_proposal(manifest, found.owner, found.repo_name)

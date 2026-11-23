@@ -178,7 +178,9 @@ def node_proposal(
         if PYTHON_IDENTIFIER_RE.fullmatch(first):
             app_name = first
         elif "-" in first:
-            app_name, cli_name = first.replace("-", "_"), first
+            app_name = first.replace("-", "_")
+            # A string-form bin has no key: its command follows the package name.
+            cli_name = first if first in manifest.named_bins else None
         else:
             app_name = first  # not derivable: validation rejects it cleanly
     return {
