@@ -1872,8 +1872,8 @@ def test_parent_move_that_preserves_a_kept_name_stays_allowed():
         "@acme/widget-extra@acme/widget",
         "@acme/widget/sub",
         "bin/acme-cli",
-        "acme-cli.js",
         "run acme-cli now",
+        "run acme-cli. now",
     ],
 )
 def test_entry_holding_a_complete_source_name_is_refused(entry):
@@ -1931,3 +1931,112 @@ def test_sibling_guidance_never_suggests_a_refused_entry():
     source = replace(SOURCE, repo_name="acme-cli-x")
     assert sibling_guidance(text, (4, 12), source) is None
     assert sibling_guidance(text, (4, 12), SOURCE) is not None
+
+
+# A dependency key extending a declared name with . or ~
+
+
+def _dependency_target(
+    tmp_path: Path,
+    rules: str,
+    dependency: str,
+    *,
+    source: Identity = SINGLE_SOURCE,
+    section: str = "dependencies",
+) -> Path:
+    text = f'import x from "{dependency}";\nimport y from "{source.npm_name}";\n'
+    target = _with_source(tmp_path, source, rules, {"src/a.ts": text})
+    manifest = {
+        "name": source.npm_name,
+        "version": "0.1.0",
+        "bin": {source.cli_name: "./run.js"},
+        section: {dependency: "1.0.0"},
+    }
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "dependency")
+    return target
+
+
+@pytest.mark.parametrize(
+    ("dependency", "section"),
+    [
+        ("ledgerkit.extra", "dependencies"),
+        ("ledgerkit~extra", "devDependencies"),
+        ("zcli.extra", "peerDependencies"),
+        ("zcli~extra", "optionalDependencies"),
+    ],
+)
+def test_dependency_extending_a_name_is_a_sibling(
+    tmp_path, capsys, dependency, section
+):
+    target = _dependency_target(tmp_path, LANGUAGES, dependency, section=section)
+    assert _verify(target) == 1
+    capsys.readouterr()
+    code = _press(target, _answers(tmp_path, SINGLE_DEST))
+    err = capsys.readouterr().err
+    _assert_refused_clean(target, code)
+    assert f"[content] package.json: {dependency}" in err
+    assert f"keep_names = {json.dumps([dependency])}" in err
+
+
+def test_scoped_dependency_extending_a_scoped_name_is_a_sibling(tmp_path, capsys):
+    source = replace(SINGLE_SOURCE, npm_name="@acme/widget")
+    dest = replace(SINGLE_DEST, npm_name="@new/x")
+    target = _dependency_target(
+        tmp_path, LANGUAGES, "@acme/widget.extra", source=source
+    )
+    code = _press(target, _answers(tmp_path, dest))
+    err = capsys.readouterr().err
+    _assert_refused_clean(target, code)
+    assert 'keep_names = ["@acme/widget.extra"]' in err
+
+
+def test_declared_dependency_survives_and_bare_name_is_rewritten(tmp_path):
+    rules = _keep_rules(["ledgerkit.extra"])
+    target = _dependency_target(tmp_path, rules, "ledgerkit.extra")
+    assert _verify(target) == 0
+    assert _press(target, _answers(tmp_path, SINGLE_DEST)) == 0
+    manifest = json.loads((target / "package.json").read_text(encoding="utf-8"))
+    assert manifest["name"] == "vaultkit"
+    assert list(manifest["dependencies"]) == ["ledgerkit.extra"]
+    text = (target / "src" / "a.ts").read_text(encoding="utf-8")
+    assert text == 'import x from "ledgerkit.extra";\nimport y from "vaultkit";\n'
+
+
+@pytest.mark.parametrize("entry", ["acme-cli.extra", "acme-cli~x", "@acme/widget.x"])
+def test_dot_or_tilde_continuation_is_keepable(entry):
+    validate_keep_names([entry], SOURCE, DEST)
+
+
+@pytest.mark.parametrize("entry", ["Acme.CLI", "acme_cli", "acme-cli.", "acme-cli~"])
+def test_real_spellings_stay_refused_beside_continuations(entry):
+    with pytest.raises(ValidationError, match="source identity"):
+        validate_keep_names([entry], SOURCE, DEST)
+
+
+@pytest.mark.parametrize(
+    "rel", ["ledgerkit.js", "zcli.config.ts", "bin/zcli.js", "docs/zcli~draft.md"]
+)
+def test_ordinary_filenames_without_a_dependency_stay_rewritable(tmp_path, rel):
+    target = _scoped_basename_target(tmp_path, LANGUAGES, {rel: "x\n"})
+    assert _press(target, _answers(tmp_path, SINGLE_DEST), "--dry-run") == 0
+
+
+def test_python_only_target_ignores_package_json_dependencies(tmp_path):
+    rules = '[rules]\nlanguages = ["python"]\n'
+    target = _with_source(tmp_path, SINGLE_SOURCE, rules, {"docs/a.md": "x\n"})
+    manifest = {"name": "tooling", "dependencies": {"ledgerkit.extra": "1.0.0"}}
+    (target / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "tooling manifest")
+    assert _press(target, _answers(tmp_path, SINGLE_DEST), "--dry-run") == 0
+
+
+def test_malformed_manifest_keeps_its_behavior(tmp_path):
+    text = "see ledgerkit.extra\n"
+    target = _scoped_basename_target(tmp_path, LANGUAGES, {"docs/a.md": text})
+    (target / "package.json").write_text("{not json", encoding="utf-8")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "malformed")
+    assert _press(target, _answers(tmp_path, SINGLE_DEST), "--dry-run") == 2

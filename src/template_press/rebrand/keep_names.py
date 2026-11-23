@@ -283,12 +283,14 @@ def _complete_name_pattern(field: str, value: str) -> re.Pattern[str]:
 
     A scoped value starts at its ``@``, so a glued alphanumeric does not extend
     it: ``widget-extra@acme/widget`` holds ``@acme/widget``. A touching ``-`` or
-    ``_`` is still an edge separator, as in ``x-@acme/widget``.
+    ``_`` is still an edge separator, as in ``x-@acme/widget``. A ``.`` or ``~``
+    followed by a name character continues an npm name, so ``acme-cli.extra``
+    does not hold ``acme-cli``.
     """
-    if value.startswith("@"):
-        return re.compile(rf"(?<![_-]){re.escape(value)}(?![A-Za-z0-9_-])")
-    pattern = token_pattern(field, value)
-    return pattern if pattern is not None else re.compile(re.escape(value))
+    left = r"(?<![_-])" if value.startswith("@") else r"(?<![A-Za-z0-9_-])"
+    return re.compile(
+        rf"{left}{re.escape(value)}(?![A-Za-z0-9_-])(?![.~][A-Za-z0-9_-])"
+    )
 
 
 def _contained_source_name(name: str, source: Identity) -> tuple[str, str] | None:
@@ -496,12 +498,33 @@ def _sibling_tokens(
     return tokens
 
 
+def _extended_dependencies(
+    dependencies: Iterable[str],
+    values: Sequence[tuple[str, str]],
+    names: Sequence[str],
+    subject: RewrittenForms,
+) -> Iterable[UndeclaredName]:
+    """Manifest dependency keys extending a declared name with ``.`` or ``~``."""
+    for dependency in dependencies:
+        if dependency in subject.tokens or dependency in subject.literals:
+            continue
+        kept = kept_spans(dependency, names)
+        for field, value in values:
+            if (
+                dependency.startswith(value)
+                and dependency[len(value) : len(value) + 1] in (".", "~")
+                and outside_kept(((0, len(value)),), kept)
+            ):
+                yield UndeclaredName("package.json", "content", field, dependency)
+
+
 def check_keep_surfaces(
     surfaces: Iterable[tuple[str, str, str]],
     source: Identity,
     names: Sequence[str],
     *,
     rewritten: RewrittenLookup | None = None,
+    dependency_names: Sequence[str] = (),
 ) -> KeepCheck:
     """Find undeclared names and stale entries on ``(path, where, text)`` rows.
 
@@ -509,7 +532,9 @@ def check_keep_surfaces(
     name part is undeclared unless one ``keep_names`` entry wholly covers it or
     ``rewritten`` proves a row rewrites it on that exact path and surface.
     Matching ignores case because the paranoid verifier does too. An entry
-    found on no surface is stale.
+    found on no surface is stale. ``dependency_names`` are the root manifest's
+    dependency keys: only that evidence separates the package ``name.extra``
+    from an ordinary file such as ``name.js``.
     """
     values = tuple(
         (field, value)
@@ -537,6 +562,15 @@ def check_keep_surfaces(
                 undeclared.setdefault(
                     (path, where, token), UndeclaredName(path, where, field, token)
                 )
+    manifest_subject = (
+        rewritten("package.json", "content", "")
+        if rewritten is not None and dependency_names
+        else RewrittenForms()
+    )
+    for item in _extended_dependencies(
+        dependency_names, values, names, manifest_subject
+    ):
+        undeclared.setdefault((item.path, item.where, item.token), item)
     return KeepCheck(tuple(undeclared.values()), tuple(unseen))
 
 

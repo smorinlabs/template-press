@@ -760,7 +760,8 @@ case and separator variants, exits `2`. Leading and trailing characters outside
 scoped name. So `"acme-cli"`, `/acme-cli`, and `@acme` (for `owner = "acme"`)
 also exit `2`. An entry with an edge `-` or `_` (`--acme-cli`) is compared exactly
 and may be kept. An entry that holds a complete source `npm_name` or `cli_name`,
-such as `widget-extra@acme/widget`, exits `2`; the preflight prints rename
+such as `widget-extra@acme/widget`, exits `2`. A `.` or `~` continuation
+(`acme-cli.extra`) is a different name and may be kept; the preflight prints rename
 guidance for such a token. A directory rename that would change a kept name in a path
 exits `2` before any write.
 
@@ -779,7 +780,9 @@ alphanumeric character glued to either side means an unrelated word:
 touching `-` or `_` or a camelCase tail is a sibling, so `tsc-helper`,
 `tscConfig`, `--tsc`, `_tsc_`, `_tsc`, and `tsc_` are refused. An unscoped value
 that is the basename of another scoped package (`@vendor/tsc`) is also a sibling,
-on content and path surfaces. Tokens rewritten by an applicable row or
+on content and path surfaces. A root `package.json` dependency key that extends
+a declared name with `.` or `~` (`acme-cli.extra`) is a sibling too; without such
+a key, `acme-cli.js` stays rewritable. Tokens rewritten by an applicable row or
 `[[replace]]` rule are exempt, and planned `[[remove]]` files are skipped.
 
 **Lockfiles.** `package-lock.json`, `bun.lock`, `uv.lock`, and `pnpm-lock.yaml`

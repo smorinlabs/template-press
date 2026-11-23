@@ -22,6 +22,12 @@ _AUTHOR_EMAIL_RE = re.compile(r"<([^<>]*)>")
 _AUTHOR_NAME_END_RE = re.compile(r"[<(]")
 # A longer author string is undiscoverable, never truncated into a guess.
 _AUTHOR_MAX_CHARS = 1024
+_DEPENDENCY_SECTIONS = (
+    "dependencies",
+    "devDependencies",
+    "peerDependencies",
+    "optionalDependencies",
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +41,7 @@ class NodeManifest:
     # Object-form bin keys only. A string-form bin has no key: its command name
     # follows the package name, so it is not a separate identity value.
     named_bins: tuple[str, ...] = ()
+    dependency_names: tuple[str, ...] = ()  # keys of the four dependency tables
 
 
 def _text(value: object) -> str | None:
@@ -88,6 +95,15 @@ def _bins(raw: object, name: str | None) -> tuple[str, ...]:
     return ()
 
 
+def _dependency_names(data: dict[str, object]) -> tuple[str, ...]:
+    names: dict[str, None] = {}
+    for section in _DEPENDENCY_SECTIONS:
+        table = data.get(section)
+        if isinstance(table, dict):
+            names.update(dict.fromkeys(key for key in table if isinstance(key, str)))
+    return tuple(names)
+
+
 def _repository(raw: object) -> tuple[str | None, str | None]:
     url = raw.get("url") if isinstance(raw, dict) else raw
     text = _text(url)
@@ -120,4 +136,5 @@ def read_node_manifest(target: Path) -> NodeManifest | None:
         owner=owner,
         repo_name=repo_name,
         named_bins=_bins(raw_bin, None) if isinstance(raw_bin, dict) else (),
+        dependency_names=_dependency_names(data),
     )

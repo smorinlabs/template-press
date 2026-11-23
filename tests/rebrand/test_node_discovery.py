@@ -535,3 +535,25 @@ def test_target_reached_through_a_symlinked_parent_is_read(tmp_path: Path):
     m = read_node_manifest(link)
     assert m is not None
     assert m.name == "pkg"
+
+
+def test_manifest_reads_dependency_keys_from_all_sections(tmp_path: Path):
+    m = read_node_manifest(
+        _node(
+            tmp_path,
+            dependencies={"a": "1"},
+            devDependencies={"b": "1"},
+            peerDependencies={"c": "1", "a": "2"},
+            optionalDependencies={"d": "1"},
+            bundleDependencies=["ignored"],
+        )
+    )
+    assert m is not None
+    assert m.dependency_names == ("a", "b", "c", "d")
+
+
+@pytest.mark.parametrize("value", [["a"], "a", 1, None])
+def test_non_object_dependency_section_is_ignored(tmp_path: Path, value: object):
+    m = read_node_manifest(_node(tmp_path, dependencies=value))
+    assert m is not None
+    assert m.dependency_names == ()

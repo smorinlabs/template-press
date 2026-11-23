@@ -48,6 +48,7 @@ from template_press.rebrand.keep_names import (
     splice_outside_kept,
 )
 from template_press.rebrand.matcher import find_occurrences, identity_pattern
+from template_press.rebrand.node_manifest import read_node_manifest
 from template_press.rebrand.pathing import ROOT_CONTROL, symlink_target_posix
 from template_press.rebrand.pipeline import (
     MAX_RENAME_PASSES,
@@ -1535,6 +1536,19 @@ def _identity_row_pattern(row: RenderedSubstitution) -> re.Pattern[str]:
     return token_pattern(field, row.from_value) or re.compile(re.escape(row.from_value))
 
 
+def _checked_dependency_names(
+    target: Path, rules: Rules, removed: frozenset[str]
+) -> tuple[str, ...]:
+    """Root ``package.json`` dependency keys, when node is a checked language."""
+
+    if "package.json" in removed or (
+        rules.languages is not None and "node" not in rules.languages
+    ):
+        return ()
+    manifest = read_node_manifest(target)
+    return () if manifest is None else manifest.dependency_names
+
+
 def check_target_keep_names(
     target: Path,
     source: Identity,
@@ -1597,6 +1611,7 @@ def check_target_keep_names(
         source,
         rules.keep_names,
         rewritten=rewritten,
+        dependency_names=_checked_dependency_names(target, rules, removed),
     )
 
 

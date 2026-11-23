@@ -191,6 +191,8 @@ wholly inside it. A match that only overlaps a kept span is still a leak.
   An entry with an edge `-` or `_` is compared exactly, so `--acme-cli`
   (a flag spelling) may be kept. An entry holding a complete source
   `npm_name` or `cli_name` (`widget-extra@acme/widget`) exits 2; rename it.
+  A `.` or `~` continuation (`acme-cli.extra`) is a different name and may
+  be kept.
 - Empty, control-character, and non-string entries exit 2.
 - An entry that occurs nowhere on the rewrite surface prints a stale-entry
   warning on stderr. The dry-run plan and the receipt list the kept names.
@@ -211,6 +213,9 @@ receipt, and prints each token with the `keep_names` line that would keep it.
   `_tsc`, and `tsc_` are refused.
 - Scoped basenames: an unscoped value that is the basename of another package
   (`@vendor/tsc`) is a sibling, on content and path surfaces.
+- Dependency keys: a root `package.json` dependency that extends a declared
+  name with `.` or `~` (`tsc.extra`) is a sibling. Without such a key,
+  `tsc.js` stays rewritable.
 - Exempt: a token that an applicable rewrite row or `[[replace]]` rule
   rewrites on that exact path and surface, and any file planned for
   `[[remove]]`.
