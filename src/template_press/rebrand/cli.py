@@ -55,6 +55,7 @@ from template_press.rebrand.keep_names import (
     validate_keep_names,
 )
 from template_press.rebrand.languages import (
+    LanguageDecision,
     check_target_languages,
     render_ignored_languages,
 )
@@ -437,7 +438,7 @@ def _resolve_source(
     accept_discovery: bool,
     dest: Identity | None,
     accept_origin_mismatch: bool,
-    languages: Sequence[str],
+    languages: LanguageDecision,
     rules: Rules,
 ) -> tuple[Identity, bool, OriginDecision, Discovered] | int:
     """Resolve the FROM identity; second element = write source-config later.
@@ -449,7 +450,7 @@ def _resolve_source(
     """
     write_pending = False
     source = load_source_config(target, override)
-    found = discover(target, languages)
+    found = discover(target, languages.checked, {d.language for d in languages.ignored})
     if source is None:
         proposal: dict[str, str | None]
         if found.source_kind == "node":
@@ -563,7 +564,7 @@ def _resolve_source(
             print(f"  {p}")
         return 2
     if found.cargo is not None:
-        for warning in cargo_warnings(target, source, rules):
+        for warning in cargo_warnings(target, source, rules, dest):
             print(warning, file=sys.stderr)
     return source, write_pending, origin, found
 
@@ -816,7 +817,7 @@ def main(argv: list[str] | None = None) -> int:
             args.accept_discovery,
             dest,
             args.accept_origin_mismatch,
-            languages.checked,
+            languages,
             rules,
         )
         if isinstance(resolved, int):
@@ -880,6 +881,7 @@ def main(argv: list[str] | None = None) -> int:
             dest,
             rules,
             frozenset(member.current_file for member in removal_plan.members),
+            languages.checked,
         )
         if keep_check.undeclared:
             print(render_undeclared(keep_check.undeclared, source), file=sys.stderr)

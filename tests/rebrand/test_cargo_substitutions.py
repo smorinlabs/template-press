@@ -154,12 +154,14 @@ def test_app_prefixed_underscore_sibling_is_refused_until_kept(tmp_path: Path) -
     # app_name treats `_` as a right separator, so this sibling would be rewritten.
     target = _repo(tmp_path, {"src/lib.rs": "use acme_core_extra::x;\n"})
     found = check_target_keep_names(
-        target, SOURCE, DEST, DEFAULT_RULES, frozenset()
+        target, SOURCE, DEST, DEFAULT_RULES, frozenset(), ("rust",)
     ).undeclared
     assert [item.token for item in found] == ["acme_core_extra"]
     rules = replace(DEFAULT_RULES, keep_names=("acme_core_extra",))
     assert (
-        check_target_keep_names(target, SOURCE, DEST, rules, frozenset()).undeclared
+        check_target_keep_names(
+            target, SOURCE, DEST, rules, frozenset(), ("rust",)
+        ).undeclared
         == ()
     )
     plan = build_plan(target, SOURCE, DEST, rules)
@@ -260,11 +262,11 @@ def test_cargo_npm_and_cli_rows_sort_longest_first() -> None:
 def test_keep_names_protects_cargo_sibling(tmp_path: Path) -> None:
     target = _repo(tmp_path, {"Cargo.toml": 'extra = "acme-core-extra"\n'})
     found = check_target_keep_names(
-        target, SOURCE, DEST, DEFAULT_RULES, frozenset()
+        target, SOURCE, DEST, DEFAULT_RULES, frozenset(), ("rust",)
     ).undeclared
     assert [item.token for item in found] == ["acme-core-extra"]
     kept = replace(DEFAULT_RULES, keep_names=("acme-core-extra",))
-    check = check_target_keep_names(target, SOURCE, DEST, kept, frozenset())
+    check = check_target_keep_names(target, SOURCE, DEST, kept, frozenset(), ("rust",))
     assert check.undeclared == ()
     assert check.stale == ()
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import subprocess  # nosec B404 — reads git origin of the target
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -20,18 +20,22 @@ from typing import TYPE_CHECKING, Any
 from template_press.rebrand.cargo_manifest import CargoFacts, read_cargo_facts
 from template_press.rebrand.config import toml_string
 from template_press.rebrand.identity import (
+    CARGO_IDENT_PREFIX,
     PYTHON_IDENTIFIER_RE,
     Identity,
     cargo_ident,
     distinct_hyphen_form,
     occurs,
+    token_occurs,
 )
+from template_press.rebrand.inventory import rewrite_surface_texts
 from template_press.rebrand.languages import KNOWN_LANGUAGES, SUPPORTED_LANGUAGES
 from template_press.rebrand.node_manifest import (
     NodeManifest,
     read_node_manifest,
     unscoped,
 )
+from template_press.rebrand.pathing import ROOT_CONTROL
 from template_press.rebrand.safety import git_hardening_args, scrubbed_git_env
 
 if TYPE_CHECKING:
@@ -105,20 +109,28 @@ def _python_project(target: Path) -> dict[str, Any] | None:
     return project if isinstance(project, dict) else None
 
 
-def discover(target: Path, languages: Sequence[str] | None = None) -> Discovered:
+def discover(
+    target: Path,
+    languages: Sequence[str] | None = None,
+    ignored: Collection[str] = (),
+) -> Discovered:
     """Read identity from the manifests of ``languages``.
 
-    The CLI passes the language guard's ``LanguageDecision.checked``. When it
-    selects no supported language, every readable manifest is read, so a
+    The CLI passes the language guard's ``LanguageDecision.checked`` and the
+    names in its ``ignored``. An ignored manifest is never read. When neither
+    python nor node is checked, every other readable manifest is read, so a
     ``package.json`` without ``name`` keeps its declared-field checks.
     """
     package_name = app_name = author = email = None
     app_names: tuple[str, ...] = ()
     selected = SUPPORTED_LANGUAGES.intersection(languages or ())
-    project = _python_project(target) if not selected or "python" in selected else None
-    manifest = (
-        read_node_manifest(target) if not selected or "node" in selected else None
-    )
+    narrowed = selected - {"rust"}
+
+    def reads(language: str) -> bool:
+        return language not in ignored and (not narrowed or language in narrowed)
+
+    project = _python_project(target) if reads("python") else None
+    manifest = read_node_manifest(target) if reads("node") else None
     checked = selected or {
         language
         for language, value in (("python", project), ("node", manifest))
@@ -297,43 +309,64 @@ def _unmapped_name_is_related(
     )
 
 
+def _changing_values(source: Identity, dest: Identity | None) -> dict[str, str]:
+    """Source values this press changes; every value when ``dest`` is unknown."""
+    wanted = dest.as_dict() if dest is not None else None
+    return {
+        field: value
+        for field, value in source.as_dict().items()
+        if wanted is None or wanted.get(field) != value
+    }
+
+
+def _identifier_on_surface(target: Path, ident: str, rules: Rules) -> bool:
+    """Whether the rewrite surface names the crate by its Rust identifier."""
+    return any(
+        token_occurs(text, f"{CARGO_IDENT_PREFIX}crate", ident)
+        for _path, _where, text in rewrite_surface_texts(
+            target,
+            exclude_files=rules.exclude_files,
+            exclude_dirs=rules.exclude_dirs,
+            root_control=ROOT_CONTROL,
+        )
+    )
+
+
 def _unmapped_name_is_broken(
-    name: str, target: Path, source: Identity, dest: Identity | None, rules: Rules
+    name: str, target: Path, source: Identity, dest: Identity, rules: Rules
 ) -> bool:
     """Whether a press without a table would leave ``name`` half rewritten."""
     if name in rules.keep_names:
         return False
-    current = source.as_dict()
-    wanted = dest.as_dict() if dest is not None else None
-    changing = {
-        field: value
-        for field, value in current.items()
-        if wanted is None or wanted.get(field) != value
-    }
+    wanted = dest.as_dict()
+    changing = _changing_values(source, dest)
     if not _unmapped_name_is_related(name, changing, rules):
         return False
     whole = next((f for f, value in changing.items() if value == name), None)
     if whole is None:
         return not (
             "package_name" in changing
-            and (dest is None or distinct_hyphen_form(source, dest) is not None)
+            and distinct_hyphen_form(source, dest) is not None
             and _rewritten_whole_by_python_row(name, source, rules, target)
         )
-    if wanted is None or whole not in wanted:
+    ident = cargo_ident(name)
+    if ident == name or whole not in wanted:
         return False
     # The Rust identifier must follow the package spelling, or code that names
     # the crate (`acme_widget::hi()`) no longer resolves after the press.
     expected = cargo_ident(wanted[whole])
-    return any(
-        value == cargo_ident(name) and wanted.get(field) != expected
+    if any(
+        value == ident and wanted.get(field) == expected
         for field, value in changing.items()
-    )
+    ):
+        return False
+    return _identifier_on_surface(target, ident, rules)
 
 
 def cargo_problems(
     target: Path, source: Identity, dest: Identity | None, rules: Rules
 ) -> list[str]:
-    """Fatal Cargo checks. ``dest=None`` treats every identity value as changing.
+    """Fatal Cargo checks. The no-table refusal needs a real ``dest``.
 
     Call only when rust is a checked language. Spellings are compared by
     underscore form, because Cargo treats ``[lib] name = "acme_core"`` as the
@@ -341,10 +374,13 @@ def cargo_problems(
     """
     facts = read_cargo_facts(target)
     if not source.cargo_names:
+        if dest is None:
+            return []
+        real_dest = dest
         broken = [
             name
             for name in facts.names
-            if _unmapped_name_is_broken(name, target, source, dest, rules)
+            if _unmapped_name_is_broken(name, target, source, real_dest, rules)
         ]
         if not broken:
             return []
@@ -382,18 +418,20 @@ def cargo_problems(
     return out
 
 
-def cargo_warnings(target: Path, source: Identity, rules: Rules) -> list[str]:
+def cargo_warnings(
+    target: Path, source: Identity, rules: Rules, dest: Identity | None = None
+) -> list[str]:
     """One stderr line per name a table-less press leaves unchanged."""
     if source.cargo_names:
         return []
     facts = read_cargo_facts(target)
-    values = source.as_dict()
+    values = _changing_values(source, dest)
     return [
         f"warning: cargo name {name!r} is not rewritten: it is "
         + (
             "listed in keep_names"
             if name in rules.keep_names
-            else "unrelated to the identity"
+            else "unrelated to the changing identity"
         )
         for name in facts.names
         if name in rules.keep_names

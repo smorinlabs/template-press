@@ -104,6 +104,13 @@ def _undeclared_refusal(detected: tuple[DetectedLanguage, ...]) -> ValidationErr
             f'{prefix}languages = ["python"] when package.json is tooling only, '
             f"or languages = [{listed}] when both manifests carry this identity"
         )
+    if "rust" in supported:
+        others = ", ".join(f'"{name}"' for name in supported if name != "rust")
+        scope = "both" if len(supported) == 2 else "all"
+        return ValidationError(
+            f"{prefix}languages = [{others}] when Cargo.toml is tooling only, "
+            f"or languages = [{listed}] when {scope} manifests carry this identity"
+        )
     return ValidationError(f"{prefix}languages = [{listed}]")
 
 

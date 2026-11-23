@@ -82,6 +82,7 @@ from template_press.rebrand.keep_names import (
     validate_keep_names,
 )
 from template_press.rebrand.languages import (
+    LanguageDecision,
     check_target_languages,
     render_ignored_languages,
 )
@@ -278,7 +279,7 @@ def _preflight(
     scan_fields: Sequence[str],
     substring_fields: frozenset[str],
     accepted_origin: dict[str, str],
-    languages: Sequence[str],
+    languages: LanguageDecision,
 ) -> tuple[list[str], dict[str, str]]:
     """Consistency + presence check against the REAL target; problems -> 2.
 
@@ -301,7 +302,7 @@ def _preflight(
     ``--accept-origin-mismatch`` press; the second return value names the
     fields whose mismatch it waived (see ``_honor_accepted_origin``).
     """
-    found = discover(target, languages)
+    found = discover(target, languages.checked, {d.language for d in languages.ignored})
     for warning in manifest_warnings(source, found):
         print(warning, file=sys.stderr)
     problems, honored = _honor_accepted_origin(
@@ -314,7 +315,9 @@ def _preflight(
         problems.append(table_problem)
     discovered = _discovered_map(found)
     if found.cargo is not None:
-        problems.extend(cargo_problems(target, source, None, rules))
+        # The no-table refusal needs the real destination, so it runs in rebrand.
+        if source.cargo_names:
+            problems.extend(cargo_problems(target, source, None, rules))
         for warning in cargo_warnings(target, source, rules):
             print(warning, file=sys.stderr)
         # A crate name confirms the identifier form, which no text need contain.
@@ -575,7 +578,7 @@ def verify_command(argv: list[str] | None = None) -> int:
             scan_fields,
             scan_substring,
             accepted_origin,
-            languages.checked,
+            languages,
         )
     except _CONFIG_ERRORS as exc:
         return _fail(f"preflight failed: {exc}")
@@ -627,6 +630,7 @@ def verify_command(argv: list[str] | None = None) -> int:
             synth,
             rules,
             frozenset(member.current_file for member in removal_plan.members),
+            languages.checked,
         )
         if keep_check.undeclared:
             if args.as_json:

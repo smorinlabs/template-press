@@ -173,7 +173,28 @@ def test_undeclared_paste_line_lists_each_detected_language(
     message = str(exc.value)
     assert "package.json" in message
     assert "Cargo.toml" in message
-    assert 'languages = ["node", "rust"]' in message
+    assert 'languages = ["node"] when Cargo.toml is tooling only' in message
+    assert 'languages = ["node", "rust"] when both manifests' in message
+
+
+def test_undeclared_python_and_rust_offers_tooling_only_path(tmp_path: Path) -> None:
+    _write(tmp_path, "pyproject.toml", '[project]\nname = "a"\n')
+    _write(tmp_path, "Cargo.toml", '[package]\nname = "a"\n')
+    with pytest.raises(ValidationError) as exc:
+        check_target_languages(tmp_path, None, [])
+    message = str(exc.value)
+    assert 'languages = ["python"] when Cargo.toml is tooling only' in message
+    assert 'languages = ["python", "rust"] when both manifests' in message
+
+
+def test_undeclared_three_languages_offers_tooling_only_path(tmp_path: Path) -> None:
+    _py_and_node(tmp_path)
+    _write(tmp_path, "Cargo.toml", '[package]\nname = "a"\n')
+    with pytest.raises(ValidationError) as exc:
+        check_target_languages(tmp_path, None, [])
+    message = str(exc.value)
+    assert 'languages = ["python", "node"] when Cargo.toml is tooling only' in message
+    assert 'languages = ["python", "node", "rust"] when all manifests' in message
 
 
 def test_single_language_undeclared_continues(tmp_path: Path) -> None:

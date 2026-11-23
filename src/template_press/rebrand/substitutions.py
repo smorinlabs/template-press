@@ -1596,14 +1596,17 @@ def _checked_dependency_names(
 
 
 def _checked_cargo_dependency_names(
-    target: Path, source: Identity, rules: Rules, removed: frozenset[str]
+    target: Path,
+    source: Identity,
+    removed: frozenset[str],
+    languages: Sequence[str],
 ) -> tuple[str, ...]:
-    """Non-local Cargo dependencies, when a Cargo table meets an active manifest."""
+    """Non-local Cargo dependencies, when a Cargo table meets a checked manifest."""
 
     if (
         not source.cargo_names
         or "Cargo.toml" in removed
-        or (rules.languages is not None and "rust" not in rules.languages)
+        or "rust" not in languages
         or not os.path.lexists(target / "Cargo.toml")
     ):
         return ()
@@ -1616,6 +1619,7 @@ def check_target_keep_names(
     destination: Identity,
     rules: Rules,
     removed: frozenset[str],
+    languages: Sequence[str],
 ) -> KeepCheck:
     """Run the keep-name preflight with this press's real rewrite rows."""
 
@@ -1674,7 +1678,7 @@ def check_target_keep_names(
         rewritten=rewritten,
         dependency_names=_checked_dependency_names(target, rules, removed),
         cargo_dependency_names=_checked_cargo_dependency_names(
-            target, source, rules, removed
+            target, source, removed, languages
         ),
     )
 

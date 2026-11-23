@@ -48,7 +48,11 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _repo(
-    tmp_path: Path, files: dict[str, str], *, repo_name: str = "acme-core"
+    tmp_path: Path,
+    files: dict[str, str],
+    *,
+    repo_name: str = "acme-core",
+    owner: str = OWNER,
 ) -> Path:
     target = (tmp_path / "target").resolve()
     target.mkdir()
@@ -57,7 +61,7 @@ def _repo(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
     _git(target, "init", "-q", "-b", "main")
-    _git(target, "remote", "add", "origin", f"https://github.com/{OWNER}/{repo_name}")
+    _git(target, "remote", "add", "origin", f"https://github.com/{owner}/{repo_name}")
     _git(target, "add", "-A")
     _git(target, "commit", "-q", "-m", "fixture")
     return target
@@ -186,6 +190,7 @@ def test_no_map_equal_repo_with_diverging_identifier_exits_2(tmp_path, capsys) -
         {
             "Cargo.toml": _crate("acme-widget"),
             "src/lib.rs": "pub fn hi() {}\n",
+            "src/main.rs": "fn main() { acme_widget::hi(); }\n",
             "press/press-source.toml": _source_config(
                 package_name="acme_widget", repo_name="acme-widget"
             ),
@@ -362,7 +367,7 @@ def test_excluded_manifest_dependency_is_still_a_sibling(tmp_path) -> None:
     source = _identity(CORE_MAP)
     dest = Identity.from_mapping(_dest_values(), ZETA_MAP)
     check = check_target_keep_names(
-        target, source, dest, load_rules(target), frozenset()
+        target, source, dest, load_rules(target), frozenset(), ("rust",)
     )
     assert [(i.path, i.token) for i in check.undeclared] == [
         ("Cargo.toml", "acme_core-extra")
@@ -725,3 +730,145 @@ def test_warnings_are_empty_with_a_map(tmp_path) -> None:
         {"Cargo.toml": _crate("acme-core"), "src/lib.rs": "pub fn hi() {}\n"},
     )
     assert cargo_warnings(target, _identity(CORE_MAP), load_rules(target)) == []
+
+
+# --- Fix round 1 ------------------------------------------------------------
+
+
+def test_verify_accepts_unmapped_crate_related_to_unchanged_owner(tmp_path) -> None:
+    values = {
+        "package_name": "tools_pkg",
+        "repo_name": "tools-repo",
+        "app_name": "tools_app",
+        "owner": "acme",
+    }
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("acme-tools"),
+            "src/lib.rs": "pub fn hi() {}\n",
+            "README.md": "tools_pkg tools_app tools-repo acme\n",
+            "press/press-source.toml": _source_config(**values),
+        },
+        repo_name="tools-repo",
+        owner="acme",
+    )
+    answers = _answers(
+        tmp_path,
+        package_name="zeta_pkg",
+        repo_name="tools-repo",
+        app_name="zeta_app",
+        owner="acme",
+    )
+    assert verify_command(["--target", str(target)]) == 0
+    assert main(["--target", str(target), "--config", str(answers)]) == 0
+    assert 'name = "acme-tools"' in (target / "Cargo.toml").read_text()
+    assert verify_command(["--target", str(target)]) == 0
+
+
+@pytest.mark.parametrize(
+    ("package", "new_package"),
+    [("acme_core", "acme_core"), ("other_pkg", "zeta_pkg")],
+)
+def test_identifier_left_behind_exits_2_before_any_write(
+    tmp_path, capsys, package, new_package
+) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("acme-core"),
+            "src/lib.rs": "pub fn hi() {}\n",
+            "src/main.rs": "fn main() { acme_core::hi(); }\n",
+            "press/press-source.toml": _source_config(
+                package_name=package, app_name="tool_app"
+            ),
+        },
+    )
+    answers = _answers(tmp_path, package_name=new_package, app_name="zeta_app")
+    assert main(["--target", str(target), "--config", str(answers)]) == 2
+    assert "[identity.cargo_names]" in capsys.readouterr().out
+    assert _clean(target)
+    assert not (target / "press" / "press-receipt.toml").exists()
+
+
+def test_binary_only_crate_without_identifier_text_continues(tmp_path) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("acme-core"),
+            "src/main.rs": "fn main() {}\n",
+            "press/press-source.toml": _source_config(
+                package_name="other_pkg", app_name="tool_app"
+            ),
+        },
+    )
+    answers = _answers(tmp_path, package_name="zeta_pkg", app_name="zeta_app")
+    assert _press(target, answers) == 0
+
+
+def _nameless_node_target(tmp_path: Path) -> Path:
+    return _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("tools-helper"),
+            "src/lib.rs": "pub fn hi() {}\n",
+            "package.json": json.dumps({"private": True, "bin": {"real-cli": "x.js"}}),
+            "README.md": "acme_core acme-core declared-cli\n",
+            "press/press-source.toml": _source_config(cli_name="declared-cli"),
+        },
+    )
+
+
+def test_sole_cargo_keeps_declared_cli_check_for_nameless_package_json(
+    tmp_path, capsys
+) -> None:
+    target = _nameless_node_target(tmp_path)
+    assert _press(target, _answers(tmp_path, cli_name="zeta-cli")) == 2
+    assert "cli_name" in capsys.readouterr().out
+    assert verify_command(["--target", str(target)]) == 2
+    assert "cli_name" in capsys.readouterr().err
+
+
+def test_ignored_node_manifest_is_never_read_as_identity(tmp_path) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("acme-core"),
+            "package.json": json.dumps({"name": "other", "bin": {"real": "x.js"}}),
+            "press/press-rules.toml": '[rules]\nlanguages = ["rust"]\n',
+        },
+    )
+    found = discover(target, ("rust",), ignored=("node",))
+    assert found.node_checked is False
+    assert found.source_kind == "cargo"
+
+
+def test_dependency_evidence_follows_checked_languages(tmp_path) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate(
+                "acme-core", '[dependencies]\nacme_core-extra = "1"\n'
+            ),
+            "src/lib.rs": "pub fn hi() {}\n",
+            "press/press-rules.toml": '[rules]\nextra_exclude_files = ["Cargo.toml"]\n',
+        },
+    )
+    source = _identity(CORE_MAP)
+    dest = Identity.from_mapping(_dest_values(), ZETA_MAP)
+    check = check_target_keep_names(
+        target, source, dest, load_rules(target), frozenset(), ("python",)
+    )
+    assert check.undeclared == ()
+
+
+def test_warning_uses_changing_values_when_destination_is_known(tmp_path) -> None:
+    target = _repo(
+        tmp_path,
+        {"Cargo.toml": _crate("acme-tools"), "src/lib.rs": "pub fn hi() {}\n"},
+    )
+    source = _identity(owner="acme")
+    rules = load_rules(target)
+    assert cargo_warnings(target, source, rules) == []
+    dest = Identity.from_mapping(_dest_values(owner="acme"))
+    assert "acme-tools" in cargo_warnings(target, source, rules, dest)[0]
