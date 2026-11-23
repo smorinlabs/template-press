@@ -37,6 +37,10 @@ from template_press.rebrand.identity import (
     Identity,
     ValidationError,
 )
+from template_press.rebrand.languages import (
+    check_target_languages,
+    render_ignored_languages,
+)
 from template_press.rebrand.receipt import (
     RECEIPT_REL,
     OriginDecision,
@@ -602,6 +606,17 @@ def main(argv: list[str] | None = None) -> int:
                 _load_rules_and_removal_receipt(target)
             return _fail(problem)
 
+        # Language guard: a multi-language target must declare which
+        # languages the press checks. Runs before any source or answers work.
+        # This is the run's one platform selection and receipt read.
+        selected, receipt_text = _load_rules_and_removal_receipt(target)
+        rules = selected.rules
+        languages = check_target_languages(
+            target,
+            rules.languages,
+            [rule.file for rule in rules.remove],
+        )
+
         # The answers file is read BEFORE the guard so the guard can ask
         # whether origin already names the destination (E1). It is a pure
         # read: the only write in this function stays deferred behind every
@@ -655,8 +670,6 @@ def main(argv: list[str] | None = None) -> int:
         # Pipeline stability, ambiguity, and termination are validated together
         # by build_plan before any write.  Keeping the target rules here ensures
         # the adapter preserves each field's effective substring posture.
-        selected, receipt_text = _load_rules_and_removal_receipt(target)
-        rules = selected.rules
         prior_removed = removed_files_from_receipt(receipt_text)
         removal_plan = plan_removals(
             target,
@@ -782,6 +795,8 @@ def main(argv: list[str] | None = None) -> int:
         # refusal that owns stdout under --diagnostics-json) is behind us,
         # so a notice or warning can no longer precede a refusal on the same
         # stream.
+        for line in render_ignored_languages(languages):
+            print(line, file=sys.stderr)
         for notice in _render_origin_notices(origin, source, dest):
             print(notice)
         for warning in _render_origin_mismatch_warnings(origin, source, dest, found):
@@ -1179,6 +1194,9 @@ def _press(
             return PressOutcome(
                 True, report.renamed, report.regenerated, env_error=None
             )
+        # A reset, edit, regeneration, or rename can change a root manifest,
+        # so the pressed tree must still pass the guard `press verify` applies.
+        check_target_languages(target, rules.languages, ())
         write_control(target, SOURCE_CONFIG_REL, render_source_config(dest))
         # The receipt is the LAST write of a successful press (P12 fix
         # round 1): it means "this rebrand completed and was verified" and it

@@ -1,6 +1,8 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from template_press.rebrand.discovery import discover, mismatches
 
 from .conftest import SOURCE
@@ -86,3 +88,13 @@ def test_declared_package_without_package_dir_is_a_mismatch(
     guarded_rmtree(src_target / "src", src_target)
     msgs = mismatches(SOURCE, discover(src_target))
     assert any("layout" in m for m in msgs)
+
+
+@pytest.mark.parametrize("authors", ['{ name = "Demo" }', "5"])
+def test_discover_ignores_non_list_authors(tmp_path: Path, authors: str):
+    (tmp_path / "pyproject.toml").write_text(
+        f'[project]\nname = "demo"\nauthors = {authors}\n', encoding="utf-8"
+    )
+    found = discover(tmp_path)
+    assert found.author is None
+    assert found.email is None

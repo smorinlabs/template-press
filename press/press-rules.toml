@@ -8,6 +8,7 @@
 # replace pass. Otherwise those reset targets would also be rewritten, making
 # their results depend on pass order.
 [rules]
+languages = ["python"]
 extra_exclude_files = [".release-please-manifest.json", "PROJECTS.md"]
 
 [[reset]]
