@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from template_press.rebrand.cli import main
+from template_press.rebrand.config import load_source_config
 from template_press.rebrand.discovery import (
     discover,
     manifest_warnings,
@@ -288,7 +290,12 @@ def test_proposal_without_bin_or_name_leaves_gaps():
     assert (p["package_name"], p["app_name"], p["npm_name"]) == (None, None, None)
 
 
-def _node_cli(tmp_path: Path, manifest: dict[str, object], origin: bool = False):
+def _node_cli(
+    tmp_path: Path,
+    manifest: dict[str, object],
+    origin: bool = False,
+    answers_extra: str = "",
+):
     target = tmp_path / "t"
     target.mkdir()
     _write(target, manifest)
@@ -318,7 +325,7 @@ def _node_cli(tmp_path: Path, manifest: dict[str, object], origin: bool = False)
         "[answers]\n"
         'package_name = "new_widget"\nrepo_name = "new-widget"\n'
         'app_name = "newapp"\nauthor = "New Author"\n'
-        'email = "new@example.test"\nowner = "newlabs"\n',
+        'email = "new@example.test"\nowner = "newlabs"\n' + answers_extra,
         encoding="utf-8",
     )
     return target, answers
@@ -348,9 +355,45 @@ def test_full_manifest_proposes_source_config(tmp_path: Path, capsys):
     out = capsys.readouterr().out
     assert code == 2
     assert 'package_name = "widget_api"' in out
-    assert 'npm_name = "@acme/widget-api"' in out or "@acme/widget-api" in out
-    assert "acme-cli" in out
+    assert 'npm_name = "@acme/widget-api"' in out
+    assert 'cli_name = "acme-cli"' in out
+    assert 'app_name = "acme_cli"' in out
     assert not (target / "press" / "press-source.toml").exists()
+
+
+def test_accept_discovery_writes_parseable_source_config(tmp_path: Path):
+    target, answers = _node_cli(
+        tmp_path,
+        {
+            "name": "@acme/widget-api",
+            "author": "Ann Lee <ann@example.test>",
+            "bin": {"acme-cli": "cli.js"},
+        },
+        origin=True,
+        answers_extra='npm_name = "@new/widget-api"\ncli_name = "new-cli"\n',
+    )
+    code = main(
+        ["--target", str(target), "--config", str(answers), "--accept-discovery"]
+    )
+    assert code == 0
+    # The press rewrites press-source.toml to the destination afterwards, so
+    # the receipt's [press.from] table is the record of what discovery wrote.
+    receipt = tomllib.loads(
+        (target / "press" / "press-receipt.toml").read_text(encoding="utf-8")
+    )
+    assert receipt["press"]["from"] == {
+        "package_name": "widget_api",
+        "repo_name": "acme-widget",
+        "app_name": "acme_cli",
+        "author": "Ann Lee",
+        "email": "ann@example.test",
+        "owner": "example-org",
+        "npm_name": "@acme/widget-api",
+        "cli_name": "acme-cli",
+    }
+    written = load_source_config(target, None)
+    assert written is not None
+    assert (written.npm_name, written.cli_name) == ("@new/widget-api", "new-cli")
 
 
 def test_origin_wins_over_manifest_repository(tmp_path: Path, capsys):
