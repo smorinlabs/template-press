@@ -1289,3 +1289,79 @@ def test_glued_multi_part_name_full_press(tmp_path, capsys):
     assert _verify(target) == 0
     assert _press(target, _answers(tmp_path)) == 0
     assert (target / "docs" / "a.md").read_text(encoding="utf-8") == text
+
+
+@pytest.mark.parametrize(
+    "entry", ["--acme-cli", "acme-cli-", "_acme-cli_", "@acme/widget-"]
+)
+def test_edge_separator_entry_may_be_declared(entry):
+    validate_keep_names([entry], SOURCE, DEST)
+    validate_keep_names([entry], SOURCE, DEST, synthetic_dest=True)
+
+
+@pytest.mark.parametrize(
+    "entry", ["acme-cli", "acme_cli", "Acme.CLI", "ACME-CLI", "AcmeCli"]
+)
+def test_real_identity_spellings_stay_refused(entry):
+    with pytest.raises(ValidationError, match="source identity"):
+        validate_keep_names([entry], SOURCE, DEST)
+
+
+def test_exact_identity_value_with_edge_separator_stays_refused():
+    source = replace(SOURCE, npm_name="-acme-tool")
+    with pytest.raises(ValidationError, match="source identity"):
+        validate_keep_names(["-acme-tool"], source, DEST)
+
+
+@pytest.mark.parametrize(
+    ("text", "entry", "spans"),
+    [
+        ("pass --acme-cli now", "--acme-cli", ((5, 15),)),
+        ("--acme-cli", "--acme-cli", ((0, 10),)),
+        ("x--acme-cli now", "--acme-cli", ()),
+        ("--acme-cli-extra", "--acme-cli", ()),
+        ("run acme-cli- now", "acme-cli-", ((4, 13),)),
+        ("run acme-cli-x now", "acme-cli-", ()),
+        ("run acme-cli-- now", "acme-cli-", ()),
+    ],
+)
+def test_kept_spans_with_edge_separators(text, entry, spans):
+    assert kept_spans(text, [entry]) == spans
+
+
+@pytest.mark.parametrize("token", ["--acme-cli", "acme-cli-", "_acme-cli_"])
+def test_edge_separator_refusal_prints_keep_line(tmp_path, capsys, token):
+    target = _make_target(tmp_path, LANGUAGES, {"docs/a.md": f"pass {token} now\n"})
+    code = _press(target, _answers(tmp_path))
+    err = capsys.readouterr().err
+    _assert_refused_clean(target, code)
+    assert f"keep_names = {json.dumps([token])}" in err
+    assert "cannot be kept" not in err
+
+
+@pytest.mark.parametrize("token", ["--acme-cli", "acme-cli-"])
+def test_declared_edge_separator_token_survives(tmp_path, token):
+    assert SOURCE.owner == "acme"
+    target = _make_target(
+        tmp_path,
+        _keep_rules([token]),
+        {"docs/a.md": f"pass {token} now\nrun acme-cli here\n"},
+    )
+    assert _verify(target) == 0
+    assert _press(target, _answers(tmp_path)) == 0
+    assert (target / "docs" / "a.md").read_text(encoding="utf-8") == (
+        f"pass {token} now\nrun new-cli here\n"
+    )
+
+
+def test_declared_edge_separator_does_not_cover_a_longer_token(tmp_path, capsys):
+    target = _make_target(
+        tmp_path,
+        _keep_rules(["--acme-cli"]),
+        {"docs/a.md": "pass --acme-cli and --acme-cli-extra\n"},
+    )
+    code = _press(target, _answers(tmp_path))
+    err = capsys.readouterr().err
+    _assert_refused_clean(target, code)
+    assert 'keep_names = ["--acme-cli-extra"]' in err
+    assert _verify(target) == 1

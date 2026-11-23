@@ -229,6 +229,18 @@ def _normalized(value: str) -> str:
     return value.casefold().translate(_NORMALIZED_AWAY)
 
 
+def _is_identity_spelling(name: str, forms: frozenset[str]) -> bool:
+    """Exact form, or a normalized match for a name with no edge ``-`` or ``_``.
+
+    An edge separator makes a distinct token: ``--acme-cli`` is not ``acme-cli``.
+    """
+    if name in forms:
+        return True
+    if name[0] in "-_" or name[-1] in "-_":
+        return False
+    return _normalized(name) in {_normalized(form) for form in forms}
+
+
 def validate_keep_names(
     names: Sequence[str],
     source: Identity,
@@ -239,15 +251,14 @@ def validate_keep_names(
     """Refuse an entry that is malformed or is a spelling of an identity value.
 
     Entries and identity forms are compared after case-folding and removing
-    ``-``, ``_``, ``.``, and spaces. ``synthetic_dest`` is for ``press
+    ``-``, ``_``, ``.``, and spaces, unless the entry starts or ends with ``-``
+    or ``_``; such an entry is refused only on exact equality. ``synthetic_dest`` is for ``press
     verify``. Its destination is generated, so the user cannot choose around
     an equality with it, and that comparison is skipped. Shape and source
     checks are identical in both commands.
     """
-    source_forms = {_normalized(form) for form in _identity_forms(source)}
-    dest_forms = (
-        set() if synthetic_dest else {_normalized(f) for f in _identity_forms(dest)}
-    )
+    source_forms = _identity_forms(source)
+    dest_forms = frozenset() if synthetic_dest else _identity_forms(dest)
     for name in names:
         if not isinstance(name, str):
             raise ValidationError(f"keep_names entry must be a string: {name!r}")
@@ -257,13 +268,12 @@ def validate_keep_names(
             raise ValidationError(
                 f"keep_names entry must not contain control characters: {name!r}"
             )
-        normalized = _normalized(name)
-        if normalized in source_forms:
+        if _is_identity_spelling(name, source_forms):
             raise ValidationError(
                 f"keep_names entry {name!r} equals a source identity value; "
                 f"an identity value cannot be kept"
             )
-        if normalized in dest_forms:
+        if _is_identity_spelling(name, dest_forms):
             raise ValidationError(
                 f"keep_names entry {name!r} equals a destination identity value; "
                 f"an identity value cannot be kept"
@@ -400,7 +410,7 @@ def check_keep_surfaces(
 
 def render_undeclared(findings: Sequence[UndeclaredName], source: Identity) -> str:
     """The exit-1 refusal: each exact token and the line that would keep it."""
-    identity = {_normalized(form) for form in _identity_forms(source)}
+    identity = _identity_forms(source)
     lines = [
         f"error: {len(findings)} undeclared name(s) contain a declared npm_name "
         "or cli_name; nothing written, no receipt.",
@@ -408,7 +418,7 @@ def render_undeclared(findings: Sequence[UndeclaredName], source: Identity) -> s
     for item in findings[:_REPORT_LIMIT]:
         path = item.path if item.path.isprintable() else repr(item.path)
         lines.append(f"  [{item.where}] {path}: {item.token}")
-        if _normalized(item.token) in identity:
+        if _is_identity_spelling(item.token, identity):
             lines.append(
                 "    this spelling is a source identity value that no row "
                 "rewrites here, so it cannot be kept; rename it or change "
