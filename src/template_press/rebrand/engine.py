@@ -3,7 +3,8 @@
 Scan-based (ARCH-03): no per-target file lists. Every tracked text file is a
 replace candidate; every path component containing an identity token is a
 rename candidate. Failure mode: any op raising propagates — git in the
-TARGET is the undo button (`git checkout . && git clean -fd`).
+TARGET is the undo button (`git -C <target> checkout .`, preview with
+`git -C <target> clean -nd`, then `git -C <target> clean -fd`).
 """
 
 from __future__ import annotations

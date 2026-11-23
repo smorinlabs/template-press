@@ -54,7 +54,7 @@ The exit code is the contract — scripts and CI can branch on it:
 | Code | Meaning |
 |------|---------|
 | `0` | Verified: the rebrand completed and no source identity remains; a receipt was written. |
-| `1` | Leaks found after applying — a partial/incorrect rebrand. **No receipt** is written; the target is left rewritten (restore with `git -C <target> checkout . && git clean -fd`). |
+| `1` | Leaks found after applying — a partial/incorrect rebrand. **No receipt** is written; the target is left rewritten (restore with `git -C <target> checkout .`, preview with `git -C <target> clean -nd`, then run `git -C <target> clean -fd`). |
 | `2` | Precondition or configuration error (missing target, dirty tree, source/target identity mismatch, an existing receipt without `--force`, or unavailable atomic rename without `--force`). **Nothing is written.** |
 
 `--dry-run` exits `0` after printing the plan — it is a preview and writes nothing (no receipt). It performs a read-only host check; a statically unsupported host produces a warning that real apply requires `--force`. The target filesystem's operational atomic-rename capability is probed only during real apply. Other plan-time refusals (a missing declared tool, a stale argv, an undeclared excluded file) exit `2` before the plan renders, exactly as they would without `--dry-run`.

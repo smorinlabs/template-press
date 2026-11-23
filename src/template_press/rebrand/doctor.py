@@ -545,8 +545,9 @@ def render_leak_report(leaks: list[Leak], limit: int = 20) -> str:
     if len(leaks) > limit:
         lines.append(f"  … and {len(leaks) - limit} more")
     lines.append(
-        "hint: restore the target (git -C <target> checkout . && git clean "
-        "-fd), fix the root cause (or, for content that is VALID to keep, "
+        "hint: restore the target (git -C <target> checkout . ; preview with "
+        "git -C <target> clean -nd ; then git -C <target> clean -fd), fix the "
+        "root cause (or, for content that is VALID to keep, "
         "add its directory to BOTH extra_exclude_dirs and verify_ignore in "
         "<target>/press/press-rules.toml — the first skips rewriting, the "
         "second skips this scan; a [symlink] leak is keyed on the link's "
