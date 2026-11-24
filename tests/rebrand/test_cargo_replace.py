@@ -186,7 +186,9 @@ def test_f3_shape_is_refused_without_a_rule(
     assert split._press(target, _f3_answers(tmp_path)) == 2
     err = capsys.readouterr().err
     assert "crates/acme/README.md:4" in err
-    assert "{cargo_ident_<role>}" in err
+    # R41: rustdoc compiles this README, so the remedy is identifier_files.
+    assert "List the file in identifier_files instead" in err
+    assert "{cargo_ident_<role>}" not in err
     assert "P15-T10" not in err
     assert split._status(target) == ""
 

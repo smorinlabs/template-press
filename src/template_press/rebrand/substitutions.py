@@ -85,6 +85,7 @@ from template_press.rebrand.rules import (
     rule_matches_path,
 )
 from template_press.rebrand.rust_text import (
+    compiled_markdown_lines,
     cut_module_docs,
     module_declarations,
     quoted_spans,
@@ -2203,6 +2204,68 @@ def _identifier_contexts(text: str, name: str) -> list[int]:
     return sorted(offsets)
 
 
+_INCLUDE_STR = re.compile(r"\binclude_str!\s*\(\s*$")
+
+
+def _doc_included_files(target: Path, paths: Sequence[str]) -> dict[str, str]:
+    """Files a ``.rs`` file reads with ``include_str!``, each with that
+    ``file:line``. rustdoc compiles such a file's code blocks when the string
+    is doc text, as in ``#![doc = include_str!("../README.md")]``.
+    """
+    found: dict[str, str] = {}
+    for path in paths:
+        if not path.endswith(".rs"):
+            continue
+        try:
+            text = read_regular_nofollow(target / path).decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if "include_str" not in text:
+            continue
+        for literal in rust_strings(text):
+            if literal.doc or not _INCLUDE_STR.search(
+                text, max(literal.start - 64, 0), literal.start
+            ):
+                continue
+            value = text[literal.content_start : literal.content_end]
+            resolved = posixpath.normpath(
+                posixpath.join(posixpath.dirname(path), value)
+            )
+            found.setdefault(resolved, f"{path}:{_line_of(text, literal.start)}")
+    return found
+
+
+def _doc_included_problems(
+    path: str, text: str, new_text: str, new: str, role: str, where: str
+) -> list[str]:
+    """Package spellings the press would write where rustdoc compiles Rust.
+
+    In a doc-included ``package_files`` file, that is any line of a code block
+    rustdoc may compile, and any position only a Rust identifier fits.
+    """
+    old_lines, new_lines = text.split("\n"), new_text.split("\n")
+    if len(old_lines) != len(new_lines):
+        return [f"{path}: the rewrite changes its line count; edit it by hand"]
+    lines = {
+        number
+        for number in compiled_markdown_lines(text)
+        if new_lines[number - 1].count(new) > old_lines[number - 1].count(new)
+    }
+    if len(_identifier_contexts(new_text, new)) > len(_identifier_contexts(text, new)):
+        lines.update(
+            _line_of(new_text, offset) for offset in _identifier_contexts(new_text, new)
+        )
+    return [
+        f"{path}:{line}: {new!r} would sit in a code block that rustdoc compiles "
+        f"as Rust, or where only a Rust identifier fits, because {where} includes "
+        "this file with include_str!, but package_files gives it the package "
+        "spelling. List the file in identifier_files instead, and cover each "
+        "span that needs the package spelling, such as a `cargo add` line, with "
+        f'an exact [[replace]] rule such as "cargo add {{cargo_exact_{role}}}"'
+        for line in sorted(lines)
+    ]
+
+
 def _rule_hyphen_problems(
     path: str,
     text: str,
@@ -2282,6 +2345,7 @@ def cargo_split_target_problems(
     surface = frozenset(entry.rel.as_posix() for entry in rename_snapshot.entries)
     content_rows = tuple(row for row in rows if "content" in row.rewrite_surfaces)
     mod_declared: set[str] = set()
+    included = _doc_included_files(target, paths)
     for path in paths:
         try:
             text = read_regular_nofollow(target / path).decode("utf-8")
@@ -2393,6 +2457,13 @@ def cargo_split_target_problems(
                     _rust_path_problems(path, text, new_text, old, plan, surface)
                 )
             if split_spelling(split, path) != "package" or path.endswith("Cargo.toml"):
+                continue
+            if path in included:
+                problems.extend(
+                    _doc_included_problems(
+                        path, text, new_text, new, split.role, included[path]
+                    )
+                )
                 continue
             written = _identifier_contexts(new_text, new)
             if len(written) <= len(_identifier_contexts(text, new)):

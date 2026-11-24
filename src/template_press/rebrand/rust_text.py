@@ -747,6 +747,34 @@ def _never_compiled(info: str) -> bool:
     return bool(tags) and all(tag in NOT_RUST_TAGS for tag in tags)
 
 
+def compiled_markdown_lines(text: str) -> frozenset[int]:
+    """The 1-based lines of a Markdown file that rustdoc may compile as Rust
+    when the file is a crate's doc text (``#![doc = include_str!(...)]``).
+
+    That is every line inside a fence that ``_never_compiled`` does not skip,
+    and, outside fences, every line that may sit in an indented code block.
+    The press does not parse Markdown further, so it fails closed.
+    """
+    found: set[int] = set()
+    fence = ""  # the open fence's marker, if any
+    compiled = False
+    for number, line in enumerate(text.split("\n"), start=1):
+        body = line.lstrip(" ")
+        if fence:
+            if _closes(body, fence):
+                fence = ""
+            elif compiled:
+                found.add(number)
+            continue
+        opened = _FENCE.match(body) if len(line) - len(body) < 4 else None
+        if opened:
+            fence = opened[1]
+            compiled = not _never_compiled(opened[2].strip())
+        elif _INDENTED.search(line):
+            found.add(number)
+    return frozenset(found)
+
+
 def _lasting(readings: Sequence[_Reading]) -> list[_Reading]:
     """Drop the indented code blocks, which a prose line ends."""
     kept = [

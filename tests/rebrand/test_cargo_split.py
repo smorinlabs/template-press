@@ -1831,6 +1831,134 @@ def test_renamed_quoting_macro_refusal_matches_real_cargo(
     assert after.returncode == 101, after.stdout + after.stderr
 
 
+# R41/I4: a package_files file that rustdoc compiles through include_str!.
+README_LIB = (
+    '#![doc = include_str!("../README.md")]\n'
+    "#[macro_export]\nmacro_rules! acme { () => { 1 } }\n" + PLAIN_LIB
+)
+README_DOC = (
+    "# Demo\n\nInstall with `cargo add acme`.\n\n"
+    "```rust\nuse acme::{acme, hi};\nlet _ = hi();\nlet _ = acme!();\n```\n"
+)
+PKG_README = '\n[[cargo_split]]\nrole = "core"\npackage_files = ["README.md"]\n'
+README_RULES = {
+    "rd_pkg_only": PKG_README,
+    "rd_pkg_plus_rule": PKG_README
+    + '\n[[replace]]\npattern = "use {cargo_ident_core}::"\n'
+    + 'files = ["README.md"]\nreason = "import"\n',
+    "rd_ident_plus_rule": '\n[[cargo_split]]\nrole = "core"\n'
+    + 'identifier_files = ["README.md"]\n\n[[replace]]\n'
+    + 'pattern = "cargo add {cargo_exact_core}"\nfiles = ["README.md"]\n'
+    + 'reason = "install line"\n',
+}
+
+
+def _readme_crate(readme: str = README_DOC) -> dict[str, str]:
+    return {
+        "Cargo.toml": _package("acme"),
+        "src/lib.rs": README_LIB,
+        "src/main.rs": 'fn main() {\n    println!("{} acmectl", acme::hi());\n}\n',
+        "README.md": readme,
+    }
+
+
+@pytest.mark.parametrize("case", ["rd_pkg_only", "rd_pkg_plus_rule"])
+def test_doc_included_package_file_with_a_compiled_name_is_refused(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    err = _refusal(tmp_path, _readme_crate(), capsys, split=README_RULES[case])
+    assert "README.md:8: 'zeta-gadget' would sit in a code block" in err
+    assert "src/lib.rs:1" in err  # where Rust includes the file
+    assert "identifier_files" in err
+    # No [[replace]] rule can make a package_files spelling right here.
+    assert "{cargo_ident_<role>}::" not in err
+
+
+def test_doc_included_identifier_file_with_an_exact_rule_presses(
+    tmp_path: Path,
+) -> None:
+    files = _readme_crate()
+    target = _round_target(tmp_path, files, split=README_RULES["rd_ident_plus_rule"])
+    assert _press(target, _zeta(tmp_path)) == 0
+    assert (target / "README.md").read_text() == (
+        README_DOC.replace("cargo add acme", "cargo add zeta-gadget").replace(
+            "acme", "zeta_gadget"
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("readme", "line"),
+    [
+        ("# Demo\n\nExample:\n\n    let _ = acme!();\n", 5),
+        ("# Demo\n\n~~~\nlet _ = acme!();\n~~~\n", 4),
+        ("# Demo\n\n```rust,ignore-x\nlet _ = acme!();\n```\n", 4),
+    ],
+    ids=["indented_block", "tilde_fence", "ignore_target_fence"],
+)
+def test_doc_included_package_file_compiled_blocks_are_refused(
+    readme: str, line: int, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    err = _refusal(tmp_path, _readme_crate(readme), capsys, split=PKG_README)
+    assert f"README.md:{line}: 'zeta-gadget' would sit in a code block" in err
+
+
+@pytest.mark.parametrize(
+    "readme",
+    [
+        "# Demo\n\nInstall with `cargo add acme`.\n",
+        "# Demo\n\n```text\ncargo add acme\n```\n",
+        "# Demo\n\n```ignore\nlet _ = acme!();\n```\n",
+    ],
+    ids=["prose", "text_fence", "ignore_fence"],
+)
+def test_doc_included_package_file_prose_keeps_the_package_spelling(
+    readme: str, tmp_path: Path
+) -> None:
+    target = _round_target(tmp_path, _readme_crate(readme), split=PKG_README)
+    assert _press(target, _zeta(tmp_path)) == 0
+    assert "zeta-gadget" in (target / "README.md").read_text()
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_doc_included_readme_refusal_and_remedy_match_real_cargo(
+    tmp_path: Path,
+) -> None:
+    """Real Cargo: the old receipt failed its doctests; the remedy passes."""
+    _require_cargo()
+    files = _readme_crate()
+    for name in ("refused", "remedy"):
+        (tmp_path / name).mkdir()
+    refused = _round_target(
+        tmp_path / "refused", files, split=README_RULES["rd_pkg_plus_rule"], lock=True
+    )
+    _assert_cargo(refused, "test", "--offline")
+    assert _press(refused, _zeta(tmp_path / "refused")) == 2
+    assert _status(refused) == ""
+    # What the old press wrote: the package spelling inside the doctest.
+    readme = refused / "README.md"
+    readme.write_text(
+        README_DOC.replace("use acme::", "use zeta_gadget::").replace(
+            "acme", "zeta-gadget"
+        )
+    )
+    for rel in ("Cargo.toml", "src/lib.rs", "src/main.rs"):
+        path = refused / rel
+        path.write_text(
+            path.read_text()
+            .replace('"acme"', '"zeta-gadget"')
+            .replace("acme", "zeta_gadget")
+        )
+    assert _cargo(refused, "test", "--offline").returncode == 101
+
+    remedy = _round_target(
+        tmp_path / "remedy", files, split=README_RULES["rd_ident_plus_rule"], lock=True
+    )
+    _press_and_prove(remedy, _zeta(tmp_path / "remedy"), ZETA)
+
+
 # --- identity and rules units ----------------------------------------------------
 
 
