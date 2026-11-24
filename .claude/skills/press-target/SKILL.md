@@ -405,8 +405,9 @@ identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadge
 |---|---|
 | Any `Cargo.toml`: package name, dependency keys, `package =` | `zeta-gadget` |
 | Rust code in any `.rs` file, such as `acme::hi()` or `mod acme;` | `zeta_gadget` |
-| A `.rs` string Cargo proves, in code or in a doc-comment code block that rustdoc compiles (a fence with no tag, or only `rust`, `should_panic`, `no_run`, `compile_fail`, and similar tags; `ignore`, `text`, and prose are not compiled): `feature = "acme"` inside `cfg(`, `cfg!(` or `cfg_attr(`; an `include_str!`/`include_bytes!`/`include!`/`#[path]` path to a file the press renames; or `"acme"` as the other side of an `==`, `!=`, `assert_eq!` or `assert_ne!` comparison with `env!("CARGO_PKG_NAME")` | `zeta-gadget` (the path follows the rename) |
-| Any other `.rs` string literal, such as `println!("acme")` or `#[command(name = "acme")]` | exit 2 before any write, with `file:line` |
+| A `.rs` string Cargo proves, in code or in doc-comment text that rustdoc may compile: `feature = "acme"` inside `cfg(`, `cfg!(` or `cfg_attr(`; an `include_str!`/`include_bytes!`/`include!`/`#[path]` path to a file the press renames; or `"acme"` as the other side of an `==`, `!=`, `assert_eq!` or `assert_ne!` comparison with `env!("CARGO_PKG_NAME")` | `zeta-gadget` (the path follows the rename) |
+| Any other `.rs` string literal, such as `println!("acme")` or `#[command(name = "acme")]`, in code or in doc-comment text that rustdoc may compile | exit 2 before any write, with `file:line` |
+| Doc-comment text that rustdoc never compiles: prose and non-Rust fences in a `///` comment (see **Doc comments** below) | `zeta_gadget`, inside double quotes too |
 | `env!("CARGO_BIN_EXE_acme")` | `CARGO_BIN_EXE_zeta-gadget` |
 | Paths, such as `crates/acme` | `crates/zeta-gadget`; declared manifest paths follow |
 | A file matched by `package_files` or `identifier_files` | that spelling |
@@ -420,6 +421,50 @@ identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadge
 - The role must exist in both `cargo_names` tables. The source must have no
   hyphen and the destination must have one; otherwise the block exits 2 as
   unnecessary.
+- **Doc comments.** rustdoc compiles the code blocks of a doc comment as
+  doctests: fenced blocks, and blocks indented by four spaces. The press does
+  not parse Markdown. It reads doc-comment text as Rust code under the string
+  rules above, unless it can prove that rustdoc compiles nothing there.
+  - **Read as prose** (the name takes `zeta_gadget`, even inside double
+    quotes), only in a run of `///` comments that starts an item's
+    documentation. The code before the run must end with `;`, `}`, `{`, `,`
+    or `(`, or the run must start the file. Attributes without `doc =`, such
+    as `#[derive(Debug)]`, may stand before or inside the run. In such a run:
+    - a line outside every fence that holds no tab and no run of four spaces;
+    - a fence that starts at the comment's left margin and whose tags are all
+      non-Rust language names: `text`, `txt`, `plain`, `plaintext`, `console`,
+      `sh`, `shell`, `bash`, `toml`, `json`, `yaml`, `yml`, `ini`, `xml`,
+      `html`, `css`, `sql`, `diff`, `c`, `cpp`, `python`, `javascript`,
+      `typescript`, `markdown`, `md`, `makefile`, `dockerfile`, `asm`,
+      `notrust` (`NOT_RUST_TAGS` in `src/template_press/rebrand/rust_text.py`);
+    - a fence at the left margin with the tag `ignore` and no
+      `ignore-<target>` tag.
+  - **Read as code** (a string the press cannot prove exits 2):
+    - every `//!`, `/** */` and `/*! */` comment, because rustdoc joins it to
+      doc text the press may not see;
+    - a run of `///` comments beside a `#[doc = ...]` attribute, one that does
+      not start an item's documentation, one that holds a tab, or one that
+      indents every line by more than three spaces;
+    - a line that holds a run of four spaces, which Markdown can read as an
+      indented code block;
+    - a fence with any other tag, including an unknown tag and a misspelt one
+      such as `should-panic` or `Rust`;
+    - after a line that starts with `<` (a possible HTML block), or after a
+      fence that is not at the left margin (it may sit in a list or a block
+      quote): all text that follows any later fence line, whatever its tag.
+  - A code block may start at more than one line when the press cannot prove
+    the Markdown structure. The press reads the text from each such line, and
+    writes a spelling only when every reading agrees. A reading that ends
+    inside a string or a comment is ignored, because that doctest cannot
+    compile.
+  - **Remedy for a doc-comment refusal:** name the crate in backticks, not in
+    double quotes, or edit the line by hand before pressing.
+  - **Limits.** The press reads doc comments only. It does not read doc text
+    from a `#[doc]` attribute or a macro, or the outer doc comment that
+    rustdoc joins in front of an inner one. If such unseen text leaves a
+    string or a block comment open, the press reads the following doc comment
+    wrongly. An `ignore` fence is prose to the press, so `cargo test --
+    --ignored` can fail on it after a press.
 - **A file with both spellings**, such as a README holding `cargo run -p acme`
   and `acme::hi()`, works only for the `package_name` crate. List the file in
   `package_files`, and add an exact rule for the identifier spans:

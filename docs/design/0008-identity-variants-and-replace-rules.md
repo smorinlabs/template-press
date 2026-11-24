@@ -168,13 +168,48 @@ retained decision record does not require those files to remain present.
    `cfg(`, `cfg!(` or `cfg_attr(`; an `include_*!` or `#[path]` string naming
    a file the press renames (the string must resolve to that file's new
    path); and `"acme"` as the other side of an `==`, `!=`, `assert_eq!` or
-   `assert_ne!` comparison with `env!("CARGO_PKG_NAME")`. In doc comments
-   (`///`, `//!`, `/**`, `/*!`), the same rules apply only inside fenced code
-   blocks that rustdoc compiles: no tag, or only tags such as `rust`,
-   `should_panic`, `no_run`, and `compile_fail`. A block is read across its
-   lines without the comment prefix, and a string still open at the end of the
-   block is refused. Prose and `ignore` or `text` fences keep the identifier
-   spelling. Any other string occurrence exits 2.
+   `assert_ne!` comparison with `env!("CARGO_PKG_NAME")`. Any other string
+   occurrence exits 2.
+
+   Doc comments (`///`, `//!`, `/** */`, `/*! */`) follow the same string
+   rules wherever rustdoc may compile them, because rustdoc compiles a doc
+   comment's fenced and indented code blocks as doctests. The press does not
+   parse Markdown, so the rule is fail-closed: doc text is Rust code unless
+   the press proves that rustdoc compiles nothing there.
+
+   - **Joined text.** rustdoc joins an item's doc comments across blank lines,
+     plain comments, and attributes. The press reads them as one text.
+   - **Prose, proven.** Only a run of `///` comments that starts an item's
+     documentation can be proven: it has no `#[doc = ...]` attribute beside
+     it, no tab, and a common indent of at most three spaces. In it, a line
+     outside every fence with no run of four spaces is prose. So is a fence
+     at the left margin whose tags are all non-Rust language names
+     (`NOT_RUST_TAGS` in `rust_text.py`, such as `text`, `toml`, `sh`), or
+     that has the tag `ignore` and no `ignore-<target>` tag. Prose takes the
+     identifier spelling, inside double quotes too.
+   - **Everything else is code.** That covers `//!`, `/** */` and `/*! */`
+     comments (rustdoc joins an inner comment to the item's outer comment,
+     which may be in another file); a fence with an unknown or misspelt tag;
+     a line with a run of four spaces; and the text after a line that starts
+     with `<` or after a fence that is not at the left margin, because an HTML
+     block, a list, or a block quote can change where a fence ends.
+   - **Readings.** Where the structure is not proven, a code block may start
+     at the first line, after any fence line, or at any line with a run of
+     four spaces. The press lexes the text from each such start. It writes a
+     string's spelling only when every reading agrees on the literal and its
+     role; otherwise it exits 2. A reading in which the text sits in a
+     comment does not count, and neither does a reading that never returns to
+     code at a line end, because that doctest cannot compile.
+   - **Limits.** The press does not read doc text from a `#[doc]` attribute
+     or a macro. If unseen text leaves a string literal or a block comment
+     open, the press reads the following doc comment wrongly. An `ignore`
+     fence is prose, so `cargo test -- --ignored` may fail on it after a
+     press.
+
+   Real `cargo test` is the oracle for these rules in
+   `tests/rebrand/test_cargo_split.py`: each layout that rustdoc compiles,
+   and each exempt tag, is pressed and then tested.
+
    `CARGO_BIN_EXE_acme` becomes `CARGO_BIN_EXE_zeta-gadget`. Paths take the
    package spelling, so `crates/acme` becomes `crates/zeta-gadget` and declared
    manifest paths follow. A file matched by `package_files` or
