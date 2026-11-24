@@ -457,14 +457,28 @@ identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadge
     writes a spelling only when every reading agrees. A reading that ends
     inside a string or a comment is ignored, because that doctest cannot
     compile.
+  - **Not read at all** (every occurrence of the name exits 2, in code
+    position too): doc-comment lines that follow doc text the press cannot
+    read, because that text may leave a string or a comment open.
+    - Lines below a `#[doc = ...]` attribute of the same item, unless its
+      value is a plain string with no quote, no backslash, and no `/*` or
+      `*/`. `#[doc = include_str!("intro.md")]`, `#[doc = concat!(...)]` and
+      `#[doc = "let s = \"x\";"]` stop the reading. A plain value such as
+      `#[cfg_attr(feature = "std", doc = "```")]` does not. Remedy: move the
+      attribute below the doc comments.
+    - The inner doc comment (`//!`) of an item whose outer doc comment ends
+      inside a string or a block comment, or stands beside such an attribute.
+    - A `mod name;` declaration whose doc comment ends inside a string or a
+      block comment exits 2 at the declaration, because rustdoc joins the doc
+      comment of the module's own file to it.
   - **Remedy for a doc-comment refusal:** name the crate in backticks, not in
     double quotes, or edit the line by hand before pressing.
-  - **Limits.** The press reads doc comments only. It does not read doc text
-    from a `#[doc]` attribute or a macro, or the outer doc comment that
-    rustdoc joins in front of an inner one. If such unseen text leaves a
-    string or a block comment open, the press reads the following doc comment
-    wrongly. An `ignore` fence is prose to the press, so `cargo test --
-    --ignored` can fail on it after a press.
+  - **Limits.** The press reads the doc comments and `doc` attributes in each
+    file. It does not see doc text that a macro produces. It does not carry a
+    `#[doc = ...]` attribute on a `mod name;` declaration into the module's
+    own file: that file's doc comment is read as if the attribute's text ended
+    outside every string and comment. An `ignore` fence is prose to the press,
+    so `cargo test -- --ignored` can fail on it after a press.
 - **A file with both spellings**, such as a README holding `cargo run -p acme`
   and `acme::hi()`, works only for the `package_name` crate. List the file in
   `package_files`, and add an exact rule for the identifier spans:

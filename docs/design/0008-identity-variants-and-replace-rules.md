@@ -200,11 +200,20 @@ retained decision record does not require those files to remain present.
      role; otherwise it exits 2. A reading in which the text sits in a
      comment does not count, and neither does a reading that never returns to
      code at a line end, because that doctest cannot compile.
-   - **Limits.** The press does not read doc text from a `#[doc]` attribute
-     or a macro. If unseen text leaves a string literal or a block comment
-     open, the press reads the following doc comment wrongly. An `ignore`
-     fence is prose, so `cargo test -- --ignored` may fail on it after a
-     press.
+   - **Unread text.** A string or a comment may start in doc text that the
+     press cannot read and end in a doc comment. So the press refuses every
+     occurrence of the name, in code position too, in doc-comment lines below
+     a `#[doc = ...]` attribute of the same item whose value is not a plain
+     string free of quotes, backslashes, and block-comment markers
+     (`include_str!`, `concat!`, a string with an escaped quote). It does the
+     same in the inner doc comment of an item whose outer doc comment ends
+     inside a string or a block comment, or stands beside such an attribute.
+     A `mod name;` declaration whose doc comment ends that way exits 2
+     itself, because the module's own file continues the text.
+   - **Limits.** The press does not see doc text that a macro produces. It
+     does not carry a `#[doc = ...]` attribute on a `mod name;` declaration
+     into the module's own file. An `ignore` fence is prose, so `cargo test --
+     --ignored` may fail on it after a press.
 
    Real `cargo test` is the oracle for these rules in
    `tests/rebrand/test_cargo_split.py`: each layout that rustdoc compiles,
