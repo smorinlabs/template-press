@@ -383,6 +383,65 @@ command = ["cargo", "update", "--workspace", "--offline"]
   dependencies, needs the dependencies vendored or cached in the default
   location.
 
+### `[[cargo_split]]`: rename `acme` to `zeta-gadget` in one press
+
+A hyphen-free crate name such as `acme` spells its package and its Rust
+identifier identically. By default, a hyphenated destination is refused with
+exit 2, because text alone cannot choose a spelling. Opt in per role:
+
+```toml
+# press-answers.toml
+[answers.cargo_names]
+core = "zeta-gadget"
+
+# press/press-rules.toml
+[[cargo_split]]
+role = "core"
+package_files = ["README.md", "scripts/release.sh"]  # fnmatch globs: zeta-gadget
+identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadget
+```
+
+| Where `acme` appears | Result |
+|---|---|
+| Any `Cargo.toml`: package name, dependency keys, `package =` | `zeta-gadget` |
+| Any `.rs` file, such as `acme::hi()` | `zeta_gadget::hi()` |
+| `env!("CARGO_BIN_EXE_acme")` | `CARGO_BIN_EXE_zeta-gadget` |
+| Paths, such as `crates/acme` | `crates/zeta-gadget`; declared manifest paths follow |
+| A file matched by `package_files` or `identifier_files` | that spelling |
+| Any other file | exit 2 before any write, listing each `file:line` |
+
+- The `Cargo.toml` and `.rs` rule outranks the globs. A file that matches both
+  lists exits 2.
+- Every key is optional except `role`. Both lists default to empty. Unknown
+  keys, a repeated `role`, and a glob in both lists are refused when the rules
+  load.
+- The role must exist in both `cargo_names` tables. The source must have no
+  hyphen and the destination must have one; otherwise the block exits 2 as
+  unnecessary.
+- **A file with both spellings**, such as a README holding `cargo run -p acme`
+  and `acme::hi()`, works only for the `package_name` crate. List the file in
+  `package_files`, and add an exact rule for the identifier spans:
+
+  ```toml
+  [[replace]]
+  pattern = "{package_name}::hi"
+  files = ["README.md"]
+  reason = "the README names the crate both ways"
+  ```
+
+  A file that would gain the invalid Rust path `zeta-gadget::` exits 2. For a
+  non-primary role, no placeholder renders the crate name, so move the
+  identifier spans to an `identifier_files` file.
+- Also refused before any write: an explicit `[lib] name = "acme"` (Cargo
+  refuses a hyphen in a library name), a renamed module path below `src/`
+  other than `src/bin/<name>`, and a target that also checks `python` or
+  `node`.
+- **After the press**, leave the block in place. The receipt and the rewritten
+  `press-source.toml` record `zeta-gadget`, so the next press uses the normal
+  two-spelling rows. When a receipt exists and the source already has a
+  hyphen, the press prints `warning: [[cargo_split]] role 'core' is inert` and
+  continues. Remove the block when convenient. `press verify` ignores it.
+
 ### Deliberate refusals
 
 These stop the press before any write:
@@ -392,7 +451,7 @@ These stop the press before any write:
 | Destination extends a source name | `acme-core` to `acme-core-next` | 2 |
 | Destination contains another field's source spelling | `zeta-acme` when `app_name = "acme"` | 2 |
 | A crate's Rust identifier would be left behind | crate `acme-widget`, no table, `repo_name` changes | 2 |
-| A hyphen-free source name takes a hyphenated destination | `acme_core` to `zeta-core` | 2 |
+| A hyphen-free source name takes a hyphenated destination, without `[[cargo_split]]` | `acme_core` to `zeta-core` | 2 |
 | A source or destination name equals a non-local dependency | crate pressed to `padkit` beside `padkit = "1"` | 2 |
 | A rewrite would separate a declared or name-inferred Cargo path from its file (`cargo paths:`) | `owner = "acme"` rewrites `[lib] path = "lib/acme-x.rs"`, but no row renames the file | 2 |
 | A `CARGO_BIN_EXE_<name>` token would not match its auto-discovered binary (`cargo paths:`) | `src/bin/acme.rs` renames to `zeta.rs`, but the token in an excluded file stays | 2 |

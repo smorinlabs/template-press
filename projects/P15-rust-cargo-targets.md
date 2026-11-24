@@ -46,3 +46,4 @@ This branch rebases on each before its dependent task starts.
       file still earns a receipt on a crate that no longer builds, and
       owner-only targets with an auto-discovered `src/bin/acme-cli.rs` or an
       unreferenced `testdata/acme-sample/Cargo.toml` are falsely refused.
+- [x] [P15-T09] One-press rename of a hyphen-free crate to a hyphenated name ([[cargo_split]])

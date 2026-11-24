@@ -130,8 +130,8 @@ identity validation → apply → verify → receipt). Command shape:
 [`docs/design/0006-external-target-model.md`](docs/design/0006-external-target-model.md).
 The identity-field set (six required plus optional `display_name`, `npm_name`,
 `cli_name`, and `cargo_names`) and the target-authored `press/press-rules.toml`
-mechanisms (`[[replace]]` exact rules, `substring_rewrite_fields`, `keep_names`)
-are specified in
+mechanisms (`[[replace]]` exact rules, `substring_rewrite_fields`, `keep_names`,
+`[[cargo_split]]`) are specified in
 [`docs/design/0008-identity-variants-and-replace-rules.md`](docs/design/0008-identity-variants-and-replace-rules.md).
 A target with several language manifests must declare `[rules] languages` in
 `press/press-rules.toml`, or `press rebrand` and `press verify` exit 2. npm
@@ -162,6 +162,22 @@ declares or Cargo infers (`members`, `exclude`, dependency `path`, target `path`
 or name, `build`, `package.workspace`) from the file or directory it names, and
 a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. See the
 `press-target` skill for the full rules.
+
+A hyphen-free crate name pressed to a hyphenated one (`acme` to `zeta-gadget`)
+is refused by default. A `[[cargo_split]]` block in `press/press-rules.toml`
+opts one role in. Manifests take `zeta-gadget`, `.rs` files take
+`zeta_gadget`, and the block's `package_files` and `identifier_files` globs
+name every other file that holds the crate name. Any other occurrence exits 2
+before any write, with `file:line`:
+
+```toml
+[[cargo_split]]
+role = "core"
+package_files = ["README.md"]
+identifier_files = ["docs/api.md"]
+```
+
+After the press the block is inert and may be removed.
 `provision`/`status` verbs arrive with the M6 Provision phase.
 
 ## Single source of truth

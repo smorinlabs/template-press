@@ -149,6 +149,50 @@ retained decision record does not require those files to remain present.
    Spec: [Rust and Cargo
    targets](../superpowers/specs/2026-11-22-rust-cargo-targets-design.md).
 
+8. **`[[cargo_split]]`: one-press rename of a hyphen-free crate (P15-T09,
+   owner decision Q2.A).** The hyphen-free refusal stays the default. A target
+   opts in per role in `press/press-rules.toml`:
+
+   ```toml
+   [[cargo_split]]
+   role = "core"                                       # a cargo_names role
+   package_files = ["README.md", "scripts/release.sh"]  # fnmatch globs
+   identifier_files = ["docs/api.md"]
+   ```
+
+   With `core = "acme"` pressed to `core = "zeta-gadget"`, every `Cargo.toml`
+   takes the package spelling `zeta-gadget`, and every `.rs` file takes the
+   identifier spelling `zeta_gadget`. That structural rule outranks the globs.
+   `CARGO_BIN_EXE_acme` becomes `CARGO_BIN_EXE_zeta-gadget`. Paths take the
+   package spelling, so `crates/acme` becomes `crates/zeta-gadget` and declared
+   manifest paths follow. A file matched by `package_files` or
+   `identifier_files` takes that spelling.
+
+   Before any write, the press exits 2 and lists `file:line` for each
+   occurrence that the ordered rows leave behind. These checks also exit 2:
+
+   - a file that matches both lists;
+   - an explicit `[lib] name = "acme"`, because Cargo refuses a hyphen in a
+     library name;
+   - a renamed module path below `src/`, other than `src/bin/<name>`;
+   - a package-spelling file whose rewrite writes the invalid Rust path
+     `zeta-gadget::`;
+   - a target that also checks `python` or `node`.
+
+   A file holding both spellings works only when the split crate is the
+   `package_name` crate. List the file in `package_files`, and add an exact
+   `[[replace]]` rule scoped to it, such as `pattern = "{package_name}::hi"`.
+   Declared rules run first and write `zeta_gadget::hi`. A non-primary role
+   cannot do this, because `[[replace]]` cannot reference `cargo_names`.
+
+   The block is validated against both tables. Its role must exist in both
+   tables. The source must have no hyphen and the destination must have one;
+   otherwise the block is refused as unnecessary. After a press, a block left
+   in place is inert: when a receipt exists and the source already has a
+   hyphen, the press prints a warning instead of refusing. The receipt and the
+   rewritten `press-source.toml` record the hyphenated name, so later presses
+   use the normal two-spelling rows. `press verify` ignores the block.
+
 ## Independence guardrail (P06 D2)
 
 The rendered substitution table introduced by design 0009 is the conservative
