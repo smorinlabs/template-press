@@ -84,6 +84,7 @@ from template_press.rebrand.rules import (
     render_replace_pattern,
 )
 from template_press.rebrand.rust_text import (
+    cut_module_docs,
     rust_strings,
     split_rust_replacements,
     string_at,
@@ -2137,6 +2138,15 @@ def cargo_split_target_problems(
         )
         kept = kept_spans(new_text, rules.keep_names)
         strings = rust_strings(new_text) if path.endswith(".rs") else ()
+        if path.endswith(".rs"):
+            problems.extend(
+                f"{path}:{_line_of(text, offset)}: the doc comment above this "
+                "`mod` declaration ends inside a Rust string literal or a block "
+                "comment. rustdoc joins the doc comment of the module's own file "
+                "to it, so the press cannot read that file's doc comment. Close "
+                "the string or comment before pressing"
+                for offset in cut_module_docs(text)
+            )
         for split in splits:
             old, new = old_names[split.role], new_names[split.role]
             role = f"[[cargo_split]] role {split.role!r}"
@@ -2157,6 +2167,20 @@ def cargo_split_target_problems(
                         "inside a Rust string literal",
                         "Edit the string by hand before pressing",
                     )
+                    if literal.unread:
+                        problems.append(
+                            f"{where}: {old!r} is in a doc comment that follows "
+                            "doc text the press cannot read: a `#[doc = ...]` "
+                            "attribute whose value is not a plain string, or holds "
+                            "a quote, a backslash, or a block-comment marker; or an "
+                            "outer doc comment that ends inside a string or a "
+                            "block comment. Code and prose cannot be told apart "
+                            f"there, so the press cannot choose {new!r} or "
+                            f"{cargo_ident(new)!r}. Move the attribute below the "
+                            "doc comment, or edit the comment by hand before "
+                            "pressing"
+                        )
+                        continue
                     if literal.doc:
                         place = (
                             "in a doc comment that rustdoc may compile as a "

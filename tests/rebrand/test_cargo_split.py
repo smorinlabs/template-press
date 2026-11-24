@@ -1012,6 +1012,11 @@ COMPILED_LAYOUTS = {
         '///     "acme",\n/// );\n/// CODE\n/// ```\npub fn ITEM() {}\n'
     ),
     "inner_doc_fence": "pub mod ITEM {\n    //! ```\n    //! CODE\n    //! ```\n}\n",
+    # Plain `doc` attributes supply the fence line, as crates do per feature.
+    "fence_from_doc_attributes": (
+        '#[cfg_attr(all(), doc = "```")]\n#[cfg_attr(any(), doc = "```ignore")]\n'
+        "/// CODE\n/// ```\npub fn ITEM() {}\n"
+    ),
     "block_doc_indented": "/**\n * Example:\n *\n *     CODE\n */\npub fn ITEM() {}\n",
     # An HTML block swallows the `text` fence line, so the block below is code.
     "html_block_hides_text_fence": (
@@ -1023,10 +1028,9 @@ COMPILED_LAYOUTS = {
         "/// - item\n///   ```text\n///   inside\n/// para\n///\n///     CODE\n"
         "///\n/// ```text\n/// ```\npub fn ITEM() {}\n"
     ),
-    # The outer comment's fence stays open, so the inner `text` line is code.
+    # The outer comment's fence stays open, so the inner comment is code.
     "inner_doc_continues_outer_fence": (
-        "/// ```\n/// /*\npub mod ITEM {\n    //! ```text\n    //! */ CODE\n"
-        "    //! ```\n}\n"
+        "/// ```\n/// let _x = 1;\npub mod ITEM {\n    //! CODE\n    //! ```\n}\n"
     ),
     # `//!x` lowers the common indent, so the indented fence does not close.
     "inner_doc_changes_outer_indent": (
@@ -1073,6 +1077,11 @@ UNPROVABLE_LAYOUTS = {
         "pub mod ITEM {\n    //! ```text\n    //! CODE\n    //! ```\n}\n"
     ),
     "block_doc_prose": "/** CODE */\npub fn ITEM() {}\n",
+    # The crate's `#![doc = ...]` does not come before a later item's docs, so
+    # this comment is read, and refused only for its unproven string.
+    "inner_doc_of_item_after_crate_doc_attribute": (
+        '#![doc = include_str!("../README.md")]\npub mod ITEM {\n    //! CODE\n}\n'
+    ),
     "prose_after_doc_attribute": '#[doc = "Intro."]\n/// CODE\npub fn ITEM() {}\n',
     "prose_before_doc_attribute": '/// CODE\n#[doc = "Outro."]\npub fn ITEM() {}\n',
     "prose_after_macro_attribute": (
@@ -1093,6 +1102,32 @@ UNPROVABLE_LAYOUTS = {
     ),
     "text_fence_after_doubtful_closer": (
         "/// ```text\n///    ```\n/// CODE\n/// ```\npub fn ITEM() {}\n"
+    ),
+}
+
+
+# Doc comments that follow doc text the press cannot read. Even a name in code
+# position is refused there.
+UNREAD_LAYOUTS = {
+    "after_included_doc": (
+        '#[doc = include_str!("../README.md")]\n/// CODE\npub fn ITEM() {}\n'
+    ),
+    "after_doc_attribute_that_opens_a_string": (
+        '/// ```\n#[doc = "let s = \\""]\n/// "; CODE\n/// ```\npub fn ITEM() {}\n'
+    ),
+    "after_concat_doc_attribute": (
+        '/// ```\n#[doc = concat!("let s = ", "\\"")]\n/// "; CODE\n/// ```\n'
+        "pub fn ITEM() {}\n"
+    ),
+    "inner_doc_after_outer_doc_that_opens_a_string": (
+        '/// ```\n/// let s = "\npub mod ITEM {\n    //! "; CODE\n    //! ```\n}\n'
+    ),
+    "inner_doc_after_outer_doc_that_opens_a_comment": (
+        "/// ```\n/// /*\npub mod ITEM {\n    //! ```text\n    //! */ CODE\n"
+        "    //! ```\n}\n"
+    ),
+    "inner_doc_after_included_doc": (
+        '#[doc = include_str!("../README.md")]\npub mod ITEM {\n    //! CODE\n}\n'
     ),
 }
 
@@ -1135,6 +1170,36 @@ def test_doc_text_rustdoc_may_compile_refuses_unproven_strings(
     assert f"src/lib.rs:{_code_line(layout)}: 'acme' is in a doc comment" in err
     assert "Rust string literal" in err
     assert "in backticks, without double quotes, takes 'zeta_gadget'" in err
+
+
+@pytest.mark.parametrize("case", sorted(UNREAD_LAYOUTS))
+@pytest.mark.parametrize("code", [PKG_ASSERT, "acme::hi();"])
+def test_doc_text_after_unreadable_doc_text_is_refused(
+    case: str, code: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    layout = UNREAD_LAYOUTS[case]
+    exit_code, _ = _press_lib(tmp_path, _doc_lib(layout, code))
+    err = capsys.readouterr().err
+    assert exit_code == 2
+    assert (
+        f"src/lib.rs:{_code_line(layout)}: 'acme' is in a doc comment that "
+        "follows doc text the press cannot read"
+    ) in err
+
+
+def test_module_doc_cut_inside_a_string_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # rustdoc joins `src/m.rs`'s inner doc comment to the outer one here, so
+    # the string that opens on line 2 closes in the other file.
+    files = _lib_crate(
+        **{
+            "src/lib.rs": '/// ```\n/// let s = "\npub mod m;\n' + PLAIN_LIB,
+            "src/m.rs": f'//! "; {PKG_ASSERT}\n//! ```\n',
+        }
+    )
+    err = _refusal(tmp_path, files, capsys)
+    assert "src/lib.rs:3: the doc comment above this `mod` declaration ends" in err
 
 
 @pytest.mark.parametrize("case", sorted(SKIPPED_LAYOUTS))

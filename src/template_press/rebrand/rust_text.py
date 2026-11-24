@@ -15,6 +15,7 @@ agrees on it. Doc text is prose only where no code block can hold it.
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
@@ -54,6 +55,10 @@ _ATTRIBUTE = re.compile(r"#!?\s*\[")
 # An attribute that adds doc text the press cannot read: ``doc = ...`` in any
 # form, or a macro variable that may expand to one.
 _DOC_ATTRIBUTE = re.compile(r"\bdoc\s*=|\$")
+_DOC_VALUE = re.compile(r"\bdoc\s*=\s*")
+_PLAIN_VALUE = re.compile(r'"[^"\\]*"')
+# After an item's doc comments: a module whose own file may continue them.
+_MODULE_FILE = re.compile(r"(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+\w+\s*;")
 # The code character before an item's first doc comment.
 _ITEM_EDGES = frozenset({"", "{", "}", ";", ",", "("})
 _FENCE = re.compile(r"(`{3,}|~{3,})(.*)")
@@ -72,7 +77,9 @@ NOT_RUST_TAGS = frozenset(
     | {"c", "cpp", "python", "javascript", "typescript", "markdown", "md"}
     | {"makefile", "dockerfile", "asm", "notrust"}
 )
-# How many lines after a doc literal its code block is read for its role.
+# How many lines around a doc literal its code block is read for its role. A
+# shorter block can only lose a role, which refuses the literal.
+_LINES_BEFORE = 40
 _LINES_AFTER = 8
 
 
@@ -92,6 +99,8 @@ class RustString:
     doc: tuple[Segment, ...] = ()
     line: int = 0
     starts: tuple[int, ...] = ()
+    # A whole doc line that follows doc text the press cannot read.
+    unread: bool = False
 
 
 # One doc line read as code: its literals, its comment spans, its end state.
@@ -103,17 +112,42 @@ def rust_strings(text: str) -> tuple[RustString, ...]:
 
     A doc comment yields the literals that rustdoc may compile.
     """
+    return _scan(text)[0]
+
+
+def cut_module_docs(text: str) -> tuple[int, ...]:
+    """Where a ``mod name;`` has a doc comment that ends inside a string or comment.
+
+    rustdoc joins the inner doc comment of the module's own file to that text,
+    so the press cannot read that file's doc comment on its own.
+    """
+    return _scan(text)[1]
+
+
+def _scan(text: str) -> tuple[tuple[RustString, ...], tuple[int, ...]]:
     found: list[RustString] = []
+    cut: list[int] = []
     docs: dict[int, list[RustString]] = {}
     index, length = 0, len(text)
     last = ""  # the last code character, outside comments and plain attributes
     attribute_end = 0
+    # Doc text the press cannot read comes before the next doc comment
+    # (``unread``), or before the same item's inner doc comment (``pending``).
+    unread = pending = False
     while index < length:
         if text.startswith(("//", "/*"), index):
             end = _comment_end(text, index)
             if _is_doc(text, index, end):
                 if index not in docs:
-                    docs.update(_doc_cluster(text, index, last in _ITEM_EDGES))
+                    inner = text[index + 2] == "!"
+                    cluster = _doc_cluster(
+                        text, index, last in _ITEM_EDGES, unread or (inner and pending)
+                    )
+                    docs.update(cluster.literals)
+                    pending = not inner and (cluster.hidden or cluster.cut)
+                    module = _MODULE_FILE.match(text, cluster.end)
+                    if cluster.cut and not inner and module:
+                        cut.append(module.start())
                 found.extend(docs.pop(index))
             index = end
             continue
@@ -122,12 +156,33 @@ def rust_strings(text: str) -> tuple[RustString, ...]:
             attribute_end = _attribute_end(text, index)
             if _DOC_ATTRIBUTE.search(text, index, attribute_end):
                 last = "#"
+                if _hides_doc_text(text, index, attribute_end):
+                    unread = True
+                    pending = pending or text[index + 1] != "!"  # an outer one
         index, literal = _token(text, index)
         if literal is not None:
             found.append(literal)
         if start >= attribute_end and not text[start].isspace():
             last = text[index - 1]
-    return tuple(found)
+            unread = False
+            pending = pending and last not in ";}"
+    return tuple(found), tuple(cut)
+
+
+def _hides_doc_text(text: str, start: int, end: int) -> bool:
+    """Whether a doc attribute may add part of a Rust string or comment.
+
+    A plain string value without a quote, a backslash, or a block-comment
+    marker cannot. Any other value, such as ``include_str!(...)``, may.
+    """
+    attribute = text[start:end]
+    values = [
+        _PLAIN_VALUE.match(attribute, found.end())
+        for found in _DOC_VALUE.finditer(attribute)
+    ]
+    return any(
+        value is None or "/*" in value[0] or "*/" in value[0] for value in values
+    )
 
 
 def _token(text: str, index: int) -> tuple[int, RustString | None]:
@@ -196,7 +251,17 @@ def _attribute_end(text: str, start: int) -> int:
     return index
 
 
-def _doc_cluster(text: str, index: int, clean: bool) -> dict[int, list[RustString]]:
+@dataclass(frozen=True)
+class _Cluster:
+    """The doc comments rustdoc joins, read as one text."""
+
+    literals: dict[int, list[RustString]]  # by the offset of each doc comment
+    end: int  # where the item's code begins
+    hidden: bool  # it holds doc text the press cannot read
+    cut: bool  # it may end inside a string or a comment that later text closes
+
+
+def _doc_cluster(text: str, index: int, clean: bool, unread: bool) -> _Cluster:
     """The literals of each doc comment that rustdoc joins with the one here.
 
     rustdoc joins an item's doc comments, across blank lines, plain comments,
@@ -211,6 +276,8 @@ def _doc_cluster(text: str, index: int, clean: bool) -> dict[int, list[RustStrin
     owners: list[int] = []
     restarts = {0}  # lines after an attribute, which may add doc text
     whole, sealed = clean and not inner, inner
+    unread_from = 0 if unread else -1
+    hidden = unread
     position, after_attribute = index, False
     while position < len(text):
         if text[position].isspace():
@@ -220,6 +287,9 @@ def _doc_cluster(text: str, index: int, clean: bool) -> dict[int, list[RustStrin
         if end > position:
             if _DOC_ATTRIBUTE.search(text, position, end):
                 whole = sealed = False
+                if _hides_doc_text(text, position, end):
+                    hidden = True
+                    unread_from = len(lines) if unread_from < 0 else unread_from
             after_attribute = True
         elif not text.startswith(("//", "/*"), position):
             break
@@ -237,7 +307,12 @@ def _doc_cluster(text: str, index: int, clean: bool) -> dict[int, list[RustStrin
                 lines += body
                 owners += [position] * len(body)
         position = end
-    return _doc_literals(text, lines, owners, restarts, whole, sealed)
+    if unread_from < 0:
+        unread_from = len(lines)
+    literals, cut = _doc_literals(
+        text, lines, owners, restarts, whole, sealed and not hidden, unread_from
+    )
+    return _Cluster(literals, position, hidden, cut)
 
 
 def _doc_lines(text: str, start: int, end: int) -> list[Segment]:
@@ -257,7 +332,8 @@ def _doc_literals(
     restarts: set[int],
     proven: bool,
     sealed: bool,
-) -> dict[int, list[RustString]]:
+    unread_from: int,
+) -> tuple[dict[int, list[RustString]], bool]:
     """Read the joined doc lines as code wherever a code block may hold them.
 
     While the Markdown structure is ``proven``, the press knows where each
@@ -269,6 +345,10 @@ def _doc_literals(
     A reading binds a line only if it is back in code at the end of that line
     or a later one, because a doctest that ends inside a string or a comment
     does not compile. The text ends with the last line only when ``sealed``.
+
+    From line ``unread_from`` on, the text follows doc text the press cannot
+    read, so each of those lines is unread as a whole. Also returns whether the
+    text may end inside a string or a comment.
     """
     bodies = [text[low:high] for low, high in lines]
     widths = [len(body) - len(body.lstrip(" ")) for body in bodies if body.strip()]
@@ -281,7 +361,7 @@ def _doc_literals(
     lexed: list[tuple[int, list[tuple[_Lexed, list[_Start]]]]] = []
     closed: dict[_Start, int] = {}  # each start: the last line it left in code
     fence, skipped = "", False
-    for number, body in enumerate(bodies):
+    for number, body in enumerate(bodies[:unread_from]):
         width = len(body) - len(body.lstrip(" "))
         marked = "```" in body or "~~~" in body
         prose = bool(body.strip()) and not _INDENTED.search(body)
@@ -322,11 +402,17 @@ def _doc_literals(
         if marked and not proven:
             readings.append((_CODE, [(number + 1, True)]))
         readings = _merged(readings)
+    cut = not sealed and any(state != _CODE for state, _ in readings)
     if not sealed:
         for _, starts in readings:
             closed.update(dict.fromkeys(starts, len(bodies)))
     doc = tuple(lines)
     found: dict[int, list[RustString]] = {owner: [] for owner in owners}
+    for number in range(unread_from, len(bodies)):
+        low, high = lines[number]
+        found[owners[number]].append(
+            RustString(low, low, high, high, True, doc, number, unread=True)
+        )
     for number, row in lexed:
         binding = [
             (
@@ -339,7 +425,7 @@ def _doc_literals(
         found[owners[number]] += _agreed(
             [reading for reading in binding if reading[2]], doc, number
         )
-    return found
+    return found, cut
 
 
 def _closes(body: str, fence: str) -> bool:
@@ -372,11 +458,10 @@ def _lasting(readings: Sequence[_Reading]) -> list[_Reading]:
 
 def _merged(readings: Sequence[_Reading]) -> list[_Reading]:
     """Join the readings that share a state: they read every later line alike."""
-    by_state: dict[_State, list[_Start]] = {}
+    by_state: dict[_State, dict[_Start, None]] = {}
     for state, starts in readings:
-        known = by_state.setdefault(state, [])
-        known += [start for start in starts if start not in known]
-    return list(by_state.items())
+        by_state.setdefault(state, {}).update(dict.fromkeys(starts))
+    return [(state, list(starts)) for state, starts in by_state.items()]
 
 
 def _lex_line(line: str, state: _State) -> _Lexed:
@@ -513,11 +598,10 @@ def _prefixed(text: str, start: int, word_end: int, word: str) -> RustString | N
 
 def string_at(strings: Sequence[RustString], span: Span) -> RustString | None:
     """The literal whose content holds ``span``, if any."""
-    for literal in strings:
-        if literal.content_start <= span[0] and span[1] <= literal.content_end:
-            return literal
-        if literal.start > span[0]:
-            break
+    index = bisect_right(strings, span[0], key=lambda literal: literal.content_start)
+    literal = strings[index - 1] if index else None
+    if literal is not None and span[1] <= literal.content_end:
+        return literal
     return None
 
 
@@ -534,8 +618,15 @@ def string_role(text: str, literal: RustString, name: str) -> StringRole:
         return "other"
     if not literal.doc:
         return _role(text, literal, name)
+    line_start = literal.doc[literal.line][0]
+    if text[literal.content_start : literal.content_end] != name and not (
+        _PATH_BEFORE.search(text, line_start, literal.start)
+    ):
+        return "other"  # no role fits: skip building the code blocks
+    first = literal.line - _LINES_BEFORE
     roles = {
-        _role(*_block_view(text, literal, start), name) for start in literal.starts
+        _role(*_block_view(text, literal, start), name)
+        for start in {max(start, first) for start in literal.starts}
     }
     return roles.pop() if len(roles) == 1 else "other"
 
