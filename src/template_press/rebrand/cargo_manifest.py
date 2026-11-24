@@ -13,6 +13,7 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePath
+from typing import Literal
 
 from template_press.rebrand.identity import ValidationError
 from template_press.rebrand.safety import (
@@ -23,6 +24,7 @@ from template_press.rebrand.safety import (
 
 _MANIFEST = "Cargo.toml"
 _DEPENDENCY_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
+_TARGET_SECTIONS = ("bin", "test", "example", "bench")
 _GLOB_CHARS = frozenset("*?[")
 # A longer author entry is undiscoverable, never truncated into a guess.
 _AUTHOR_MAX_CHARS = 1024
@@ -40,6 +42,19 @@ class CargoFacts:
     email: str | None
     repository: str | None
     external_dependencies: tuple[str, ...]  # resolved package names, non-local
+
+
+@dataclass(frozen=True)
+class DeclaredPath:
+    """One path string a manifest declares, relative to that manifest."""
+
+    kind: Literal["member", "dependency", "target", "build"]
+    key: str  # where it is declared, for messages
+    value: str
+
+    @property
+    def is_glob(self) -> bool:
+        return self.kind == "member" and bool(_GLOB_CHARS & set(self.value))
 
 
 def _table(value: object) -> Table:
@@ -160,23 +175,48 @@ def _has_main(directory: Path) -> bool:
     return main.is_file() and not main.is_symlink()
 
 
-def _package_bins(directory: Path, data: Table, package: Table, name: str) -> list[str]:
-    declared = data.get("bin")
-    entries = [e for e in (declared if isinstance(declared, list) else []) if _table(e)]
-    bins = [
-        value for entry in entries if (value := _text(entry.get("name"))) is not None
-    ]
-    # A file a [[bin]] claims by path is that binary, not another discovered one.
-    claimed = {
+def _claimed_bin_paths(entries: list[Table]) -> set[str]:
+    """Files a [[bin]] claims by path, which are not other discovered binaries."""
+    return {
         os.path.normpath(path)
         for entry in entries
         if isinstance(path := entry.get("path"), str)
     }
+
+
+def _bin_entries(data: Table) -> list[Table]:
+    declared = data.get("bin")
+    return [e for e in (declared if isinstance(declared, list) else []) if _table(e)]
+
+
+def _package_bins(directory: Path, data: Table, package: Table, name: str) -> list[str]:
+    entries = _bin_entries(data)
+    bins = [
+        value for entry in entries if (value := _text(entry.get("name"))) is not None
+    ]
+    claimed = _claimed_bin_paths(entries)
     if package.get("autobins") is not False:
         if _has_main(directory) and os.path.join("src", "main.rs") not in claimed:
             bins.append(name)
         bins.extend(_auto_bins(directory, claimed))
     return bins
+
+
+def auto_discovered_bins(directory: Path, data: Table) -> list[tuple[str, str]]:
+    """``(name, path)`` of each ``src/bin`` binary, with its path under ``directory``.
+
+    No manifest spells these names: each is the file or directory stem.
+    """
+    package = _table(data.get("package"))
+    if not package or package.get("autobins") is False:
+        return []
+    found: list[tuple[str, str]] = []
+    for stem in _auto_bins(directory, _claimed_bin_paths(_bin_entries(data))):
+        file = f"src/bin/{stem}.rs"
+        found.append(
+            (stem, file if (directory / file).is_file() else f"src/bin/{stem}")
+        )
+    return found
 
 
 def _author(raw: object) -> tuple[str | None, str | None]:
@@ -274,6 +314,77 @@ def _workspace_manifests(
             seen.add(key)
             manifests.append((dependency, _member_manifest(root, dependency)))
     return manifests
+
+
+def _declared_dependency_paths(data: Table) -> list[DeclaredPath]:
+    workspace = _table(data.get("workspace"))
+    tables = [*_dependency_tables(data), _table(workspace.get("dependencies"))]
+    tables.extend(_table(entry) for entry in _table(data.get("patch")).values())
+    tables.append(_table(data.get("replace")))
+    return [
+        DeclaredPath("dependency", f"dependency {key!r} path", path)
+        for table in tables
+        for key, spec in table.items()
+        if isinstance(path := _table(spec).get("path"), str)
+    ]
+
+
+def declared_cargo_paths(data: Table) -> list[DeclaredPath]:
+    """Every declared path in one parsed manifest, in a stable order."""
+    workspace = _table(data.get("workspace"))
+    found = [
+        DeclaredPath("member", f"workspace {key}", item)
+        for key in ("members", "default-members")
+        for item in _strings(workspace.get(key))
+    ]
+    found.extend(_declared_dependency_paths(data))
+    if isinstance(path := _table(data.get("lib")).get("path"), str):
+        found.append(DeclaredPath("target", "[lib] path", path))
+    for section in _TARGET_SECTIONS:
+        entries = data.get(section)
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(path := _table(entry).get("path"), str):
+                found.append(DeclaredPath("target", f"[[{section}]] path", path))
+    if isinstance(build := _table(data.get("package")).get("build"), str):
+        found.append(DeclaredPath("build", "package.build", build))
+    return found
+
+
+def cargo_manifest_files(target: Path) -> tuple[str, ...]:
+    """Root-relative POSIX paths of the manifests a build of ``target`` reads.
+
+    That is the workspace plus every path dependency inside the root, including
+    one excluded from the workspace. An unreferenced ``Cargo.toml`` is absent.
+    """
+    root = target.resolve()
+    root_data = _load(root / _MANIFEST)
+    workspace = _table(root_data.get("workspace"))
+    manifests = _workspace_manifests(
+        root, root_data, workspace, _table(workspace.get("dependencies"))
+    )
+    seen = {os.path.normpath(os.path.relpath(path, root)) for path, _ in manifests}
+    index = 0
+    while index < len(manifests):
+        directory, data = manifests[index]
+        index += 1
+        for declared in declared_cargo_paths(data):
+            if declared.kind != "dependency":
+                continue
+            dependency = Path(os.path.normpath(directory / declared.value))
+            key = os.path.relpath(dependency, root)
+            if (
+                key in seen
+                or key == os.pardir
+                or key.startswith(f"{os.pardir}{os.sep}")
+                or not os.path.lexists(dependency / _MANIFEST)
+            ):
+                continue
+            seen.add(key)
+            manifests.append((dependency, _member_manifest(root, dependency)))
+    return tuple(
+        Path(os.path.relpath(directory / _MANIFEST, root)).as_posix()
+        for directory, _ in manifests
+    )
 
 
 def read_cargo_facts(target: Path) -> CargoFacts:

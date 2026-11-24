@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import posixpath
 import re
 import stat
 import tomllib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
-from template_press.rebrand.cargo_manifest import read_cargo_facts
+from template_press.rebrand.cargo_manifest import (
+    DeclaredPath,
+    auto_discovered_bins,
+    cargo_manifest_files,
+    declared_cargo_paths,
+    read_cargo_facts,
+)
 from template_press.rebrand.identity import (
     CARGO_BIN_ENV_TAG,
     DISPLAY_FORM_NAMES,
@@ -38,6 +45,7 @@ from template_press.rebrand.inventory import (
     WorktreeKind,
     capture_surface_snapshot,
     rewrite_surface_texts,
+    select_content_rewrite_entries,
     select_rename_entries,
     select_symlink_entries,
 )
@@ -1624,13 +1632,9 @@ def _compiled_rows(
 
 
 def identity_row_rewriter(
-    source: Identity,
-    destination: Identity,
-    target: Path | None,
-    rules: Rules,
-    surface: Surface = "content",
+    source: Identity, destination: Identity, target: Path | None, rules: Rules
 ) -> Callable[[str], str]:
-    """Apply the identity rows a press would really run on ``surface``, in order."""
+    """Apply the identity rows a press would really run on content, in order."""
 
     rows = _normalize_rows(
         [],
@@ -1643,7 +1647,7 @@ def identity_row_rewriter(
         ),
         rules,
     )
-    active = tuple(row for row in rows if surface in row.rewrite_surfaces)
+    active = tuple(row for row in rows if "content" in row.rewrite_surfaces)
 
     def rewrite(text: str) -> str:
         for row in active:
@@ -1651,6 +1655,157 @@ def identity_row_rewriter(
         return text
 
     return rewrite
+
+
+def _declared_path_follows(
+    before: DeclaredPath,
+    after: DeclaredPath,
+    manifest: str,
+    plan: RenamePlan,
+    directories: frozenset[str],
+) -> bool:
+    """Whether the rewritten string still names what the old string named."""
+    old = posixpath.normpath(posixpath.join(posixpath.dirname(manifest), before.value))
+    new = posixpath.normpath(
+        posixpath.join(posixpath.dirname(plan.translate(manifest)), after.value)
+    )
+    if not before.is_glob:
+        return plan.translate(old) == new
+    if old == os.pardir or old.startswith(f"{os.pardir}/") or old.startswith("/"):
+        return before.value == after.value  # the press renames nothing out there
+    matched = {
+        plan.translate(path)
+        for path in directories
+        if PurePosixPath(path).full_match(old)
+    }
+    moved = {plan.translate(path) for path in directories}
+    return matched == {path for path in moved if PurePosixPath(path).full_match(new)}
+
+
+def _rewritten_texts_with_bin_env(
+    target: Path,
+    rows: Sequence[RenderedSubstitution],
+    rewritten: Iterable[str],
+    removed: tuple[set[str], tuple[str, ...]],
+    rules: Rules,
+) -> tuple[tuple[str, str, str], ...]:
+    """``(path, text, rewritten text)`` of kept files naming a binary by ``env!``."""
+    found: list[tuple[str, str, str]] = []
+    for path in sorted(rewritten):
+        if path in removed[0] or path.startswith(removed[1]):
+            continue
+        try:
+            text = read_regular_nofollow(target / path).decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if "CARGO_BIN_EXE_" in text:
+            scoped = (row for row in rows if row_matches_scope(row, path))
+            found.append((path, text, rewrite_file(scoped, text, rules.keep_names)[0]))
+    return tuple(found)
+
+
+def _bin_env_splits(
+    target: Path,
+    manifest: str,
+    data: dict[str, object],
+    plan: RenamePlan,
+    new_texts: Sequence[tuple[str, str, str]],
+) -> list[str]:
+    """``env!`` tokens the rewrite moves away from an auto-discovered binary.
+
+    The binary's name is its file stem, so it changes only if the file renames.
+    """
+    base = posixpath.dirname(manifest)
+    problems: list[str] = []
+    for name, rel in auto_discovered_bins(target / base, data):
+        moved = PurePosixPath(plan.translate(posixpath.join(base, rel)))
+        new_name = moved.stem if rel.endswith(".rs") else moved.name
+        old_token = re.compile(rf"CARGO_BIN_EXE_{re.escape(name)}(?![\w-])")
+        new_token = re.compile(rf"CARGO_BIN_EXE_{re.escape(new_name)}(?![\w-])")
+        problems.extend(
+            f"{path}: CARGO_BIN_EXE_{name} would be rewritten, but the press "
+            f"would name that binary {new_name!r}"
+            for path, old_text, new_text in new_texts
+            if len(old_token.findall(old_text)) != len(new_token.findall(new_text))
+        )
+    return problems
+
+
+def cargo_path_splits(
+    target: Path, source: Identity, destination: Identity, rules: Rules
+) -> list[str]:
+    """Declared Cargo paths this press would separate from their files.
+
+    Both halves come from what the press really runs: the whole-manifest content
+    rewrite and the rename plan. A table or plan that cannot compile is left for
+    the plan step, which reports it.
+    """
+    snapshot = capture_surface_snapshot(target)
+    selection = {
+        "exclude_files": rules.exclude_files,
+        "exclude_dirs": rules.exclude_dirs,
+        "root_control": ROOT_CONTROL,
+    }
+    try:
+        rows = _compiled_rows(source, destination, target, rules)
+        plan = _compile_rename_plan(
+            rows,
+            SurfaceSnapshot(
+                entries=select_rename_entries(snapshot, **selection),
+                visibility_inputs=snapshot.visibility_inputs,
+            ),
+            rules.keep_names,
+        )
+    except ValidationError:
+        return []
+    rewritten = {
+        entry.rel.as_posix()
+        for entry in select_content_rewrite_entries(snapshot, **selection)
+    }
+    removed_files = {str(rule.file) for rule in rules.remove}
+    removed_dirs = tuple(f"{rule.dir}/" for rule in rules.remove_dirs)
+    directories = frozenset(
+        parent.as_posix()
+        for entry in snapshot.entries
+        for parent in entry.rel.parents
+        if parent != Path()
+    )
+    removed = (removed_files, removed_dirs)
+    content_rows = tuple(row for row in rows if "content" in row.rewrite_surfaces)
+    new_texts = _rewritten_texts_with_bin_env(
+        target, content_rows, rewritten, removed, rules
+    )
+    problems: list[str] = []
+    for manifest in cargo_manifest_files(target):
+        if manifest in removed_files or manifest.startswith(removed_dirs):
+            continue
+        text = read_regular_nofollow(target / manifest).decode("utf-8")
+        new_text = text
+        if manifest in rewritten:
+            new_text, _ = rewrite_file(
+                (row for row in content_rows if row_matches_scope(row, manifest)),
+                text,
+                rules.keep_names,
+            )
+        parsed = tomllib.loads(text)
+        problems.extend(_bin_env_splits(target, manifest, parsed, plan, new_texts))
+        declared = declared_cargo_paths(parsed)
+        try:
+            rewritten_paths = declared_cargo_paths(tomllib.loads(new_text))
+        except tomllib.TOMLDecodeError as exc:
+            problems.append(f"{manifest}: the rewrite breaks its TOML: {exc}")
+            continue
+        if len(rewritten_paths) != len(declared):
+            problems.append(f"{manifest}: the rewrite changes its declared paths")
+            continue
+        problems.extend(
+            f"{manifest}: {before.key} {before.value!r} would become "
+            f"{after.value!r}, but the press would not move what it points at "
+            "to match"
+            for before, after in zip(declared, rewritten_paths, strict=True)
+            if not _declared_path_follows(before, after, manifest, plan, directories)
+        )
+    return problems
 
 
 def _identity_row_pattern(row: RenderedSubstitution) -> re.Pattern[str]:

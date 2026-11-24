@@ -470,3 +470,191 @@ def test_bin_env_token_compiles_after_press(tmp_path: Path, cargo_or_skip) -> No
 
     assert "CARGO_BIN_EXE_zeta-cli" in (target / "tests/cli.rs").read_text()
     _assert_tokens_absent(target, ("acme", "Acme"))
+
+
+# --- P15-T08: declared paths, with real Cargo as the oracle ----------------------
+
+OWNER_ONLY = {
+    **ACME,
+    "package_name": "other_pkg",
+    "repo_name": "other-repo",
+    "app_name": "tool_app",
+    "author": "Dev Author",
+    "email": "dev@example.test",
+    "owner": "acme",
+}
+PACKAGE = '[package]\nname = "{}"\nversion = "0.1.0"\nedition = "2021"\n'
+SPLIT_SHAPES = {
+    "lib": {
+        "Cargo.toml": PACKAGE.format("acme-core") + '\n[lib]\npath = "lib/acme-x.rs"\n',
+        "lib/acme-x.rs": "pub fn hi() {}\n",
+    },
+    "bin": {
+        "Cargo.toml": PACKAGE.format("acme-core")
+        + '\n[[bin]]\nname = "tool"\npath = "tools/acme-x.rs"\n',
+        "tools/acme-x.rs": "fn main() {}\n",
+    },
+    "build": {
+        "Cargo.toml": PACKAGE.format("acme-core") + 'build = "tools/acme-build.rs"\n',
+        "tools/acme-build.rs": "fn main() {}\n",
+        "src/lib.rs": "pub fn hi() {}\n",
+    },
+    "unrelated_dependency": {
+        "Cargo.toml": '[workspace]\nresolver = "2"\nmembers = ["crates/*"]\n',
+        "crates/app/Cargo.toml": PACKAGE.format("tool-app")
+        + '\n[dependencies]\nhelper = { path = "../acme-x" }\n',
+        "crates/app/src/main.rs": "fn main() {\n    helper::hi();\n}\n",
+        "crates/acme-x/Cargo.toml": PACKAGE.format("helper"),
+        "crates/acme-x/src/lib.rs": "pub fn hi() {}\n",
+    },
+}
+HEALTHY_SHAPES = {
+    "auto_discovered_bin": {
+        "Cargo.toml": PACKAGE.format("tool-pkg"),
+        "src/lib.rs": "pub fn hi() {}\n",
+        "src/bin/acme-cli.rs": "fn main() {}\n",
+    },
+    "unreferenced_manifest": {
+        "Cargo.toml": PACKAGE.format("tool-pkg"),
+        "src/lib.rs": "pub fn hi() {}\n",
+        "testdata/acme-sample/Cargo.toml": PACKAGE.format("acme-sample"),
+        "testdata/acme-sample/src/lib.rs": "pub fn hi() {}\n",
+    },
+}
+
+
+def _owner_answers(tmp_path: Path) -> Path:
+    answers = tmp_path / "answers.toml"
+    answers.write_text(
+        _table("answers", {**OWNER_ONLY, "owner": "zeta"}), encoding="utf-8"
+    )
+    return answers
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("shape", sorted(SPLIT_SHAPES))
+def test_split_declared_path_is_refused_and_still_builds(
+    shape: str, tmp_path: Path, cargo_or_skip
+) -> None:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _commit_unmapped(target, SPLIT_SHAPES[shape], OWNER_ONLY)
+    _assert_cargo(target, "check", "--offline")
+
+    assert (
+        main(["--target", str(target), "--config", str(_owner_answers(tmp_path))]) == 2
+    )
+
+    assert not (target / RECEIPT_REL).exists()
+    status = subprocess.run(  # noqa: S603
+        ["git", "-C", str(target), "status", "--porcelain"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert status.stdout == ""
+    _assert_cargo(target, "check", "--offline")
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("shape", sorted(HEALTHY_SHAPES))
+def test_undeclared_path_presses_and_builds(
+    shape: str, tmp_path: Path, cargo_or_skip
+) -> None:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _commit_unmapped(target, HEALTHY_SHAPES[shape], OWNER_ONLY)
+    _assert_cargo(target, "check", "--offline")
+
+    assert (
+        main(["--target", str(target), "--config", str(_owner_answers(tmp_path))]) == 0
+    )
+
+    assert (target / RECEIPT_REL).is_file()
+    _assert_cargo(target, "check", "--offline")
+
+
+def _consistent_workspace(members: str) -> dict[str, str]:
+    return {
+        "Cargo.toml": f'[workspace]\nresolver = "2"\nmembers = ["{members}"]\n',
+        "crates/acme-app/Cargo.toml": PACKAGE.format("acme-app")
+        + 'build = "tools/acme-build.rs"\n'
+        + '\n[lib]\npath = "lib/acme-app.rs"\n'
+        + '\n[[bin]]\nname = "acme-tool"\npath = "tools/acme-tool.rs"\n'
+        + '\n[dependencies]\nacme-core = { path = "../acme-core" }\n',
+        "crates/acme-app/tools/acme-build.rs": "fn main() {}\n",
+        "crates/acme-app/lib/acme-app.rs": "pub use acme_core::hi;\n",
+        "crates/acme-app/tools/acme-tool.rs": "fn main() {\n    acme_app::hi();\n}\n",
+        "crates/acme-core/Cargo.toml": PACKAGE.format("acme-core"),
+        "crates/acme-core/src/lib.rs": "pub fn hi() {}\n",
+    }
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("members", ["crates/*", "crates/acme-*"])
+def test_declared_paths_moved_with_their_files_press_and_build(
+    members: str, tmp_path: Path, cargo_or_skip
+) -> None:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    identity = {**ACME, "package_name": "acme", "repo_name": "acme", "app_name": "acme"}
+    destination = {
+        **ZETA,
+        "package_name": "zeta",
+        "repo_name": "zeta",
+        "app_name": "zeta",
+    }
+    _commit_unmapped(target, _consistent_workspace(members), identity)
+    _assert_cargo(target, "check", "--offline")
+    answers = tmp_path / "answers.toml"
+    answers.write_text(_table("answers", destination), encoding="utf-8")
+
+    assert main(["--target", str(target), "--config", str(answers)]) == 0
+
+    assert (target / RECEIPT_REL).is_file()
+    assert (target / "crates/zeta-app/lib/zeta-app.rs").is_file()
+    _assert_cargo(target, "check", "--offline")
+    _set_origin(target, destination)
+    assert verify_command(["--target", str(target)]) == 0
+    _assert_tokens_absent(target, ("acme",))
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_bin_env_token_moves_with_an_auto_discovered_bin(
+    tmp_path: Path, cargo_or_skip
+) -> None:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    identity = {**ACME, "package_name": "acme", "repo_name": "acme", "app_name": "acme"}
+    destination = {
+        **ZETA,
+        "package_name": "zeta",
+        "repo_name": "zeta",
+        "app_name": "zeta",
+    }
+    files = {
+        "Cargo.toml": PACKAGE.format("acme"),
+        "src/lib.rs": "pub fn hi() {}\n",
+        "src/bin/acme-cli.rs": "fn main() {}\n",
+        "tests/cli.rs": (
+            "#[test]\nfn names_the_binary() {\n"
+            '    assert!(!env!("CARGO_BIN_EXE_acme-cli").is_empty());\n}\n'
+        ),
+    }
+    _commit_unmapped(target, files, identity)
+    _assert_cargo(target, "test", "--offline")
+    answers = tmp_path / "answers.toml"
+    answers.write_text(_table("answers", destination), encoding="utf-8")
+
+    assert main(["--target", str(target), "--config", str(answers)]) == 0
+
+    assert (target / "src/bin/zeta-cli.rs").is_file()
+    _assert_cargo(target, "test", "--offline")

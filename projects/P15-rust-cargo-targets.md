@@ -35,12 +35,11 @@ This branch rebases on each before its dependent task starts.
 - [x] [P15-T01] Identity table and control-file round trip
 - [x] [P15-T02] Rewrite rows
 - [x] [P15-T03] Cargo manifest reader
-- [~] [P15-T04] Discovery gates and proposal
-      Open through P15-T08.
+- [x] [P15-T04] Discovery gates and proposal
 - [x] [P15-T05] Independent verify and synthesis
 - [x] [P15-T06] Lockfile declaration
 - [x] [P15-T07] Acceptance, CI, and docs
-- [ ] [P15-T08] Judge declared Cargo paths instead of inferred path components
+- [x] [P15-T08] Judge declared Cargo paths instead of inferred path components
       Compare rewrites on the paths manifests declare: `members`, dependency
       `path`, target `path`, and `build`. This must fix two open defects:
       a rewrite that splits `[lib] path`, `[[bin]] path`, or `build` from its

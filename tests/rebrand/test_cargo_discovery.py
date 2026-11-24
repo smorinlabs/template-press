@@ -28,6 +28,7 @@ from template_press.rebrand.keep_names import (
     validate_keep_names,
 )
 from template_press.rebrand.languages import SUPPORTED_LANGUAGES
+from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.rules import load_rules
 from template_press.rebrand.substitutions import check_target_keep_names
 from template_press.rebrand.verify_cli import verify_command
@@ -1283,3 +1284,208 @@ def test_no_map_owner_merged_into_a_path_row_still_continues(tmp_path) -> None:
     )
     answers = _answers(tmp_path, **{**_OWNER_ONLY_DEST, "repo_name": "zeta"})
     assert _press(target, answers) == 0
+
+
+# --- P15-T08: judge the paths Cargo manifests declare ---------------------------
+
+_DECLARED_SPLITS = {
+    "lib": ('\n[lib]\npath = "lib/acme-x.rs"\n', "lib/acme-x.rs", "pub fn hi() {}\n"),
+    "bin": (
+        '\n[[bin]]\nname = "tool"\npath = "tools/acme-x.rs"\n',
+        "tools/acme-x.rs",
+        "fn main() {}\n",
+    ),
+    "test": (
+        '\n[[test]]\nname = "smoke"\npath = "checks/acme-x.rs"\n',
+        "checks/acme-x.rs",
+        "",
+    ),
+    "example": (
+        '\n[[example]]\nname = "demo"\npath = "demos/acme-x.rs"\n',
+        "demos/acme-x.rs",
+        "fn main() {}\n",
+    ),
+    "bench": (
+        '\n[[bench]]\nname = "speed"\npath = "speed/acme-x.rs"\nharness = false\n',
+        "speed/acme-x.rs",
+        "fn main() {}\n",
+    ),
+    "build": (
+        'build = "tools/acme-build.rs"\n',
+        "tools/acme-build.rs",
+        "fn main() {}\n",
+    ),
+}
+
+
+def _press_for_real(target: Path, answers: Path) -> int:
+    return main(["--target", str(target), "--config", str(answers)])
+
+
+def _assert_refused_untouched(target: Path, code: int) -> None:
+    assert code == 2
+    assert not (target / RECEIPT_REL).exists()
+    assert _clean(target)
+
+
+@pytest.mark.parametrize("kind", sorted(_DECLARED_SPLITS))
+def test_owner_row_cannot_split_declared_target_path(tmp_path, capsys, kind) -> None:
+    extra, rel, body = _DECLARED_SPLITS[kind]
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("acme-core", extra),
+            "src/lib.rs": "pub fn hi() {}\n",
+            rel: body,
+            "press/press-source.toml": _source_config(**_OWNER_ONLY),
+        },
+        repo_name="other-repo",
+        owner="acme",
+    )
+    code = _press_for_real(target, _answers(tmp_path, **_OWNER_ONLY_DEST))
+    _assert_refused_untouched(target, code)
+    assert rel in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("field", "source", "dest"),
+    [("owner", "acme", "zeta"), ("author", "acme", "zeta")],
+)
+def test_unrelated_crate_path_split_is_refused(
+    tmp_path, capsys, field, source, dest
+) -> None:
+    identity = {**_OWNER_ONLY, "owner": "other-org", field: source}
+    answers = {**_OWNER_ONLY_DEST, "owner": "zeta-org", field: dest}
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": '[workspace]\nresolver = "2"\nmembers = ["crates/*"]\n',
+            "crates/app/Cargo.toml": _crate(
+                "plain-app", '\n[dependencies]\nhelper = { path = "../acme-x" }\n'
+            ),
+            "crates/app/src/main.rs": "fn main() {}\n",
+            "crates/acme-x/Cargo.toml": _crate("helper"),
+            "crates/acme-x/src/lib.rs": "pub fn hi() {}\n",
+            "press/press-source.toml": _source_config(**identity),
+        },
+        repo_name="other-repo",
+        owner=identity["owner"],
+    )
+    code = _press_for_real(target, _answers(tmp_path, **answers))
+    _assert_refused_untouched(target, code)
+    assert "../acme-x" in capsys.readouterr().out
+
+
+def test_declared_table_cannot_split_declared_path(tmp_path, capsys) -> None:
+    identity = {"repo_name": "other-repo", "app_name": "tool_app", "owner": "acme"}
+    moved = {"repo_name": "zeta-repo", "app_name": "zeta_app", "owner": "zeta"}
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("acme-core", '\n[lib]\npath = "lib/acme-x.rs"\n'),
+            "lib/acme-x.rs": "pub fn hi() {}\n",
+            "press/press-source.toml": _source_config(CORE_MAP, **identity),
+        },
+        repo_name="other-repo",
+        owner="acme",
+    )
+    code = _press_for_real(target, _answers(tmp_path, ZETA_MAP, **moved))
+    _assert_refused_untouched(target, code)
+    assert "lib/acme-x.rs" in capsys.readouterr().out
+
+
+def test_split_in_a_path_dependency_of_a_plain_package_is_refused(
+    tmp_path, capsys
+) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate(
+                "tool-pkg", '\n[dependencies]\nhelper = { path = "vendor/helper" }\n'
+            ),
+            "src/lib.rs": "pub fn hi() {}\n",
+            "vendor/helper/Cargo.toml": _crate(
+                "helper", '\n[lib]\npath = "lib/acme-x.rs"\n'
+            ),
+            "vendor/helper/lib/acme-x.rs": "pub fn hi() {}\n",
+            "press/press-source.toml": _source_config(**_OWNER_ONLY),
+        },
+        repo_name="other-repo",
+        owner="acme",
+    )
+    code = _press_for_real(target, _answers(tmp_path, **_OWNER_ONLY_DEST))
+    _assert_refused_untouched(target, code)
+    assert "lib/acme-x.rs" in capsys.readouterr().out
+
+
+def test_glob_member_split_is_refused(tmp_path, capsys) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": '[workspace]\nresolver = "2"\nmembers = ["crates/acme-*"]\n',
+            "crates/acme-x/Cargo.toml": _crate("helper"),
+            "crates/acme-x/src/lib.rs": "pub fn hi() {}\n",
+            "press/press-source.toml": _source_config(**_OWNER_ONLY),
+        },
+        repo_name="other-repo",
+        owner="acme",
+    )
+    code = _press_for_real(target, _answers(tmp_path, **_OWNER_ONLY_DEST))
+    _assert_refused_untouched(target, code)
+    assert "crates/acme-*" in capsys.readouterr().out
+
+
+def test_keep_name_protects_a_declared_path(tmp_path) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("tool-pkg", '\n[lib]\npath = "lib/acme-x.rs"\n'),
+            "lib/acme-x.rs": "pub fn hi() {}\n",
+            "press/press-source.toml": _source_config(**_OWNER_ONLY),
+            "press/press-rules.toml": '[rules]\nkeep_names = ["acme-x"]\n',
+        },
+        repo_name="other-repo",
+        owner="acme",
+    )
+    answers = _answers(tmp_path, **_OWNER_ONLY_DEST)
+    assert _press_for_real(target, answers) == 0
+    assert 'path = "lib/acme-x.rs"' in (target / "Cargo.toml").read_text()
+    assert (target / "lib/acme-x.rs").is_file()
+
+
+def test_bin_env_token_cannot_leave_an_auto_discovered_bin(tmp_path, capsys) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("plain-pkg"),
+            "src/lib.rs": "pub fn hi() {}\n",
+            "src/bin/acme-cli.rs": "fn main() {}\n",
+            "tests/cli.rs": 'const BIN: &str = env!("CARGO_BIN_EXE_acme-cli");\n',
+            "press/press-source.toml": _source_config(**_OWNER_ONLY),
+        },
+        repo_name="other-repo",
+        owner="acme",
+    )
+    code = _press_for_real(target, _answers(tmp_path, **_OWNER_ONLY_DEST))
+    _assert_refused_untouched(target, code)
+    assert "CARGO_BIN_EXE_acme-cli" in capsys.readouterr().out
+
+
+def test_default_member_split_is_refused(tmp_path, capsys) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": (
+                '[workspace]\nresolver = "2"\nmembers = ["crates/*"]\n'
+                'default-members = ["crates/acme-x"]\n'
+            ),
+            "crates/acme-x/Cargo.toml": _crate("helper"),
+            "crates/acme-x/src/lib.rs": "pub fn hi() {}\n",
+            "press/press-source.toml": _source_config(**_OWNER_ONLY),
+        },
+        repo_name="other-repo",
+        owner="acme",
+    )
+    code = _press_for_real(target, _answers(tmp_path, **_OWNER_ONLY_DEST))
+    _assert_refused_untouched(target, code)
+    assert "crates/acme-x" in capsys.readouterr().out
