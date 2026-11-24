@@ -36,7 +36,7 @@ _CODE: _State = ("code", 0)
 
 _IDENT_CHARS = re.compile(r"[A-Za-z0-9_]")
 _STRING_PREFIXES = frozenset({"r", "b", "br", "c", "cr"})
-_CHAR_LITERAL = re.compile(r"'(?:\\u\{[0-9A-Fa-f]{1,6}\}|\\.|[^\\'\n])'")
+_CHAR_LITERAL = re.compile(r"'(?:\\u\{[0-9A-Fa-f_]+\}|\\x[0-9A-Fa-f]{2}|\\.|[^\\'\n])'")
 # Text right before a literal that makes it a Cargo feature name or a path the
 # compiler resolves against the source file's directory.
 _FEATURE_BEFORE = re.compile(r"\bfeature\s*=\s*$")

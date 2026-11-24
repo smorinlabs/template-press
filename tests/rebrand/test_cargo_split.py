@@ -1758,3 +1758,12 @@ def test_rust_strings_skip_comments_lifetimes_and_chars() -> None:
     )
     contents = [text[s.content_start : s.content_end] for s in rust_strings(text)]
     assert contents == ['raw "acme"', "acme"]
+
+
+def test_rust_strings_read_hex_and_unicode_char_escapes() -> None:
+    from template_press.rebrand.rust_text import rust_strings
+
+    # Each char literal stands right before a string that holds a quote.
+    text = "eat!('\\x41'\"'\", '\\u{4_1}'\"'\"); let s = \"acme\";\n"
+    contents = [text[s.content_start : s.content_end] for s in rust_strings(text)]
+    assert contents == ["'", "'", "acme"]
