@@ -12,7 +12,8 @@ usage() {
     cat >&2 <<'EOF'
 Usage: scripts/check-gitleaks.sh [--staged|--range]
   --staged   Scan staged changes only (pre-commit hook mode).
-  --range    Scan range upstream..HEAD (pre-push hook mode).
+  --range    Scan commits not yet on the upstream (pre-push hook mode).
+             A new branch is compared with origin's default branch.
 EOF
     exit 2
 }
@@ -36,16 +37,21 @@ scan_staged() {
 
 scan_range() {
     require_gitleaks
-    local upstream
-    if ! upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null); then
-        echo "WARN: no upstream tracking branch; skipping range scan" >&2
-        exit 0
-    fi
+    local base range ref
+    base=""
+    for ref in '@{u}' origin/HEAD origin/main; do
+        if git rev-parse --verify --quiet "${ref}^{commit}" >/dev/null; then
+            base="${ref}"
+            break
+        fi
+    done
+    # With no remote base, every commit is unpushed, so scan them all.
+    range="${base:+${base}..}HEAD"
     if gitleaks detect --config "${CONFIG}" --no-banner --redact \
-            --log-opts="${upstream}..HEAD"; then
-        echo "PASS: no secrets in ${upstream}..HEAD"
+            --log-opts="${range}"; then
+        echo "PASS: no secrets in ${range}"
     else
-        echo "FAIL: gitleaks found secret(s) in ${upstream}..HEAD" >&2
+        echo "FAIL: gitleaks found secret(s) in ${range}" >&2
         exit 1
     fi
 }
