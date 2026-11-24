@@ -1068,9 +1068,11 @@ def _pressed_tree_fails_verify(
     source-config, receipt, and settled origin the real target will have.
     Exit 2 means verify could not reach its leak scan and keeps today's outcome.
     A failure building the copy is treated the same way, as standalone verify
-    reports its own copy failures as exit 2.
+    reports its own copy failures as exit 2. A verify exit 1 still blocks when
+    removing the copy fails afterward.
     """
     output = io.StringIO()
+    code: int | None = None
     try:
         with owned_sandbox(target) as root:
             sandbox = make_sandbox(target, root)
@@ -1097,7 +1099,8 @@ def _pressed_tree_fails_verify(
             ):
                 code = verify_command(["--target", str(sandbox.path)])
     except (SafetyError, ValidationError, OSError, subprocess.CalledProcessError):
-        return False
+        if code != 1:
+            return False
     if code != 1:
         return False
     print(output.getvalue(), end="", file=sys.stderr)

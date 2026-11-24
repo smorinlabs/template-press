@@ -91,3 +91,26 @@ def test_private_copy_setup_failure_keeps_the_press(
     assert _press(tmp_path, target) == 0
 
     assert (target / RECEIPT_REL).is_file()
+
+
+def test_cleanup_error_keeps_a_failing_verify_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import contextlib
+
+    import template_press.rebrand.cli as cli_module
+
+    original = cli_module.owned_sandbox
+
+    @contextlib.contextmanager
+    def teardown_fails(target: Path):  # type: ignore[no-untyped-def]
+        with original(target) as root:
+            yield root
+        raise OSError("sandbox removal failed")
+
+    monkeypatch.setattr(cli_module, "owned_sandbox", teardown_fails)
+    target = _target(tmp_path, files={"NOTES.md": "_zapp_\n"})
+
+    assert _press(tmp_path, target, _with(DEST, app_name="zapp")) == 1
+
+    assert not (target / RECEIPT_REL).exists()
