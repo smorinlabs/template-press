@@ -179,6 +179,43 @@ def quoting_renames(text: str) -> tuple[int, ...]:
     return tuple(found.start() for found in _QUOTING_RENAME.finditer("".join(pieces)))
 
 
+_MODULE_DECLARATION = re.compile(
+    r"(?<![A-Za-z0-9_])mod\s+(?:r#)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*;"
+)
+_PATH_ATTRIBUTE = re.compile(r"#\s*\[\s*path\s*=")
+
+
+def module_declarations(text: str) -> tuple[tuple[int, str, bool], ...]:
+    """Each ``mod name;`` in code: its offset, its name, and whether a
+    ``#[path = ...]`` attribute gives its file instead of the name.
+
+    Comments, doc comments, and string literals are skipped.
+    """
+    pieces: list[str] = []
+    index = 0
+    while index < len(text):
+        if text.startswith(("//", "/*"), index):
+            end = _comment_end(text, index)
+            pieces.append(_blank(text[index:end]))
+        else:
+            end, literal = _token(text, index)
+            piece = text[index:end]
+            # Keep the quotes, so that a ``#[path = "..."]`` stays visible.
+            pieces.append('""' if literal else piece)
+            if literal:
+                pieces.append(_blank(piece)[2:])
+        index = end
+    code = "".join(pieces)
+    found: list[tuple[int, str, bool]] = []
+    for match in _MODULE_DECLARATION.finditer(code):
+        item = max(code.rfind(edge, 0, match.start()) for edge in ";{}")
+        attributes = code[item + 1 : match.start()]
+        found.append(
+            (match.start(), match["name"], bool(_PATH_ATTRIBUTE.search(attributes)))
+        )
+    return tuple(found)
+
+
 def _blank(piece: str) -> str:
     return re.sub(r"[^\n]", " ", piece)
 

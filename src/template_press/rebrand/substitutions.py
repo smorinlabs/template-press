@@ -86,6 +86,7 @@ from template_press.rebrand.rules import (
 )
 from template_press.rebrand.rust_text import (
     cut_module_docs,
+    module_declarations,
     quoted_spans,
     quoting_renames,
     rust_strings,
@@ -2013,6 +2014,128 @@ def cargo_path_splits(
                 *inferred,
             )
             if not _declared_path_follows(before, after, manifest, plan, directories)
+        )
+    split_tokens = _split_tokens(source, destination, rules)
+    files = frozenset(
+        entry.rel.as_posix()
+        for entry in snapshot.entries
+        if entry.worktree_kind == "file"
+    )
+    for path in sorted(rewritten):
+        if (
+            not path.endswith(".rs")
+            or path in removed_files
+            or path.startswith(removed_dirs)
+        ):
+            continue
+        try:
+            text = read_regular_nofollow(target / path).decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        new_text, _ = rewrite_file(
+            (row for row in content_rows if row_matches_scope(row, path)),
+            text,
+            rules.keep_names,
+        )
+        if new_text != text:
+            problems.extend(
+                _rust_source_path_splits(
+                    path, text, new_text, plan, files, split_tokens
+                )
+            )
+    return problems
+
+
+def _split_tokens(
+    source: Identity, destination: Identity, rules: Rules
+) -> tuple[re.Pattern[str], ...]:
+    """The crate names a ``[[cargo_split]]`` press checks with its own rules."""
+    names = dict(source.cargo_names)
+    return tuple(
+        token_pattern(f"{CARGO_EXACT_PREFIX}{split.role}", names[split.role])
+        or re.compile(re.escape(names[split.role]))
+        for split in active_cargo_splits(source, destination, rules)
+    )
+
+
+def _rust_source_path_splits(
+    path: str,
+    text: str,
+    new_text: str,
+    plan: RenamePlan,
+    files: frozenset[str],
+    split_tokens: Sequence[re.Pattern[str]],
+) -> list[str]:
+    """Paths Rust source declares that the rewrite would separate from their files.
+
+    These are the file of a ``mod name;``, a ``#[path]`` value, and an
+    ``include_str!``, ``include_bytes!``, or ``include!`` argument. Each is
+    judged only when the rewrite changes it: it must still name the file it
+    named, at that file's planned new path. A crate name that a
+    ``[[cargo_split]]`` role splits is left to the split preflight.
+    """
+
+    def split_owned(value: str) -> bool:
+        return any(token.search(value) for token in split_tokens)
+
+    problems: list[str] = []
+    new_path = plan.translate(path)
+    base, new_base = posixpath.dirname(path), posixpath.dirname(new_path)
+    old_strings = [
+        literal
+        for literal in rust_strings(text)
+        if string_role(text, literal, "\0") == "path"
+    ]
+    new_strings = [
+        literal
+        for literal in rust_strings(new_text)
+        if string_role(new_text, literal, "\0") == "path"
+    ]
+    old_mods, new_mods = module_declarations(text), module_declarations(new_text)
+    if len(old_strings) != len(new_strings) or len(old_mods) != len(new_mods):
+        return [f"{path}: the rewrite changes which Rust paths the file declares"]
+    for old, new in zip(old_strings, new_strings, strict=True):
+        value = text[old.content_start : old.content_end]
+        new_value = new_text[new.content_start : new.content_end]
+        if value == new_value or split_owned(value):
+            continue
+        resolved = posixpath.normpath(posixpath.join(base, value))
+        moved = posixpath.normpath(posixpath.join(new_base, new_value))
+        if resolved in files and plan.translate(resolved) == moved:
+            continue
+        problems.append(
+            f"{path}:{_line_of(text, old.start)}: the Rust path {value!r} would "
+            f"become {new_value!r}, but the press would not move the file it "
+            "names to match. Rename the file so a press moves it, add the shared "
+            "name to keep_names, or edit the path by hand before pressing"
+        )
+    stem = PurePosixPath(path).stem
+    new_stem = PurePosixPath(new_path).stem
+    for (offset, name, attributed), (_, new_name, _) in zip(
+        old_mods, new_mods, strict=True
+    ):
+        if name == new_name or attributed or split_owned(name):
+            continue
+        # A module file sits beside a crate root or ``mod.rs`` and below
+        # any other file's stem; both places are read, so neither is missed.
+        places = ((base, new_base), (f"{base}/{stem}", f"{new_base}/{new_stem}"))
+        found = [
+            (posixpath.normpath(f"{old_dir}/{shape.format(name)}"), new_dir, shape)
+            for old_dir, new_dir in places
+            for shape in ("{}.rs", "{}/mod.rs")
+            if posixpath.normpath(f"{old_dir}/{shape.format(name)}") in files
+        ]
+        if found and all(
+            plan.translate(file)
+            == posixpath.normpath(f"{new_dir}/{shape.format(new_name)}")
+            for file, new_dir, shape in found
+        ):
+            continue
+        problems.append(
+            f"{path}:{_line_of(text, offset)}: `mod {name};` would become "
+            f"`mod {new_name};`, but the press would not rename the module's "
+            "file to match. Rename the file so a press moves it, add the shared "
+            "name to keep_names, or edit the module by hand before pressing"
         )
     return problems
 
