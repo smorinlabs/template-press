@@ -168,6 +168,8 @@ def make_target(base: Path, layout: str = "src") -> Path:
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test")
+    # Background maintenance can change .git while the template is copied.
+    _git(repo, "config", "maintenance.auto", "false")
     _git(
         repo,
         "remote",
