@@ -128,6 +128,19 @@ def test_rejects_bad_role_and_bad_name(tmp_path: Path, table: str) -> None:
         load_answers(path)
 
 
+@pytest.mark.parametrize("name", ["_acme_widget", "_zeta_widget", "_a", "_1"])
+def test_accepts_leading_underscore_value(tmp_path: Path, name: str) -> None:
+    path = _answers(tmp_path, f'[answers.cargo_names]\npy = "{name}"\n')
+    assert load_answers(path).cargo_names == (("py", name),)
+
+
+@pytest.mark.parametrize("name", ["_", "__", "_-", "-_", ""])
+def test_rejects_underscore_only_value(tmp_path: Path, name: str) -> None:
+    path = _answers(tmp_path, f'[answers.cargo_names]\npy = "{name}"\n')
+    with pytest.raises(ValidationError):
+        load_answers(path)
+
+
 def test_rejects_non_string_table_value(tmp_path: Path) -> None:
     path = _answers(tmp_path, "[answers.cargo_names]\ncore = 3\n")
     with pytest.raises(ValidationError):

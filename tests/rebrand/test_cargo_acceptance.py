@@ -750,3 +750,68 @@ def test_bin_env_token_in_an_excluded_file_is_refused(
 
     assert not (target / RECEIPT_REL).exists()
     _assert_cargo(target, "test", "--offline")
+
+
+MATURIN_ACME = {**ACME, "package_name": "acme_widget", "app_name": "acme_widget"}
+MATURIN_ZETA = {**ZETA, "package_name": "zeta_widget", "app_name": "zeta_widget"}
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_maturin_leading_underscore_lib_presses_builds_and_verifies(
+    tmp_path: Path, cargo_or_skip
+) -> None:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    names = {"widget": "acme-widget", "py": "_acme_widget"}
+    _write(
+        target,
+        {
+            "Cargo.toml": (
+                '[package]\nname = "acme-widget"\nversion = "0.1.0"\n'
+                f'edition = "2021"\n{AUTHOR_LINE}repository = "{REPOSITORY}"\n\n'
+                '[lib]\nname = "_acme_widget"\npath = "src/lib.rs"\n'
+            ),
+            "pyproject.toml": '[project]\nname = "acme-widget"\nversion = "0.1.0"\n',
+            "src/acme_widget/__init__.py": "",
+            "src/lib.rs": (
+                'pub const MODULE: &str = "_acme_widget";\n'
+                'pub const PACKAGE: &str = "acme_widget";\n'
+            ),
+            "tests/smoke.rs": (
+                "#[test]\nfn links_library() {\n"
+                '    assert_eq!(_acme_widget::MODULE, "_acme_widget");\n}\n'
+            ),
+            ".gitignore": "target/\n",
+            "press/press-source.toml": _table("identity", MATURIN_ACME)
+            + _table("identity.cargo_names", names),
+            "press/press-rules.toml": LOCK_RULES.replace(
+                "[rules]\n", '[rules]\nlanguages = ["python", "rust"]\n', 1
+            ),
+        },
+    )
+    _assert_cargo(target, "generate-lockfile", "--offline")
+    _git(target, "init", "-q", "-b", "main")
+    _git(target, "config", "user.email", "t@example.test")
+    _git(target, "config", "user.name", "t")
+    _git(target, "remote", "add", "origin", f"{REPOSITORY}.git")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "seed")
+    answers = _answers(
+        tmp_path,
+        "zeta.toml",
+        MATURIN_ZETA,
+        {"widget": "zeta-widget", "py": "_zeta_widget"},
+    )
+
+    assert main(["--target", str(target), "--config", str(answers)]) == 0
+    assert (target / RECEIPT_REL).is_file()
+    lib = (target / "src/lib.rs").read_text(encoding="utf-8")
+    assert '"_zeta_widget"' in lib
+    assert '"zeta_widget"' in lib
+    assert "__zeta" not in lib
+    _assert_cargo(target, "check", "--offline")
+    _set_origin(target, MATURIN_ZETA)
+    assert verify_command(["--target", str(target)]) == 0
+    _assert_tokens_absent(target, ("acme", "Acme"))

@@ -18,6 +18,8 @@ from template_press.rebrand.discovery import (
     discover,
 )
 from template_press.rebrand.identity import (
+    CARGO_NAME_RE,
+    CARGO_ROLE_RE,
     Identity,
     ValidationError,
     cargo_identity_problem,
@@ -1069,37 +1071,68 @@ def test_no_map_leading_underscore_lib_continues(tmp_path) -> None:
     assert _press(target, answers) == 0
 
 
-def test_table_hint_never_prints_an_unloadable_table(tmp_path) -> None:
+def test_table_hint_for_a_leading_underscore_lib_is_loadable(tmp_path) -> None:
     target = _repo(tmp_path, _maturin_files(_source_config()))
     hint = cargo_table_hint(read_cargo_facts(target))
+    assert "cannot represent" not in hint
+    assert 'acme_widget = "_acme_widget"' in hint
+    for line in hint.splitlines():
+        if " = " in line and not line.startswith("#"):
+            role, value = (part.strip() for part in line.split(" = ", 1))
+            assert CARGO_ROLE_RE.fullmatch(role), role
+            assert CARGO_NAME_RE.fullmatch(value.strip('"')), value
+
+
+def test_table_hint_refuses_a_name_whose_role_cannot_start_with_a_letter(
+    tmp_path,
+) -> None:
+    files = _maturin_files(_source_config())
+    files["Cargo.toml"] = _crate("acme-widget", '[lib]\nname = "_1acme"\n')
+    target = _repo(tmp_path, files)
+    hint = cargo_table_hint(read_cargo_facts(target))
     assert "[identity.cargo_names]" not in hint
-    assert "_acme_widget" in hint
+    assert "_1acme" in hint
     assert "cannot represent" in hint
 
 
-def test_declared_table_refusal_names_the_underscore_limit(tmp_path, capsys) -> None:
-    target = _repo(
-        tmp_path,
-        _maturin_files(
-            _source_config(
-                {"widget": "acme-widget"},
-                package_name="acme_widget",
-                repo_name="acme-widget",
-            )
-        ),
-        repo_name="acme-widget",
+_MATURIN_RS = (
+    "pub fn hi() {}\n"
+    "// _acme_widget is the extension module; acme_widget is the Python package.\n"
+    'pub const MODULE: &str = "_acme_widget";\n'
+    'pub const PACKAGE: &str = "acme_widget";\n'
+)
+_MATURIN_TABLE = {"widget": "acme-widget", "py": "_acme_widget"}
+_MATURIN_DEST = {"widget": "zeta-widget", "py": "_zeta_widget"}
+
+
+def _maturin_with_table(tmp_path: Path) -> tuple[Path, Path]:
+    files = _maturin_files(
+        _source_config(
+            _MATURIN_TABLE, package_name="acme_widget", repo_name="acme-widget"
+        )
     )
+    files["src/lib.rs"] = _MATURIN_RS
+    target = _repo(tmp_path, files, repo_name="acme-widget")
     answers = _answers(
-        tmp_path,
-        {"widget": "zeta-widget"},
-        package_name="zeta_widget",
-        repo_name="zeta-widget",
+        tmp_path, _MATURIN_DEST, package_name="zeta_widget", repo_name="zeta-widget"
     )
-    assert _press(target, answers) == 2
-    out = capsys.readouterr().out
-    assert "_acme_widget" in out
-    assert "cannot represent" in out
-    assert _clean(target)
+    return target, answers
+
+
+def test_declared_leading_underscore_table_presses(tmp_path) -> None:
+    target, answers = _maturin_with_table(tmp_path)
+    assert _press_for_real(target, answers) == 0
+    assert (target / RECEIPT_REL).is_file()
+    cargo = (target / "Cargo.toml").read_text()
+    assert 'name = "zeta-widget"' in cargo
+    assert 'name = "_zeta_widget"' in cargo
+    text = (target / "src/lib.rs").read_text()
+    assert '"_zeta_widget"' in text
+    assert '"zeta_widget"' in text
+    assert "__zeta" not in text
+    assert "_zeta_zeta" not in text
+    assert "acme" not in text.replace("acme_widget is", "")
+    assert "acme" not in cargo
 
 
 def test_role_equal_to_app_name_keeps_env_prefix(tmp_path) -> None:

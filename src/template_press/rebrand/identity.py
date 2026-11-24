@@ -20,7 +20,8 @@ NPM_NAME_RE = re.compile(r"^(?:@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]
 NPM_NAME_MAX_LENGTH = 214
 CLI_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 CARGO_ROLE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-CARGO_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+# A leading underscore is allowed (maturin library names); a bare "_" is not.
+CARGO_NAME_RE = re.compile(r"^(?=.*[A-Za-z0-9])[A-Za-z_][A-Za-z0-9_-]*$")
 CARGO_EXACT_PREFIX = "cargo_exact_"
 CARGO_IDENT_PREFIX = "cargo_ident_"
 CARGO_BIN_ENV_TAG = "cargo_binenv_"
@@ -149,8 +150,9 @@ def validate_cargo_role(role: str) -> str:
 def validate_cargo_name(name: str) -> str:
     if not CARGO_NAME_RE.fullmatch(name):
         raise ValidationError(
-            f"cargo_names name must start with a letter and use letters, "
-            f"digits, hyphens, and underscores "
+            f"cargo_names name must start with a letter or underscore, use "
+            f"letters, digits, hyphens, and underscores, and contain at "
+            f"least one letter or digit "
             f"(matching {CARGO_NAME_RE.pattern}): {name!r}"
         )
     return name

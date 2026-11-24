@@ -238,6 +238,8 @@ def node_proposal(
 def cargo_role_table(facts: CargoFacts) -> dict[str, str]:
     """One role per name, keyed by its lowercase underscore form.
 
+    Leading underscores are dropped from the key, since a role starts with a letter.
+
     Spellings of one name share a role. ``facts.names`` is sorted, so a hyphen
     spelling (``-`` sorts before ``_``) is the value that role records.
     """
@@ -248,7 +250,8 @@ def cargo_role_table(facts: CargoFacts) -> dict[str, str]:
         if ident in seen:
             continue
         seen.add(ident)
-        base = role = ident.lower()
+        # A role must start with a letter, so ``_acme_widget`` keys as ``acme_widget``.
+        base = role = ident.lower().lstrip("_")
         suffix = 2
         while role in table:
             role = f"{base}_{suffix}"
@@ -269,7 +272,8 @@ def _unloadable_names(facts: CargoFacts) -> list[str]:
 def _table_limit(names: Sequence[str]) -> str:
     return (
         f"A cargo_names table cannot represent {list(names)!r}: its values must "
-        f"match {CARGO_NAME_RE.pattern}. Choose identity fields whose rewrite "
+        f"match {CARGO_NAME_RE.pattern} and its roles {CARGO_ROLE_RE.pattern}. "
+        "Choose identity fields whose rewrite "
         "keeps the package and Rust spellings of that name consistent, or "
         "rename it."
     )
