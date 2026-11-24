@@ -1723,8 +1723,8 @@ def _bin_env_splits(
         old_token = re.compile(rf"CARGO_BIN_EXE_{re.escape(name)}(?![\w-])")
         new_token = re.compile(rf"CARGO_BIN_EXE_{re.escape(new_name)}(?![\w-])")
         problems.extend(
-            f"{path}: CARGO_BIN_EXE_{name} would be rewritten, but the press "
-            f"would name that binary {new_name!r}"
+            f"{path}: CARGO_BIN_EXE_{name} tokens would not match the "
+            f"binary, which its file would name {new_name!r}"
             for path, old_text, new_text in new_texts
             if len(old_token.findall(old_text)) != len(new_token.findall(new_text))
         )
