@@ -87,6 +87,7 @@ from template_press.rebrand.rules import (
 from template_press.rebrand.rust_text import (
     cut_module_docs,
     quoted_spans,
+    quoting_renames,
     rust_strings,
     span_within,
     split_rust_replacements,
@@ -2183,6 +2184,14 @@ def cargo_split_target_problems(
                 "comment, or move the attribute into the module's file, below "
                 "its doc comment"
                 for offset in cut_module_docs(text)
+            )
+            problems.extend(
+                f"{path}:{_line_of(text, offset)}: renames `stringify!` or "
+                "`concat!`. A call through the new name, in this file or another, "
+                "turns its arguments into text that the press cannot see, so it "
+                "cannot choose a spelling there. Call the macro by its own name "
+                "before pressing"
+                for offset in quoting_renames(text)
             )
         for split in splits:
             old, new = old_names[split.role], new_names[split.role]

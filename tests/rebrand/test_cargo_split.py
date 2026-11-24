@@ -1727,6 +1727,110 @@ def test_chained_comparison_refusal_matches_real_cargo(
     assert after.returncode == 101, after.stdout + after.stderr
 
 
+# R33/I1: a renamed quoting macro hides the call from the press, target-wide.
+ALIAS_CALL = 'assert_eq!({}!(acme), env!("CARGO_PKG_NAME"));'
+QUOTING_RENAMES = {
+    "b0_alias": (
+        {
+            "src/lib.rs": PLAIN_LIB
+            + "\nuse core::stringify as s;\n"
+            + _test_lib(ALIAS_CALL.format("s"))
+        },
+        "src/lib.rs:5:",
+    ),
+    "grouped": (
+        {
+            "src/lib.rs": "use core::{stringify as s};\n"
+            + PLAIN_LIB
+            + "#[cfg(test)]\nmod tests {\n    use super::s;\n"
+            + _test_lib(ALIAS_CALL.format("s"))
+            + "}\n"
+        },
+        "src/lib.rs:1:",
+    ),
+    "cross_file": (
+        {
+            "src/lib.rs": "pub(crate) use core::stringify as s;\nmod other;\n"
+            + PLAIN_LIB,
+            "src/other.rs": _test_lib(ALIAS_CALL.format("crate::s")),
+        },
+        "src/lib.rs:1:",
+    ),
+    "concat_alias": (
+        {
+            "src/lib.rs": PLAIN_LIB,
+            "src/util.rs": "pub use std::concat as c;\n",
+        },
+        "src/util.rs:1:",
+    ),
+    "multi_line_rename": (
+        {"src/lib.rs": "use core::{\n    stringify\n    as s,\n};\n" + PLAIN_LIB},
+        "src/lib.rs:2:",
+    ),
+    "doc_fence_rename": (
+        {
+            "src/lib.rs": "/// ```\n/// use core::stringify as s;\n"
+            + "/// let _ = s!(acme);\n/// ```\n"
+            + PLAIN_LIB
+        },
+        "src/lib.rs:2:",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(QUOTING_RENAMES))
+def test_renamed_quoting_macro_is_refused_target_wide(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files, where = QUOTING_RENAMES[case]
+    err = _refusal(tmp_path, _lib_crate(**files), capsys)
+    assert f"{where} renames `stringify!` or `concat!`" in err
+
+
+def test_quoting_macro_names_in_strings_and_comments_are_no_rename(
+    tmp_path: Path,
+) -> None:
+    lib = (
+        PLAIN_LIB
+        + '// use core::stringify as s;\npub const T: &str = "concat as c";\n'
+        + "pub fn stringify_as() {}\n"
+    )
+    target = _round_target(tmp_path, _lib_crate(**{"src/lib.rs": lib}))
+    assert _press(target, _zeta(tmp_path)) == 0
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("case", ["b0_alias", "grouped", "cross_file"])
+def test_renamed_quoting_macro_refusal_matches_real_cargo(
+    case: str, tmp_path: Path
+) -> None:
+    """Real Cargo: the identifier spelling the press used to write fails."""
+    _require_cargo()
+    files = {
+        "Cargo.toml": _package("acme"),
+        "README.md": "# acme-repo, by acmectl\n",
+        **QUOTING_RENAMES[case][0],
+    }
+    target = _round_target(tmp_path, files, lock=True)
+    _assert_cargo(target, "test", "--offline")
+
+    assert _press(target, _zeta(tmp_path)) == 2
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+    # What the press wrote before the fix: the identifier spelling in the call.
+    for rel in files:
+        if rel.endswith(".rs"):
+            path = target / rel
+            path.write_text(path.read_text().replace("!(acme)", "!(zeta_gadget)"))
+    toml = target / "Cargo.toml"
+    toml.write_text(toml.read_text().replace('"acme"', '"zeta-gadget"'))
+    after = _cargo(target, "test", "--offline")
+    assert after.returncode == 101, after.stdout + after.stderr
+
+
 # --- identity and rules units ----------------------------------------------------
 
 

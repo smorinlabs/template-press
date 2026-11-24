@@ -154,6 +154,35 @@ def quoted_spans(text: str) -> tuple[Span, ...]:
     return _scan(text)[2]
 
 
+_QUOTING_RENAME = re.compile(r"\b(?:stringify|concat)\s+as\b")
+
+
+def quoting_renames(text: str) -> tuple[int, ...]:
+    """Where ``text`` renames ``stringify!`` or ``concat!``, as in ``use
+    core::stringify as s;`` or ``use core::{stringify as s};``.
+
+    A call through the new name is no quoting call the press can see, in this
+    file or another. Code and doc comments count, since rustdoc may compile a
+    doc comment; string literals and plain comments do not.
+    """
+    pieces: list[str] = []
+    index = 0
+    while index < len(text):
+        if text.startswith(("//", "/*"), index):
+            end = _comment_end(text, index)
+            piece = text[index:end]
+            pieces.append(piece if _is_doc(text, index, end) else _blank(piece))
+        else:
+            end, literal = _token(text, index)
+            pieces.append(_blank(text[index:end]) if literal else text[index:end])
+        index = end
+    return tuple(found.start() for found in _QUOTING_RENAME.finditer("".join(pieces)))
+
+
+def _blank(piece: str) -> str:
+    return re.sub(r"[^\n]", " ", piece)
+
+
 def span_within(spans: Sequence[Span], span: Span) -> bool:
     """Whether one of ``spans`` holds ``span``."""
     return any(low <= span[0] and span[1] <= high for low, high in spans)
