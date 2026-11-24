@@ -2144,9 +2144,10 @@ def cargo_split_target_problems(
         if path.endswith(".rs"):
             problems.extend(
                 f"{path}:{_line_of(text, offset)}: the documentation above this "
-                "`mod` declaration may end inside a Rust string literal or a "
-                "block comment: its doc comment ends that way, or a "
-                "`#[doc = ...]` attribute there is not a plain string. rustdoc "
+                "`mod` declaration may end inside a Rust string literal, a block "
+                "comment, or the arguments of a `stringify!` or `concat!` call: "
+                "its doc comment ends that way, or a `#[doc = ...]` attribute "
+                "there is not a plain string or names one of those macros. rustdoc "
                 "joins the doc comment of the module's own file to it, so the "
                 "press cannot read that file's doc comment. Close the string or "
                 "comment, or move the attribute into the module's file, below "
@@ -2167,7 +2168,9 @@ def cargo_split_target_problems(
                 kept,
             ):
                 where = f"{path}:{_line_of(new_text, start)}"
-                if span_within(quoted, (start, end)):
+                literal = string_at(strings, (start, end))
+                unread = literal is not None and literal.unread
+                if span_within(quoted, (start, end)) and not unread:
                     problems.append(
                         f"{where}: {old!r} is in the arguments of a `stringify!` "
                         "or `concat!` call, which turns them into text, so the "
@@ -2177,7 +2180,6 @@ def cargo_split_target_problems(
                         "call by hand before pressing"
                     )
                     continue
-                literal = string_at(strings, (start, end))
                 if literal is not None:
                     place, remedy = (
                         "inside a Rust string literal",

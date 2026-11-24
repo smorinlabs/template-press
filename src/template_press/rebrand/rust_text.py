@@ -129,8 +129,9 @@ def rust_strings(text: str) -> tuple[RustString, ...]:
 def cut_module_docs(text: str) -> tuple[int, ...]:
     """Where a ``mod name;`` has doc text that may end inside a string or comment.
 
-    Its doc comment ends that way, or it has a ``doc`` attribute that the
-    press cannot read. rustdoc joins the inner doc comment of the module's own
+    Its doc comment ends that way, or in a quoting macro's arguments, or it
+    has a ``doc`` attribute that the press cannot read or that names such a
+    macro. rustdoc joins the inner doc comment of the module's own
     file to that text, so the press cannot read that file's doc comment.
     """
     return _scan(text)[1]
@@ -164,11 +165,16 @@ def _scan(
     # Doc text the press cannot read comes before the next doc comment
     # (``unread``), or before the same item's inner doc comment (``pending``).
     unread = pending = False
+    # A quoting macro's call may be open before the next doc comment
+    # (``calling``), or before the same item's inner doc comment (``called``).
+    calling = called = False
     # For each open bracket, whether a macro call or definition holds it. A
     # macro may add doc text around the doc comments it is given.
     macros: list[bool] = []
-    # For each open bracket, where a quoting macro opens it, or -1.
-    calls: list[int] = []
+    # For each open bracket, whether a quoting macro opens it; how many of
+    # those are open; and where the part of the outermost one being read began.
+    calls: list[bool] = []
+    held = segment = 0
     word = ""  # the last code token, past spaces and comments, if it is a word
     bang = False  # the code ends with ``name!``, or ``name! name``
     quoting = False  # the code ends with ``stringify!`` or ``concat!``
@@ -183,14 +189,19 @@ def _scan(
                         index,
                         last in _ITEM_EDGES and not any(macros[-1:]),
                         unread or (inner and pending),
+                        calling or (inner and called),
                     )
                     docs.update(cluster.literals)
                     quoted += cluster.quoted
                     pending = not inner and (cluster.hidden or cluster.cut)
+                    called = not inner and cluster.calling
                     module = _MODULE_FILE.match(text, cluster.end)
-                    if cluster.cut and not inner and module:
+                    if (cluster.cut or cluster.calling) and not inner and module:
                         cut.append(module.start())
                 found.extend(docs.pop(index))
+            elif held:  # a plain comment is no argument
+                quoted.append((segment, index))
+                segment = end
             index = end
             continue
         start = index
@@ -198,24 +209,30 @@ def _scan(
             attribute_end = _attribute_end(text, index)
             if _DOC_ATTRIBUTE.search(text, index, attribute_end):
                 last = "#"
-                if _hides_doc_text(text, index, attribute_end):
-                    unread = True
-                    if text[index + 1] != "!":  # an outer attribute
-                        pending = True
-                        module = _MODULE_FILE.match(text, _item_start(text, index))
-                        if module:
-                            cut.append(module.start())
+                hides = _hides_doc_text(text, index, attribute_end)
+                names = _names_quoting(text, index, attribute_end)
+                unread, calling = unread or hides, calling or names
+                if (hides or names) and text[index + 1] != "!":  # an outer attribute
+                    pending, called = pending or hides, called or names
+                    module = _MODULE_FILE.match(text, _item_start(text, index))
+                    if module:
+                        cut.append(module.start())
         index, literal = _token(text, index)
         if literal is not None:
             found.append(literal)
         char = text[start]
         if char in "{([":
             macros.append(bang or any(macros[-1:]))
-            calls.append(start if quoting else -1)
+            calls.append(quoting)
+            if quoting and not held:
+                segment = start
+            held += quoting
         elif char in "})]":
             del macros[-1:]
-            if calls and (opened := calls.pop()) >= 0:
-                quoted.append((opened, index))
+            if calls and calls.pop():
+                held -= 1
+                if not held:
+                    quoted.append((segment, index))
         if char == "!":
             bang = bool(word)
         elif not (char.isspace() or _IDENT_CHARS.match(char)) or literal:
@@ -225,9 +242,11 @@ def _scan(
             word = text[start:index] if _IDENT_CHARS.match(char) and not literal else ""
         if start >= attribute_end and not char.isspace():
             last = text[index - 1]
-            unread = False
+            unread = calling = False
             pending = pending and last not in ";}"
-    quoted += [(opened, length) for opened in calls if opened >= 0]
+            called = called and last not in ";}"
+    if held:
+        quoted.append((segment, length))
     return tuple(found), tuple(sorted(set(cut))), tuple(quoted)
 
 
@@ -259,6 +278,24 @@ def _hides_doc_text(text: str, start: int, end: int) -> bool:
     return any(
         value is None or "/*" in value[0] or "*/" in value[0] for value in values
     )
+
+
+def _names_quoting(text: str, start: int, end: int) -> bool:
+    """Whether a string in the attribute holds a quoting macro's name.
+
+    As doc text, that string may open a call of the macro.
+    """
+    index = start
+    while index < end:
+        if text.startswith(("//", "/*"), index):
+            index = _comment_end(text, index)
+            continue
+        index, literal = _token(text, index)
+        if literal and _QUOTING_NAME.search(
+            text, literal.content_start, literal.content_end
+        ):
+            return True
+    return False
 
 
 def _token(text: str, index: int) -> tuple[int, RustString | None]:
@@ -336,9 +373,12 @@ class _Cluster:
     hidden: bool  # it holds doc text the press cannot read
     cut: bool  # it may end inside a string or a comment that later text closes
     quoted: list[Span]  # where a quoting macro's arguments may hold it
+    calling: bool  # it may end inside such arguments, which later text closes
 
 
-def _doc_cluster(text: str, index: int, clean: bool, unread: bool) -> _Cluster:
+def _doc_cluster(
+    text: str, index: int, clean: bool, unread: bool, calling: bool
+) -> _Cluster:
     """The literals of each doc comment that rustdoc joins with the one here.
 
     rustdoc joins an item's doc comments, across blank lines, plain comments,
@@ -355,6 +395,8 @@ def _doc_cluster(text: str, index: int, clean: bool, unread: bool) -> _Cluster:
     whole, sealed = clean and not inner, inner
     hidden = after_hidden = unread  # unread doc text comes before the next line
     unknown: set[int] = set()  # the lines such text comes before
+    # The first line that follows doc text which may open a quoting macro's call.
+    open_from = 0 if calling else None
     position, after_attribute = index, False
     while position < len(text):
         if text[position].isspace():
@@ -367,6 +409,8 @@ def _doc_cluster(text: str, index: int, clean: bool, unread: bool) -> _Cluster:
                 sealed = sealed and "$" not in text[position:end]
                 if _hides_doc_text(text, position, end):
                     hidden = after_hidden = True
+                if open_from is None and _names_quoting(text, position, end):
+                    open_from = len(lines)
             after_attribute = True
         elif not text.startswith(("//", "/*"), position):
             break
@@ -392,10 +436,13 @@ def _doc_cluster(text: str, index: int, clean: bool, unread: bool) -> _Cluster:
     # so nothing after that text can be read.
     sealed = sealed and not after_hidden
     unread_from = len(lines) if sealed or not unknown else min(unknown)
-    literals, cut, quoted = _doc_literals(
+    literals, cut, quoted, open_end = _doc_literals(
         text, lines, owners, restarts, whole, sealed, unread_from, unknown
     )
-    return _Cluster(literals, position, hidden, cut, quoted)
+    if open_from is not None and open_from < len(lines):
+        quoted.append((lines[open_from][0], lines[-1][1]))
+    calling = not sealed and (open_end or open_from is not None)
+    return _Cluster(literals, position, hidden, cut, quoted, calling)
 
 
 def _doc_lines(text: str, start: int, end: int) -> list[Segment]:
@@ -417,7 +464,7 @@ def _doc_literals(
     sealed: bool,
     unread_from: int,
     unknown: set[int],
-) -> tuple[dict[int, list[RustString]], bool, list[Span]]:
+) -> tuple[dict[int, list[RustString]], bool, list[Span], bool]:
     """Read the joined doc lines as code wherever a code block may hold them.
 
     While the Markdown structure is ``proven``, the press knows where each
@@ -434,8 +481,9 @@ def _doc_literals(
     read, so each of those lines is unread as a whole. Before that, such text
     leaves only the lexer state of an ``unknown`` line in doubt: one more
     reading starts there in each state that the later text can close. Also
-    returns whether the text may end inside a string or a comment, and where
-    the lines read as code may sit in a quoting macro's arguments.
+    returns whether the text may end inside a string or a comment, where the
+    lines read as code may sit in a quoting macro's arguments, and whether
+    they may end there.
     """
     bodies = [text[low:high] for low, high in lines]
     widths = [len(body) - len(body.lstrip(" ")) for body in bodies if body.strip()]
@@ -532,16 +580,20 @@ def _doc_literals(
             [reading for reading in binding if reading[2]], doc, number
         )
     code = [lines[number] for number, row in lexed if row]
-    return found, cut, _doc_calls(text, code, len(restarts) > 1)
+    breaks = [lines[number][0] for number in restarts if number]
+    return found, cut, *_doc_calls(text, code, breaks)
 
 
-def _doc_calls(text: str, lines: Sequence[Segment], apart: bool) -> list[Span]:
+def _doc_calls(
+    text: str, lines: Sequence[Segment], breaks: Sequence[int]
+) -> tuple[list[Span], bool]:
     """Where doc lines read as code may sit in a quoting macro's arguments.
 
     The lines are read as code from each macro name on, which is exact
     wherever the name is code. A call runs to the last line when the lines do
-    not close it, or when they are ``apart``: an attribute between them may
-    add a bracket.
+    not close it, or when one of the ``breaks`` is inside it: the attribute
+    before that line may add a bracket. Also returns whether a call runs on
+    like that.
     """
     pieces: list[str] = []
     base = position = lines[0][0] if lines else 0
@@ -550,25 +602,40 @@ def _doc_calls(text: str, lines: Sequence[Segment], apart: bool) -> list[Span]:
         position = high
     view = "".join(pieces)  # the lines, each at its place in the file
     calls: list[Span] = []
+    open_end = False
     for name in _QUOTING_NAME.finditer(view):
         bang = _item_start(view, name.end())  # past spaces and comments
         opener = _item_start(view, bang + 1)
         if view[bang : bang + 1] == "!" and view[opener : opener + 1] in _OPENERS:
-            end = len(view) if apart else _group_end(view, opener + 1)
-            calls.append((base + name.start(), base + end))
-    return calls
+            end, comments = _group_end(view, opener + 1)
+            if end < 0 or any(name.start() < cut - base < end for cut in breaks):
+                open_end, end, comments = True, len(view), []
+            start = name.start()
+            for low, high in comments:  # a plain comment is no argument
+                calls.append((base + start, base + low))
+                start = high
+            calls.append((base + start, base + end))
+    return calls, open_end
 
 
-def _group_end(text: str, index: int) -> int:
-    """Where the bracket group that is open at ``index`` closes, read as code."""
+def _group_end(text: str, index: int) -> tuple[int, list[Span]]:
+    """Where the bracket group that is open at ``index`` closes, read as code.
+
+    The end is -1 when the text ends first. Also returns the plain comments
+    inside the group.
+    """
     depth = 1
+    comments: list[Span] = []
     while index < len(text) and depth:
         if text.startswith(("//", "/*"), index):
-            index = _comment_end(text, index)
+            end = _comment_end(text, index)
+            if not _is_doc(text, index, end):
+                comments.append((index, end))
+            index = end
             continue
         depth += (text[index] in "([{") - (text[index] in ")]}")
         index = _token(text, index)[0]
-    return index
+    return (-1 if depth else index), comments
 
 
 def _open_states(doc: str) -> list[_State] | None:

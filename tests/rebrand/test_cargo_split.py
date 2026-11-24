@@ -1476,6 +1476,34 @@ QUOTED_DOC_CALLS = {
         "/// ```\npub fn documented() {}\n",
         4,
     ),
+    # The call opens in a doc attribute, and a doc comment closes it.
+    "opened_by_a_doc_attribute": (
+        '#[doc = "```"]\n#[doc = "assert_eq!(stringify!("]\n'
+        "/// acme).len(), 4);\n/// ```\npub fn documented() {}\n",
+        3,
+    ),
+    "opened_by_a_doc_attribute_between_comments": (
+        '/// ```\n#[doc = "assert_eq!(stringify!("]\n'
+        "/// acme).len(), 4);\n/// ```\npub fn documented() {}\n",
+        3,
+    ),
+    "opened_by_an_inner_doc_attribute": (
+        '#![doc = "```"]\n#![doc = "assert_eq!(stringify!("]\n'
+        "//! acme).len(), 4);\n//! ```\n",
+        3,
+    ),
+    # The call opens in the item's outer documentation, and its inner doc
+    # comment closes it.
+    "opened_by_the_outer_doc_comment": (
+        "/// ```\n/// assert_eq!(stringify!(\npub mod documented {\n"
+        "    //! acme).len(), 4);\n    //! ```\n}\n",
+        4,
+    ),
+    "opened_by_an_attribute_of_the_module": (
+        '#[doc = "```"]\n#[doc = "assert_eq!(stringify!("]\npub mod documented {\n'
+        "    //! acme).len(), 4);\n    //! ```\n}\n",
+        4,
+    ),
 }
 
 
@@ -1513,6 +1541,34 @@ def test_doc_call_that_ends_on_a_later_line_is_refused(
     assert f"src/lib.rs:{line}: {QUOTED_REFUSAL}" in capsys.readouterr().err
 
 
+def test_module_doc_that_ends_inside_a_call_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # rustdoc joins `src/m.rs`'s inner doc comment to the outer one here, so
+    # the call that opens on line 2 closes in the other file.
+    files = _lib_crate(
+        **{
+            "src/lib.rs": "/// ```\n/// assert_eq!(stringify!(\npub mod m;\n"
+            + PLAIN_LIB,
+            "src/m.rs": "//! acme).len(), 4);\n//! ```\n",
+        }
+    )
+    err = _refusal(tmp_path, files, capsys)
+    assert "src/lib.rs:3: the documentation above this `mod` declaration" in err
+
+
+def test_closed_call_in_an_outer_doc_comment_leaves_the_inner_one(
+    tmp_path: Path,
+) -> None:
+    lib = (
+        "/// ```\n/// let _n = stringify!(other);\n/// ```\n"
+        "pub mod documented {\n    //! `acme::hi()` says hello.\n}\n"
+    )
+    code, pressed = _press_lib(tmp_path, lib)
+    assert code == 0
+    assert "//! `zeta_gadget::hi()` says hello." in pressed
+
+
 @pytest.mark.parametrize("case", sorted(SKIPPED_LAYOUTS))
 def test_doc_text_rustdoc_never_compiles_keeps_a_stringified_name(
     case: str, tmp_path: Path
@@ -1541,6 +1597,21 @@ def test_name_after_a_closed_call_takes_the_identifier_spelling(tmp_path: Path) 
 
     assert "/// zeta_gadget::hi();" in (target / "src/lib.rs").read_text()
     assert "zeta_gadget::hi();" in (target / "tests/it.rs").read_text()
+
+
+def test_name_in_a_plain_comment_inside_a_call_is_no_argument(tmp_path: Path) -> None:
+    # The idiom keeps code out of a doctest. A comment there is not a token.
+    lib = (
+        "/// ```\n/// # const IGNORE: &str = stringify! {\n"
+        "/// fn demo() {} // like acme::hi\n/// # };\n/// ```\n"
+        "pub fn documented() {}\n"
+        "#[test]\nfn named() {\n"
+        "    let _text = stringify!(other /* not acme::hi */);\n}\n"
+    )
+    code, pressed = _press_lib(tmp_path, lib)
+    assert code == 0
+    assert "// like zeta_gadget::hi" in pressed
+    assert "/* not zeta_gadget::hi */" in pressed
 
 
 @pytest.mark.slow
