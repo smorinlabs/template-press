@@ -1,5 +1,11 @@
 # [~] Project P17: Pressed-target verify false receipt
 
+**References**
+- **Trunk:** [PROJECTS.md](../PROJECTS.md)
+- **Design:** [docs/design/0006-external-target-model.md](../docs/design/0006-external-target-model.md)
+- **Tracking:** #160
+- **Prior art:** [P13 hyphenated package-name false receipt](P13-hyphenated-package-name-false-receipt.md)
+
 **Goal/Requirement**: `press rebrand` must not write a receipt when `press verify`
 would exit 1 on the pressed target.
 
