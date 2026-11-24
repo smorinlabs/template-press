@@ -497,7 +497,13 @@ def test_retry_after_a_receiptless_press_names_the_restore_path(
 
     write_source_config(src_target)
 
-    def failing_write_receipt(*args, **kwargs):
+    original_write_receipt = cli_module.write_receipt
+
+    def failing_write_receipt(target, *args, **kwargs):
+        # Only the real target's write fails; the pre-receipt verify copy's
+        # write succeeds, so the failure lands after the source-config write.
+        if Path(target).resolve() != src_target.resolve():
+            return original_write_receipt(target, *args, **kwargs)
         raise OSError(errno.EIO, "injected receipt write failure")
 
     answers = write_answers(tmp_path)
