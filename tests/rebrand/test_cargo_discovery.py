@@ -1614,4 +1614,5 @@ def test_bin_env_token_in_an_excluded_dir_is_refused(tmp_path, capsys) -> None:
     _assert_refused_untouched(target, code)
     out = capsys.readouterr().out
     assert "CARGO_BIN_EXE_acme" in out
-    assert "cargo_names" in out
+    # M4: no table can help a file the press does not rewrite.
+    assert "excluded from rewriting; remove the exclusion" in out
