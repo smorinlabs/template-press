@@ -154,6 +154,15 @@ def _member_manifest(root: Path, directory: Path) -> Table:
     return _load(manifest)
 
 
+def _through_symlink(root: Path, directory: Path) -> bool:
+    """Whether reaching a path dependency's manifest follows a symlink."""
+    try:
+        assert_under_root(directory / _MANIFEST, root)
+    except SafetyError:
+        return True
+    return False
+
+
 def _auto_bins(directory: Path, claimed: set[str]) -> list[str]:
     bin_dir = directory / "src" / "bin"
     stems: list[str] = []
@@ -435,6 +444,10 @@ def cargo_manifest_files(target: Path) -> tuple[str, ...]:
             ):
                 continue
             seen.add(key)
+            if _through_symlink(root, dependency):
+                # The press writes no file through a symlink, so this manifest
+                # is not rewritten and is left to Cargo, as on base.
+                continue
             manifests.append((dependency, _member_manifest(root, dependency)))
     return tuple(
         Path(os.path.relpath(directory / _MANIFEST, root)).as_posix()
