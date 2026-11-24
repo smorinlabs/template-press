@@ -1489,3 +1489,96 @@ def test_default_member_split_is_refused(tmp_path, capsys) -> None:
     code = _press_for_real(target, _answers(tmp_path, **_OWNER_ONLY_DEST))
     _assert_refused_untouched(target, code)
     assert "crates/acme-x" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("extra", "rel"),
+    [
+        ('\n[[bin]]\nname = "acme-cli"\n', "src/bin/acme-cli.rs"),
+        ('\n[[bin]]\nname = "acme-cli"\n', "src/bin/acme-cli/main.rs"),
+        ('\n[[example]]\nname = "acme-demo"\n', "examples/acme-demo.rs"),
+        ('\n[[test]]\nname = "acme-it"\n', "tests/acme-it.rs"),
+        ('\n[[bench]]\nname = "acme-speed"\n', "benches/acme-speed.rs"),
+    ],
+    ids=["bin", "bin_dir", "example", "test", "bench"],
+)
+def test_name_inferred_target_path_split_is_refused(
+    tmp_path, capsys, extra, rel
+) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("tool-pkg", extra),
+            "src/lib.rs": "pub fn hi() {}\n",
+            rel: "fn main() {}\n",
+            "press/press-source.toml": _source_config(**_OWNER_ONLY),
+        },
+        repo_name="other-repo",
+        owner="acme",
+    )
+    code = _press_for_real(target, _answers(tmp_path, **_OWNER_ONLY_DEST))
+    _assert_refused_untouched(target, code)
+    assert "inferred" in capsys.readouterr().out
+
+
+def test_package_workspace_split_is_refused(tmp_path, capsys) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("tool-pkg", 'workspace = "acme-ws"\n'),
+            "src/lib.rs": "pub fn hi() {}\n",
+            "acme-ws/Cargo.toml": '[workspace]\nmembers = [".."]\n',
+            "press/press-source.toml": _source_config(**_OWNER_ONLY),
+        },
+        repo_name="other-repo",
+        owner="acme",
+    )
+    code = _press_for_real(target, _answers(tmp_path, **_OWNER_ONLY_DEST))
+    _assert_refused_untouched(target, code)
+    assert "package.workspace" in capsys.readouterr().out
+
+
+def test_workspace_exclude_split_is_refused(tmp_path, capsys) -> None:
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": (
+                '[workspace]\nresolver = "2"\nmembers = ["crates/app"]\n'
+                'exclude = ["crates/acme-x"]\n'
+            ),
+            "crates/app/Cargo.toml": _crate("plain-app"),
+            "crates/app/src/lib.rs": "pub fn hi() {}\n",
+            "crates/acme-x/Cargo.toml": _crate("helper"),
+            "crates/acme-x/src/lib.rs": "pub fn hi() {}\n",
+            "press/press-source.toml": _source_config(**_OWNER_ONLY),
+        },
+        repo_name="other-repo",
+        owner="acme",
+    )
+    code = _press_for_real(target, _answers(tmp_path, **_OWNER_ONLY_DEST))
+    _assert_refused_untouched(target, code)
+    assert "exclude" in capsys.readouterr().out
+
+
+def test_bin_env_token_in_an_excluded_dir_is_refused(tmp_path, capsys) -> None:
+    identity = {**_OWNER_ONLY, "app_name": "acme", "owner": OWNER}
+    target = _repo(
+        tmp_path,
+        {
+            "Cargo.toml": _crate("plain-pkg"),
+            "src/lib.rs": "pub fn hi() {}\n",
+            "src/bin/acme.rs": "fn main() {}\n",
+            "tests/cli.rs": 'const BIN: &str = env!("CARGO_BIN_EXE_acme");\n',
+            "press/press-source.toml": _source_config(**identity),
+            "press/press-rules.toml": '[rules]\nextra_exclude_dirs = ["tests"]\n',
+        },
+        repo_name="other-repo",
+    )
+    answers = _answers(
+        tmp_path, **{**identity, "app_name": "zeta", "owner": "zeta-org"}
+    )
+    code = _press_for_real(target, answers)
+    _assert_refused_untouched(target, code)
+    out = capsys.readouterr().out
+    assert "CARGO_BIN_EXE_acme" in out
+    assert "cargo_names" in out

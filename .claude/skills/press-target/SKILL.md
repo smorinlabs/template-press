@@ -391,10 +391,15 @@ These stop the press before any write:
 | A crate's Rust identifier would be left behind | crate `acme-widget`, no table, `repo_name` changes | 2 |
 | A hyphen-free source name takes a hyphenated destination | `acme_core` to `zeta-core` | 2 |
 | A source or destination name equals a non-local dependency | crate pressed to `padkit` beside `padkit = "1"` | 2 |
+| A rewrite would separate a declared or name-inferred Cargo path from its file (`cargo paths:`) | `owner = "acme"` rewrites `[lib] path = "lib/acme-x.rs"`, but no row renames the file | 2 |
+| A `CARGO_BIN_EXE_<name>` token would not match its auto-discovered binary (`cargo paths:`) | `src/bin/acme.rs` renames to `zeta.rs`, but the token in an excluded file stays | 2 |
 | Versioned string that extends a declared name | `acme-core-0.1.0` in a README | 1 |
 
 For the first two, press in two steps through an intermediate identity. For a
-versioned string, edit the text or add the exact token to `keep_names`.
+versioned string, edit the text or add the exact token to `keep_names`. For a
+`cargo paths:` refusal, rename the path so a path row moves it, or add the shared
+name to `keep_names`. For a binary token, declare a `cargo_names` table that
+names the binary.
 
 ## Rules authoring (`press/press-rules.toml`)
 

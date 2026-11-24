@@ -386,8 +386,7 @@ def _declared_path_problems(
     target: Path, source: Identity, dest: Identity, rules: Rules
 ) -> list[str]:
     return [
-        f"cargo paths: {split}. Rename the path so a press moves it, or add the "
-        "shared name to keep_names."
+        f"cargo paths: {split}."
         for split in cargo_path_splits(target, source, dest, rules)
     ]
 

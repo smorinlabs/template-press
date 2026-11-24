@@ -8,7 +8,7 @@ import posixpath
 import re
 import stat
 import tomllib
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -18,6 +18,7 @@ from template_press.rebrand.cargo_manifest import (
     auto_discovered_bins,
     cargo_manifest_files,
     declared_cargo_paths,
+    inferred_target_paths,
     read_cargo_facts,
 )
 from template_press.rebrand.identity import (
@@ -1685,22 +1686,36 @@ def _declared_path_follows(
 def _rewritten_texts_with_bin_env(
     target: Path,
     rows: Sequence[RenderedSubstitution],
-    rewritten: Iterable[str],
+    snapshot: SurfaceSnapshot,
+    rewritten: Collection[str],
     removed: tuple[set[str], tuple[str, ...]],
     rules: Rules,
 ) -> tuple[tuple[str, str, str], ...]:
-    """``(path, text, rewritten text)`` of kept files naming a binary by ``env!``."""
+    """``(path, text, text after the press)`` of kept files naming a binary.
+
+    Every tracked file counts; one excluded from rewriting keeps its text.
+    """
     found: list[tuple[str, str, str]] = []
-    for path in sorted(rewritten):
-        if path in removed[0] or path.startswith(removed[1]):
+    for entry in snapshot.entries:
+        path = entry.rel.as_posix()
+        if (
+            not entry.tracked
+            or entry.worktree_kind != "file"
+            or path in removed[0]
+            or path.startswith(removed[1])
+        ):
             continue
         try:
             text = read_regular_nofollow(target / path).decode("utf-8")
         except UnicodeDecodeError:
             continue
-        if "CARGO_BIN_EXE_" in text:
+        if "CARGO_BIN_EXE_" not in text:
+            continue
+        new_text = text
+        if path in rewritten:
             scoped = (row for row in rows if row_matches_scope(row, path))
-            found.append((path, text, rewrite_file(scoped, text, rules.keep_names)[0]))
+            new_text = rewrite_file(scoped, text, rules.keep_names)[0]
+        found.append((path, text, new_text))
     return tuple(found)
 
 
@@ -1724,7 +1739,9 @@ def _bin_env_splits(
         new_token = re.compile(rf"CARGO_BIN_EXE_{re.escape(new_name)}(?![\w-])")
         problems.extend(
             f"{path}: CARGO_BIN_EXE_{name} tokens would not match the "
-            f"binary, which its file would name {new_name!r}"
+            f"binary, which its file would name {new_name!r}. Declare a "
+            "cargo_names table that names this binary, so the press rewrites "
+            "the binary and its tokens together"
             for path, old_text, new_text in new_texts
             if len(old_token.findall(old_text)) != len(new_token.findall(new_text))
         )
@@ -1773,7 +1790,7 @@ def cargo_path_splits(
     removed = (removed_files, removed_dirs)
     content_rows = tuple(row for row in rows if "content" in row.rewrite_surfaces)
     new_texts = _rewritten_texts_with_bin_env(
-        target, content_rows, rewritten, removed, rules
+        target, content_rows, snapshot, rewritten, removed, rules
     )
     problems: list[str] = []
     for manifest in cargo_manifest_files(target):
@@ -1791,18 +1808,26 @@ def cargo_path_splits(
         problems.extend(_bin_env_splits(target, manifest, parsed, plan, new_texts))
         declared = declared_cargo_paths(parsed)
         try:
-            rewritten_paths = declared_cargo_paths(tomllib.loads(new_text))
+            new_parsed = tomllib.loads(new_text)
         except tomllib.TOMLDecodeError as exc:
             problems.append(f"{manifest}: the rewrite breaks its TOML: {exc}")
             continue
-        if len(rewritten_paths) != len(declared):
+        rewritten_paths = declared_cargo_paths(new_parsed)
+        inferred = inferred_target_paths(
+            parsed, new_parsed, target / posixpath.dirname(manifest)
+        )
+        if len(rewritten_paths) != len(declared) or inferred is None:
             problems.append(f"{manifest}: the rewrite changes its declared paths")
             continue
         problems.extend(
             f"{manifest}: {before.key} {before.value!r} would become "
             f"{after.value!r}, but the press would not move what it points at "
-            "to match"
-            for before, after in zip(declared, rewritten_paths, strict=True)
+            "to match. Rename the path so a press moves it, or add the shared "
+            "name to keep_names"
+            for before, after in (
+                *zip(declared, rewritten_paths, strict=True),
+                *inferred,
+            )
             if not _declared_path_follows(before, after, manifest, plan, directories)
         )
     return problems

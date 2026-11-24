@@ -25,6 +25,12 @@ from template_press.rebrand.safety import (
 _MANIFEST = "Cargo.toml"
 _DEPENDENCY_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
 _TARGET_SECTIONS = ("bin", "test", "example", "bench")
+_INFERRED_DIRS = {
+    "bin": "src/bin",
+    "test": "tests",
+    "example": "examples",
+    "bench": "benches",
+}
 _GLOB_CHARS = frozenset("*?[")
 # A longer author entry is undiscoverable, never truncated into a guess.
 _AUTHOR_MAX_CHARS = 1024
@@ -48,7 +54,7 @@ class CargoFacts:
 class DeclaredPath:
     """One path string a manifest declares, relative to that manifest."""
 
-    kind: Literal["member", "dependency", "target", "build"]
+    kind: Literal["member", "exclude", "dependency", "target", "build", "workspace"]
     key: str  # where it is declared, for messages
     value: str
 
@@ -337,6 +343,11 @@ def declared_cargo_paths(data: Table) -> list[DeclaredPath]:
         for key in ("members", "default-members")
         for item in _strings(workspace.get(key))
     ]
+    # Cargo matches `exclude` as literal prefixes, never as globs.
+    found.extend(
+        DeclaredPath("exclude", "workspace exclude", item)
+        for item in _strings(workspace.get("exclude"))
+    )
     found.extend(_declared_dependency_paths(data))
     if isinstance(path := _table(data.get("lib")).get("path"), str):
         found.append(DeclaredPath("target", "[lib] path", path))
@@ -345,9 +356,53 @@ def declared_cargo_paths(data: Table) -> list[DeclaredPath]:
         for entry in entries if isinstance(entries, list) else []:
             if isinstance(path := _table(entry).get("path"), str):
                 found.append(DeclaredPath("target", f"[[{section}]] path", path))
-    if isinstance(build := _table(data.get("package")).get("build"), str):
+    package = _table(data.get("package"))
+    if isinstance(build := package.get("build"), str):
         found.append(DeclaredPath("build", "package.build", build))
+    if isinstance(root := package.get("workspace"), str):
+        found.append(DeclaredPath("workspace", "package.workspace", root))
     return found
+
+
+def _unpathed_targets(data: Table) -> list[tuple[str, str]]:
+    """``(section, name)`` of each named target that declares no ``path``."""
+    found: list[tuple[str, str]] = []
+    for section in _TARGET_SECTIONS:
+        entries = data.get(section)
+        for entry in entries if isinstance(entries, list) else []:
+            table = _table(entry)
+            if "path" not in table and isinstance(name := table.get("name"), str):
+                found.append((section, name))
+    return found
+
+
+def inferred_target_paths(
+    before: Table, after: Table, directory: Path
+) -> list[tuple[DeclaredPath, DeclaredPath]] | None:
+    """Paths Cargo infers from a target's ``name``, before and after a rewrite.
+
+    Cargo looks for ``<dir>/<name>.rs`` or ``<dir>/<name>/main.rs``. A target
+    found neither way (a ``[[bin]]`` on ``src/main.rs``) is not judged here.
+    ``None`` means the rewrite changes which targets declare no path.
+    """
+    old, new = _unpathed_targets(before), _unpathed_targets(after)
+    if [section for section, _ in old] != [section for section, _ in new]:
+        return None
+    pairs: list[tuple[DeclaredPath, DeclaredPath]] = []
+    for (section, name), (_section, new_name) in zip(old, new, strict=True):
+        base = _INFERRED_DIRS[section]
+        for shape in ("{}.rs", "{}/main.rs"):
+            path = directory / base / shape.format(name)
+            if path.is_file() and not path.is_symlink():
+                key = f"[[{section}]] {name!r} inferred path"
+                pairs.append(
+                    (
+                        DeclaredPath("target", key, f"{base}/{shape.format(name)}"),
+                        DeclaredPath("target", key, f"{base}/{shape.format(new_name)}"),
+                    )
+                )
+                break
+    return pairs
 
 
 def cargo_manifest_files(target: Path) -> tuple[str, ...]:

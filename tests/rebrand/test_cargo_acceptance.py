@@ -499,6 +499,32 @@ SPLIT_SHAPES = {
         "tools/acme-build.rs": "fn main() {}\n",
         "src/lib.rs": "pub fn hi() {}\n",
     },
+    "inferred_bin": {
+        "Cargo.toml": PACKAGE.format("tool-pkg") + '\n[[bin]]\nname = "acme-cli"\n',
+        "src/bin/acme-cli.rs": "fn main() {}\n",
+    },
+    "inferred_example": {
+        "Cargo.toml": PACKAGE.format("tool-pkg")
+        + '\n[[example]]\nname = "acme-demo"\n',
+        "src/lib.rs": "pub fn hi() {}\n",
+        "examples/acme-demo.rs": "fn main() {}\n",
+    },
+    "inferred_test": {
+        "Cargo.toml": PACKAGE.format("tool-pkg") + '\n[[test]]\nname = "acme-it"\n',
+        "src/lib.rs": "pub fn hi() {}\n",
+        "tests/acme-it.rs": "#[test]\nfn runs() {}\n",
+    },
+    "inferred_bench": {
+        "Cargo.toml": PACKAGE.format("tool-pkg")
+        + '\n[[bench]]\nname = "acme-speed"\nharness = false\n',
+        "src/lib.rs": "pub fn hi() {}\n",
+        "benches/acme-speed.rs": "fn main() {}\n",
+    },
+    "package_workspace": {
+        "Cargo.toml": PACKAGE.format("tool-pkg") + 'workspace = "acme-ws"\n',
+        "src/lib.rs": "pub fn hi() {}\n",
+        "acme-ws/Cargo.toml": '[workspace]\nresolver = "2"\nmembers = [".."]\n',
+    },
     "unrelated_dependency": {
         "Cargo.toml": '[workspace]\nresolver = "2"\nmembers = ["crates/*"]\n',
         "crates/app/Cargo.toml": PACKAGE.format("tool-app")
@@ -541,7 +567,7 @@ def test_split_declared_path_is_refused_and_still_builds(
     target = tmp_path / "target-repo"
     target.mkdir()
     _commit_unmapped(target, SPLIT_SHAPES[shape], OWNER_ONLY)
-    _assert_cargo(target, "check", "--offline")
+    _assert_cargo(target, "check", "--offline", "--all-targets")
 
     assert (
         main(["--target", str(target), "--config", str(_owner_answers(tmp_path))]) == 2
@@ -585,7 +611,9 @@ def _consistent_workspace(members: str) -> dict[str, str]:
         + 'build = "tools/acme-build.rs"\n'
         + '\n[lib]\npath = "lib/acme-app.rs"\n'
         + '\n[[bin]]\nname = "acme-tool"\npath = "tools/acme-tool.rs"\n'
+        + '\n[[example]]\nname = "acme-demo"\n'
         + '\n[dependencies]\nacme-core = { path = "../acme-core" }\n',
+        "crates/acme-app/examples/acme-demo.rs": "fn main() {}\n",
         "crates/acme-app/tools/acme-build.rs": "fn main() {}\n",
         "crates/acme-app/lib/acme-app.rs": "pub use acme_core::hi;\n",
         "crates/acme-app/tools/acme-tool.rs": "fn main() {\n    acme_app::hi();\n}\n",
@@ -657,4 +685,68 @@ def test_bin_env_token_moves_with_an_auto_discovered_bin(
     assert main(["--target", str(target), "--config", str(answers)]) == 0
 
     assert (target / "src/bin/zeta-cli.rs").is_file()
+    _assert_cargo(target, "test", "--offline")
+
+
+EXCLUDED = "crates/acme-x/Cargo.toml"
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_excluded_crate_split_is_refused_and_still_builds(
+    tmp_path: Path, cargo_or_skip
+) -> None:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    files = {
+        "Cargo.toml": (
+            '[workspace]\nresolver = "2"\nmembers = ["crates/app"]\n'
+            'exclude = ["crates/acme-x"]\n'
+        ),
+        "crates/app/Cargo.toml": PACKAGE.format("tool-app"),
+        "crates/app/src/lib.rs": "pub fn hi() {}\n",
+        "crates/acme-x/Cargo.toml": PACKAGE.format("helper"),
+        "crates/acme-x/src/lib.rs": "pub fn hi() {}\n",
+    }
+    _commit_unmapped(target, files, OWNER_ONLY)
+    _assert_cargo(target, "check", "--offline", "--manifest-path", EXCLUDED)
+
+    assert (
+        main(["--target", str(target), "--config", str(_owner_answers(tmp_path))]) == 2
+    )
+
+    assert not (target / RECEIPT_REL).exists()
+    _assert_cargo(target, "check", "--offline", "--manifest-path", EXCLUDED)
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_bin_env_token_in_an_excluded_file_is_refused(
+    tmp_path: Path, cargo_or_skip
+) -> None:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    identity = {**OWNER_ONLY, "app_name": "acme", "owner": "other-org"}
+    files = {
+        "Cargo.toml": PACKAGE.format("tool-pkg"),
+        "src/lib.rs": "pub fn hi() {}\n",
+        "src/bin/acme.rs": "fn main() {}\n",
+        "tests/cli.rs": (
+            "#[test]\nfn names_the_binary() {\n"
+            '    assert!(!env!("CARGO_BIN_EXE_acme").is_empty());\n}\n'
+        ),
+        "press/press-rules.toml": '[rules]\nextra_exclude_dirs = ["tests"]\n',
+    }
+    _commit_unmapped(target, files, identity)
+    _assert_cargo(target, "test", "--offline")
+    answers = tmp_path / "answers.toml"
+    answers.write_text(
+        _table("answers", {**identity, "app_name": "zeta"}), encoding="utf-8"
+    )
+
+    assert main(["--target", str(target), "--config", str(answers)]) == 2
+
+    assert not (target / RECEIPT_REL).exists()
     _assert_cargo(target, "test", "--offline")

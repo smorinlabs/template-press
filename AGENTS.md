@@ -156,8 +156,12 @@ The command environment passes `HOME` but not `CARGO_HOME`, so a custom Cargo
 home needs dependencies vendored or cached in the default location. The press
 deliberately refuses a destination that extends a source name or contains
 another field's source spelling, a crate whose Rust identifier would be left
-behind, and a versioned string such as `acme-core-0.1.0`. See the `press-target`
-skill for the full rules.
+behind, and a versioned string such as `acme-core-0.1.0`. It also refuses,
+with exit 2 before any write, a rewrite that would separate a path a manifest
+declares or Cargo infers (`members`, `exclude`, dependency `path`, target `path`
+or name, `build`, `package.workspace`) from the file or directory it names, and
+a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. See the
+`press-target` skill for the full rules.
 `provision`/`status` verbs arrive with the M6 Provision phase.
 
 ## Single source of truth
