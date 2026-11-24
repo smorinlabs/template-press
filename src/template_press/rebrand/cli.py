@@ -2,8 +2,9 @@
 
 Pipeline: preconditions → answers → source identity (config-first,
 discovery validates) → plan → [--dry-run stops here] → apply → regenerate
-lockfiles → VERIFY (no-leak doctor) → receipt. Exit codes: 0 ok, 1 leaks
-found after apply (no receipt), 2 precondition/config error (no writes).
+lockfiles → VERIFY (no-leak doctor, then `press verify` on a private copy of
+the pressed tree) → receipt. Exit codes: 0 ok, 1 leaks found after apply (no
+receipt), 2 precondition/config error (no writes).
 """
 
 from __future__ import annotations

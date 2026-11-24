@@ -48,7 +48,12 @@ project template and ships no application. First target:
 3. **Verify-then-mark**: after apply, a no-leak doctor pass scans the target
    for surviving source-identity tokens (changed fields only; the explicit
    `verify_ignore` list in `press/press-rules.toml` is the one sanctioned
-   exemption). Any leak ⇒ exit 1 and NO receipt. The receipt
+   exemption). Any leak ⇒ exit 1 and NO receipt. The press then runs
+   `press verify` on a private copy of the pressed tree that carries the new
+   source-config, receipt, and origin; a verify exit 1 there ⇒ exit 1 and NO
+   receipt, so a receipt never precedes a failing `press verify` (P17). A
+   target with a submodule is the known exception: the copy cannot hold
+   submodule content, so the gate passes while `press verify` exits 1. The receipt
    (`<target>/press/press-receipt.toml`) records the verified state, and on
    success `press/press-source.toml` is refreshed to the new identity so a
    future re-press starts from a valid baseline. When declared regeneration

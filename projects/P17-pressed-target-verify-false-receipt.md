@@ -14,6 +14,9 @@ would exit 1 on the pressed target.
 - TypeScript, Bun, Rust, and BAML target work.
 - `[P14-T09]` and closing P14.
 - A source `app_name` form that survives a press while verify passes afterward.
+- Targets with a submodule (owner decision, 2026-11-23): the private copy holds
+  a placeholder, so the gate passes while `press verify` exits 1 on the
+  unavailable submodule. Recorded as a known limitation.
 - Publishing or release work.
 
 ### Tests & Tasks
