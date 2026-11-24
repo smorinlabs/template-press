@@ -164,12 +164,26 @@ retained decision record does not require those files to remain present.
    Rust identifier would be left behind (exit 2), and a versioned string such
    as `acme-core-0.1.0` (sibling preflight, exit 1, unless the exact token is in
    `keep_names`). The verifier derives its Cargo hunts directly from `Identity`.
+
+   A rewrite that would separate a path from its file also exits 2, with
+   `file:line`, on every Rust press (`cargo paths:`). This covers paths a
+   manifest declares or Cargo infers, and paths Rust source declares
+   statically: the file of `mod name;`, a `#[path = "..."]` value, and an
+   `include_str!`, `include_bytes!`, or `include!` argument. The usual cause
+   is a content-only row, such as `owner = "acmelabs"`, that rewrites
+   `pub mod acmelabs;` while no row renames `src/acmelabs.rs`. Limit: a path
+   that code reads at run time, such as a string `build.rs` passes to
+   `std::fs::read_to_string`, is not checked, so such a rewrite still gets a
+   receipt for a build that then fails.
    Spec: [Rust and Cargo
    targets](../superpowers/specs/2026-11-22-rust-cargo-targets-design.md).
 
 8. **`[[cargo_split]]`: one-press rename of a hyphen-free crate (P15-T09,
-   owner decision Q2.A).** The hyphen-free refusal stays the default. A target
-   opts in per role in `press/press-rules.toml`:
+   owner decision Q2.A).** The hyphen-free refusal stays the default.
+   `[[cargo_split]]` is experimental: its spelling proofs may miss Rust shapes
+   that real targets use. If it writes a receipt and `cargo test` then fails,
+   that is a bug to report. A target opts in per role in
+   `press/press-rules.toml`:
 
    ```toml
    [[cargo_split]]
@@ -186,13 +200,19 @@ retained decision record does not require those files to remain present.
    `cfg(`, `cfg!(` or `cfg_attr(`; an `include_*!` or `#[path]` string naming
    a file the press renames (the string must resolve to that file's new
    path); and `"acme"` as the other side of an `==`, `!=`, `assert_eq!` or
-   `assert_ne!` comparison with `env!("CARGO_PKG_NAME")`. Any other string
+   `assert_ne!` comparison with `env!("CARGO_PKG_NAME")`, when both operands
+   are bare: a method call, an index, or an operator on either side, as in
+   `"acme" == env!("CARGO_PKG_NAME").replace('-', "_")`, changes the value
+   compared, so the string is not proven. Any other string
    occurrence exits 2. So does every occurrence in the arguments of a direct
    `stringify!` or `concat!` call, in code or in doc text that rustdoc may
    compile (there the arguments run to the end of the item's doc text when
    the press cannot find where the call ends), because the call turns the
    name into text that neither spelling is proven for; a call that another
-   macro makes is not seen.
+   macro makes is not seen. A rename of either macro anywhere in a `.rs` file,
+   such as `use core::stringify as s;` or `use core::{stringify as s};`, exits
+   2 at the rename, because a call through the new name, in that file or
+   another, is not seen either.
 
    Doc comments (`///`, `//!`, `/** */`, `/*! */`) follow the same string
    rules wherever rustdoc may compile them, because rustdoc compiles a doc
@@ -246,6 +266,14 @@ retained decision record does not require those files to remain present.
      macro puts part of a string or a comment in front of a doc comment it is
      given, the press reads that comment wrongly. An `ignore` fence is prose,
      so `cargo test -- --ignored` may fail on it after a press.
+   - **Limits: code that names no crate token.** The press cannot see code
+     that expects the crate name and the package name to be equal without
+     spelling either one: `module_path!()`, `core::any::type_name::<T>()`,
+     or `env!("CARGO_CRATE_NAME")` compared with `env!("CARGO_PKG_NAME")`.
+     After a split press those differ (`zeta_gadget` and `zeta-gadget`), so
+     such a test fails although the press wrote a receipt. The same holds for
+     a target's own macro that forwards its arguments to `stringify!` or
+     `concat!`: the press sees only direct calls.
 
    Real `cargo test` is the oracle for these rules in
    `tests/rebrand/test_cargo_split.py`: each layout that rustdoc compiles,
@@ -268,6 +296,18 @@ retained decision record does not require those files to remain present.
      identifier fits: `::` paths, `extern crate`, `use`, and log filters such
      as `RUST_LOG=acme=debug`; the remedies are `identifier_files` or an exact
      `[[replace]]`;
+   - a `package_files` file that a `.rs` file reads with `include_str!`, such
+     as a README behind `#![doc = include_str!("../README.md")]`, when its
+     rewrite puts `zeta-gadget` on a line of a code block rustdoc may compile
+     (every fence except `ignore` and the non-Rust tags, and every line with a
+     tab or four spaces in a row) or at an identifier position. rustdoc
+     compiles every position there, so no `[[replace]]` rule can be right; the
+     remedy is `identifier_files` plus an exact `{cargo_exact_<role>}` rule for
+     each span that needs the package spelling. Limits: the press finds such a
+     file only through a plain string argument to `include_str!`, and it does
+     not read the file as Rust, so under `identifier_files` a string literal in
+     one of its code blocks takes the identifier spelling without the `.rs`
+     string rules;
    - a target that also checks `python` or `node`.
 
    A file holding both spellings works only when the split crate is the

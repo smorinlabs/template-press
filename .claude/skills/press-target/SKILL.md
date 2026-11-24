@@ -388,6 +388,10 @@ command = ["cargo", "update", "--workspace", "--offline"]
 
 ### `[[cargo_split]]`: rename `acme` to `zeta-gadget` in one press
 
+`[[cargo_split]]` is experimental: its spelling proofs may miss Rust shapes
+that real targets use. If it writes a receipt and `cargo test` then fails,
+that is a bug to report.
+
 A hyphen-free crate name such as `acme` spells its package and its Rust
 identifier identically. By default, a hyphenated destination is refused with
 exit 2, because text alone cannot choose a spelling. Opt in per role:
@@ -408,9 +412,10 @@ identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadge
 |---|---|
 | Any `Cargo.toml`: package name, dependency keys, `package =` | `zeta-gadget` |
 | Rust code in any `.rs` file, such as `acme::hi()` or `mod acme;` | `zeta_gadget` |
-| A `.rs` string Cargo proves, in code or in doc-comment text that rustdoc may compile: `feature = "acme"` inside `cfg(`, `cfg!(` or `cfg_attr(`; an `include_str!`/`include_bytes!`/`include!`/`#[path]` path to a file the press renames; or `"acme"` as the other side of an `==`, `!=`, `assert_eq!` or `assert_ne!` comparison with `env!("CARGO_PKG_NAME")` | `zeta-gadget` (the path follows the rename) |
+| A `.rs` string Cargo proves, in code or in doc-comment text that rustdoc may compile: `feature = "acme"` inside `cfg(`, `cfg!(` or `cfg_attr(`; an `include_str!`/`include_bytes!`/`include!`/`#[path]` path to a file the press renames; or `"acme"` as the other side of an `==`, `!=`, `assert_eq!` or `assert_ne!` comparison with `env!("CARGO_PKG_NAME")`, when both operands are bare (`"acme" == env!("CARGO_PKG_NAME").replace('-', "_")` and `"acme".to_string()` are not, and exit 2) | `zeta-gadget` (the path follows the rename) |
 | Any other `.rs` string literal, such as `println!("acme")` or `#[command(name = "acme")]`, in code or in doc-comment text that rustdoc may compile | exit 2 before any write, with `file:line` |
 | A name in the arguments of a direct `stringify!` or `concat!` call, which turns it into text, in code or in doc-comment text that rustdoc may compile (there the arguments run to the end of the item's doc text when the press cannot find where the call ends; a call that another macro makes is not seen) | exit 2 before any write, with `file:line` |
+| A rename of `stringify!` or `concat!` anywhere in a `.rs` file, such as `use core::stringify as s;` or `use core::{stringify as s};`, because a call through the new name, in that file or another, is not seen | exit 2 before any write, with `file:line` of the rename |
 | Doc-comment text that rustdoc never compiles: prose and non-Rust fences in a `///` comment (see **Doc comments** below) | `zeta_gadget`, inside double quotes too |
 | `env!("CARGO_BIN_EXE_acme")` | `CARGO_BIN_EXE_zeta-gadget` |
 | Paths, such as `crates/acme` | `crates/zeta-gadget`; declared manifest paths follow |
@@ -496,6 +501,14 @@ identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadge
     of a string or a comment in front of a doc comment it is given, the press
     reads that comment wrongly. An `ignore` fence is prose to the press, so
     `cargo test -- --ignored` can fail on it after a press.
+  - **Limits: code that names no crate token.** The press cannot see code
+    that expects the crate name and the package name to be equal without
+    spelling either one: `module_path!()`, `core::any::type_name::<T>()`, or
+    `env!("CARGO_CRATE_NAME")` compared with `env!("CARGO_PKG_NAME")`. After a
+    split press those differ (`zeta_gadget` and `zeta-gadget`), so such a test
+    fails although the press wrote a receipt. The same holds for a target's
+    own macro that forwards its arguments to `stringify!` or `concat!`: the
+    press sees only direct calls.
 - **A file with both spellings**, such as a README holding `cargo run -p acme`
   and `acme::hi()`, works only for the `package_name` crate. List the file in
   `package_files`, and add an exact rule for the identifier spans:
@@ -515,6 +528,34 @@ identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadge
   an exact `[[replace]]`. For any role, use `{cargo_ident_<role>}` in the
   pattern, for example `extern crate {cargo_ident_core};` or
   `{cargo_ident_core}::`, scoped with `files`.
+- **A file that rustdoc compiles**, such as a README that a `.rs` file reads
+  with `include_str!` (`#![doc = include_str!("../README.md")]`), is Rust in
+  every code block rustdoc may compile: every fence except `ignore` and the
+  non-Rust tags listed under **Doc comments**, and every line holding a tab or
+  four spaces in a row. In `package_files`, any `zeta-gadget` the press would
+  write on such a line, or at an identifier position, exits 2 with
+  `file:line`, because no `[[replace]]` rule can cover every position there
+  (`use acme::{acme, hi};` and `acme!()` each need `zeta_gadget`). The remedy
+  is to list the file in `identifier_files` and cover each span that needs the
+  package spelling with an exact rule:
+
+  ```toml
+  [[cargo_split]]
+  role = "core"
+  identifier_files = ["README.md"]
+
+  [[replace]]
+  pattern = "cargo add {cargo_exact_core}"
+  files = ["README.md"]
+  reason = "install line"
+  ```
+
+  Limits: the press finds such a file only through a plain string argument,
+  `include_str!("../README.md")`, not through
+  `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))`. It does
+  not read a doc-included file as Rust, so under `identifier_files` a string
+  literal inside one of its code blocks takes `zeta_gadget` without the `.rs`
+  string rules.
 - Also refused before any write: an explicit `[lib] name = "acme"` (Cargo
   refuses a hyphen in a library name), a renamed path below `src/` other than
   `src/bin/<name>`, a renamed `acme.rs` or `acme/` anywhere when some `.rs`
@@ -539,6 +580,7 @@ These stop the press before any write:
 | A hyphen-free source name takes a hyphenated destination, without `[[cargo_split]]` | `acme_core` to `zeta-core` | 2 |
 | A source or destination name equals a non-local dependency | crate pressed to `padkit` beside `padkit = "1"` | 2 |
 | A rewrite would separate a declared or name-inferred Cargo path from its file (`cargo paths:`) | `owner = "acme"` rewrites `[lib] path = "lib/acme-x.rs"`, but no row renames the file | 2 |
+| A rewrite would separate a path that Rust source declares from its file (`cargo paths:`): the file of `mod name;`, a `#[path = "..."]` value, or an `include_str!`/`include_bytes!`/`include!` argument | `owner = "acmelabs"` rewrites `pub mod acmelabs;` or `include_str!("../data/acmelabs.txt")`, but no row renames the file | 2 |
 | A `CARGO_BIN_EXE_<name>` token would not match its auto-discovered binary (`cargo paths:`) | `src/bin/acme.rs` renames to `zeta.rs`, but the token in an excluded file stays | 2 |
 | Versioned string that extends a declared name | `acme-core-0.1.0` in a README | 1 |
 
@@ -546,7 +588,14 @@ For the first two, press in two steps through an intermediate identity. For a
 versioned string, edit the text or add the exact token to `keep_names`. For a
 `cargo paths:` refusal, rename the path so a path row moves it, or add the shared
 name to `keep_names`. For a binary token, declare a `cargo_names` table that
-names the binary.
+names the binary; when the token sits in an excluded file, remove the
+exclusion or edit the token by hand.
+
+Limit: the press checks only paths that a manifest declares or Cargo infers,
+and paths that Rust source declares statically. A path that code reads at run
+time, such as `std::fs::read_to_string("data/acmelabs.txt")` in `build.rs`, is
+not checked, so an `owner`, `author`, or `email` row that rewrites it without
+renaming the file gives a receipt for a build that then fails.
 
 ## Rules authoring (`press/press-rules.toml`)
 

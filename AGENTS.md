@@ -159,17 +159,30 @@ another field's source spelling, a crate whose Rust identifier would be left
 behind, and a versioned string such as `acme-core-0.1.0`. It also refuses,
 with exit 2 before any write, a rewrite that would separate a path a manifest
 declares or Cargo infers (`members`, `exclude`, dependency `path`, target `path`
-or name, `build`, `package.workspace`) from the file or directory it names, and
-a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. See the
-`press-target` skill for the full rules.
+or name, `build`, `package.workspace`) from the file or directory it names, or
+a path Rust source declares (the file of `mod name;`, `#[path = "..."]`, and
+`include_str!`, `include_bytes!`, or `include!` arguments) from its file, and
+a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. A path
+read at run time, such as a string `build.rs` passes to
+`std::fs::read_to_string`, is not checked. See the `press-target` skill for the
+full rules.
 
 A hyphen-free crate name pressed to a hyphenated one (`acme` to `zeta-gadget`)
 is refused by default. A `[[cargo_split]]` block in `press/press-rules.toml`
-opts one role in. Manifests take `zeta-gadget`, and Rust code in `.rs` files
+opts one role in. `[[cargo_split]]` is experimental: its spelling proofs may
+miss Rust shapes, and if it writes a receipt and `cargo test` then fails, that
+is a bug to report. Manifests take `zeta-gadget`, and Rust code in `.rs` files
 takes `zeta_gadget`. A `.rs` string takes `zeta-gadget` only when Cargo proves
 it (a feature name inside `cfg`, a path to a renamed file, the other side of a
-`CARGO_PKG_NAME` comparison); any other string exits 2. A name in the
-arguments of `stringify!` or `concat!` also exits 2. Doc-comment text is
+`CARGO_PKG_NAME` comparison whose operands are both bare, with no method call
+on either side); any other string exits 2. A name in the arguments of a
+direct `stringify!` or `concat!` call also exits 2, and so does a rename such
+as `use core::stringify as s;`; a call that another macro makes is not seen.
+The press also cannot see code that compares the crate and package names
+without spelling either, such as `module_path!()`,
+`core::any::type_name::<T>()`, or `env!("CARGO_CRATE_NAME")` against
+`env!("CARGO_PKG_NAME")`; such a test fails after a split press although the
+press wrote a receipt. Doc-comment text is
 read as Rust code under the same rules, because rustdoc compiles fenced and
 indented code blocks as doctests. It is read as prose only where the press
 proves that rustdoc compiles nothing: in a `///` comment that starts an item's
@@ -181,7 +194,10 @@ such as `include_str!(...)`, exits 2 wherever it holds the name. The block's
 the crate name.
 Any other occurrence, and any identifier context (`::`, `use`, `extern crate`,
 `RUST_LOG`) in a `package_files` file, exits 2 before any write, with
-`file:line`:
+`file:line`. In a `package_files` file that a `.rs` file reads with
+`include_str!`, such as a README behind `#![doc = include_str!("../README.md")]`,
+so does `zeta-gadget` on any line of a code block rustdoc may compile; list
+such a file in `identifier_files` instead:
 
 ```toml
 [[cargo_split]]
