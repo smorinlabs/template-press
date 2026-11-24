@@ -22,7 +22,7 @@ would exit 1 on the pressed target.
 - [x] [P17-T01] Run the verify check before the source-config and receipt writes
 - [x] [P17-T02] `make check`, `just check`, `just matrix`, and
       `uv run ruff format --check .` pass
-- [ ] [P17-T03] PR opened for owner review
+- [x] [P17-T03] PR #160 opened for owner review
 
 ### Deliverable
 
