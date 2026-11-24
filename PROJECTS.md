@@ -38,6 +38,7 @@ file by hand — see Conventions.
 | P13 | `[x]` | [Hyphenated package-name false receipt](projects/P13-hyphenated-package-name-false-receipt.md) — no receipt while a hyphenated package name survives |
 | P14 | `[~]` | [TypeScript and Bun targets](projects/P14-typescript-bun-targets.md) — package.json discovery, exact npm and CLI names, keep_names, declared lockfile exemptions |
 | P16 | `[x]` | [Explicit target languages](projects/P16-explicit-target-languages.md) — multi-language targets must declare `[rules] languages` or press exits 2 |
+| P18 | `[?]` | [One-press renames to names containing the source](projects/P18-one-press-contained-renames-.md) — Allow a new name that contains the old one, for every identity field. |
 
 ## Conventions
 
