@@ -1419,7 +1419,9 @@ def test_skipped_doc_layouts_are_never_compiled_by_real_cargo(tmp_path: Path) ->
             for tag in NOT_RUST_TAGS
         },
     }
-    lib = "".join(
+    # The struct layout's lowercase name must pass `RUSTFLAGS=-D warnings`,
+    # which the pinned toolchain action in CI sets.
+    lib = "#![allow(non_camel_case_types)]\n" + "".join(
         _doc_lib(layout, UNPROVEN, f"item_{case}".replace("-", "_"))
         for case, layout in sorted(layouts.items())
     )
