@@ -76,6 +76,7 @@ _MODULE_FILE = re.compile(r"(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+\w+\s*;")
 # The code character before an item's first doc comment.
 _ITEM_EDGES = frozenset({"", "{", "}", ";", ",", "("})
 _FENCE = re.compile(r"(`{3,}|~{3,})(.*)")
+_FENCE_MARK = re.compile(r"`{3,}|~{3,}")
 # A line that can sit in an indented code block: it holds a tab or four spaces
 # in a row. Markdown counts the indent after any list, task, or quote marker,
 # so the run may follow one.
@@ -758,8 +759,19 @@ def compiled_markdown_lines(text: str) -> frozenset[int]:
     found: set[int] = set()
     fence = ""  # the open fence's marker, if any
     compiled = False
+    # After a line that starts with ``<`` (a possible HTML block), or after a
+    # fence that is not at the left margin (in a block quote or a list), the
+    # structure is unproven: every line after any later fence line counts.
+    loose = unproven = False
     for number, line in enumerate(text.split("\n"), start=1):
         body = line.lstrip(" ")
+        if unproven:
+            found.add(number)
+            continue
+        if loose and _FENCE_MARK.search(line):
+            unproven = True
+            found.add(number)
+            continue
         if fence:
             if _closes(body, fence):
                 fence = ""
@@ -770,6 +782,10 @@ def compiled_markdown_lines(text: str) -> frozenset[int]:
         if opened:
             fence = opened[1]
             compiled = not _never_compiled(opened[2].strip())
+        elif _FENCE_MARK.search(line):
+            unproven = True  # a fence that is not at the left margin
+        elif body.startswith("<"):
+            loose = True
         elif _INDENTED.search(line):
             found.add(number)
     return frozenset(found)

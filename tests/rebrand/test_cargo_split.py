@@ -1733,14 +1733,14 @@ QUOTING_RENAMES = {
     "b0_alias": (
         {
             "src/lib.rs": PLAIN_LIB
-            + "\nuse core::stringify as s;\n"
+            + "\n#[cfg(test)] use core::stringify as s;\n"
             + _test_lib(ALIAS_CALL.format("s"))
         },
         "src/lib.rs:5:",
     ),
     "grouped": (
         {
-            "src/lib.rs": "use core::{stringify as s};\n"
+            "src/lib.rs": "#[cfg(test)] use core::{stringify as s};\n"
             + PLAIN_LIB
             + "#[cfg(test)]\nmod tests {\n    use super::s;\n"
             + _test_lib(ALIAS_CALL.format("s"))
@@ -1750,7 +1750,7 @@ QUOTING_RENAMES = {
     ),
     "cross_file": (
         {
-            "src/lib.rs": "pub(crate) use core::stringify as s;\nmod other;\n"
+            "src/lib.rs": "#[cfg(test)] pub(crate) use core::stringify as s;\nmod other;\n"
             + PLAIN_LIB,
             "src/other.rs": _test_lib(ALIAS_CALL.format("crate::s")),
         },
@@ -1893,8 +1893,18 @@ def test_doc_included_identifier_file_with_an_exact_rule_presses(
         ("# Demo\n\nExample:\n\n    let _ = acme!();\n", 5),
         ("# Demo\n\n~~~\nlet _ = acme!();\n~~~\n", 4),
         ("# Demo\n\n```rust,ignore-x\nlet _ = acme!();\n```\n", 4),
+        # A fence in a block quote: no `use` or `::` names the crate.
+        ("# Demo\n\n> ```rust\n> fn acme() {}\n> acme();\n> ```\n", 4),
+        # After an HTML line, even a `text` fence may not end where it seems.
+        ("<p>Demo</p>\n\n```text\nx\n```\nfn acme() {}\n", 6),
     ],
-    ids=["indented_block", "tilde_fence", "ignore_target_fence"],
+    ids=[
+        "indented_block",
+        "tilde_fence",
+        "ignore_target_fence",
+        "block_quote_fence",
+        "after_html",
+    ],
 )
 def test_doc_included_package_file_compiled_blocks_are_refused(
     readme: str, line: int, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -1909,8 +1919,9 @@ def test_doc_included_package_file_compiled_blocks_are_refused(
         "# Demo\n\nInstall with `cargo add acme`.\n",
         "# Demo\n\n```text\ncargo add acme\n```\n",
         "# Demo\n\n```ignore\nlet _ = acme!();\n```\n",
+        "<p>Demo</p>\n\nInstall with `cargo add acme`.\n",
     ],
-    ids=["prose", "text_fence", "ignore_fence"],
+    ids=["prose", "text_fence", "ignore_fence", "html_then_prose"],
 )
 def test_doc_included_package_file_prose_keeps_the_package_spelling(
     readme: str, tmp_path: Path
