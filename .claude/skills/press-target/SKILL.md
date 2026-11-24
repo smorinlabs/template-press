@@ -457,17 +457,27 @@ identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadge
     writes a spelling only when every reading agrees. A reading that ends
     inside a string or a comment is ignored, because that doctest cannot
     compile.
-  - **Not read at all** (every occurrence of the name exits 2, in code
-    position too): doc-comment lines that follow doc text the press cannot
-    read, because that text may leave a string or a comment open.
-    - Lines below a `#[doc = ...]` attribute of the same item, unless its
-      value is a plain string with no quote, no backslash, and no `/*` or
-      `*/`. `#[doc = include_str!("intro.md")]`, `#[doc = concat!(...)]` and
-      `#[doc = "let s = \"x\";"]` stop the reading. A plain value such as
-      `#[cfg_attr(feature = "std", doc = "```")]` does not. Remedy: move the
-      attribute below the doc comments.
-    - The inner doc comment (`//!`) of an item whose outer doc comment ends
-      inside a string or a block comment, or stands beside such an attribute.
+  - **Doc text the press cannot read.** A `#[doc = ...]` attribute adds doc
+    text. The press reads its value only when it is a plain string with no
+    quote, no backslash, and no `/*` or `*/`, such as
+    `#[cfg_attr(feature = "std", doc = "```")]`. Any other value may leave a
+    string or a comment open: `#[doc = include_str!("intro.md")]`,
+    `#[doc = concat!(...)]`, `#[doc = "let s = \"x\";"]`. The same holds for
+    an outer doc comment that ends inside a string or a block comment. What
+    follows such text is read like this:
+    - **In a `///` comment:** nothing is read. Every occurrence of the name
+      below the attribute exits 2, in code position too, because the string
+      may close only in doc text further on. Remedy: move the attribute below
+      the doc comments.
+    - **In a `//!` comment**, which ends the item's doc text: the press also
+      reads the comment as the rest of a string, a raw string, or a block
+      comment. Such a reading counts only if the comment closes it and is back
+      in code at the end of some line. Where it counts and disagrees with the
+      plain reading, the occurrence exits 2. So an inner doc comment below
+      `#![doc = include_str!("../README.md")]` presses, unless a later line
+      can close such a string: a line with an odd number of double quotes (a
+      string literal that spans lines has two of them), or the `"#` end of a
+      raw string. Then the names above that line exit 2.
     - A `mod name;` declaration whose doc comment ends inside a string or a
       block comment exits 2 at the declaration, because rustdoc joins the doc
       comment of the module's own file to it.

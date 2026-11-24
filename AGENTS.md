@@ -173,9 +173,9 @@ read as Rust code under the same rules, because rustdoc compiles fenced and
 indented code blocks as doctests. It is read as prose only where the press
 proves that rustdoc compiles nothing: in a `///` comment that starts an item's
 documentation, a prose line with no tab and no run of four spaces, and a fence
-tagged `ignore` or with non-Rust language names such as `text` or `toml`. Doc
-comments below a `#[doc = ...]` attribute that is not a plain string, such as
-`include_str!(...)`, exit 2 wherever they hold the name. The block's
+tagged `ignore` or with non-Rust language names such as `text` or `toml`. A
+`///` comment below a `#[doc = ...]` attribute that is not a plain string,
+such as `include_str!(...)`, exits 2 wherever it holds the name. The block's
 `package_files` and `identifier_files` globs name every other file that holds
 the crate name.
 Any other occurrence, and any identifier context (`::`, `use`, `extern crate`,

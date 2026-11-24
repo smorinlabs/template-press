@@ -201,15 +201,20 @@ retained decision record does not require those files to remain present.
      comment does not count, and neither does a reading that never returns to
      code at a line end, because that doctest cannot compile.
    - **Unread text.** A string or a comment may start in doc text that the
-     press cannot read and end in a doc comment. So the press refuses every
-     occurrence of the name, in code position too, in doc-comment lines below
-     a `#[doc = ...]` attribute of the same item whose value is not a plain
-     string free of quotes, backslashes, and block-comment markers
-     (`include_str!`, `concat!`, a string with an escaped quote). It does the
-     same in the inner doc comment of an item whose outer doc comment ends
-     inside a string or a block comment, or stands beside such an attribute.
-     A `mod name;` declaration whose doc comment ends that way exits 2
-     itself, because the module's own file continues the text.
+     press cannot read and end in a doc comment. Unread text is a
+     `#[doc = ...]` attribute whose value is not a plain string free of
+     quotes, backslashes, and block-comment markers (`include_str!`,
+     `concat!`, a string with an escaped quote), and an outer doc comment that
+     ends inside a string or a block comment. After unread text, the lexer
+     state is unknown. In a `///` comment the string may close only in later
+     doc text, so the press refuses every occurrence of the name below the
+     attribute, in code position too. A `//!` comment ends the item's doc
+     text, so there the press adds one reading for each state the comment can
+     close (a string, a raw string, a block comment); as always, a reading
+     counts only if it returns to code at a line end, and the press writes a
+     spelling only when the readings that count agree. A `mod name;`
+     declaration whose doc comment ends inside a string or a block comment
+     exits 2 itself, because the module's own file continues the text.
    - **Limits.** The press does not see doc text that a macro produces. It
      does not carry a `#[doc = ...]` attribute on a `mod name;` declaration
      into the module's own file. An `ignore` fence is prose, so `cargo test --
