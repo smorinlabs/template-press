@@ -405,7 +405,7 @@ identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadge
 |---|---|
 | Any `Cargo.toml`: package name, dependency keys, `package =` | `zeta-gadget` |
 | Rust code in any `.rs` file, such as `acme::hi()` or `mod acme;` | `zeta_gadget` |
-| A `.rs` string Cargo proves: `feature = "acme"`, an `include_str!`/`include_bytes!`/`include!`/`#[path]` path to a file the press renames, or a string compared on a `CARGO_PKG_NAME` line | `zeta-gadget` (the path follows the rename) |
+| A `.rs` string Cargo proves, in code or in a `///`, `//!`, `/**`, `/*!` doc comment: `feature = "acme"` inside `cfg(`, `cfg!(` or `cfg_attr(`; an `include_str!`/`include_bytes!`/`include!`/`#[path]` path to a file the press renames; or `"acme"` as the other side of an `==`, `!=`, `assert_eq!` or `assert_ne!` comparison with `env!("CARGO_PKG_NAME")` | `zeta-gadget` (the path follows the rename) |
 | Any other `.rs` string literal, such as `println!("acme")` or `#[command(name = "acme")]` | exit 2 before any write, with `file:line` |
 | `env!("CARGO_BIN_EXE_acme")` | `CARGO_BIN_EXE_zeta-gadget` |
 | Paths, such as `crates/acme` | `crates/zeta-gadget`; declared manifest paths follow |

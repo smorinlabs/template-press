@@ -164,10 +164,13 @@ retained decision record does not require those files to remain present.
    takes the package spelling `zeta-gadget`, and Rust code in every `.rs` file
    takes the identifier spelling `zeta_gadget`. That structural rule outranks
    the globs. Inside a `.rs` string literal, the press writes `zeta-gadget`
-   only where real Cargo proves it right: a `feature = "acme"` value, an
-   `include_*!` or `#[path]` string naming a file the press renames (the
-   string must resolve to that file's new path), and a string compared on a
-   `CARGO_PKG_NAME` line. Any other string occurrence exits 2.
+   only where real Cargo proves it right: a `feature = "acme"` value inside
+   `cfg(`, `cfg!(` or `cfg_attr(`; an `include_*!` or `#[path]` string naming
+   a file the press renames (the string must resolve to that file's new
+   path); and `"acme"` as the other side of an `==`, `!=`, `assert_eq!` or
+   `assert_ne!` comparison with `env!("CARGO_PKG_NAME")`. Strings inside doc
+   comments (`///`, `//!`, `/**`, `/*!`), which rustdoc compiles, follow the
+   same rules. Any other string occurrence exits 2.
    `CARGO_BIN_EXE_acme` becomes `CARGO_BIN_EXE_zeta-gadget`. Paths take the
    package spelling, so `crates/acme` becomes `crates/zeta-gadget` and declared
    manifest paths follow. A file matched by `package_files` or
