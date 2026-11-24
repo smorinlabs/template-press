@@ -1012,6 +1012,12 @@ COMPILED_LAYOUTS = {
         '///     "acme",\n/// );\n/// CODE\n/// ```\npub fn ITEM() {}\n'
     ),
     "inner_doc_fence": "pub mod ITEM {\n    //! ```\n    //! CODE\n    //! ```\n}\n",
+    # A macro adds the fence line, so the doc comment it is given is code.
+    "macro_adds_the_fence": (
+        'macro_rules! ITEM_wrap {\n    ($i:item) => {\n        #[doc = "```"]\n'
+        "        $i\n    };\n}\nITEM_wrap! {\n    /// CODE\n    /// ```\n"
+        "    pub fn ITEM() {}\n}\n"
+    ),
     # Plain `doc` attributes supply the fence line, as crates do per feature.
     "fence_from_doc_attributes": (
         '#[cfg_attr(all(), doc = "```")]\n#[cfg_attr(any(), doc = "```ignore")]\n'
@@ -1245,7 +1251,42 @@ def test_module_doc_cut_inside_a_string_is_refused(
         }
     )
     err = _refusal(tmp_path, files, capsys)
-    assert "src/lib.rs:3: the doc comment above this `mod` declaration ends" in err
+    assert "src/lib.rs:3: the documentation above this `mod` declaration" in err
+
+
+def test_module_with_unreadable_doc_attribute_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The attribute opens a string that `src/m.rs`'s doc comment closes.
+    files = _lib_crate(
+        **{
+            "src/lib.rs": (
+                '#[doc = "```"]\n#[doc = "let s = \\""]\npub mod m;\n' + PLAIN_LIB
+            ),
+            "src/m.rs": f'//! "; {PKG_ASSERT}\n//! ```\n',
+        }
+    )
+    err = _refusal(tmp_path, files, capsys)
+    assert "src/lib.rs:3: the documentation above this `mod` declaration" in err
+
+
+def test_comment_text_gives_a_string_no_role(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The words of a comment are not code: they prove nothing about the string.
+    lib = 'pub fn name() -> &\'static str {\n    // cfg!(feature =\n    "acme"\n}\n'
+    files = _lib_crate(**{"src/lib.rs": lib + PLAIN_LIB})
+    assert "src/lib.rs:3:" in _refusal(tmp_path, files, capsys)
+
+
+def test_comment_between_tokens_keeps_a_proven_role(tmp_path: Path) -> None:
+    lib = (
+        '#[test]\nfn name() {\n    assert_eq!(env!("CARGO_PKG_NAME"), // the package\n'
+        '        "acme");\n}\n'
+    )
+    code, pressed = _press_lib(tmp_path, lib)
+    assert code == 0
+    assert '        "zeta-gadget");' in pressed
 
 
 @pytest.mark.parametrize("case", sorted(SKIPPED_LAYOUTS))

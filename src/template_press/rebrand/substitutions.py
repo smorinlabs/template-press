@@ -2140,11 +2140,14 @@ def cargo_split_target_problems(
         strings = rust_strings(new_text) if path.endswith(".rs") else ()
         if path.endswith(".rs"):
             problems.extend(
-                f"{path}:{_line_of(text, offset)}: the doc comment above this "
-                "`mod` declaration ends inside a Rust string literal or a block "
-                "comment. rustdoc joins the doc comment of the module's own file "
-                "to it, so the press cannot read that file's doc comment. Close "
-                "the string or comment before pressing"
+                f"{path}:{_line_of(text, offset)}: the documentation above this "
+                "`mod` declaration may end inside a Rust string literal or a "
+                "block comment: its doc comment ends that way, or a "
+                "`#[doc = ...]` attribute there is not a plain string. rustdoc "
+                "joins the doc comment of the module's own file to it, so the "
+                "press cannot read that file's doc comment. Close the string or "
+                "comment, or move the attribute into the module's file, below "
+                "its doc comment"
                 for offset in cut_module_docs(text)
             )
         for split in splits:

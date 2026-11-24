@@ -18,6 +18,7 @@ import re
 from bisect import bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import Literal
 
 Span = tuple[int, int]
@@ -120,10 +121,11 @@ def rust_strings(text: str) -> tuple[RustString, ...]:
 
 
 def cut_module_docs(text: str) -> tuple[int, ...]:
-    """Where a ``mod name;`` has a doc comment that ends inside a string or comment.
+    """Where a ``mod name;`` has doc text that may end inside a string or comment.
 
-    rustdoc joins the inner doc comment of the module's own file to that text,
-    so the press cannot read that file's doc comment on its own.
+    Its doc comment ends that way, or it has a ``doc`` attribute that the
+    press cannot read. rustdoc joins the inner doc comment of the module's own
+    file to that text, so the press cannot read that file's doc comment.
     """
     return _scan(text)[1]
 
@@ -138,6 +140,10 @@ def _scan(text: str) -> tuple[tuple[RustString, ...], tuple[int, ...]]:
     # Doc text the press cannot read comes before the next doc comment
     # (``unread``), or before the same item's inner doc comment (``pending``).
     unread = pending = False
+    # For each open bracket, whether a macro call or definition holds it. A
+    # macro may add doc text around the doc comments it is given.
+    macros: list[bool] = []
+    bang = False  # the code ends with ``name!``, or ``name! name``
     while index < length:
         if text.startswith(("//", "/*"), index):
             end = _comment_end(text, index)
@@ -145,7 +151,10 @@ def _scan(text: str) -> tuple[tuple[RustString, ...], tuple[int, ...]]:
                 if index not in docs:
                     inner = text[index + 2] == "!"
                     cluster = _doc_cluster(
-                        text, index, last in _ITEM_EDGES, unread or (inner and pending)
+                        text,
+                        index,
+                        last in _ITEM_EDGES and not any(macros[-1:]),
+                        unread or (inner and pending),
                     )
                     docs.update(cluster.literals)
                     pending = not inner and (cluster.hidden or cluster.cut)
@@ -162,15 +171,42 @@ def _scan(text: str) -> tuple[tuple[RustString, ...], tuple[int, ...]]:
                 last = "#"
                 if _hides_doc_text(text, index, attribute_end):
                     unread = True
-                    pending = pending or text[index + 1] != "!"  # an outer one
+                    if text[index + 1] != "!":  # an outer attribute
+                        pending = True
+                        module = _MODULE_FILE.match(text, _item_start(text, index))
+                        if module:
+                            cut.append(module.start())
         index, literal = _token(text, index)
         if literal is not None:
             found.append(literal)
-        if start >= attribute_end and not text[start].isspace():
+        char = text[start]
+        if char in "{([":
+            macros.append(bang or any(macros[-1:]))
+        elif char in "})]":
+            del macros[-1:]
+        if char == "!":
+            bang = bool(_IDENT_CHARS.match(text[start - 1 : start]))
+        elif not (char.isspace() or _IDENT_CHARS.match(char)) or literal:
+            bang = False
+        if start >= attribute_end and not char.isspace():
             last = text[index - 1]
             unread = False
             pending = pending and last not in ";}"
-    return tuple(found), tuple(cut)
+    return tuple(found), tuple(sorted(set(cut)))
+
+
+def _item_start(text: str, position: int) -> int:
+    """Where the item's code begins, past its attributes and comments."""
+    while position < len(text):
+        if text[position].isspace():
+            position += 1
+        elif text.startswith(("//", "/*"), position):
+            position = _comment_end(text, position)
+        elif (end := _attribute_end(text, position)) > position:
+            position = end
+        else:
+            break
+    return position
 
 
 def _hides_doc_text(text: str, start: int, end: int) -> bool:
@@ -694,7 +730,24 @@ def _block_view(text: str, literal: RustString, start: int) -> tuple[str, RustSt
     )
 
 
+@lru_cache(maxsize=8)
+def _without_comments(text: str) -> str:
+    """``text`` with each comment blanked, so that its words fit no role."""
+    pieces: list[str] = []
+    index = 0
+    while index < len(text):
+        if text.startswith(("//", "/*"), index):
+            end = _comment_end(text, index)
+            pieces.append(re.sub(r"[^\n]", " ", text[index:end]))
+        else:
+            end = _token(text, index)[0]
+            pieces.append(text[index:end])
+        index = end
+    return "".join(pieces)
+
+
 def _role(text: str, literal: RustString, name: str) -> StringRole:
+    text = _without_comments(text)
     before = text[: literal.start]
     content = text[literal.content_start : literal.content_end]
     if _FEATURE_BEFORE.search(before) and content == name:
