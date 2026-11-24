@@ -817,6 +817,76 @@ def test_rust_log_oracle_needs_the_identifier_spelling(tmp_path: Path) -> None:
     assert "VISIBLE" not in run("zeta-gadget=debug").stderr
 
 
+# --- fix round 2: doc-comment strings, cfg-only features, real comparisons -------
+
+FEATURE_PKG = _package("acme") + '\n[features]\ndefault = ["acme"]\nacme = []\n'
+DOC_CASES = {
+    "doc_pkgname": (
+        '/// ```\n/// assert_eq!(env!("CARGO_PKG_NAME"), "acme");\n/// ```\n',
+        '/// assert_eq!(env!("CARGO_PKG_NAME"), "zeta-gadget");',
+    ),
+    "doc_feature": (
+        '/// ```\n/// assert!(cfg!(feature = "acme"));\n/// ```\n',
+        '/// assert!(cfg!(feature = "zeta-gadget"));',
+    ),
+    "doc_inner_reversed": (
+        '//! ```\n//! assert_eq!("acme", env!("CARGO_PKG_NAME"));\n//! ```\n',
+        '//! assert_eq!("zeta-gadget", env!("CARGO_PKG_NAME"));',
+    ),
+    "cmp_eq": (
+        '#[test]\nfn name() {\n    assert!(env!("CARGO_PKG_NAME") == "acme");\n}\n',
+        'assert!(env!("CARGO_PKG_NAME") == "zeta-gadget");',
+    ),
+}
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("case", sorted(DOC_CASES))
+def test_doc_and_comparison_strings_build(case: str, tmp_path: Path) -> None:
+    _require_cargo()
+    lead, written = DOC_CASES[case]
+    files = {
+        "Cargo.toml": FEATURE_PKG,
+        "src/lib.rs": lead + PLAIN_LIB,
+        "README.md": "# acme-repo, by acmectl\n",
+    }
+    target = _round_target(tmp_path, files, lock=True)
+    _assert_cargo(target, "test", "--offline")
+
+    _press_and_prove(target, _zeta(tmp_path), ZETA)
+
+    assert written in (target / "src/lib.rs").read_text()
+    _assert_absent(target, ("acme", "Acme"))
+
+
+@pytest.mark.parametrize(
+    ("lib", "line"),
+    [
+        # N2: a feature-shaped assignment outside cfg is an ordinary string.
+        ('#[test]\nfn t() {\n    let feature = "acme";\n    let _ = feature;\n}\n', 3),
+        # N3: the literal is not the other side of the CARGO_PKG_NAME comparison.
+        (
+            '#[test]\nfn t() {\n    let _n = env!("CARGO_PKG_NAME"); '
+            'assert_eq!(module_path!(), "acme");\n}\n',
+            3,
+        ),
+        # N1: a doc comment's string with no provable spelling is refused.
+        ('/// ```\n/// assert_eq!(module_path!(), "acme");\n/// ```\n', 2),
+        ('/** ```\n let s = "acme";\n``` */\npub fn x() {}\n', 2),
+    ],
+)
+def test_round_two_unprovable_strings_are_refused(
+    lib: str, line: int, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = _lib_crate(**{"src/lib.rs": lib + PLAIN_LIB})
+    files["Cargo.toml"] = FEATURE_PKG
+    err = _refusal(tmp_path, files, capsys)
+    assert f"src/lib.rs:{line}:" in err
+    assert "Rust string literal" in err
+
+
 # --- identity and rules units ----------------------------------------------------
 
 

@@ -23,6 +23,15 @@ _CHAR_LITERAL = re.compile(r"'(?:\\u\{[0-9A-Fa-f]{1,6}\}|\\.|[^\\'\n])'")
 # Text right before a literal that makes it a Cargo feature name or a path the
 # compiler resolves against the source file's directory.
 _FEATURE_BEFORE = re.compile(r"\bfeature\s*=\s*$")
+_CFG_CALL = re.compile(r"\b(?:cfg!?|cfg_attr)\s*$")
+_PKG_NAME = r'env!\(\s*"CARGO_PKG_NAME"\s*\)'
+_PKG_BEFORE = re.compile(
+    rf"(?:{_PKG_NAME}\s*(?:==|!=)\s*|\bassert_(?:eq|ne)!\(\s*{_PKG_NAME}\s*,\s*)$"
+)
+_PKG_AFTER_CMP = re.compile(rf"\s*(?:==|!=)\s*{_PKG_NAME}")
+_ASSERT_BEFORE = re.compile(r"\bassert_(?:eq|ne)!\(\s*$")
+_PKG_AFTER_ARG = re.compile(rf"\s*,\s*{_PKG_NAME}\s*[,)]")
+_ARG_END = re.compile(r"\s*[,)]")
 _PATH_BEFORE = re.compile(
     r"(?:\b(?:include_str|include_bytes|include)!\s*\(\s*|#!?\[\s*path\s*=\s*)$"
 )
@@ -46,9 +55,15 @@ def rust_strings(text: str) -> tuple[RustString, ...]:
         char = text[index]
         if text.startswith("//", index):
             newline = text.find("\n", index)
-            index = length if newline == -1 else newline + 1
+            end = length if newline == -1 else newline
+            if _is_doc(text, index, "/"):
+                found.extend(_doc_strings(text, index + 3, end))
+            index = end + 1
         elif text.startswith("/*", index):
-            index = _block_comment_end(text, index)
+            end = _block_comment_end(text, index)
+            if _is_doc(text, index, "*") and end - index >= 5:
+                found.extend(_doc_strings(text, index + 3, end - 2))
+            index = end
         elif char == '"':
             found.append(_quoted(text, index, index))
             index = found[-1].end
@@ -73,6 +88,26 @@ def rust_strings(text: str) -> tuple[RustString, ...]:
         else:
             index += 1
     return tuple(found)
+
+
+def _is_doc(text: str, start: int, mark: str) -> bool:
+    """``///`` or ``//!`` (``/**`` or ``/*!``), but not ``////`` or ``/***``."""
+    third = text[start + 2 : start + 3]
+    return third == "!" or (third == mark and text[start + 3 : start + 4] != mark)
+
+
+def _doc_strings(text: str, start: int, end: int) -> list[RustString]:
+    """Terminated string literals in a doc comment body, which rustdoc compiles."""
+    return [
+        RustString(
+            literal.start + start,
+            literal.content_start + start,
+            literal.content_end + start,
+            literal.end + start,
+        )
+        for literal in rust_strings(text[start:end])
+        if literal.end > literal.content_end
+    ]
 
 
 def _block_comment_end(text: str, start: int) -> int:
@@ -137,15 +172,47 @@ def string_role(text: str, literal: RustString, name: str) -> StringRole:
     before = text[: literal.start]
     content = text[literal.content_start : literal.content_end]
     if _FEATURE_BEFORE.search(before) and content == name:
-        return "feature"
+        return "feature" if _inside_cfg(text, literal.start) else "other"
     if _PATH_BEFORE.search(before):
         return "path"
-    line_start = text.rfind("\n", 0, literal.start) + 1
-    line_end = text.find("\n", literal.end)
-    line = text[line_start : len(text) if line_end == -1 else line_end]
-    if content == name and "CARGO_PKG_NAME" in line:
+    if content == name and _compared_with_pkg_name(text, literal):
         return "pkg_name"
     return "other"
+
+
+def _inside_cfg(text: str, position: int) -> bool:
+    """Whether an unclosed ``cfg(``, ``cfg!(`` or ``cfg_attr(`` encloses it.
+
+    The scan walks outward through unclosed parentheses and stops at the end
+    of the enclosing statement or block.
+    """
+    depth = 0
+    for index in range(position - 1, max(position - 4000, 0) - 1, -1):
+        char = text[index]
+        if char == ")":
+            depth += 1
+        elif char == "(":
+            if depth:
+                depth -= 1
+            elif _CFG_CALL.search(text[max(index - 32, 0) : index]):
+                return True
+        elif char in ";{}" and depth == 0:
+            return False
+    return False
+
+
+def _compared_with_pkg_name(text: str, literal: RustString) -> bool:
+    """Whether the literal is the other side of an ``env!("CARGO_PKG_NAME")``
+    comparison: ``==``, ``!=``, or an ``assert_eq!``/``assert_ne!`` argument.
+    """
+    before, start = text[: literal.start], literal.end
+    if _PKG_BEFORE.search(before):
+        return bool(_ARG_END.match(text, start)) or not re.search(
+            r"assert_(?:eq|ne)!\(\s*" + _PKG_NAME + r"\s*,\s*$", before
+        )
+    if _PKG_AFTER_CMP.match(text, start):
+        return True
+    return bool(_ASSERT_BEFORE.search(before) and _PKG_AFTER_ARG.match(text, start))
 
 
 def split_rust_replacements(
