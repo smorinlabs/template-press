@@ -255,7 +255,9 @@ def test_extra_phase_receipt_rows_success_control(tmp_path, monkeypatch):
         return result
 
     def observe_write(target, source, dest, report, **kwargs):
-        writer_rows.append((source, dest, kwargs))
+        # The pre-receipt verify writes its own copy's receipt, not the target's.
+        if Path(target).resolve() == repo.resolve():
+            writer_rows.append((source, dest, kwargs))
         return original_write(target, source, dest, report, **kwargs)
 
     monkeypatch.setattr(cli, "preflight_receipt", observe_preflight)

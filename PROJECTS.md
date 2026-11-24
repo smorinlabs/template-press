@@ -40,6 +40,8 @@ file by hand — see Conventions.
 | P15 | `[~]` | [Rust and Cargo targets](projects/P15-rust-cargo-targets.md) — single-crate and workspace Cargo repositories, optional role-keyed `cargo_names` identity table |
 | P16 | `[x]` | [Explicit target languages](projects/P16-explicit-target-languages.md) — multi-language targets must declare `[rules] languages` or press exits 2 |
 
+- [x] **P17** — [Pressed-target verify false receipt](projects/P17-pressed-target-verify-false-receipt.md) — no receipt when `press verify` would exit 1 on the pressed target
+
 ## Conventions
 
 Planning system: **Superpowers** — specs/plans live under

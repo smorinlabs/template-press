@@ -2,19 +2,22 @@
 
 Pipeline: preconditions → answers → source identity (config-first,
 discovery validates) → plan → [--dry-run stops here] → apply → regenerate
-lockfiles → VERIFY (no-leak doctor) → receipt. Exit codes: 0 ok, 1 leaks
-found after apply (no receipt), 2 precondition/config error (no writes).
+lockfiles → VERIFY (no-leak doctor, then `press verify` on a private copy of
+the pressed tree) → receipt. Exit codes: 0 ok, 1 leaks found after apply (no
+receipt), 2 precondition/config error (no writes).
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import shlex
 import subprocess  # nosec B404 — invokes git/uv on user-supplied targets
 import sys
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -122,9 +125,11 @@ from template_press.rebrand.safety import (
     RenameClosureUnauthorized,
     SafetyError,
     git_hardening_args,
+    owned_sandbox,
     scrubbed_git_env,
     write_control,
 )
+from template_press.rebrand.sandbox import make_sandbox
 from template_press.rebrand.substitutions import (
     SubstitutionTable,
     cargo_split_target_problems,
@@ -133,6 +138,7 @@ from template_press.rebrand.substitutions import (
     revalidate_substitution_table,
     validate_reset_visibility,
 )
+from template_press.rebrand.verify_cli import verify_command
 
 _EXISTING_RECEIPT_PROBLEM = (
     "target already has a press receipt (press/press-receipt.toml); "
@@ -1142,6 +1148,57 @@ class PressOutcome:
     env_error: str | None
 
 
+def _pressed_tree_fails_verify(
+    target: Path, dest: Identity, write_press_receipt: Callable[[Path], Path]
+) -> bool:
+    """True when `press verify` would exit 1 once this press completes.
+
+    Verify hunts the identity in the source-config, which a press replaces
+    with ``dest``, so the check runs on a private copy holding the same
+    source-config, receipt, and settled origin the real target will have.
+    Exit 2 means verify could not reach its leak scan and keeps today's outcome.
+    A failure building the copy is treated the same way, as standalone verify
+    reports its own copy failures as exit 2. A verify exit 1 still blocks when
+    removing the copy fails afterward.
+    """
+    output = io.StringIO()
+    code: int | None = None
+    try:
+        with owned_sandbox(target) as root:
+            sandbox = make_sandbox(target, root)
+            write_control(sandbox.path, SOURCE_CONFIG_REL, render_source_config(dest))
+            write_press_receipt(sandbox.path)
+            subprocess.run(  # noqa: S603 # nosec B603 B607
+                [  # noqa: S607
+                    "git",
+                    "-C",
+                    str(sandbox.path),
+                    *git_hardening_args(),
+                    "remote",
+                    "add",
+                    "origin",
+                    f"https://github.com/{dest.owner}/{dest.repo_name}.git",
+                ],
+                check=True,
+                capture_output=True,
+                env=scrubbed_git_env(),
+            )
+            with (
+                contextlib.redirect_stdout(output),
+                contextlib.redirect_stderr(output),
+            ):
+                code = verify_command(["--target", str(sandbox.path)])
+    except (SafetyError, ValidationError, OSError, subprocess.CalledProcessError):
+        if code != 1:
+            return False
+    if code != 1:
+        return False
+    print(output.getvalue(), end="", file=sys.stderr)
+    print("error: press verify would fail — no receipt written", file=sys.stderr)
+    print(_partial_rewrite_restore_hint(target), file=sys.stderr)
+    return True
+
+
 def _press(
     target: Path,
     source: Identity,
@@ -1443,13 +1500,6 @@ def _press(
         # A reset, edit, regeneration, or rename can change a root manifest,
         # so the pressed tree must still pass the guard `press verify` applies.
         check_target_languages(target, rules.languages, ())
-        write_control(target, SOURCE_CONFIG_REL, render_source_config(dest))
-        # The receipt is the LAST write of a successful press (P12 fix
-        # round 1): it means "this rebrand completed and was verified" and it
-        # guards re-runs, so it must not survive a failure of the
-        # source-config write ABOVE. Ordered this way, an OSError there leaves
-        # no receipt and the press can be re-run without --force. Nothing
-        # between the two writes reads the receipt.
         all_directories: tuple[DirectoryRemoval, ...] = ()
         if removal_plan is None:
             removals = [
@@ -1480,22 +1530,38 @@ def _press(
         phases = _receipt_phases(
             edit_plans, regen_plans, report.reset, report.regenerated
         )
-        receipt_path = write_receipt(
-            target,
-            source,
-            dest,
-            report,
-            platform=platform,
-            origin=origin,
-            clean=[rule.paths for rule in rules.clean],
-            edits=phases.edits,
-            regenerations=phases.regenerations,
-            resets=phases.resets,
-            removals=removals,
-            remove_dirs=all_directories,
-            exempt=phases.exempt,
-            keep_names=rules.keep_names,
-        )
+
+        def write_press_receipt(root: Path) -> Path:
+            return write_receipt(
+                root,
+                source,
+                dest,
+                report,
+                platform=platform,
+                origin=origin,
+                clean=[rule.paths for rule in rules.clean],
+                edits=phases.edits,
+                regenerations=phases.regenerations,
+                resets=phases.resets,
+                removals=removals,
+                remove_dirs=all_directories,
+                exempt=phases.exempt,
+                keep_names=rules.keep_names,
+            )
+
+        if _pressed_tree_fails_verify(target, dest, write_press_receipt):
+            print(report.render(), file=sys.stderr)
+            return PressOutcome(
+                True, report.renamed, report.regenerated, env_error=None
+            )
+        write_control(target, SOURCE_CONFIG_REL, render_source_config(dest))
+        # The receipt is the LAST write of a successful press (P12 fix
+        # round 1): it means "this rebrand completed and was verified" and it
+        # guards re-runs, so it must not survive a failure of the
+        # source-config write ABOVE. Ordered this way, an OSError there leaves
+        # no receipt and the press can be re-run without --force. Nothing
+        # between the two writes reads the receipt.
+        receipt_path = write_press_receipt(target)
         # The receipt is the durable completion boundary. Interruptions during
         # the success-reporting prints below must not advise rolling back a
         # completed, verified press.
