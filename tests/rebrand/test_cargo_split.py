@@ -1000,6 +1000,9 @@ COMPILED_LAYOUTS = {
     "hidden_line": "/// ```\n/// # CODE\n/// ```\npub fn ITEM() {}\n",
     "list_item_block": "/// -     CODE\npub fn ITEM() {}\n",
     "quote_block": "/// >     CODE\npub fn ITEM() {}\n",
+    # After a task marker, four spaces are enough to indent a code block.
+    "task_item_block": "/// - [ ]     CODE\npub fn ITEM() {}\n",
+    "task_item_block_four_spaces": "/// - [x]    CODE\npub fn ITEM() {}\n",
     "block_after_heading": "/// # Example\n///     CODE\npub fn ITEM() {}\n",
     "block_after_odd_quote_prose": (
         '/// A 5" disk.\n///\n///     CODE\npub fn ITEM() {}\n'
@@ -1129,8 +1132,9 @@ def test_doc_text_rustdoc_may_compile_refuses_unproven_strings(
     code, _ = _press_lib(tmp_path, _doc_lib(layout, UNPROVEN))
     err = capsys.readouterr().err
     assert code == 2
-    assert f"src/lib.rs:{_code_line(layout)}:" in err
+    assert f"src/lib.rs:{_code_line(layout)}: 'acme' is in a doc comment" in err
     assert "Rust string literal" in err
+    assert "in backticks, without double quotes, takes 'zeta_gadget'" in err
 
 
 @pytest.mark.parametrize("case", sorted(SKIPPED_LAYOUTS))
@@ -1154,15 +1158,26 @@ def test_every_non_rust_fence_tag_reads_as_prose(tmp_path: Path) -> None:
     assert pressed.count(UNPROVEN_AS_PROSE) == len(NOT_RUST_TAGS)
 
 
-def test_inner_doc_string_after_an_unclosed_quote_is_refused(
+def test_inner_doc_readings_that_disagree_are_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # A code block may start at line 1 or at line 3. Read from line 1, the
-    # quote on line 1 is still open at line 3, so the two readings disagree.
-    lib = f'//! He said "hi\n//!\n//!     {PKG_ASSERT}\n'
+    # quote on line 1 closes on line 3, so the two readings disagree there.
+    lib = f'//! He said "hi\n//!\n//!     {PKG_ASSERT} // "\n'
     code, _ = _press_lib(tmp_path, lib)
     assert code == 2
     assert "src/lib.rs:3:" in capsys.readouterr().err
+
+
+def test_inner_doc_reading_that_never_closes_its_string_does_not_bind(
+    tmp_path: Path,
+) -> None:
+    # Read from line 1, the quote on line 1 is still open when the comment
+    # ends. A doctest that ends inside a string does not compile, so only the
+    # block that starts at line 3 counts.
+    code, lib = _press_lib(tmp_path, f'//! He said "hi\n//!\n//!     {PKG_ASSERT}\n')
+    assert code == 0
+    assert PKG_PRESSED in lib
 
 
 def _doc_crate(tmp_path: Path, lib: str) -> Path:
@@ -1247,8 +1262,9 @@ def test_skipped_doc_layouts_are_never_compiled_by_real_cargo(tmp_path: Path) ->
     pressed = (target / "src/lib.rs").read_text()
     assert pressed.count(UNPROVEN_AS_PROSE) == len(layouts)
     after = _cargo(target, "test", "--doc", "--offline").stdout
-    # Only the `ignore` fences are doctests at all, and none of them runs.
-    assert "test result: ok. 0 passed; 0 failed; 2 ignored" in after
+    # The one test that runs is the Rust fence in `prose_after_code_fence`, which
+    # holds no name. The two `ignore` fences are listed and never compiled.
+    assert "test result: ok. 1 passed; 0 failed; 2 ignored" in after
 
 
 # --- identity and rules units ----------------------------------------------------

@@ -2151,13 +2151,27 @@ def cargo_split_target_problems(
                 kept,
             ):
                 where = f"{path}:{_line_of(new_text, start)}"
-                if string_at(strings, (start, end)) is not None:
+                literal = string_at(strings, (start, end))
+                if literal is not None:
+                    place, remedy = (
+                        "inside a Rust string literal",
+                        "Edit the string by hand before pressing",
+                    )
+                    if literal.doc:
+                        place = (
+                            "in a doc comment that rustdoc may compile as a "
+                            "doctest, where it would sit in a Rust string literal"
+                        )
+                        remedy = (
+                            "Edit the comment by hand before pressing: prose that "
+                            "names the crate in backticks, without double quotes, "
+                            f"takes {cargo_ident(new)!r}"
+                        )
                     problems.append(
-                        f"{where}: {old!r} is inside a Rust string literal that "
-                        "the press cannot prove is a Cargo feature name, a path "
-                        "to a file it renames, or a CARGO_PKG_NAME comparison, "
-                        f"so it cannot choose {new!r} or {cargo_ident(new)!r}. "
-                        "Edit the string by hand before pressing"
+                        f"{where}: {old!r} is {place} that the press cannot prove "
+                        "is a Cargo feature name, a path to a file it renames, or "
+                        "a CARGO_PKG_NAME comparison, so it cannot choose "
+                        f"{new!r} or {cargo_ident(new)!r}. {remedy}"
                     )
                     continue
                 problems.append(
