@@ -1526,8 +1526,13 @@ def test_direct_file_only_press_keeps_no_receipt_read(tmp_path, monkeypatch):
     write_dir_rules(repo, '[[remove]]\nfile="research/one.md"\nreason="one file"\n')
     _commit(repo)
 
-    def unexpected_read(*args, **kwargs):
-        pytest.fail("direct file-only press added a receipt read")
+    original_read = remove_module.read_receipt
+
+    def unexpected_read(target, *args, **kwargs):
+        # The pre-receipt verify reads its own copy's receipt, not the target's.
+        if Path(target).resolve() == repo.resolve():
+            pytest.fail("direct file-only press added a receipt read")
+        return original_read(target, *args, **kwargs)
 
     monkeypatch.setattr(remove_module, "read_receipt", unexpected_read)
     outcome = _press(repo, SOURCE, DEST, load_rules(repo), [], [])
@@ -1792,7 +1797,9 @@ def test_force_receipt_selects_and_reads_once(tmp_path, active_directory, monkey
         return original_select(target)
 
     def read_once(target, *, max_bytes=None):
-        bounds.append(max_bytes)
+        # The pre-receipt verify reads its own copy's receipt, not the target's.
+        if Path(target).resolve() == repo.resolve():
+            bounds.append(max_bytes)
         return original_read(target, max_bytes=max_bytes)
 
     monkeypatch.setattr(cli_module, "load_selected_rules", select_once)
