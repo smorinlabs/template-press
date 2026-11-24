@@ -14,6 +14,8 @@ would exit 1 on the pressed target.
 - A verify exit 1 makes the press exit 1 with no receipt and the source-config
   unchanged.
 - Targets whose pressed tree passes `press verify` keep their current outcome.
+- When the gate cannot establish the result (verify exits 2 on the copy, or
+  building the copy fails), the press keeps its pre-P17 outcome.
 
 **Out of Scope**
 
