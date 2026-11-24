@@ -12,6 +12,7 @@ uv run pytest -m "" tests/rebrand/test_cargo_split.py
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tomllib
@@ -957,6 +958,297 @@ def test_compiled_doc_fence_strings_are_refused(
     err = _refusal(tmp_path, files, capsys)
     assert f"src/lib.rs:{line}:" in err
     assert "Rust string literal" in err
+
+
+# --- fix round 4: doc text is code unless rustdoc provably skips it ---------------
+
+# One line of doctest code. Cargo proves the first; nothing proves the second.
+PKG_ASSERT = 'assert_eq!(env!("CARGO_PKG_NAME"), "acme");'
+PKG_PRESSED = 'assert_eq!(env!("CARGO_PKG_NAME"), "zeta-gadget");'
+UNPROVEN = 'let name = "acme"; assert_eq!(name, env!("CARGO_PKG_NAME"));'
+UNPROVEN_AS_PROSE = (
+    'let name = "zeta_gadget"; assert_eq!(name, env!("CARGO_PKG_NAME"));'
+)
+
+# Each snippet is one documented item. CODE is the doctest line and ITEM is the
+# item's name. S1: rustdoc compiles every one of these, whatever it looks like.
+S1_LAYOUTS = {
+    "indented_block": "/// Example:\n///\n///     CODE\npub fn ITEM() {}\n",
+    "tag_rust_ignore_target": "/// ```rust,ignore-x\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "tag_ignore_target": "/// ```ignore-x\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "tag_class_attribute": "/// ```{.rust}\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "tag_rust_then_unknown": "/// ```rust,foo\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "split_by_doc_attribute": (
+        '/// ```\n#[doc = "let _x = 1;"]\n/// CODE\n/// ```\npub fn ITEM() {}\n'
+    ),
+    "split_by_plain_comment": (
+        "/// ```\n// plain comment\n/// CODE\n/// ```\npub fn ITEM() {}\n"
+    ),
+    "fence_indented_four": "///     ```\n///     CODE\n///     ```\npub fn ITEM() {}\n",
+}
+# More doc text that rustdoc compiles. Several hide the code block behind text
+# that looks like a `text` fence or like prose.
+COMPILED_LAYOUTS = {
+    **S1_LAYOUTS,
+    "tag_text_then_rust": "/// ```text,rust\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "tag_class_text": "/// ```{.text}\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "tag_ignore_and_ignore_target": (
+        "/// ```ignore,ignore-x\n/// CODE\n/// ```\npub fn ITEM() {}\n"
+    ),
+    "tag_edition": "/// ```edition2021\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "tilde_fence": "/// ~~~\n/// CODE\n/// ~~~\npub fn ITEM() {}\n",
+    "hidden_line": "/// ```\n/// # CODE\n/// ```\npub fn ITEM() {}\n",
+    "list_item_block": "/// -     CODE\npub fn ITEM() {}\n",
+    "quote_block": "/// >     CODE\npub fn ITEM() {}\n",
+    "block_after_heading": "/// # Example\n///     CODE\npub fn ITEM() {}\n",
+    "block_after_odd_quote_prose": (
+        '/// A 5" disk.\n///\n///     CODE\npub fn ITEM() {}\n'
+    ),
+    "multi_line_assert": (
+        '/// ```\n/// assert_eq!(\n///     env!("CARGO_PKG_NAME"),\n'
+        '///     "acme",\n/// );\n/// CODE\n/// ```\npub fn ITEM() {}\n'
+    ),
+    "inner_doc_fence": "pub mod ITEM {\n    //! ```\n    //! CODE\n    //! ```\n}\n",
+    "block_doc_indented": "/**\n * Example:\n *\n *     CODE\n */\npub fn ITEM() {}\n",
+    # An HTML block swallows the `text` fence line, so the block below is code.
+    "html_block_hides_text_fence": (
+        "/// <div>\n/// ```text\n///\n///     CODE\n///\n/// <div>\n/// ```\n"
+        "pub fn ITEM() {}\n"
+    ),
+    # The list item ends at `para`, and its `text` fence ends with it.
+    "list_item_ends_text_fence": (
+        "/// - item\n///   ```text\n///   inside\n/// para\n///\n///     CODE\n"
+        "///\n/// ```text\n/// ```\npub fn ITEM() {}\n"
+    ),
+    # The outer comment's fence stays open, so the inner `text` line is code.
+    "inner_doc_continues_outer_fence": (
+        "/// ```\n/// /*\npub mod ITEM {\n    //! ```text\n    //! */ CODE\n"
+        "    //! ```\n}\n"
+    ),
+    # `//!x` lowers the common indent, so the indented fence does not close.
+    "inner_doc_changes_outer_indent": (
+        "/// ```\n/// /*\n///    ```\n/// ```text\n/// */ CODE\n/// ```\n"
+        "pub mod ITEM {\n//!x\n}\n"
+    ),
+}
+# Doc text that rustdoc provably never compiles: prose and non-Rust fences in
+# a `///` comment. CODE keeps the identifier spelling, as prose does.
+SKIPPED_LAYOUTS = {
+    "prose": "/// CODE\npub fn ITEM() {}\n",
+    "prose_three_spaces": "///   CODE\npub fn ITEM() {}\n",
+    "prose_in_list_item": "/// - CODE\npub fn ITEM() {}\n",
+    "prose_after_code_fence": (
+        "/// ```\n/// let _x = 1;\n/// ```\n/// CODE\npub fn ITEM() {}\n"
+    ),
+    "text_fence": "/// ```text\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "ignore_fence": "/// ```ignore\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "ignore_rust_fence": "/// ```ignore,rust\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "two_language_fence": "/// ```text,toml\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "tilde_text_fence": "/// ~~~text\n/// ```\n/// CODE\n/// ~~~\npub fn ITEM() {}\n",
+    "long_text_fence": (
+        "/// ````text\n/// ```\n/// CODE\n/// ```\n/// ````\npub fn ITEM() {}\n"
+    ),
+    "text_fence_after_derive": (
+        "#[derive(Debug)]\n/// ```text\n/// CODE\n/// ```\npub struct ITEM;\n"
+    ),
+    "text_fence_split_by_plain_comment": (
+        "/// ```text\n// plain comment\n/// CODE\n/// ```\npub fn ITEM() {}\n"
+    ),
+}
+# Doc text the press cannot prove rustdoc skips. An unproven string is refused.
+UNPROVABLE_LAYOUTS = {
+    **COMPILED_LAYOUTS,
+    # rustdoc skips these today, but the tag is a misspelt Rust tag or unknown.
+    "tag_should_dash_panic": "/// ```should-panic\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "tag_capital_rust": "/// ```Rust\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "tag_unknown_language": "/// ```klingon\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "tag_text_no_run": "/// ```text,no_run\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    "tag_with_punctuation": "/// ```c++\n/// CODE\n/// ```\npub fn ITEM() {}\n",
+    # Another doc fragment of the same item may precede these comments.
+    "inner_doc_prose": "pub mod ITEM {\n    //! CODE\n}\n",
+    "inner_doc_text_fence": (
+        "pub mod ITEM {\n    //! ```text\n    //! CODE\n    //! ```\n}\n"
+    ),
+    "block_doc_prose": "/** CODE */\npub fn ITEM() {}\n",
+    "prose_after_doc_attribute": '#[doc = "Intro."]\n/// CODE\npub fn ITEM() {}\n',
+    "prose_before_doc_attribute": '/// CODE\n#[doc = "Outro."]\npub fn ITEM() {}\n',
+    "prose_after_macro_attribute": (
+        "macro_rules! ITEM {\n    ($(#[$m:meta])*) => {\n        $(#[$m])*\n"
+        "        /// CODE\n        pub fn made() {}\n    };\n}\n"
+    ),
+    # The layout leaves the Markdown structure in doubt.
+    "prose_four_spaces": "///     CODE\npub fn ITEM() {}\n",
+    "prose_after_tab": "///\tCODE\npub fn ITEM() {}\n",
+    "text_fence_after_html": (
+        "/// <div>\n///\n/// ```text\n/// CODE\n/// ```\npub fn ITEM() {}\n"
+    ),
+    "text_fence_not_flush": (
+        "///intro\n///  ```text\n///  CODE\n///  ```\npub fn ITEM() {}\n"
+    ),
+    "text_fence_in_list_item": (
+        "/// - item\n///   ```text\n///   CODE\n///   ```\npub fn ITEM() {}\n"
+    ),
+    "text_fence_after_doubtful_closer": (
+        "/// ```text\n///    ```\n/// CODE\n/// ```\npub fn ITEM() {}\n"
+    ),
+}
+
+
+def _doc_lib(layout: str, code: str, name: str = "documented") -> str:
+    return layout.replace("ITEM", name).replace("CODE", code)
+
+
+def _code_line(layout: str) -> int:
+    return layout.split("CODE")[0].count("\n") + 1
+
+
+def _press_lib(tmp_path: Path, lib: str) -> tuple[int, str]:
+    target = _round_target(tmp_path, _lib_crate(**{"src/lib.rs": lib + PLAIN_LIB}))
+    code = _press(target, _zeta(tmp_path))
+    assert (code == 0) == (target / RECEIPT_REL).exists()
+    if code:
+        assert _status(target) == ""
+    return code, (target / "src/lib.rs").read_text()
+
+
+@pytest.mark.parametrize("case", sorted(COMPILED_LAYOUTS))
+def test_doc_text_rustdoc_compiles_takes_the_string_rules(
+    case: str, tmp_path: Path
+) -> None:
+    code, lib = _press_lib(tmp_path, _doc_lib(COMPILED_LAYOUTS[case], PKG_ASSERT))
+    assert code == 0
+    assert PKG_PRESSED in lib
+    assert '"zeta_gadget"' not in lib
+
+
+@pytest.mark.parametrize("case", sorted(UNPROVABLE_LAYOUTS))
+def test_doc_text_rustdoc_may_compile_refuses_unproven_strings(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    layout = UNPROVABLE_LAYOUTS[case]
+    code, _ = _press_lib(tmp_path, _doc_lib(layout, UNPROVEN))
+    err = capsys.readouterr().err
+    assert code == 2
+    assert f"src/lib.rs:{_code_line(layout)}:" in err
+    assert "Rust string literal" in err
+
+
+@pytest.mark.parametrize("case", sorted(SKIPPED_LAYOUTS))
+def test_doc_text_rustdoc_never_compiles_reads_as_prose(
+    case: str, tmp_path: Path
+) -> None:
+    code, lib = _press_lib(tmp_path, _doc_lib(SKIPPED_LAYOUTS[case], UNPROVEN))
+    assert code == 0
+    assert UNPROVEN_AS_PROSE in lib
+
+
+def test_every_non_rust_fence_tag_reads_as_prose(tmp_path: Path) -> None:
+    from template_press.rebrand.rust_text import NOT_RUST_TAGS
+
+    lib = "".join(
+        _doc_lib(SKIPPED_LAYOUTS["text_fence"].replace("text", tag), UNPROVEN, f"f{n}")
+        for n, tag in enumerate(sorted(NOT_RUST_TAGS))
+    )
+    code, pressed = _press_lib(tmp_path, lib)
+    assert code == 0
+    assert pressed.count(UNPROVEN_AS_PROSE) == len(NOT_RUST_TAGS)
+
+
+def test_inner_doc_string_after_an_unclosed_quote_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A code block may start at line 1 or at line 3. Read from line 1, the
+    # quote on line 1 is still open at line 3, so the two readings disagree.
+    lib = f'//! He said "hi\n//!\n//!     {PKG_ASSERT}\n'
+    code, _ = _press_lib(tmp_path, lib)
+    assert code == 2
+    assert "src/lib.rs:3:" in capsys.readouterr().err
+
+
+def _doc_crate(tmp_path: Path, lib: str) -> Path:
+    files = {
+        "Cargo.toml": _package("acme"),
+        "src/lib.rs": lib + PLAIN_LIB,
+        "README.md": "# acme-repo, by acmectl\n",
+    }
+    target = _round_target(tmp_path, files, lock=True)
+    _assert_cargo(target, "test", "--offline")
+    return target
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("case", sorted(S1_LAYOUTS))
+def test_s1_doctests_pass_real_cargo_after_the_press(case: str, tmp_path: Path) -> None:
+    _require_cargo()
+    target = _doc_crate(tmp_path, _doc_lib(S1_LAYOUTS[case], PKG_ASSERT))
+
+    _press_and_prove(target, _zeta(tmp_path), ZETA)
+
+    assert PKG_PRESSED in (target / "src/lib.rs").read_text()
+    _assert_absent(target, ("acme", "Acme"))
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_compiled_doc_layouts_pass_real_cargo_after_the_press(tmp_path: Path) -> None:
+    """Real ``cargo test`` runs every layout's doctest, before and after."""
+    _require_cargo()
+    lib = "".join(
+        _doc_lib(layout, PKG_ASSERT, f"item_{case}")
+        for case, layout in sorted(COMPILED_LAYOUTS.items())
+    )
+    target = _doc_crate(tmp_path, lib)
+    listed = _cargo(target, "test", "--doc", "--offline").stdout
+    counted = re.search(r"(\d+) passed; 0 failed; (\d+) ignored", listed)
+    assert counted is not None, listed
+    passed, ignored = int(counted[1]), int(counted[2])
+    # `ignore-x` skips a doctest on a host whose target triple holds an `x`.
+    host_skipped = sum("ignore-x" in layout for layout in COMPILED_LAYOUTS.values())
+    assert passed + ignored == len(COMPILED_LAYOUTS)
+    assert ignored in (0, host_skipped)
+
+    _press_and_prove(target, _zeta(tmp_path), ZETA)
+
+    pressed = (target / "src/lib.rs").read_text()
+    assert pressed.count(PKG_PRESSED) == len(COMPILED_LAYOUTS)
+    _assert_absent(target, ("acme", "Acme"))
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_skipped_doc_layouts_are_never_compiled_by_real_cargo(tmp_path: Path) -> None:
+    """The oracle for every exemption: prose, and each non-Rust fence tag.
+
+    The press writes the identifier spelling into each block. That text would
+    fail as a doctest, so ``cargo test`` passes only if rustdoc compiles none.
+    """
+    _require_cargo()
+    from template_press.rebrand.rust_text import NOT_RUST_TAGS
+
+    layouts = {
+        **SKIPPED_LAYOUTS,
+        **{
+            f"tag_{tag}": SKIPPED_LAYOUTS["text_fence"].replace("text", tag)
+            for tag in NOT_RUST_TAGS
+        },
+    }
+    lib = "".join(
+        _doc_lib(layout, UNPROVEN, f"item_{case}".replace("-", "_"))
+        for case, layout in sorted(layouts.items())
+    )
+    target = _doc_crate(tmp_path, lib)
+
+    _press_and_prove(target, _zeta(tmp_path), ZETA)
+
+    pressed = (target / "src/lib.rs").read_text()
+    assert pressed.count(UNPROVEN_AS_PROSE) == len(layouts)
+    after = _cargo(target, "test", "--doc", "--offline").stdout
+    # Only the `ignore` fences are doctests at all, and none of them runs.
+    assert "test result: ok. 0 passed; 0 failed; 2 ignored" in after
 
 
 # --- identity and rules units ----------------------------------------------------
