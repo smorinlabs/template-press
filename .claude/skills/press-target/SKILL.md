@@ -301,7 +301,10 @@ widget = "zeta-gadget"
 
 - One role covers every use of one name. A package and a binary with the same
   name share a role. A `[lib]` or `[[bin]]` with a different name gets its own.
-- Role keys match `^[a-z][a-z0-9_]*$`. Values match `^[A-Za-z][A-Za-z0-9_-]*$`.
+- Role keys match `^[a-z][a-z0-9_]*$`. Values start with a letter or underscore, use letters, digits, `_`, and `-`, and
+  contain at least one letter or digit (`^(?=.*[A-Za-z0-9])[A-Za-z_][A-Za-z0-9_-]*$`).
+  A maturin library name such as `_acme_widget` is a valid value. A proposed
+  role key drops leading underscores.
 - `package_name` must be the underscore form of one source value, and its
   destination must be the underscore form of the same role's destination. In a
   virtual workspace, choose one member as the primary crate.

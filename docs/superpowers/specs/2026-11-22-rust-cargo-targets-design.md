@@ -82,7 +82,10 @@ widget = "zeta-gadget"
 - One entry covers every use of one name. A package and a binary with the same
   name share one role. A binary or `[lib] name` with a different name gets its
   own role.
-- Role keys match `^[a-z][a-z0-9_]*$`. Values match `^[A-Za-z][A-Za-z0-9_-]*$`.
+- Role keys match `^[a-z][a-z0-9_]*$`. Values start with a letter or underscore, use letters, digits, `_`, and `-`, and
+  contain at least one letter or digit (`^(?=.*[A-Za-z0-9])[A-Za-z_][A-Za-z0-9_-]*$`).
+  A maturin library name such as `_acme_widget` is a valid value. A proposed
+  role key drops leading underscores.
 - `Identity` stores the table as an immutable sorted tuple of `(role, name)`
   pairs. It stays out of `as_dict()`, whose values are all strings.
 - `render_source_config` writes the table, so the refreshed source config can
