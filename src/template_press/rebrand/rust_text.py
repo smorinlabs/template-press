@@ -156,6 +156,7 @@ def quoted_spans(text: str) -> tuple[Span, ...]:
 
 
 _QUOTING_RENAME = re.compile(r"\b(?:stringify|concat)\s+as\b")
+_USE = re.compile(r"\buse\b")
 
 
 def quoting_renames(text: str) -> tuple[int, ...]:
@@ -177,7 +178,13 @@ def quoting_renames(text: str) -> tuple[int, ...]:
             end, literal = _token(text, index)
             pieces.append(_blank(text[index:end]) if literal else text[index:end])
         index = end
-    return tuple(found.start() for found in _QUOTING_RENAME.finditer("".join(pieces)))
+    code = "".join(pieces)
+    return tuple(
+        found.start()
+        for found in _QUOTING_RENAME.finditer(code)
+        # Only a ``use`` item renames: ``concat as usize`` casts a variable.
+        if _USE.search(code, code.rfind(";", 0, found.start()) + 1, found.start())
+    )
 
 
 _MODULE_DECLARATION = re.compile(

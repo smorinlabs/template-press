@@ -1794,6 +1794,8 @@ def test_quoting_macro_names_in_strings_and_comments_are_no_rename(
         PLAIN_LIB
         + '// use core::stringify as s;\npub const T: &str = "concat as c";\n'
         + "pub fn stringify_as() {}\n"
+        + "pub fn cast() -> usize {\n    let concat = 1u8;\n    concat as usize\n}\n"
+        + "/// We stringify as JSON.\npub fn documented() {}\n"
     )
     target = _round_target(tmp_path, _lib_crate(**{"src/lib.rs": lib}))
     assert _press(target, _zeta(tmp_path)) == 0
