@@ -23,6 +23,7 @@ from template_press.rebrand.identity import (
     cargo_bin_env_pairs,
     cargo_field_values,
     cargo_name_pairs,
+    cargo_split_roles,
     display_forms,
     exact_name_rank,
     pair_renames_paths,
@@ -647,6 +648,19 @@ def _pipeline_inputs(
         )
 
     raw_pairs = _raw_replacement_pairs(source, dest, rules.display_forms)
+    # A [[cargo_split]] press writes a split crate's identifier spelling only in
+    # scoped files, so the package_name pair that equals it is not unscoped.
+    split_sources = {
+        name
+        for role, name in source.cargo_names
+        if role
+        in cargo_split_roles(source, dest, (split.role for split in rules.cargo_split))
+    }
+    raw_pairs = [
+        pair
+        for pair in raw_pairs
+        if not (pair[0] == "package_name" and pair[1] in split_sources)
+    ]
     provenance_by_values: dict[tuple[str, str], list[str]] = {}
     for tag, cur, repl in raw_pairs:
         provenance_by_values.setdefault((cur, repl), []).append(f"identity:{tag}")

@@ -23,12 +23,16 @@ from template_press.rebrand.cargo_manifest import (
 )
 from template_press.rebrand.identity import (
     CARGO_BIN_ENV_TAG,
+    CARGO_EXACT_PREFIX,
+    CARGO_IDENT_PREFIX,
     DISPLAY_FORM_NAMES,
     Identity,
     ValidationError,
     cargo_bin_env_pairs,
     cargo_field_values,
+    cargo_ident,
     cargo_name_pairs,
+    cargo_split_roles,
     display_forms,
     distinct_hyphen_form,
     exact_name_rank,
@@ -74,6 +78,7 @@ from template_press.rebrand.pipeline import (
     validate_pipeline,
 )
 from template_press.rebrand.rules import (
+    CargoSplit,
     ReplaceRule,
     Rules,
     render_replace_pattern,
@@ -1134,8 +1139,110 @@ def _declared_rows(
     return rows
 
 
-def _identity_rows(
+SplitSpelling = Literal["package", "identifier", "both"]
+# The path-only row of a [[cargo_split]] role carries this row_id suffix.
+SPLIT_PATH_ROW_SUFFIX = ":path"
+
+
+def split_spelling(split: CargoSplit, posix: str) -> SplitSpelling | None:
+    """Which spelling a ``[[cargo_split]]`` press writes into one file.
+
+    Cargo manifests and ``.rs`` files are classified by structure, which takes
+    precedence over the declared glob lists.
+    """
+    if posixpath.basename(posix) == "Cargo.toml":
+        return "package"
+    if posix.endswith(".rs"):
+        return "identifier"
+    package = any(fnmatch.fnmatchcase(posix, glob) for glob in split.package_files)
+    ident = any(fnmatch.fnmatchcase(posix, glob) for glob in split.identifier_files)
+    if package and ident:
+        return "both"
+    if package:
+        return "package"
+    return "identifier" if ident else None
+
+
+def active_cargo_splits(
     source: Identity, destination: Identity, rules: Rules
+) -> tuple[CargoSplit, ...]:
+    """The declared splits whose role this press really splits."""
+    roles = cargo_split_roles(
+        source, destination, (split.role for split in rules.cargo_split)
+    )
+    return tuple(split for split in rules.cargo_split if split.role in roles)
+
+
+def _content_surface_paths(target: Path, rules: Rules) -> tuple[str, ...]:
+    snapshot = capture_surface_snapshot(target)
+    return tuple(
+        entry.rel.as_posix()
+        for entry in select_content_rewrite_entries(
+            snapshot,
+            exclude_files=rules.exclude_files,
+            exclude_dirs=rules.exclude_dirs,
+            root_control=ROOT_CONTROL,
+        )
+    )
+
+
+def _split_rows(
+    row: RenderedSubstitution,
+    split: CargoSplit,
+    destination_name: str,
+    paths: Sequence[str],
+) -> list[RenderedSubstitution]:
+    """Replace one unscoped exact row with the rows a split press runs.
+
+    Content rows take exact file scopes, so the shared validator can prove
+    they never meet. The package spelling alone renames paths.
+    """
+    scoped = {
+        spelling: tuple(
+            path for path in paths if split_spelling(split, path) == spelling
+        )
+        for spelling in ("package", "identifier")
+    }
+    field = f"{CARGO_IDENT_PREFIX}{split.role}"
+    ident_matcher = MatcherSpec("conservative", field, row.matcher.substring)
+    rows: list[RenderedSubstitution] = []
+    if scoped["package"]:
+        rows.append(
+            replace(
+                row,
+                rewrite_surfaces=frozenset({"content"}),
+                scope=Scope(scoped["package"]),
+            )
+        )
+    if scoped["identifier"]:
+        rows.append(
+            RenderedSubstitution(
+                row_id=f"identity:{field}",
+                provenance=(Provenance(kind="identity", name=field),),
+                matcher=ident_matcher,
+                from_value=row.from_value,
+                to_value=cargo_ident(destination_name),
+                rewrite_surfaces=frozenset({"content"}),
+                hunts=_identity_hunts(field, ident_matcher, renames_paths=False),
+                scope=Scope(scoped["identifier"]),
+            )
+        )
+    if "path" in row.rewrite_surfaces:
+        rows.append(
+            replace(
+                row,
+                row_id=f"{row.row_id}{SPLIT_PATH_ROW_SUFFIX}",
+                rewrite_surfaces=frozenset({"path"}),
+            )
+        )
+    return rows
+
+
+def _identity_rows(
+    source: Identity,
+    destination: Identity,
+    rules: Rules,
+    target: Path | None = None,
 ) -> list[RenderedSubstitution]:
     source_values = source.as_dict()
     destination_values = destination.as_dict()
@@ -1204,7 +1311,20 @@ def _identity_rows(
                 scope=Scope(),
             )
         )
-    return rows
+    splits = active_cargo_splits(source, destination, rules)
+    if not splits:
+        return rows
+    paths = _content_surface_paths(target, rules) if target is not None else ()
+    wanted = dict(destination.cargo_names)
+    by_field = {f"{CARGO_EXACT_PREFIX}{split.role}": split for split in splits}
+    split_rows: list[RenderedSubstitution] = []
+    for row in rows:
+        split = by_field.get(row.provenance[0].name)
+        if split is None:
+            split_rows.append(row)
+        else:
+            split_rows.extend(_split_rows(row, split, wanted[split.role], paths))
+    return split_rows
 
 
 def _manifest_text(target: Path | None, rules: Rules) -> tuple[str, str] | None:
@@ -1419,6 +1539,9 @@ def _normalize_rows(
                 row.matcher.substring
                 and is_cargo_field(identity_owners[duplicate_index].provenance[0].name)
             )
+            # A [[cargo_split]] path row keeps the path surface its scoped
+            # content row lacks.
+            or row.row_id.endswith(SPLIT_PATH_ROW_SUFFIX)
         ):
             identity_owners.append(row)
             continue
@@ -1476,8 +1599,12 @@ def _validate_rows(
         provenance = row.provenance[0]
         if provenance.kind == "replace_rule" and "path" in row.rewrite_surfaces:
             validator_surfaces.add("symlink")
-        if provenance.kind == "identity" and not provenance.name.startswith(
-            "display_name_"
+        # A scoped identity row is a [[cargo_split]] content row; its path
+        # row alone models symlink text.
+        if (
+            provenance.kind == "identity"
+            and not provenance.name.startswith("display_name_")
+            and not row.scope.files
         ):
             validator_surfaces.add("symlink")
         candidates.append(
@@ -1623,7 +1750,7 @@ def _compiled_rows(
         ],
         sorted(
             [
-                *_identity_rows(source, destination, rules),
+                *_identity_rows(source, destination, rules, target),
                 *_hyphen_rows(source, destination, target, rules),
             ],
             key=lambda row: -len(row.from_value),
@@ -1641,7 +1768,7 @@ def identity_row_rewriter(
         [],
         sorted(
             [
-                *_identity_rows(source, destination, rules),
+                *_identity_rows(source, destination, rules, target),
                 *_hyphen_rows(source, destination, target, rules),
             ],
             key=lambda row: -len(row.from_value),
@@ -1833,6 +1960,149 @@ def cargo_path_splits(
     return problems
 
 
+def _line_of(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
+
+def _module_rename_problem(step: RenameStep, new_name: str) -> str | None:
+    """A rename that would give a Rust module path the package spelling.
+
+    ``src/bin/<name>`` names a binary, which may hold a hyphen; any other
+    renamed component below ``src/`` is a module that ``mod <name>;`` names.
+    """
+    parts = PurePosixPath(step.old_prefix).parts
+    parents = parts[:-1]
+    if "src" not in parents:
+        return None
+    below = parents[len(parents) - parents[::-1].index("src") :]
+    if below == ("bin",):
+        return None
+    return (
+        f"{step.old_prefix}: renaming it to {step.new_prefix!r} gives a Rust "
+        f"module path the package spelling {new_name!r}, which `mod` cannot "
+        "name. Rename the module first"
+    )
+
+
+def cargo_split_target_problems(
+    target: Path, source: Identity, destination: Identity, rules: Rules
+) -> list[str]:
+    """Why this target's ``[[cargo_split]]`` press cannot choose every spelling.
+
+    Each check reads what the press really runs: every occurrence the ordered
+    rows leave behind is a file nobody declared, listed by ``file:line``.
+    """
+    splits = active_cargo_splits(source, destination, rules)
+    if not splits:
+        return []
+    old_names, new_names = dict(source.cargo_names), dict(destination.cargo_names)
+    removed = frozenset(rule.file for rule in rules.remove)
+    removed_dirs = tuple(f"{rule.dir}/" for rule in rules.remove_dirs)
+    problems: list[str] = []
+    paths = [
+        path
+        for path in _content_surface_paths(target, rules)
+        if path not in removed and not path.startswith(removed_dirs)
+    ]
+    for split in splits:
+        problems.extend(
+            f"{path}: matches both package_files and identifier_files of "
+            f"[[cargo_split]] role {split.role!r}; a file takes one spelling"
+            for path in paths
+            if split_spelling(split, path) == "both"
+        )
+    if problems:
+        return problems
+    rows = _compiled_rows(source, destination, target, rules)
+    content_rows = tuple(row for row in rows if "content" in row.rewrite_surfaces)
+    for path in paths:
+        try:
+            text = read_regular_nofollow(target / path).decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        new_text, _ = rewrite_file(
+            (row for row in content_rows if row_matches_scope(row, path)),
+            text,
+            rules.keep_names,
+        )
+        kept = kept_spans(new_text, rules.keep_names)
+        for split in splits:
+            old, new = old_names[split.role], new_names[split.role]
+            role = f"[[cargo_split]] role {split.role!r}"
+            for start, _end in disjoint_matches(
+                token_pattern(f"{CARGO_EXACT_PREFIX}{split.role}", old)
+                or re.compile(re.escape(old)),
+                new_text,
+                kept,
+            ):
+                problems.append(
+                    f"{path}:{_line_of(new_text, start)}: {old!r} is in no "
+                    f"{role} list, so the press cannot tell whether to write "
+                    f"{new!r} or {cargo_ident(new)!r}. Add the file to "
+                    "package_files or identifier_files"
+                )
+            if split_spelling(split, path) != "package":
+                continue
+            rust_path = re.compile(rf"(?<![A-Za-z0-9_-]){re.escape(new)}::")
+            written = list(rust_path.finditer(new_text))
+            if len(written) <= len(rust_path.findall(text)):
+                continue  # the press wrote none of them
+            for match in written:
+                problems.append(
+                    f"{path}:{_line_of(new_text, match.start())}: the package "
+                    f"spelling would write the Rust path {new}::, which does not "
+                    f"compile. This file holds both spellings of {old!r}; cover "
+                    "the identifier spans with an exact [[replace]] rule "
+                    'scoped to it (pattern "{package_name}::" when '
+                    f"{old!r} is the package_name crate), or move them to an "
+                    "identifier_files file"
+                )
+    for manifest in cargo_manifest_files(target):
+        if manifest in removed or manifest.startswith(removed_dirs):
+            continue
+        data = tomllib.loads(read_regular_nofollow(target / manifest).decode("utf-8"))
+        lib = data.get("lib")
+        lib_name = lib.get("name") if isinstance(lib, dict) else None
+        for split in splits:
+            if lib_name == old_names[split.role]:
+                problems.append(
+                    f"{manifest}: [lib] name {lib_name!r} would take the package "
+                    f"spelling {new_names[split.role]!r}, and Cargo refuses a "
+                    "hyphen in a library name. Remove the explicit [lib] name, "
+                    "which defaults to the package name's underscore form"
+                )
+    split_path_rows = {
+        f"identity:{CARGO_EXACT_PREFIX}{split.role}{SPLIT_PATH_ROW_SUFFIX}": split
+        for split in splits
+    }
+    rename_snapshot = capture_surface_snapshot(target)
+    try:
+        plan = _compile_rename_plan(
+            rows,
+            SurfaceSnapshot(
+                entries=select_rename_entries(
+                    rename_snapshot,
+                    exclude_files=rules.exclude_files,
+                    exclude_dirs=rules.exclude_dirs,
+                    root_control=ROOT_CONTROL,
+                ),
+                visibility_inputs=rename_snapshot.visibility_inputs,
+            ),
+            rules.keep_names,
+        )
+    except ValidationError:
+        return problems  # the plan step reports an uncompilable plan
+    for step in plan.steps:
+        for row_id in step.row_ids:
+            split = split_path_rows.get(row_id)
+            if split is None:
+                continue
+            problem = _module_rename_problem(step, new_names[split.role])
+            if problem is not None:
+                problems.append(problem)
+    return problems
+
+
 def _identity_row_pattern(row: RenderedSubstitution) -> re.Pattern[str]:
     """The matcher one compiled identity row rewrites with."""
 
@@ -1885,7 +2155,7 @@ def check_target_keep_names(
 
     rows = (
         *_declared_rows(source, destination, rules),
-        *_identity_rows(source, destination, rules),
+        *_identity_rows(source, destination, rules, target),
         *_hyphen_rows(source, destination, target, rules),
     )
     # Equal-valued fields collapse to one owner row, so only the compiled rows

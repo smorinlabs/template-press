@@ -1,0 +1,644 @@
+"""P15-T09: one-press rename of a hyphen-free crate to a hyphenated name.
+
+``[[cargo_split]]`` in ``press/press-rules.toml`` lets ``acme`` become
+``zeta-gadget`` in one press. Cargo manifests take the package spelling,
+``.rs`` files the identifier spelling, and two glob lists name the other files.
+Every other occurrence is refused before any write.
+
+The slow tests use real Cargo as the oracle:
+uv run pytest -m "" tests/rebrand/test_cargo_split.py
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import tomllib
+from pathlib import Path
+
+import pytest
+
+from template_press.rebrand.cli import main
+from template_press.rebrand.identity import (
+    Identity,
+    ValidationError,
+    cargo_identity_problem,
+    cargo_name_pairs,
+    cargo_split_problems,
+    cargo_split_roles,
+)
+from template_press.rebrand.receipt import RECEIPT_REL
+from template_press.rebrand.rules import CargoSplit, load_rules
+from template_press.rebrand.verify_cli import verify_command
+
+from .conftest import _git, posix_only
+
+ACME = {
+    "package_name": "acme",
+    "repo_name": "acme-repo",
+    "app_name": "acmectl",
+    "author": "Acme Author",
+    "email": "acme@example.test",
+    "owner": "acmelabs",
+}
+ZETA = {
+    "package_name": "zeta_gadget",
+    "repo_name": "zeta-repo",
+    "app_name": "zetactl",
+    "author": "Zeta Author",
+    "email": "zeta@example.test",
+    "owner": "zetalabs",
+}
+NOVA = {
+    "package_name": "nova_gadget",
+    "repo_name": "nova-repo",
+    "app_name": "novactl",
+    "author": "Nova Author",
+    "email": "nova@example.test",
+    "owner": "novalabs",
+}
+REPOSITORY = "https://github.com/acmelabs/acme-repo"
+AUTHOR_LINE = 'authors = ["Acme Author <acme@example.test>"]\n'
+LIB_RS = (
+    'pub fn hi() -> &\'static str {\n    "hello"\n}\n\n'
+    "#[cfg(test)]\nmod tests {\n    #[test]\n    fn says_hello() {\n"
+    '        assert_eq!(super::hi(), "hello");\n    }\n}\n'
+)
+LOCK_RULES = (
+    '[rules]\nextra_exclude_files = ["Cargo.lock"]\n\n'
+    '[[regenerate]]\nfile = "Cargo.lock"\n'
+    'command = ["cargo", "update", "--workspace", "--offline"]\n'
+)
+SINGLE_SPLIT = (
+    '\n[[cargo_split]]\nrole = "core"\n'
+    'package_files = ["README.md", "scripts/release.sh"]\n'
+    'identifier_files = ["docs/api.md"]\n\n'
+    '[[replace]]\npattern = "{package_name}::hi"\nfiles = ["README.md"]\n'
+    'reason = "the README names the crate both ways"\n'
+)
+WORKSPACE_SPLIT = (
+    '\n[[cargo_split]]\nrole = "core"\npackage_files = ["README.md"]\n'
+    'identifier_files = ["docs/*.md"]\n'
+)
+
+
+def _table(header: str, values: dict[str, str]) -> str:
+    return f"[{header}]\n" + "".join(f'{k} = "{v}"\n' for k, v in values.items())
+
+
+def _write(root: Path, files: dict[str, str]) -> None:
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
+def _package(name: str, *, workspace: bool = False) -> str:
+    if workspace:
+        return (
+            f'[package]\nname = "{name}"\nversion.workspace = true\n'
+            "edition.workspace = true\nauthors.workspace = true\n"
+            "repository.workspace = true\n"
+        )
+    return (
+        f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n'
+        f'{AUTHOR_LINE}repository = "{REPOSITORY}"\n'
+    )
+
+
+def _single_crate_files() -> dict[str, str]:
+    return {
+        "Cargo.toml": _package("acme"),
+        "src/lib.rs": LIB_RS,
+        "src/main.rs": 'fn main() {\n    println!("{}", acme::hi());\n}\n',
+        "tests/cli.rs": (
+            "#[test]\nfn runs_the_binary() {\n"
+            '    let bin = env!("CARGO_BIN_EXE_acme");\n'
+            "    let done = std::process::Command::new(bin).output().unwrap();\n"
+            "    assert!(done.status.success());\n"
+            '    assert_eq!(acme::hi(), "hello");\n}\n'
+        ),
+        "README.md": "# acme-repo\n\nRun `cargo run -p acme`, then call `acme::hi()`.\n",
+        "scripts/release.sh": "# ships acmectl\ncargo publish -p acme\n",
+        "docs/api.md": "`acme::hi` returns hello.\n",
+    }
+
+
+def _workspace_files() -> dict[str, str]:
+    return {
+        "Cargo.toml": (
+            '[workspace]\nresolver = "2"\nmembers = ["crates/acme", "crates/app"]\n\n'
+            '[workspace.package]\nversion = "0.1.0"\nedition = "2021"\n'
+            f'{AUTHOR_LINE}repository = "{REPOSITORY}"\n'
+        ),
+        "crates/acme/Cargo.toml": _package("acme", workspace=True),
+        "crates/acme/src/lib.rs": LIB_RS,
+        "crates/app/Cargo.toml": _package("app", workspace=True)
+        + '\n[dependencies]\nacme = { path = "../acme" }\n',
+        "crates/app/src/main.rs": (
+            'fn main() {\n    println!("{}", acme::hi());\n}\n\n'
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn calls_core() {\n"
+            '        assert_eq!(acme::hi(), "hello");\n    }\n}\n'
+        ),
+        "README.md": "# acme-repo\n\nTest the core with `cargo test -p acme`.\n",
+        "docs/api.md": "Call `acme::hi()` from `app` or `acmectl`.\n",
+    }
+
+
+SHAPES = {
+    "single_crate": (_single_crate_files, {"core": "acme"}, SINGLE_SPLIT),
+    "workspace": (_workspace_files, {"core": "acme", "app": "app"}, WORKSPACE_SPLIT),
+}
+DEST_NAMES = {
+    "single_crate": {"core": "zeta-gadget"},
+    "workspace": {"core": "zeta-gadget", "app": "app"},
+}
+NOVA_NAMES = {
+    "single_crate": {"core": "nova-gadget"},
+    "workspace": {"core": "nova-gadget", "app": "app"},
+}
+
+
+def _identity(shape: str, values: dict[str, str]) -> dict[str, str]:
+    return {**values, "package_name": "app"} if shape == "workspace" else values
+
+
+def _seed(
+    target: Path,
+    files: dict[str, str],
+    names: dict[str, str],
+    rules: str,
+    identity: dict[str, str],
+    *,
+    lock: bool,
+) -> None:
+    _write(
+        target,
+        {
+            **files,
+            ".gitignore": "target/\n" if lock else "target/\nCargo.lock\n",
+            "press/press-source.toml": _table("identity", identity)
+            + _table("identity.cargo_names", names),
+            "press/press-rules.toml": rules,
+        },
+    )
+    if lock:
+        _assert_cargo(target, "generate-lockfile", "--offline")
+    _git(target, "init", "-q", "-b", "main")
+    _git(target, "config", "user.email", "t@example.test")
+    _git(target, "config", "user.name", "t")
+    _git(target, "remote", "add", "origin", f"{REPOSITORY}.git")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "seed")
+
+
+def _answers(
+    base: Path, name: str, fields: dict[str, str], names: dict[str, str]
+) -> Path:
+    path = base / name
+    path.write_text(
+        _table("answers", fields) + _table("answers.cargo_names", names),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _status(target: Path) -> str:
+    done = subprocess.run(  # noqa: S603
+        ["git", "-C", str(target), "status", "--porcelain"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout
+
+
+def _press(target: Path, answers: Path, *flags: str) -> int:
+    return main(["--target", str(target), "--config", str(answers), *flags])
+
+
+# --- real Cargo as the oracle ----------------------------------------------------
+
+
+def _require_cargo() -> None:
+    if shutil.which("cargo") is not None:
+        return
+    if os.environ.get("CI"):
+        pytest.fail("cargo is required in CI but is not on PATH")
+    pytest.skip("cargo is not installed")
+
+
+def _cargo(target: Path, *argv: str) -> subprocess.CompletedProcess[str]:
+    home = target.parent / "cargo-home"
+    home.mkdir(exist_ok=True)
+    return subprocess.run(  # noqa: S603
+        ["cargo", *argv],  # noqa: S607
+        cwd=target,
+        env={**os.environ, "CARGO_HOME": str(home)},
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+
+
+def _assert_cargo(target: Path, *argv: str) -> None:
+    done = _cargo(target, *argv)
+    assert done.returncode == 0, f"cargo {argv}: {done.stdout}{done.stderr}"
+
+
+def _set_origin(target: Path, identity: dict[str, str]) -> None:
+    url = f"https://github.com/{identity['owner']}/{identity['repo_name']}.git"
+    _git(target, "remote", "set-url", "origin", url)
+
+
+def _press_and_prove(
+    target: Path, answers: Path, identity: dict[str, str], *flags: str
+) -> None:
+    assert _press(target, answers, *flags) == 0
+    assert (target / RECEIPT_REL).is_file()
+    _assert_cargo(target, "check", "--locked", "--offline")
+    _assert_cargo(target, "test", "--offline")
+    _set_origin(target, identity)
+    assert verify_command(["--target", str(target)]) == 0
+
+
+def _assert_absent(target: Path, tokens: tuple[str, ...]) -> None:
+    for path in target.rglob("*"):
+        parts = path.relative_to(target).parts
+        if ".git" in parts or "target" in parts or not path.is_file():
+            continue
+        rel = path.relative_to(target).as_posix()
+        if rel == RECEIPT_REL.as_posix():  # the receipt records the source identity
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for token in tokens:
+            assert token not in rel, f"{token!r} survives in path {rel}"
+            assert token not in text, f"{token!r} survives in {rel}"
+
+
+def _locked_names(target: Path) -> set[str]:
+    lock = tomllib.loads((target / "Cargo.lock").read_text(encoding="utf-8"))
+    return {entry["name"] for entry in lock["package"]}
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("shape", ["single_crate", "workspace"])
+def test_split_press_builds_verifies_and_presses_again(
+    shape: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _require_cargo()
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    files, names, split = SHAPES[shape]
+    _seed(
+        target,
+        files(),
+        names,
+        LOCK_RULES + split,
+        _identity(shape, ACME),
+        lock=True,
+    )
+    _assert_cargo(target, "test", "--offline")
+    zeta = _identity(shape, ZETA)
+    first = _answers(tmp_path, "zeta.toml", zeta, DEST_NAMES[shape])
+
+    _press_and_prove(target, first, zeta)
+
+    _assert_absent(target, ("acme", "Acme"))
+    assert "zeta-gadget" in _locked_names(target)
+    if shape == "single_crate":
+        assert (target / "README.md").read_text() == (
+            "# zeta-repo\n\nRun `cargo run -p zeta-gadget`, then call "
+            "`zeta_gadget::hi()`.\n"
+        )
+        assert (target / "scripts/release.sh").read_text() == (
+            "# ships zetactl\ncargo publish -p zeta-gadget\n"
+        )
+        assert (
+            target / "docs/api.md"
+        ).read_text() == "`zeta_gadget::hi` returns hello.\n"
+        cli = (target / "tests/cli.rs").read_text()
+        assert 'env!("CARGO_BIN_EXE_zeta-gadget")' in cli
+        assert "zeta_gadget::hi()" in cli
+    else:
+        app = tomllib.loads((target / "crates/app/Cargo.toml").read_text())
+        assert app["dependencies"] == {"zeta-gadget": {"path": "../zeta-gadget"}}
+        assert (target / "crates/zeta-gadget/Cargo.toml").is_file()
+        assert "zeta_gadget::hi()" in (target / "crates/app/src/main.rs").read_text()
+        assert "cargo test -p zeta-gadget" in (target / "README.md").read_text()
+        assert "zeta_gadget::hi()" in (target / "docs/api.md").read_text()
+    refreshed = tomllib.loads((target / "press/press-source.toml").read_text())
+    assert refreshed["identity"]["cargo_names"] == DEST_NAMES[shape]
+    receipt = tomllib.loads((target / RECEIPT_REL).read_text(encoding="utf-8"))
+    assert receipt["press"]["from"]["cargo_names"] == names
+    assert receipt["press"]["to"]["cargo_names"] == DEST_NAMES[shape]
+    # The block stays in place; the next press reads it as inert.
+    assert "[[cargo_split]]" in (target / "press/press-rules.toml").read_text()
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "first press")
+    capsys.readouterr()
+
+    nova = _identity(shape, NOVA)
+    second = _answers(tmp_path, "nova.toml", nova, NOVA_NAMES[shape])
+    _press_and_prove(target, second, nova, "--force")
+
+    assert "[[cargo_split]] role 'core' is inert" in capsys.readouterr().err
+    _assert_absent(target, ("acme", "Acme", "zeta", "Zeta"))
+    assert "nova-gadget" in _locked_names(target)
+    receipt = tomllib.loads((target / RECEIPT_REL).read_text(encoding="utf-8"))
+    assert receipt["press"]["from"]["cargo_names"] == DEST_NAMES[shape]
+    assert receipt["press"]["to"]["cargo_names"] == NOVA_NAMES[shape]
+
+
+# --- fast end-to-end checks without Cargo ----------------------------------------
+
+
+def _fast_target(
+    tmp_path: Path,
+    files: dict[str, str] | None = None,
+    split: str = SINGLE_SPLIT,
+    rules_head: str = "",
+) -> Path:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(
+        target,
+        _single_crate_files() if files is None else files,
+        {"core": "acme"},
+        rules_head + split,
+        ACME,
+        lock=False,
+    )
+    return target
+
+
+def _zeta(tmp_path: Path) -> Path:
+    return _answers(tmp_path, "zeta.toml", ZETA, {"core": "zeta-gadget"})
+
+
+def test_split_press_rewrites_each_spelling(tmp_path: Path) -> None:
+    target = _fast_target(tmp_path)
+    assert _press(target, _zeta(tmp_path)) == 0
+    assert 'name = "zeta-gadget"' in (target / "Cargo.toml").read_text()
+    assert "zeta_gadget::hi()" in (target / "src/main.rs").read_text()
+    assert (target / "README.md").read_text() == (
+        "# zeta-repo\n\nRun `cargo run -p zeta-gadget`, then call "
+        "`zeta_gadget::hi()`.\n"
+    )
+    assert (target / "docs/api.md").read_text() == "`zeta_gadget::hi` returns hello.\n"
+    _set_origin(target, ZETA)
+    assert verify_command(["--target", str(target)]) == 0
+
+
+def test_without_block_the_refusal_names_cargo_split(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = _fast_target(tmp_path, split="")
+    assert _press(target, _zeta(tmp_path)) == 2
+    assert "[[cargo_split]]" in capsys.readouterr().err
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
+def test_undeclared_file_is_refused_with_file_and_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = {**_single_crate_files(), "NOTES.md": "intro\nsee acme here\n"}
+    target = _fast_target(tmp_path, files)
+    assert _press(target, _zeta(tmp_path)) == 2
+    err = capsys.readouterr().err
+    assert "NOTES.md:2: 'acme' is in no [[cargo_split]] role 'core' list" in err
+    assert "nothing written" in err
+    assert _status(target) == ""
+
+
+def test_longer_rows_consume_their_own_spans_first(tmp_path: Path) -> None:
+    # The email row owns acme@example.test, so NOTES.md needs no declaration.
+    files = {**_single_crate_files(), "NOTES.md": "mail acme@example.test\n"}
+    target = _fast_target(tmp_path, files)
+    assert _press(target, _zeta(tmp_path)) == 0
+    assert (target / "NOTES.md").read_text() == "mail zeta@example.test\n"
+
+
+def test_mixed_file_without_replace_rule_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    split = (
+        '\n[[cargo_split]]\nrole = "core"\n'
+        'package_files = ["README.md", "scripts/release.sh"]\n'
+        'identifier_files = ["docs/api.md"]\n'
+    )
+    target = _fast_target(tmp_path, split=split)
+    assert _press(target, _zeta(tmp_path)) == 2
+    err = capsys.readouterr().err
+    assert "README.md:3: the package spelling would write the Rust path" in err
+    assert _status(target) == ""
+
+
+def test_file_in_both_lists_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    split = (
+        '\n[[cargo_split]]\nrole = "core"\npackage_files = ["docs/*"]\n'
+        'identifier_files = ["docs/api.md"]\n'
+    )
+    files = {**_single_crate_files(), "README.md": "# acme-repo\n"}
+    files.pop("scripts/release.sh")
+    target = _fast_target(tmp_path, files, split=split)
+    assert _press(target, _zeta(tmp_path)) == 2
+    err = capsys.readouterr().err
+    assert "docs/api.md: matches both package_files and identifier_files" in err
+    assert _status(target) == ""
+
+
+def test_explicit_lib_name_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = {
+        **_single_crate_files(),
+        "Cargo.toml": _package("acme") + '\n[lib]\nname = "acme"\n',
+    }
+    target = _fast_target(tmp_path, files)
+    assert _press(target, _zeta(tmp_path)) == 2
+    assert "Cargo.toml: [lib] name 'acme'" in capsys.readouterr().err
+    assert _status(target) == ""
+
+
+def test_module_file_rename_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = {
+        **_single_crate_files(),
+        "src/lib.rs": "pub mod acme;\n" + LIB_RS,
+        "src/acme.rs": "pub fn inner() {}\n",
+    }
+    target = _fast_target(tmp_path, files)
+    assert _press(target, _zeta(tmp_path)) == 2
+    assert "src/acme.rs: renaming it to 'src/zeta-gadget.rs'" in (
+        capsys.readouterr().err
+    )
+    assert _status(target) == ""
+
+
+def test_binary_file_under_src_bin_may_rename(tmp_path: Path) -> None:
+    files = {**_single_crate_files(), "src/bin/acme.rs": "fn main() {}\n"}
+    files.pop("src/main.rs")
+    target = _fast_target(tmp_path, files)
+    assert _press(target, _zeta(tmp_path)) == 0
+    assert (target / "src/bin/zeta-gadget.rs").is_file()
+
+
+def test_python_checked_target_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = {
+        **_single_crate_files(),
+        "pyproject.toml": '[project]\nname = "acme"\nversion = "0.1.0"\n',
+        "src/acme/__init__.py": "",
+    }
+    target = _fast_target(
+        tmp_path, files, rules_head='[rules]\nlanguages = ["python", "rust"]\n'
+    )
+    assert _press(target, _zeta(tmp_path)) == 2
+    assert "supports Rust-only targets" in capsys.readouterr().err
+    assert _status(target) == ""
+
+
+def test_hyphenated_source_block_is_refused_before_any_press(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = {
+        **_single_crate_files(),
+        "Cargo.toml": _package("acme-core"),
+        "src/main.rs": 'fn main() {\n    println!("{}", acme_core::hi());\n}\n',
+        "README.md": "# acme-repo\n",
+        "tests/cli.rs": "#[test]\nfn noop() {}\n",
+        "docs/api.md": "`acme_core::hi`\n",
+        "scripts/release.sh": "# ships acmectl\ncargo publish -p acme-core\n",
+    }
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(
+        target,
+        files,
+        {"core": "acme-core"},
+        SINGLE_SPLIT,
+        {**ACME, "package_name": "acme_core"},
+        lock=False,
+    )
+    answers = _answers(
+        tmp_path,
+        "zeta.toml",
+        {**ZETA, "package_name": "zeta_core"},
+        {"core": "zeta-core"},
+    )
+    assert _press(target, answers) == 2
+    assert "is unnecessary: source name 'acme-core' has a hyphen" in (
+        capsys.readouterr().err
+    )
+    assert _status(target) == ""
+
+
+# --- identity and rules units ----------------------------------------------------
+
+
+def _ident(names: dict[str, str], **values: str) -> Identity:
+    return Identity.from_mapping({**ACME, **values}, names)
+
+
+def test_hyphen_free_source_gets_one_unscoped_pair() -> None:
+    source = _ident({"core": "acme"})
+    dest = Identity.from_mapping(ZETA, {"core": "zeta-gadget"})
+    assert cargo_name_pairs(source, dest) == [
+        ("cargo_exact_core", "acme", "zeta-gadget")
+    ]
+
+
+def test_split_roles_need_a_hyphen_free_source_and_hyphenated_destination() -> None:
+    source = _ident({"core": "acme", "app": "acme-app"})
+    dest = Identity.from_mapping(ZETA, {"core": "zeta-gadget", "app": "zeta-app"})
+    assert cargo_split_roles(source, dest, ["core", "app", "ghost"]) == {"core"}
+
+
+def test_identity_problem_allows_only_split_roles() -> None:
+    source = _ident({"core": "acme"})
+    dest = Identity.from_mapping(ZETA, {"core": "zeta-gadget"})
+    problem = cargo_identity_problem(source, dest)
+    assert problem is not None
+    assert '[[cargo_split]] role = "core"' in problem
+    assert cargo_identity_problem(source, dest, split_roles={"core"}) is None
+
+
+@pytest.mark.parametrize(
+    ("names", "dest_names", "pressed", "problem", "warning"),
+    [
+        ({"core": "acme"}, {"core": "zeta-gadget"}, False, None, None),
+        ({"core": "acme"}, {"core": "zeta"}, False, "destination 'zeta' has no", None),
+        ({"core": "acme-x"}, {"core": "zeta-x"}, False, "source name 'acme-x'", None),
+        ({"core": "acme-x"}, {"core": "zeta-x"}, True, None, "is inert"),
+        ({"app": "acme"}, {"app": "zeta-gadget"}, False, "is not a cargo_names", None),
+    ],
+)
+def test_split_problems(names, dest_names, pressed, problem, warning) -> None:
+    source = _ident(names, package_name=next(iter(names.values())).replace("-", "_"))
+    dest = Identity.from_mapping(ZETA, dest_names)
+    problems, warnings = cargo_split_problems(source, dest, ["core"], pressed=pressed)
+    assert [p for p in problems if problem and problem in p] == (
+        problems if problem else []
+    )
+    assert bool(problems) == bool(problem)
+    assert bool(warnings) == bool(warning)
+    if warning:
+        assert warning in warnings[0]
+
+
+def _rules(tmp_path: Path, text: str):
+    (tmp_path / "press").mkdir(exist_ok=True)
+    (tmp_path / "press" / "press-rules.toml").write_text(text, encoding="utf-8")
+    return load_rules(tmp_path)
+
+
+def test_rules_parse_cargo_split(tmp_path: Path) -> None:
+    rules = _rules(tmp_path, SINGLE_SPLIT)
+    assert rules.cargo_split == (
+        CargoSplit("core", ("README.md", "scripts/release.sh"), ("docs/api.md",)),
+    )
+    assert _rules(tmp_path, '[[cargo_split]]\nrole = "core"\n').cargo_split == (
+        CargoSplit("core"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("block", "message"),
+    [
+        ('role = "core"\nfiles = ["a"]\n', "unknown key(s): files"),
+        ("package_files = []\n", "role must be a cargo_names role string"),
+        ('role = "Core"\n', "cargo_names role must be"),
+        ('role = "core"\npackage_files = "README.md"\n', "must be a list"),
+        ('role = "core"\nidentifier_files = [1]\n', "must be a list"),
+        ('role = "core"\npackage_files = [""]\n', "must be a list"),
+        (
+            'role = "core"\npackage_files = ["a.md"]\nidentifier_files = ["a.md"]\n',
+            "in both package_files and identifier_files",
+        ),
+    ],
+)
+def test_rules_refuse_bad_cargo_split(tmp_path: Path, block: str, message: str) -> None:
+    with pytest.raises(ValidationError, match=r".*") as caught:
+        _rules(tmp_path, f"[[cargo_split]]\n{block}")
+    assert message in str(caught.value)
+
+
+def test_rules_refuse_duplicate_role(tmp_path: Path) -> None:
+    block = '[[cargo_split]]\nrole = "core"\n'
+    with pytest.raises(ValidationError, match="declared twice"):
+        _rules(tmp_path, block + block)
+
+
+def test_rules_refuse_non_table_cargo_split(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="array of tables"):
+        _rules(tmp_path, 'cargo_split = ["core"]\n')

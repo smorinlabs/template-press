@@ -48,6 +48,8 @@ from template_press.rebrand.identity import (
     ValidationError,
     cargo_ident,
     cargo_identity_problem,
+    cargo_split_problems,
+    cargo_split_roles,
 )
 from template_press.rebrand.keep_names import (
     render_stale,
@@ -125,6 +127,7 @@ from template_press.rebrand.safety import (
 )
 from template_press.rebrand.substitutions import (
     SubstitutionTable,
+    cargo_split_target_problems,
     check_target_keep_names,
     declared_rule_triples,
     revalidate_substitution_table,
@@ -633,7 +636,13 @@ def display_name_problem(source: Identity, dest: Identity) -> str | None:
                 continue
             # An exact match keeps its spelling; an identifier match keeps its form.
             expected = new if value == name else cargo_ident(new)
-            if dest_values.get(other) != expected:
+            # A hyphen-free source text is both forms, so either may follow. It
+            # takes a hyphenated destination only through [[cargo_split]],
+            # which cargo_identity_problem checks next.
+            allowed = (
+                {new, cargo_ident(new)} if name == cargo_ident(name) else {expected}
+            )
+            if dest_values.get(other) not in allowed:
                 return (
                     f"source cargo_names role {role!r} ({name!r}) matches source "
                     f"{other} ({value!r}), but the answers give "
@@ -837,10 +846,24 @@ def main(argv: list[str] | None = None) -> int:
         if dest is None:
             return _fail("--config ANSWERS.toml is required")
 
+        split_declared = [split.role for split in rules.cargo_split]
+        split_roles = cargo_split_roles(source, dest, split_declared)
         display_problem = display_name_problem(source, dest)
         if display_problem is not None:
             return _fail(display_problem)
-        cargo_problem = cargo_identity_problem(source, dest)
+        split_problems, split_warnings = cargo_split_problems(
+            source, dest, split_declared, pressed=receipt_present(target)
+        )
+        other_languages = sorted({"python", "node"} & set(languages.checked))
+        if split_declared and other_languages:
+            split_problems.append(
+                f"[[cargo_split]] supports Rust-only targets, but this press also "
+                f"checks {other_languages!r}, whose names would take the package "
+                "spelling"
+            )
+        if split_problems:
+            return _fail("\n  ".join(split_problems))
+        cargo_problem = cargo_identity_problem(source, dest, split_roles=split_roles)
         if cargo_problem is not None:
             return _fail(cargo_problem)
 
@@ -865,6 +888,16 @@ def main(argv: list[str] | None = None) -> int:
         # by build_plan before any write.  Keeping the target rules here ensures
         # the adapter preserves each field's effective substring posture.
         validate_keep_names(rules.keep_names, source, dest)
+        split_target = cargo_split_target_problems(target, source, dest, rules)
+        if split_target:
+            print(
+                "error: [[cargo_split]] cannot choose every spelling — nothing "
+                "written:",
+                file=sys.stderr,
+            )
+            for problem in split_target:
+                print(f"  {problem}", file=sys.stderr)
+            return 2
         prior_removed = removed_files_from_receipt(receipt_text)
         removal_plan = plan_removals(
             target,
@@ -1003,6 +1036,8 @@ def main(argv: list[str] | None = None) -> int:
         # stream.
         for line in render_ignored_languages(languages):
             print(line, file=sys.stderr)
+        for warning in split_warnings:
+            print(warning, file=sys.stderr)
         for line in render_stale(keep_check.stale):
             print(line, file=sys.stderr)
         for notice in _render_origin_notices(origin, source, dest):

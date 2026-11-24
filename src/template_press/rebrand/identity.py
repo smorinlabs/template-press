@@ -9,7 +9,7 @@ to per-run values so any target's identity can be pressed (ARCH-03).
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 PYTHON_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -443,7 +443,9 @@ def cargo_name_pairs(source: Identity, dest: Identity) -> list[tuple[str, str, s
         ident = (f"{CARGO_IDENT_PREFIX}{role}", cargo_ident(old), cargo_ident(new))
         if exact[1] != exact[2]:
             pairs.append(exact)
-        if ident[1:] != exact[1:] and ident[1] != ident[2]:
+        # A hyphen-free source spells both forms identically, so its one text
+        # gets one unscoped pair; only a [[cargo_split]] press splits it.
+        if ident[1] != exact[1] and ident[1] != ident[2]:
             pairs.append(ident)
     pairs.sort(
         key=lambda p: (-len(p[1]), not p[0].startswith(CARGO_EXACT_PREFIX), p[0])
@@ -470,10 +472,73 @@ def _cargo_forms(name: str) -> set[str]:
     return {name, cargo_ident(name)}
 
 
-def cargo_identity_problem(source: Identity, dest: Identity) -> str | None:
+def cargo_split_roles(
+    source: Identity, dest: Identity, roles: Iterable[str]
+) -> frozenset[str]:
+    """The declared ``[[cargo_split]]`` roles this press really splits.
+
+    A role splits when its source name has no hyphen and its destination has
+    one, so one source text needs two destination spellings.
+    """
+    src_map, dst_map = dict(source.cargo_names), dict(dest.cargo_names)
+    return frozenset(
+        role
+        for role in roles
+        if role in src_map
+        and role in dst_map
+        and src_map[role] == cargo_ident(src_map[role])
+        and dst_map[role] != cargo_ident(dst_map[role])
+    )
+
+
+def cargo_split_problems(
+    source: Identity, dest: Identity, roles: Sequence[str], *, pressed: bool
+) -> tuple[list[str], list[str]]:
+    """``(refusals, warnings)`` for the declared ``[[cargo_split]]`` roles.
+
+    After a press the source already has a hyphen, so a block left in place
+    is inert and warned about. Before any press it is refused as unnecessary.
+    """
+    src_map, dst_map = dict(source.cargo_names), dict(dest.cargo_names)
+    problems: list[str] = []
+    warnings: list[str] = []
+    for role in roles:
+        where = f"[[cargo_split]] role {role!r}"
+        if role not in src_map or role not in dst_map:
+            problems.append(
+                f"{where} is not a cargo_names role in both the source config "
+                "and the answers file"
+            )
+            continue
+        old, new = src_map[role], dst_map[role]
+        if old != cargo_ident(old):
+            if pressed:
+                warnings.append(
+                    f"warning: {where} is inert: source name {old!r} already "
+                    "has a hyphen, so a previous press split it. Remove the "
+                    "block from press/press-rules.toml"
+                )
+                continue
+            problems.append(
+                f"{where} is unnecessary: source name {old!r} has a hyphen, so "
+                "its package and identifier spellings already differ. Remove "
+                "the block"
+            )
+        elif new == cargo_ident(new):
+            problems.append(
+                f"{where} is unnecessary: destination {new!r} has no hyphen, so "
+                "both spellings stay identical. Remove the block"
+            )
+    return problems, warnings
+
+
+def cargo_identity_problem(
+    source: Identity, dest: Identity, *, split_roles: Collection[str] = ()
+) -> str | None:
     """Why this source and destination Cargo name tables cannot be pressed.
 
-    ``None`` means they can, or neither side declares a table.
+    ``None`` means they can, or neither side declares a table. A role in
+    ``split_roles`` may take a hyphen-free source to a hyphenated destination.
     """
     if not source.cargo_names and not dest.cargo_names:
         return None
@@ -509,13 +574,17 @@ def cargo_identity_problem(source: Identity, dest: Identity) -> str | None:
     for role, old in src_map.items():
         new = dst_map[role]
         if old == cargo_ident(old) and new != cargo_ident(new):
+            if role in split_roles:
+                continue
             return (
                 f"cargo_names role {role!r} maps {old!r}, which has no hyphen, to "
                 f"{new!r}, which has one. Text alone cannot tell the package "
                 f"spelling of {old!r} from its Rust identifier, so the press "
                 f"cannot tell whether to write {new!r} or {cargo_ident(new)!r}; "
-                f"use {cargo_ident(new)!r} as the destination, or rename the "
-                "source crate to a hyphenated name first"
+                f"use {cargo_ident(new)!r} as the destination, rename the "
+                "source crate to a hyphenated name first, or declare "
+                f'[[cargo_split]] role = "{role}" in press/press-rules.toml to '
+                "do this rename in one press"
             )
     role = next(
         (r for r, n in src_map.items() if cargo_ident(n) == source.package_name),
