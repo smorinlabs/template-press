@@ -8,7 +8,9 @@ import pytest
 
 from template_press.rebrand.config import SOURCE_CONFIG_REL
 from template_press.rebrand.receipt import RECEIPT_REL
+from template_press.rebrand.safety import SafetyError
 
+from .conftest import _git
 from .test_hyphen_package_name import DEST, _press, _settle, _target, _verify, _with
 
 
@@ -59,3 +61,33 @@ def test_declared_keep_name_allows_the_press(tmp_path: Path) -> None:
     assert (target / RECEIPT_REL).is_file()
     _settle(target, dest)
     assert _verify(target) == 0
+
+
+def test_verify_exit_two_keeps_the_press(tmp_path: Path) -> None:
+    # The new app_name never appears in the target, so verify stops at its
+    # presence preflight (exit 2) and the press keeps today's outcome.
+    target = _target(tmp_path)
+    pyproject = target / "pyproject.toml"
+    text = pyproject.read_text(encoding="utf-8")
+    pyproject.write_text(text.split("[project.scripts]")[0], encoding="utf-8")
+    _git(target, "commit", "-qam", "drop scripts")
+
+    assert _press(tmp_path, target, _with(DEST, app_name="zapp")) == 0
+
+    assert (target / RECEIPT_REL).is_file()
+
+
+def test_private_copy_setup_failure_keeps_the_press(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import template_press.rebrand.cli as cli_module
+
+    def refuse_copy(*args: object, **kwargs: object) -> None:
+        raise SafetyError("cannot materialize worktree node: legacy/fifo")
+
+    monkeypatch.setattr(cli_module, "make_sandbox", refuse_copy)
+    target = _target(tmp_path)
+
+    assert _press(tmp_path, target) == 0
+
+    assert (target / RECEIPT_REL).is_file()

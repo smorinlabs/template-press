@@ -1067,29 +1067,37 @@ def _pressed_tree_fails_verify(
     with ``dest``, so the check runs on a private copy holding the same
     source-config, receipt, and settled origin the real target will have.
     Exit 2 means verify could not reach its leak scan and keeps today's outcome.
+    A failure building the copy is treated the same way, as standalone verify
+    reports its own copy failures as exit 2.
     """
     output = io.StringIO()
-    with owned_sandbox(target) as root:
-        sandbox = make_sandbox(target, root)
-        write_control(sandbox.path, SOURCE_CONFIG_REL, render_source_config(dest))
-        write_press_receipt(sandbox.path)
-        subprocess.run(  # noqa: S603 # nosec B603 B607
-            [  # noqa: S607
-                "git",
-                "-C",
-                str(sandbox.path),
-                *git_hardening_args(),
-                "remote",
-                "add",
-                "origin",
-                f"https://github.com/{dest.owner}/{dest.repo_name}.git",
-            ],
-            check=True,
-            capture_output=True,
-            env=scrubbed_git_env(),
-        )
-        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-            code = verify_command(["--target", str(sandbox.path)])
+    try:
+        with owned_sandbox(target) as root:
+            sandbox = make_sandbox(target, root)
+            write_control(sandbox.path, SOURCE_CONFIG_REL, render_source_config(dest))
+            write_press_receipt(sandbox.path)
+            subprocess.run(  # noqa: S603 # nosec B603 B607
+                [  # noqa: S607
+                    "git",
+                    "-C",
+                    str(sandbox.path),
+                    *git_hardening_args(),
+                    "remote",
+                    "add",
+                    "origin",
+                    f"https://github.com/{dest.owner}/{dest.repo_name}.git",
+                ],
+                check=True,
+                capture_output=True,
+                env=scrubbed_git_env(),
+            )
+            with (
+                contextlib.redirect_stdout(output),
+                contextlib.redirect_stderr(output),
+            ):
+                code = verify_command(["--target", str(sandbox.path)])
+    except (SafetyError, ValidationError, OSError, subprocess.CalledProcessError):
+        return False
     if code != 1:
         return False
     print(output.getvalue(), end="", file=sys.stderr)
