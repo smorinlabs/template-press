@@ -26,6 +26,7 @@ would exit 1 on the pressed target.
 - [x] [P17-T02] `make check`, `just check`, `just matrix`, and
       `uv run ruff format --check .` pass
 - [x] [P17-T03] PR #160 opened for owner review
+- [ ] [P17-T04] PR #160 merged
 
 ### Deliverable
 
