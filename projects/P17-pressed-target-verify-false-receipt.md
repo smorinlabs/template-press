@@ -18,9 +18,9 @@ would exit 1 on the pressed target.
 
 ### Tests & Tasks
 
-- [ ] [P17-TS01] Regression tests in `tests/rebrand/test_pressed_verify_gate.py`
-- [ ] [P17-T01] Run the verify check before the source-config and receipt writes
-- [ ] [P17-T02] `make check`, `just check`, `just matrix`, and
+- [x] [P17-TS01] Regression tests in `tests/rebrand/test_pressed_verify_gate.py`
+- [x] [P17-T01] Run the verify check before the source-config and receipt writes
+- [x] [P17-T02] `make check`, `just check`, `just matrix`, and
       `uv run ruff format --check .` pass
 - [ ] [P17-T03] PR opened for owner review
 
