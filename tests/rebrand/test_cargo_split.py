@@ -435,7 +435,7 @@ def test_mixed_file_without_replace_rule_is_refused(
     target = _fast_target(tmp_path, split=split)
     assert _press(target, _zeta(tmp_path)) == 2
     err = capsys.readouterr().err
-    assert "README.md:3: the package spelling would write the Rust path" in err
+    assert "README.md:3: 'zeta-gadget' would sit where only a Rust" in err
     assert _status(target) == ""
 
 
@@ -543,6 +543,280 @@ def test_hyphenated_source_block_is_refused_before_any_press(
     assert _status(target) == ""
 
 
+# --- fix round 1: text in .rs strings, module paths, identifier contexts ---------
+
+PLAIN_SPLIT = '\n[[cargo_split]]\nrole = "core"\n'
+PLAIN_LIB = 'pub fn hi() -> &\'static str {\n    "hello"\n}\n'
+
+
+def _round_target(
+    tmp_path: Path,
+    files: dict[str, str],
+    *,
+    names: dict[str, str] | None = None,
+    split: str = PLAIN_SPLIT,
+    identity: dict[str, str] = ACME,
+    lock: bool = False,
+) -> Path:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    rules = (LOCK_RULES if lock else "") + split
+    _seed(target, files, names or {"core": "acme"}, rules, identity, lock=lock)
+    return target
+
+
+def _feature_workspace() -> dict[str, str]:
+    return {
+        "Cargo.toml": (
+            '[workspace]\nresolver = "2"\nmembers = ["crates/acme", "crates/app"]\n'
+        ),
+        "crates/acme/Cargo.toml": _package("acme"),
+        "crates/acme/src/lib.rs": PLAIN_LIB,
+        "crates/app/Cargo.toml": _package("app")
+        + '\n[dependencies]\nacme = { path = "../acme", optional = true }\n\n'
+        '[features]\ndefault = ["acme"]\n',
+        "crates/app/src/main.rs": (
+            'fn main() {\n    #[cfg(feature = "acme")]\n    println!("{}", acme::hi());\n'
+            "}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn feature_on() {\n"
+            '        assert!(cfg!(feature = "acme"));\n    }\n}\n'
+        ),
+        "README.md": "# acme-repo, by acmectl\n",
+    }
+
+
+def _include_crate() -> dict[str, str]:
+    return {
+        "Cargo.toml": _package("acme"),
+        "src/lib.rs": (
+            "pub fn hi() -> &'static str {\n"
+            '    include_str!("../assets/acme.txt")\n}\n\n'
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn reads_asset() {\n"
+            '        assert_eq!(super::hi(), "hello\\n");\n    }\n}\n'
+        ),
+        "assets/acme.txt": "hello\n",
+        "src/main.rs": 'fn main() {\n    println!("{} acmectl", acme::hi());\n}\n',
+    }
+
+
+def _pkg_name_crate() -> dict[str, str]:
+    return {
+        "Cargo.toml": _package("acme"),
+        "src/lib.rs": PLAIN_LIB
+        + '\n#[test]\nfn name() {\n    assert_eq!(env!("CARGO_PKG_NAME"), "acme");\n}\n',
+        "README.md": "# acme-repo, by acmectl\n",
+    }
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("case", ["feature_cfg", "include_str", "pkg_name_env"])
+def test_split_string_spans_that_are_provable_build(case: str, tmp_path: Path) -> None:
+    _require_cargo()
+    files, names, identity, dest_names, dest = {
+        "feature_cfg": (
+            _feature_workspace(),
+            {"core": "acme", "app": "app"},
+            {**ACME, "package_name": "app"},
+            {"core": "zeta-gadget", "app": "app"},
+            {**ZETA, "package_name": "app"},
+        ),
+        "include_str": (
+            _include_crate(),
+            {"core": "acme"},
+            ACME,
+            {"core": "zeta-gadget"},
+            ZETA,
+        ),
+        "pkg_name_env": (
+            _pkg_name_crate(),
+            {"core": "acme"},
+            ACME,
+            {"core": "zeta-gadget"},
+            ZETA,
+        ),
+    }[case]
+    target = _round_target(tmp_path, files, names=names, identity=identity, lock=True)
+    _assert_cargo(target, "test", "--offline")
+    answers = _answers(tmp_path, "zeta.toml", dest, dest_names)
+
+    _press_and_prove(target, answers, dest)
+
+    _assert_absent(target, ("acme", "Acme"))
+    if case == "feature_cfg":
+        main_rs = (target / "crates/app/src/main.rs").read_text()
+        assert main_rs.count('feature = "zeta-gadget"') == 2
+        assert "zeta_gadget::hi()" in main_rs
+    elif case == "include_str":
+        assert (target / "assets/zeta-gadget.txt").is_file()
+        lib = (target / "src/lib.rs").read_text()
+        assert 'include_str!("../assets/zeta-gadget.txt")' in lib
+    else:
+        lib = (target / "src/lib.rs").read_text()
+        assert '"zeta-gadget");' in lib
+
+
+def _refusal(
+    tmp_path: Path,
+    files: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+    split: str = PLAIN_SPLIT,
+) -> str:
+    target = _round_target(tmp_path, files, split=split)
+    assert _press(target, _zeta(tmp_path)) == 2
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+    return capsys.readouterr().err
+
+
+def _lib_crate(**extra: str) -> dict[str, str]:
+    return {
+        "Cargo.toml": _package("acme"),
+        "src/lib.rs": PLAIN_LIB,
+        "README.md": "# acme-repo, by acmectl\n",
+        **extra,
+    }
+
+
+def test_unprovable_rust_string_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = _lib_crate(
+        **{"src/main.rs": 'fn main() {\n    println!("run acme now");\n}\n'}
+    )
+    err = _refusal(tmp_path, files, capsys)
+    assert "src/main.rs:2:" in err
+    assert "Rust string literal" in err
+
+
+def test_rust_attribute_string_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = _lib_crate(**{"src/main.rs": '#[doc(alias = "acme")]\nfn main() {}\n'})
+    assert "src/main.rs:1:" in _refusal(tmp_path, files, capsys)
+
+
+def test_path_string_to_an_unrenamed_file_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The string names a path no file occupies, so the press cannot prove it.
+    files = _lib_crate(
+        **{
+            "src/main.rs": (
+                'fn main() {\n    let _ = include_bytes!("../missing/acme.bin");\n}\n'
+            )
+        }
+    )
+    assert "src/main.rs:2:" in _refusal(tmp_path, files, capsys)
+
+
+def test_tests_module_directory_rename_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = _lib_crate(
+        **{
+            "tests/it.rs": "mod acme;\n",
+            "tests/acme/mod.rs": (
+                '#[test]\nfn t() {\n    assert_eq!(::acme::hi(), "hello");\n}\n'
+            ),
+        }
+    )
+    err = _refusal(tmp_path, files, capsys)
+    assert "tests/acme" in err
+    assert "mod" in err
+
+
+def test_test_target_file_may_rename(tmp_path: Path) -> None:
+    files = _lib_crate(
+        **{
+            "tests/acme.rs": '#[test]\nfn t() {\n    assert_eq!(acme::hi(), "hello");\n}\n',
+            "examples/acme.rs": 'fn main() {\n    println!("{}", acme::hi());\n}\n',
+        }
+    )
+    target = _round_target(tmp_path, files)
+    assert _press(target, _zeta(tmp_path)) == 0
+    assert (target / "tests/zeta-gadget.rs").is_file()
+    assert (target / "examples/zeta-gadget.rs").is_file()
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("Run `cargo run -p acme`.\n\n```rust\nextern crate acme;\n```\n", 4),
+        ("Run `cargo run -p acme`.\n\n```rust\nuse acme as c;\n```\n", 4),
+        (
+            "Run `cargo run -p acme`.\n\n```rust\n#[macro_use]\nextern crate acme;\n```\n",
+            5,
+        ),
+        ("Debug with `RUST_LOG=acme=debug cargo run -p acme`.\n", 1),
+        ("Set the filter to `acme=info`.\n", 1),
+        ("Call `acme::hi()` after `cargo add acme`.\n", 1),
+    ],
+)
+def test_identifier_context_in_package_file_is_refused(
+    text: str, line: int, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    split = PLAIN_SPLIT + 'package_files = ["GUIDE.md"]\n'
+    err = _refusal(tmp_path, _lib_crate(**{"GUIDE.md": text}), capsys, split)
+    assert f"GUIDE.md:{line}:" in err
+    assert "identifier_files" in err
+    assert "[[replace]]" in err
+
+
+def test_rust_log_in_package_script_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    split = PLAIN_SPLIT + 'package_files = ["scripts/*.sh"]\n'
+    files = _lib_crate(
+        **{"scripts/run.sh": "#!/bin/sh\nRUST_LOG=acme=debug cargo run -q\n"}
+    )
+    assert "scripts/run.sh:2:" in _refusal(tmp_path, files, capsys, split)
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_rust_log_oracle_needs_the_identifier_spelling(tmp_path: Path) -> None:
+    """Real env_logger matches the module path, never the package spelling.
+
+    Skips without a cached registry, because env_logger is a registry crate.
+    """
+    _require_cargo()
+    target = tmp_path / "crate"
+    _write(
+        target,
+        {
+            "Cargo.toml": (
+                '[package]\nname = "zeta-gadget"\nversion = "0.1.0"\n'
+                'edition = "2021"\n\n[dependencies]\nlog = "0.4"\n'
+                'env_logger = "0.11"\n'
+            ),
+            "src/main.rs": (
+                'fn main() {\n    env_logger::init();\n    log::debug!("VISIBLE");\n}\n'
+            ),
+        },
+    )
+    home = Path.home() / ".cargo"
+    env = {**os.environ, "CARGO_HOME": str(home)}
+
+    def run(filter_: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["cargo", "run", "-q", "--offline"],  # noqa: S607
+            cwd=target,
+            env={**env, "RUST_LOG": filter_},
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+
+    first = run("zeta_gadget=debug")
+    if first.returncode != 0:
+        pytest.skip(f"log and env_logger are not cached offline: {first.stderr[-300:]}")
+    assert "VISIBLE" in first.stderr
+    assert "VISIBLE" not in run("zeta-gadget=debug").stderr
+
+
 # --- identity and rules units ----------------------------------------------------
 
 
@@ -642,3 +916,15 @@ def test_rules_refuse_duplicate_role(tmp_path: Path) -> None:
 def test_rules_refuse_non_table_cargo_split(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="array of tables"):
         _rules(tmp_path, 'cargo_split = ["core"]\n')
+
+
+def test_rust_strings_skip_comments_lifetimes_and_chars() -> None:
+    from template_press.rebrand.rust_text import rust_strings
+
+    text = (
+        '// "acme" in a comment\n/* "x" /* nested */ */\n'
+        "fn f<'a>(c: char) -> &'a str { let _ = 'q'; r#\"raw \"acme\"\"# }\n"
+        'const B: &[u8] = b"acme";\n'
+    )
+    contents = [text[s.content_start : s.content_end] for s in rust_strings(text)]
+    assert contents == ['raw "acme"', "acme"]
