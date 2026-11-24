@@ -1018,6 +1018,17 @@ COMPILED_LAYOUTS = {
         "        $i\n    };\n}\nITEM_wrap! {\n    /// CODE\n    /// ```\n"
         "    pub fn ITEM() {}\n}\n"
     ),
+    # The same call with a space, or a comment, between the name and the `!`.
+    "macro_call_with_spaced_bang": (
+        'macro_rules! ITEM_wrap {\n    ($i:item) => {\n        #[doc = "```"]\n'
+        "        $i\n    };\n}\nITEM_wrap ! {\n    /// CODE\n    /// ```\n"
+        "    pub fn ITEM() {}\n}\n"
+    ),
+    "macro_call_with_comment_before_bang": (
+        'macro_rules! ITEM_wrap {\n    ($i:item) => {\n        #[doc = "```"]\n'
+        "        $i\n    };\n}\nITEM_wrap /* call */ ! {\n    /// CODE\n    /// ```\n"
+        "    pub fn ITEM() {}\n}\n"
+    ),
     # Plain `doc` attributes supply the fence line, as crates do per feature.
     "fence_from_doc_attributes": (
         '#[cfg_attr(all(), doc = "```")]\n#[cfg_attr(any(), doc = "```ignore")]\n'
@@ -1101,6 +1112,11 @@ UNPROVABLE_LAYOUTS = {
     "prose_after_macro_attribute": (
         "macro_rules! ITEM {\n    ($(#[$m:meta])*) => {\n        $(#[$m])*\n"
         "        /// CODE\n        pub fn made() {}\n    };\n}\n"
+    ),
+    # A macro definition written with a space before the `!`.
+    "prose_in_macro_definition_with_spaced_bang": (
+        "macro_rules ! ITEM_def {\n    () => {\n        /// CODE\n"
+        "        pub fn made() {}\n    };\n}\n"
     ),
     # The layout leaves the Markdown structure in doubt.
     "prose_four_spaces": "///     CODE\npub fn ITEM() {}\n",
@@ -1417,6 +1433,147 @@ def test_skipped_doc_layouts_are_never_compiled_by_real_cargo(tmp_path: Path) ->
     # The one test that runs is the Rust fence in `prose_after_code_fence`, which
     # holds no name. The two `ignore` fences are listed and never compiled.
     assert "test result: ok. 1 passed; 0 failed; 2 ignored" in after
+
+
+# --- fix round 5: names that `stringify!` and `concat!` turn into text ------------
+
+# Each call holds the crate name in its arguments. `stringify!(acme)` is the
+# text "acme", which is neither a Rust identifier nor a string the press reads.
+QUOTED_CALLS = {
+    "stringify": "stringify!(acme)",
+    "spaced_bang": "stringify ! (acme)",
+    "comment_before_bang": "stringify /* text */ !(acme)",
+    "square_brackets": "stringify![acme]",
+    "path_and_braces": "core::stringify!{acme}",
+    "nested_brackets": "stringify!((acme, [1]))",
+    "after_a_string_that_holds_a_bracket": 'stringify!(")", acme)',
+    "over_three_lines": "stringify!(\n        acme\n    )",
+    "inside_concat": 'concat!(name_of!(acme), "")',
+    "stringify_inside_concat": 'concat!(stringify!(other), stringify!(acme), "")',
+    # A string that Cargo proves outside the call is text of the call inside it.
+    "proven_string_inside": 'stringify!(cfg!(feature = "acme"))',
+}
+QUOTED_REFUSAL = "'acme' is in the arguments of a `stringify!` or `concat!` call"
+STRINGIFIED = 'assert_eq!(stringify!(acme), env!("CARGO_PKG_NAME"));'
+# Doc text where the call's end is not on the line that opens it.
+QUOTED_DOC_CALLS = {
+    "over_three_lines": (
+        "/// ```\n/// assert_eq!(stringify!(\n///     acme\n/// ).len(), 4);\n"
+        "/// ```\npub fn documented() {}\n",
+        3,
+    ),
+    "inner_doc_over_two_lines": (
+        "//! ```\n//! assert_eq!(stringify!(\n//! acme).len(), 4);\n//! ```\n",
+        3,
+    ),
+    "never_closed": (
+        "//! ```\n//! let _n = stringify!(\n//! acme::hi();\n//! ```\n",
+        3,
+    ),
+    # The attribute adds a bracket, so the `)` on line 4 does not end the call.
+    "attribute_inside_the_call": (
+        '/// ```\n/// assert_eq!(stringify!(\n#[doc = "("]\n/// ) acme).len(), 7);\n'
+        "/// ```\npub fn documented() {}\n",
+        4,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(QUOTED_CALLS))
+def test_name_in_stringify_or_concat_arguments_is_refused(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    call = QUOTED_CALLS[case]
+    lib = f"#[test]\nfn named() {{\n    let _text = {call};\n}}\n"
+    code, _ = _press_lib(tmp_path, lib)
+    line = 3 + call.split("acme")[0].count("\n")
+    assert code == 2
+    assert f"src/lib.rs:{line}: {QUOTED_REFUSAL}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("case", sorted(COMPILED_LAYOUTS))
+def test_doc_text_rustdoc_compiles_refuses_a_stringified_name(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    layout = COMPILED_LAYOUTS[case]
+    code, _ = _press_lib(tmp_path, _doc_lib(layout, STRINGIFIED))
+    assert code == 2
+    assert f"src/lib.rs:{_code_line(layout)}: {QUOTED_REFUSAL}" in (
+        capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize("case", sorted(QUOTED_DOC_CALLS))
+def test_doc_call_that_ends_on_a_later_line_is_refused(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lib, line = QUOTED_DOC_CALLS[case]
+    code, _ = _press_lib(tmp_path, lib)
+    assert code == 2
+    assert f"src/lib.rs:{line}: {QUOTED_REFUSAL}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("case", sorted(SKIPPED_LAYOUTS))
+def test_doc_text_rustdoc_never_compiles_keeps_a_stringified_name(
+    case: str, tmp_path: Path
+) -> None:
+    code, lib = _press_lib(tmp_path, _doc_lib(SKIPPED_LAYOUTS[case], STRINGIFIED))
+    assert code == 0
+    assert "stringify!(zeta_gadget)" in lib
+
+
+def test_name_after_a_closed_call_takes_the_identifier_spelling(tmp_path: Path) -> None:
+    files = _lib_crate(
+        **{
+            "src/lib.rs": (
+                '/// ```\n/// let _n = concat!(stringify!(other), ")");\n'
+                "/// acme::hi();\n/// ```\n" + PLAIN_LIB
+            ),
+            "tests/it.rs": (
+                '#[test]\nfn named() {\n    let _n = stringify!((other, ")")); '
+                "acme::hi();\n}\n"
+            ),
+        }
+    )
+    target = _round_target(tmp_path, files)
+
+    assert _press(target, _zeta(tmp_path)) == 0
+
+    assert "/// zeta_gadget::hi();" in (target / "src/lib.rs").read_text()
+    assert "zeta_gadget::hi();" in (target / "tests/it.rs").read_text()
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_stringified_name_is_refused_and_real_cargo_rejects_the_identifier(
+    tmp_path: Path,
+) -> None:
+    """Real Cargo: the spelling the identifier rule would write fails the test."""
+    _require_cargo()
+    # A unit test, then a doctest on the item that follows.
+    lib = (
+        f"#[test]\nfn named() {{\n    {STRINGIFIED}\n}}\n"
+        f"/// ```\n/// {STRINGIFIED}\n/// ```\n"
+    )
+    target = _doc_crate(tmp_path, lib)
+    path = target / "src/lib.rs"
+
+    assert _press(target, _zeta(tmp_path)) == 2
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+    # The remedy: a string that Cargo proves. The press then succeeds.
+    path.write_text(path.read_text().replace("stringify!(acme)", '"acme"'))
+    _git(target, "commit", "-q", "-a", "-m", "edit the calls by hand")
+    _press_and_prove(target, _zeta(tmp_path), ZETA)
+    # The identifier rule would have written this, and real Cargo rejects it.
+    path.write_text(
+        path.read_text().replace('"zeta-gadget"', "stringify!(zeta_gadget)")
+    )
+    after = _cargo(target, "test", "--offline")
+    assert after.returncode == 101
+    assert 'left: "zeta_gadget"' in after.stdout + after.stderr
 
 
 # --- identity and rules units ----------------------------------------------------
