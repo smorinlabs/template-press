@@ -165,10 +165,13 @@ a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. See the
 
 A hyphen-free crate name pressed to a hyphenated one (`acme` to `zeta-gadget`)
 is refused by default. A `[[cargo_split]]` block in `press/press-rules.toml`
-opts one role in. Manifests take `zeta-gadget`, `.rs` files take
-`zeta_gadget`, and the block's `package_files` and `identifier_files` globs
-name every other file that holds the crate name. Any other occurrence exits 2
-before any write, with `file:line`:
+opts one role in. Manifests take `zeta-gadget`, and Rust code in `.rs` files
+takes `zeta_gadget`. A `.rs` string takes `zeta-gadget` only when Cargo proves
+it (a feature name, a path to a renamed file, a `CARGO_PKG_NAME` comparison);
+any other string exits 2. The block's `package_files` and `identifier_files`
+globs name every other file that holds the crate name. Any other occurrence,
+and any identifier context (`::`, `use`, `extern crate`, `RUST_LOG`) in a
+`package_files` file, exits 2 before any write, with `file:line`:
 
 ```toml
 [[cargo_split]]

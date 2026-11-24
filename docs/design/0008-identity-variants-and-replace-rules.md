@@ -161,8 +161,13 @@ retained decision record does not require those files to remain present.
    ```
 
    With `core = "acme"` pressed to `core = "zeta-gadget"`, every `Cargo.toml`
-   takes the package spelling `zeta-gadget`, and every `.rs` file takes the
-   identifier spelling `zeta_gadget`. That structural rule outranks the globs.
+   takes the package spelling `zeta-gadget`, and Rust code in every `.rs` file
+   takes the identifier spelling `zeta_gadget`. That structural rule outranks
+   the globs. Inside a `.rs` string literal, the press writes `zeta-gadget`
+   only where real Cargo proves it right: a `feature = "acme"` value, an
+   `include_*!` or `#[path]` string naming a file the press renames (the
+   string must resolve to that file's new path), and a string compared on a
+   `CARGO_PKG_NAME` line. Any other string occurrence exits 2.
    `CARGO_BIN_EXE_acme` becomes `CARGO_BIN_EXE_zeta-gadget`. Paths take the
    package spelling, so `crates/acme` becomes `crates/zeta-gadget` and declared
    manifest paths follow. A file matched by `package_files` or
@@ -174,16 +179,20 @@ retained decision record does not require those files to remain present.
    - a file that matches both lists;
    - an explicit `[lib] name = "acme"`, because Cargo refuses a hyphen in a
      library name;
-   - a renamed module path below `src/`, other than `src/bin/<name>`;
-   - a package-spelling file whose rewrite writes the invalid Rust path
-     `zeta-gadget::`;
+   - a renamed path below `src/`, other than `src/bin/<name>`, and a renamed
+     `acme.rs` or `acme/` anywhere when a `.rs` file declares `mod acme;`;
+   - a `package_files` file whose rewrite puts `zeta-gadget` where only an
+     identifier fits: `::` paths, `extern crate`, `use`, and log filters such
+     as `RUST_LOG=acme=debug`; the remedies are `identifier_files` or an exact
+     `[[replace]]`;
    - a target that also checks `python` or `node`.
 
    A file holding both spellings works only when the split crate is the
    `package_name` crate. List the file in `package_files`, and add an exact
    `[[replace]]` rule scoped to it, such as `pattern = "{package_name}::hi"`.
    Declared rules run first and write `zeta_gadget::hi`. A non-primary role
-   cannot do this, because `[[replace]]` cannot reference `cargo_names`.
+   cannot do this yet, because `[[replace]]` cannot reference `cargo_names`;
+   P15-T10 adds `{cargo_exact_<role>}` and `{cargo_ident_<role>}`.
 
    The block is validated against both tables. Its role must exist in both
    tables. The source must have no hyphen and the destination must have one;

@@ -404,7 +404,9 @@ identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadge
 | Where `acme` appears | Result |
 |---|---|
 | Any `Cargo.toml`: package name, dependency keys, `package =` | `zeta-gadget` |
-| Any `.rs` file, such as `acme::hi()` | `zeta_gadget::hi()` |
+| Rust code in any `.rs` file, such as `acme::hi()` or `mod acme;` | `zeta_gadget` |
+| A `.rs` string Cargo proves: `feature = "acme"`, an `include_str!`/`include_bytes!`/`include!`/`#[path]` path to a file the press renames, or a string compared on a `CARGO_PKG_NAME` line | `zeta-gadget` (the path follows the rename) |
+| Any other `.rs` string literal, such as `println!("acme")` or `#[command(name = "acme")]` | exit 2 before any write, with `file:line` |
 | `env!("CARGO_BIN_EXE_acme")` | `CARGO_BIN_EXE_zeta-gadget` |
 | Paths, such as `crates/acme` | `crates/zeta-gadget`; declared manifest paths follow |
 | A file matched by `package_files` or `identifier_files` | that spelling |
@@ -429,13 +431,20 @@ identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadge
   reason = "the README names the crate both ways"
   ```
 
-  A file that would gain the invalid Rust path `zeta-gadget::` exits 2. For a
-  non-primary role, no placeholder renders the crate name, so move the
-  identifier spans to an `identifier_files` file.
+  A `package_files` file is refused, with `file:line`, when its rewrite
+  would put `zeta-gadget` where only a Rust identifier fits: `zeta-gadget::`,
+  `extern crate`, `use`, or a log filter such as `RUST_LOG=acme=debug` or
+  `acme=info` (`env_logger` matches the module path `zeta_gadget`). The two
+  remedies are to list the file in `identifier_files`, or to cover the span with
+  an exact `[[replace]]`. For a non-primary role, no placeholder renders the
+  crate name yet; `{cargo_exact_<role>}` and `{cargo_ident_<role>}`
+  placeholders arrive with P15-T10.
 - Also refused before any write: an explicit `[lib] name = "acme"` (Cargo
-  refuses a hyphen in a library name), a renamed module path below `src/`
-  other than `src/bin/<name>`, and a target that also checks `python` or
-  `node`.
+  refuses a hyphen in a library name), a renamed path below `src/` other than
+  `src/bin/<name>`, a renamed `acme.rs` or `acme/` anywhere when some `.rs`
+  file declares `mod acme;` (for example `tests/acme/mod.rs`), and a target
+  that also checks `python` or `node`. Target files such as `tests/acme.rs` and
+  `examples/acme.rs` rename to `zeta-gadget.rs`, which Cargo accepts.
 - **After the press**, leave the block in place. The receipt and the rewritten
   `press-source.toml` record `zeta-gadget`, so the next press uses the normal
   two-spelling rows. When a receipt exists and the source already has a
