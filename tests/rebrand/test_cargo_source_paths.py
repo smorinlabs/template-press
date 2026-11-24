@@ -209,28 +209,69 @@ def test_content_row_inside_a_rust_source_path_is_refused(
     assert not (target / RECEIPT_REL).exists()
 
 
-@pytest.mark.parametrize(
-    "files",
-    [
-        # The module file renames with the declaration: the crate name does both.
-        {"src/lib.rs": LIB + "pub mod acme_core;\n", "src/acme_core.rs": ""},
-        # An inline module has no file.
-        {"src/lib.rs": LIB + "pub mod acmelabs {\n    pub fn org() {}\n}\n"},
-        # A path no row changes.
-        {
-            "src/lib.rs": LIB + 'pub const T: &str = include_str!("t.txt");\n',
-            "src/t.txt": "x\n",
-        },
-    ],
-    ids=["renamed_with_its_file", "inline_module", "unchanged_path"],
-)
-def test_rust_source_paths_that_follow_their_files_press(
-    files: dict[str, str], tmp_path: Path
-) -> None:
-    target = _source_path_target(tmp_path, files, table=True)
-    answers = _answers(tmp_path, CORE_DEST, {"core": "zeta-core"})
+FOLLOWING_PATHS = {
+    # The module file renames with the declaration: the crate name does both.
+    "renamed_with_its_file": {
+        "src/lib.rs": LIB + "pub mod acme_core;\n",
+        "src/acme_core.rs": "",
+    },
+    "renamed_mod_rs": {
+        "src/lib.rs": LIB + "pub mod acme_core;\n",
+        "src/acme_core/mod.rs": "",
+    },
+    "renamed_below_a_module_file": {
+        "src/lib.rs": LIB + "pub mod outer;\n",
+        "src/outer.rs": "pub mod acme_core;\n",
+        "src/outer/acme_core.rs": "",
+    },
+    "renamed_beside_a_root_file": {
+        "src/lib.rs": LIB,
+        "build.rs": "mod acme_core;\nfn main() {}\n",
+        "acme_core.rs": "",
+    },
+    "renamed_include_path": {
+        "src/lib.rs": LIB + 'pub const T: &str = include_str!("acme_core.txt");\n',
+        "src/acme_core.txt": "x\n",
+    },
+    # An inline module has no file.
+    "inline_module": {
+        "src/lib.rs": LIB + "pub mod acmelabs {\n    pub fn org() {}\n}\n"
+    },
+    # A path no row changes.
+    "unchanged_path": {
+        "src/lib.rs": LIB + 'pub const T: &str = include_str!("t.txt");\n',
+        "src/t.txt": "x\n",
+    },
+}
 
-    assert _press(target, answers) == 0
+
+@pytest.mark.parametrize("table", [True, False], ids=["table", "tableless"])
+@pytest.mark.parametrize("case", sorted(FOLLOWING_PATHS))
+def test_rust_source_paths_that_follow_their_files_press(
+    case: str, table: bool, tmp_path: Path
+) -> None:
+    target = _source_path_target(tmp_path, FOLLOWING_PATHS[case], table=table)
+
+    assert _press(target, _source_path_answers(tmp_path, table=table)) == 0
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize(
+    "case", ["renamed_beside_a_root_file", "renamed_below_a_module_file"]
+)
+def test_rust_source_paths_that_follow_their_files_build(
+    case: str, tmp_path: Path
+) -> None:
+    _require_cargo()
+    target = _source_path_target(tmp_path, FOLLOWING_PATHS[case], table=True)
+    _assert_cargo(target, "test", "--offline")
+
+    assert _press(target, _source_path_answers(tmp_path, table=True)) == 0
+
+    assert (target / RECEIPT_REL).is_file()
+    _assert_cargo(target, "test", "--offline")
 
 
 @pytest.mark.slow

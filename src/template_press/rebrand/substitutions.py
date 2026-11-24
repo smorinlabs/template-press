@@ -2127,16 +2127,17 @@ def _rust_source_path_splits(
             continue
         # A module file sits beside a crate root or ``mod.rs`` and below
         # any other file's stem; both places are read, so neither is missed.
-        places = ((base, new_base), (f"{base}/{stem}", f"{new_base}/{new_stem}"))
+        join = posixpath.join
+        places = ((base, new_base), (join(base, stem), join(new_base, new_stem)))
         found = [
-            (posixpath.normpath(f"{old_dir}/{shape.format(name)}"), new_dir, shape)
+            (posixpath.normpath(join(old_dir, shape.format(name))), new_dir, shape)
             for old_dir, new_dir in places
             for shape in ("{}.rs", "{}/mod.rs")
-            if posixpath.normpath(f"{old_dir}/{shape.format(name)}") in files
+            if posixpath.normpath(join(old_dir, shape.format(name))) in files
         ]
         if found and all(
             plan.translate(file)
-            == posixpath.normpath(f"{new_dir}/{shape.format(new_name)}")
+            == posixpath.normpath(join(new_dir, shape.format(new_name)))
             for file, new_dir, shape in found
         ):
             continue
