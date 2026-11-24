@@ -1647,6 +1647,86 @@ def test_stringified_name_is_refused_and_real_cargo_rejects_the_identifier(
     assert 'left: "zeta_gadget"' in after.stdout + after.stderr
 
 
+# --- final review 2: comparison operands, quoting renames, doc-included files ---
+
+# R40 (I3): a method call on either operand changes the value compared.
+CHAINED_COMPARISONS = {
+    "pkg_after_replace": (
+        'assert!("acme" == env!("CARGO_PKG_NAME").replace(\'-\', "_"));'
+    ),
+    "literal_method": 'assert!(env!("CARGO_PKG_NAME") == "acme".replace("-", "_"));',
+    "pkg_chain_as_str": (
+        'assert!("acme" == env!("CARGO_PKG_NAME").replace("-", "_").as_str());'
+    ),
+    "pkg_chain_next_line": (
+        'assert!("acme"\n        == env!("CARGO_PKG_NAME")\n        .replace("-", "_"));'
+    ),
+    "literal_index": 'assert!(env!("CARGO_PKG_NAME") == &"acme"[..]);',
+    "binary_operator_before": 'assert!(1 + env!("CARGO_PKG_NAME") == "acme");',
+}
+BARE_COMPARISONS = {
+    "literal_left": 'assert!("acme" == env!("CARGO_PKG_NAME"));',
+    "literal_right": 'assert!(env!("CARGO_PKG_NAME") == "acme");',
+    "not_equal": 'assert!(!("acme" != env!("CARGO_PKG_NAME")));',
+    "if_condition": 'if env!("CARGO_PKG_NAME") == "acme" { return; }',
+    "let_binding": 'let same = "acme" == env!("CARGO_PKG_NAME"); assert!(same);',
+    "and_chain": 'assert!(true && "acme" == env!("CARGO_PKG_NAME") && true);',
+}
+
+
+def _test_lib(body: str) -> str:
+    return f"#[test]\nfn named() {{\n    {body}\n}}\n"
+
+
+@pytest.mark.parametrize("case", sorted(CHAINED_COMPARISONS))
+def test_comparison_with_a_chained_operand_is_refused(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = _lib_crate(
+        **{"src/lib.rs": PLAIN_LIB + _test_lib(CHAINED_COMPARISONS[case])}
+    )
+    err = _refusal(tmp_path, files, capsys)
+    assert "src/lib.rs:" in err
+    assert "Rust string literal" in err
+
+
+@pytest.mark.parametrize("case", sorted(BARE_COMPARISONS))
+def test_comparison_with_bare_operands_takes_the_package_spelling(
+    case: str, tmp_path: Path
+) -> None:
+    files = _lib_crate(**{"src/lib.rs": PLAIN_LIB + _test_lib(BARE_COMPARISONS[case])})
+    target = _round_target(tmp_path, files)
+    assert _press(target, _zeta(tmp_path)) == 0
+    lib = (target / "src/lib.rs").read_text()
+    assert '"zeta-gadget"' in lib
+    assert "acme" not in lib
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("case", ["pkg_after_replace", "literal_method"])
+def test_chained_comparison_refusal_matches_real_cargo(
+    case: str, tmp_path: Path
+) -> None:
+    """Real Cargo: the package spelling the old rule wrote fails the test."""
+    _require_cargo()
+    target = _doc_crate(tmp_path, _test_lib(CHAINED_COMPARISONS[case]))
+    path = target / "src/lib.rs"
+
+    assert _press(target, _zeta(tmp_path)) == 2
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+    # What the old rule wrote: the package spelling on a chained operand.
+    shutil.rmtree(target / "target", ignore_errors=True)
+    path.write_text(path.read_text().replace('"acme"', '"zeta-gadget"'))
+    toml = target / "Cargo.toml"
+    toml.write_text(toml.read_text().replace('"acme"', '"zeta-gadget"'))
+    after = _cargo(target, "test", "--offline")
+    assert after.returncode == 101, after.stdout + after.stderr
+
+
 # --- identity and rules units ----------------------------------------------------
 
 

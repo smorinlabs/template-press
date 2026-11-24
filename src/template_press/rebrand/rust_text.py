@@ -49,6 +49,13 @@ _PKG_AFTER_CMP = re.compile(rf"\s*(?:==|!=)\s*{_PKG_NAME}")
 _ASSERT_BEFORE = re.compile(r"\bassert_(?:eq|ne)!\(\s*$")
 _PKG_AFTER_ARG = re.compile(rf"\s*,\s*{_PKG_NAME}\s*[,)]")
 _ARG_END = re.compile(r"\s*[,)]")
+# Text that ends one whole operand of ``==``, or starts one. A method call,
+# an index, ``?``, ``as``, or a binary operator would change the value compared.
+# The end of the text is no operand end: a doc block is read in part.
+_OPERAND_END = re.compile(r"\s*(?:[),;\]}{]|&&|\|\|)")
+_OPERAND_START = re.compile(
+    r"(?:(?:^|[(,{;\[])|(?<![=!<>])=|&&|\|\||!|\b(?:if|while|return|match))\s*$"
+)
 _PATH_BEFORE = re.compile(
     r"(?:\b(?:include_str|include_bytes|include)!\s*\(\s*|#!?\[\s*path\s*=\s*)$"
 )
@@ -927,12 +934,21 @@ def _compared_with_pkg_name(text: str, literal: RustString) -> bool:
     comparison: ``==``, ``!=``, or an ``assert_eq!``/``assert_ne!`` argument.
     """
     before, start = text[: literal.start], literal.end
-    if _PKG_BEFORE.search(before):
-        return bool(_ARG_END.match(text, start)) or not re.search(
-            r"assert_(?:eq|ne)!\(\s*" + _PKG_NAME + r"\s*,\s*$", before
+    found = _PKG_BEFORE.search(before)
+    if found:
+        if re.search(r"assert_(?:eq|ne)!\(\s*" + _PKG_NAME + r"\s*,\s*$", before):
+            return bool(_ARG_END.match(text, start))
+        # ``env!(...) == "<name>"``: both operands must be whole.
+        return bool(
+            _OPERAND_START.search(before, 0, found.start())
+            and _OPERAND_END.match(text, start)
         )
-    if _PKG_AFTER_CMP.match(text, start):
-        return True
+    after = _PKG_AFTER_CMP.match(text, start)
+    if after:
+        # ``"<name>" == env!(...)``: both operands must be whole.
+        return bool(
+            _OPERAND_START.search(before) and _OPERAND_END.match(text, after.end())
+        )
     return bool(_ASSERT_BEFORE.search(before) and _PKG_AFTER_ARG.match(text, start))
 
 
