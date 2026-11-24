@@ -80,6 +80,10 @@ NOT_RUST_TAGS = frozenset(
 # How many lines around a doc literal its code block is read for its role. A
 # shorter block can only lose a role, which refuses the literal.
 _LINES_BEFORE = 40
+# The most hashes of a raw string, and levels of a block comment, that the
+# press follows from doc text it cannot read. Beyond that, it reads nothing.
+_MAX_OPEN = 6
+_MAX_STATES = 2 * _MAX_OPEN + 2  # a string, each raw string, each comment
 _LINES_AFTER = 8
 
 
@@ -276,8 +280,8 @@ def _doc_cluster(text: str, index: int, clean: bool, unread: bool) -> _Cluster:
     owners: list[int] = []
     restarts = {0}  # lines after an attribute, which may add doc text
     whole, sealed = clean and not inner, inner
-    unread_from = 0 if unread else -1
-    hidden = unread
+    hidden = after_hidden = unread  # unread doc text comes before the next line
+    unknown: set[int] = set()  # the lines such text comes before
     position, after_attribute = index, False
     while position < len(text):
         if text[position].isspace():
@@ -286,10 +290,10 @@ def _doc_cluster(text: str, index: int, clean: bool, unread: bool) -> _Cluster:
         end = _attribute_end(text, position)
         if end > position:
             if _DOC_ATTRIBUTE.search(text, position, end):
-                whole = sealed = False
+                whole = False
+                sealed = sealed and "$" not in text[position:end]
                 if _hides_doc_text(text, position, end):
-                    hidden = True
-                    unread_from = len(lines) if unread_from < 0 else unread_from
+                    hidden = after_hidden = True
             after_attribute = True
         elif not text.startswith(("//", "/*"), position):
             break
@@ -303,14 +307,20 @@ def _doc_cluster(text: str, index: int, clean: bool, unread: bool) -> _Cluster:
                 if after_attribute:
                     restarts.add(len(lines))
                     after_attribute = False
+                if after_hidden:
+                    unknown.add(len(lines))
+                    after_hidden = False
                 body = _doc_lines(text, position + 3, end - 2 if block else end)
                 lines += body
                 owners += [position] * len(body)
         position = end
-    if unread_from < 0:
-        unread_from = len(lines)
+    # An inner comment ends the item's doc text, unless unread text follows it.
+    # Then, and in an outer comment, a string from unread text may never close,
+    # so nothing after that text can be read.
+    sealed = sealed and not after_hidden
+    unread_from = len(lines) if sealed or not unknown else min(unknown)
     literals, cut = _doc_literals(
-        text, lines, owners, restarts, whole, sealed and not hidden, unread_from
+        text, lines, owners, restarts, whole, sealed, unread_from, unknown
     )
     return _Cluster(literals, position, hidden, cut)
 
@@ -333,6 +343,7 @@ def _doc_literals(
     proven: bool,
     sealed: bool,
     unread_from: int,
+    unknown: set[int],
 ) -> tuple[dict[int, list[RustString]], bool]:
     """Read the joined doc lines as code wherever a code block may hold them.
 
@@ -347,8 +358,10 @@ def _doc_literals(
     does not compile. The text ends with the last line only when ``sealed``.
 
     From line ``unread_from`` on, the text follows doc text the press cannot
-    read, so each of those lines is unread as a whole. Also returns whether the
-    text may end inside a string or a comment.
+    read, so each of those lines is unread as a whole. Before that, such text
+    leaves only the lexer state of an ``unknown`` line in doubt: one more
+    reading starts there in each state that the later text can close. Also
+    returns whether the text may end inside a string or a comment.
     """
     bodies = [text[low:high] for low, high in lines]
     widths = [len(body) - len(body.lstrip(" ")) for body in bodies if body.strip()]
@@ -361,7 +374,22 @@ def _doc_literals(
     lexed: list[tuple[int, list[tuple[_Lexed, list[_Start]]]]] = []
     closed: dict[_Start, int] = {}  # each start: the last line it left in code
     fence, skipped = "", False
-    for number, body in enumerate(bodies[:unread_from]):
+    for number, body in enumerate(bodies):
+        if number in unknown and number < unread_from:
+            # The blocks so far run on into the unread text, which may close
+            # them. After it, a block is in code or in a state from that text.
+            for _, starts in readings:
+                closed.update(dict.fromkeys(starts, number - 1))
+            states = _open_states("\n".join(bodies[number:]))
+            if states is None:
+                unread_from = number
+            else:  # a start below zero: the block began in unread text
+                readings = [
+                    (state, [(-1 - number * _MAX_STATES - n, True)])
+                    for n, state in enumerate(states)
+                ]
+        if number >= unread_from:
+            break
         width = len(body) - len(body.lstrip(" "))
         marked = "```" in body or "~~~" in body
         prose = bool(body.strip()) and not _INDENTED.search(body)
@@ -395,10 +423,14 @@ def _doc_literals(
                 readings = _merged([*readings, (_CODE, [(number, False)])])
         row = [(_lex_line(body, state), starts) for state, starts in readings]
         lexed.append((number, row))
-        readings = [(state, starts) for (_, _, state), starts in row]
-        for state, starts in readings:
+        readings = []
+        for (_, _, state), starts in row:
             if state == _CODE:
                 closed.update(dict.fromkeys(starts, number))
+                # Back in code, a block from the unread text reads on like one
+                # that starts at the next line.
+                starts = [(number + 1, True) if s[0] < 0 else s for s in starts]
+            readings.append((state, starts))
         if marked and not proven:
             readings.append((_CODE, [(number + 1, True)]))
         readings = _merged(readings)
@@ -426,6 +458,22 @@ def _doc_literals(
             [reading for reading in binding if reading[2]], doc, number
         )
     return found, cut
+
+
+def _open_states(doc: str) -> list[_State] | None:
+    """The states a string or comment from earlier text can be in, if few.
+
+    Only a state that ``doc`` can close matters: a string closes at a quote, a
+    raw string at a quote and its hashes, a comment at ``*/``.
+    """
+    hashes = max((len(found[1]) for found in re.finditer(r'"(#*)', doc)), default=-1)
+    depth = doc.count("*/")
+    if max(hashes, depth) > _MAX_OPEN:
+        return None
+    strings: list[_State] = [("string", 0)] if hashes >= 0 else []
+    raws: list[_State] = [("raw", count) for count in range(hashes + 1)]
+    comments: list[_State] = [("comment", count + 1) for count in range(depth)]
+    return strings + raws + comments
 
 
 def _closes(body: str, fence: str) -> bool:
@@ -618,6 +666,8 @@ def string_role(text: str, literal: RustString, name: str) -> StringRole:
         return "other"
     if not literal.doc:
         return _role(text, literal, name)
+    if min(literal.starts) < 0:
+        return "other"  # one block began in doc text the press cannot read
     line_start = literal.doc[literal.line][0]
     if text[literal.content_start : literal.content_end] != name and not (
         _PATH_BEFORE.search(text, line_start, literal.start)

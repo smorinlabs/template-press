@@ -1077,6 +1077,14 @@ UNPROVABLE_LAYOUTS = {
         "pub mod ITEM {\n    //! ```text\n    //! CODE\n    //! ```\n}\n"
     ),
     "block_doc_prose": "/** CODE */\npub fn ITEM() {}\n",
+    # Read after `include_str!` text: no reading that starts inside a string
+    # or a comment of that text can end in code here.
+    "inner_doc_around_included_doc": (
+        '//! Intro.\n#![doc = include_str!("../README.md")]\n//! CODE\n'
+    ),
+    "inner_doc_after_included_doc": (
+        '#[doc = include_str!("../README.md")]\npub mod ITEM {\n    //! CODE\n}\n'
+    ),
     # The crate's `#![doc = ...]` does not come before a later item's docs, so
     # this comment is read, and refused only for its unproven string.
     "inner_doc_of_item_after_crate_doc_attribute": (
@@ -1106,8 +1114,8 @@ UNPROVABLE_LAYOUTS = {
 }
 
 
-# Doc comments that follow doc text the press cannot read. Even a name in code
-# position is refused there.
+# `///` comments below a doc attribute the press cannot read. A string from that
+# text may never close in sight, so even a name in code position is refused.
 UNREAD_LAYOUTS = {
     "after_included_doc": (
         '#[doc = include_str!("../README.md")]\n/// CODE\npub fn ITEM() {}\n'
@@ -1119,15 +1127,19 @@ UNREAD_LAYOUTS = {
         '/// ```\n#[doc = concat!("let s = ", "\\"")]\n/// "; CODE\n/// ```\n'
         "pub fn ITEM() {}\n"
     ),
-    "inner_doc_after_outer_doc_that_opens_a_string": (
+}
+
+
+# An inner doc comment after doc text the press cannot read. The comment ends
+# the text, so only the lexer state at its first line is unknown: the press
+# also reads it as the rest of a string or comment that the earlier text opened.
+OPEN_START_LAYOUTS = {
+    "outer_doc_opens_a_string": (
         '/// ```\n/// let s = "\npub mod ITEM {\n    //! "; CODE\n    //! ```\n}\n'
     ),
-    "inner_doc_after_outer_doc_that_opens_a_comment": (
+    "outer_doc_opens_a_comment": (
         "/// ```\n/// /*\npub mod ITEM {\n    //! ```text\n    //! */ CODE\n"
         "    //! ```\n}\n"
-    ),
-    "inner_doc_after_included_doc": (
-        '#[doc = include_str!("../README.md")]\npub mod ITEM {\n    //! CODE\n}\n'
     ),
 }
 
@@ -1141,6 +1153,7 @@ def _code_line(layout: str) -> int:
 
 
 def _press_lib(tmp_path: Path, lib: str) -> tuple[int, str]:
+    tmp_path.mkdir(exist_ok=True)
     target = _round_target(tmp_path, _lib_crate(**{"src/lib.rs": lib + PLAIN_LIB}))
     code = _press(target, _zeta(tmp_path))
     assert (code == 0) == (target / RECEIPT_REL).exists()
@@ -1183,8 +1196,41 @@ def test_doc_text_after_unreadable_doc_text_is_refused(
     assert exit_code == 2
     assert (
         f"src/lib.rs:{_code_line(layout)}: 'acme' is in a doc comment that "
-        "follows doc text the press cannot read"
+        "follows a `#[doc = ...]` attribute the press cannot read"
     ) in err
+
+
+@pytest.mark.parametrize("case", sorted(OPEN_START_LAYOUTS))
+def test_inner_doc_after_an_open_outer_doc_is_read_from_that_state(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    layout = OPEN_START_LAYOUTS[case]
+    # Code that follows the closing quote or `*/` is code in every reading.
+    code, lib = _press_lib(tmp_path / "plain", _doc_lib(layout, "acme::hi();"))
+    assert code == 0
+    assert "zeta_gadget::hi();" in lib
+    # A string there has no provable role: its block began in the outer comment.
+    code, _ = _press_lib(tmp_path / "string", _doc_lib(layout, PKG_ASSERT))
+    assert code == 2
+    assert f"src/lib.rs:{_code_line(layout)}: 'acme' is in a doc comment" in (
+        capsys.readouterr().err
+    )
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("case", sorted(OPEN_START_LAYOUTS))
+def test_inner_doc_after_an_open_outer_doc_passes_real_cargo(
+    case: str, tmp_path: Path
+) -> None:
+    _require_cargo()
+    target = _doc_crate(tmp_path, _doc_lib(OPEN_START_LAYOUTS[case], "acme::hi();"))
+    assert "1 passed; 0 failed" in _cargo(target, "test", "--doc", "--offline").stdout
+
+    _press_and_prove(target, _zeta(tmp_path), ZETA)
+
+    assert "zeta_gadget::hi();" in (target / "src/lib.rs").read_text()
 
 
 def test_module_doc_cut_inside_a_string_is_refused(

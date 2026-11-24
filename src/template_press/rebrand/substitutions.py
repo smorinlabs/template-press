@@ -2169,13 +2169,12 @@ def cargo_split_target_problems(
                     )
                     if literal.unread:
                         problems.append(
-                            f"{where}: {old!r} is in a doc comment that follows "
-                            "doc text the press cannot read: a `#[doc = ...]` "
-                            "attribute whose value is not a plain string, or holds "
-                            "a quote, a backslash, or a block-comment marker; or an "
-                            "outer doc comment that ends inside a string or a "
-                            "block comment. Code and prose cannot be told apart "
-                            f"there, so the press cannot choose {new!r} or "
+                            f"{where}: {old!r} is in a doc comment that follows a "
+                            "`#[doc = ...]` attribute the press cannot read: its "
+                            "value is not a plain string, or holds a quote, a "
+                            "backslash, or a block-comment marker. A string or a "
+                            "comment from that text may still be open here, so "
+                            f"the press cannot choose {new!r} or "
                             f"{cargo_ident(new)!r}. Move the attribute below the "
                             "doc comment, or edit the comment by hand before "
                             "pressing"
