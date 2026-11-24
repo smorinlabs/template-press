@@ -510,7 +510,9 @@ identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadge
     own macro that forwards its arguments to `stringify!` or `concat!`: the
     press sees only direct calls.
 - **A file with both spellings**, such as a README holding `cargo run -p acme`
-  and `acme::hi()`, works only for the `package_name` crate. List the file in
+  and `acme::hi()`, works only for the `package_name` crate. If Rust reads
+  the README with `include_str!`, see **A file that rustdoc compiles** below
+  instead. List the file in
   `package_files`, and add an exact rule for the identifier spans:
 
   ```toml
@@ -532,7 +534,9 @@ identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadge
   with `include_str!` (`#![doc = include_str!("../README.md")]`), is Rust in
   every code block rustdoc may compile: every fence except `ignore` and the
   non-Rust tags listed under **Doc comments**, and every line holding a tab or
-  four spaces in a row. In `package_files`, any `zeta-gadget` the press would
+  four spaces in a row. After a fence that is not at the left margin (in a
+  block quote or a list item) or a line that starts with `<`, every line after
+  a later fence line counts as code. In `package_files`, any `zeta-gadget` the press would
   write on such a line, or at an identifier position, exits 2 with
   `file:line`, because no `[[replace]]` rule can cover every position there
   (`use acme::{acme, hi};` and `acme!()` each need `zeta_gadget`). The remedy
@@ -592,7 +596,11 @@ names the binary; when the token sits in an excluded file, remove the
 exclusion or edit the token by hand.
 
 Limit: the press checks only paths that a manifest declares or Cargo infers,
-and paths that Rust source declares statically. A path that code reads at run
+and paths that Rust source declares with a plain string literal. A path built
+by a macro, such as `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`,
+a `mod name;` inside an inline module (`mod outer { mod name; }`, which is
+refused as not found), and a `.rs` file excluded from rewriting are not
+checked in this way. A path that code reads at run
 time, such as `std::fs::read_to_string("data/acmelabs.txt")` in `build.rs`, is
 not checked, so an `owner`, `author`, or `email` row that rewrites it without
 renaming the file gives a receipt for a build that then fails.
