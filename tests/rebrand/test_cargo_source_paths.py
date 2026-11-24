@@ -250,3 +250,27 @@ def test_rust_source_path_refusal_matches_real_cargo(case: str, tmp_path: Path) 
     assert not (target / RECEIPT_REL).exists()
     assert _status(target) == ""
     assert _cargo(target, "test", "--offline").returncode == 0
+
+
+# --- M4: a binary token in a file the press does not rewrite ---------------------
+
+
+def test_binary_token_in_an_excluded_file_names_the_exclusion(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = {
+        "src/lib.rs": "pub fn hi() -> u8 { 1 }\n",
+        "src/bin/acme-core.rs": "fn main() {}\n",
+        "third_party/x/t.rs": 'const B: &str = env!("CARGO_BIN_EXE_acme-core");\n',
+        "press/press-rules.toml": '[rules]\nextra_exclude_dirs = ["third_party"]\n',
+    }
+    target = _source_path_target(tmp_path, files, table=True)
+
+    assert _press(target, _source_path_answers(tmp_path, table=True)) == 2
+
+    out = capsys.readouterr()
+    message = out.out + out.err
+    assert "third_party/x/t.rs: CARGO_BIN_EXE_acme-core tokens" in message
+    assert "excluded from rewriting; remove the exclusion" in message
+    assert "Declare a cargo_names table" not in message
+    assert _status(target) == ""

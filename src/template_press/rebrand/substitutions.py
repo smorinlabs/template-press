@@ -1911,6 +1911,7 @@ def _bin_env_splits(
     data: dict[str, object],
     plan: RenamePlan,
     new_texts: Sequence[tuple[str, str, str]],
+    rewritten: frozenset[str] | set[str],
 ) -> list[str]:
     """``env!`` tokens the rewrite moves away from an auto-discovered binary.
 
@@ -1925,9 +1926,14 @@ def _bin_env_splits(
         new_token = re.compile(rf"CARGO_BIN_EXE_{re.escape(new_name)}(?![\w-])")
         problems.extend(
             f"{path}: CARGO_BIN_EXE_{name} tokens would not match the "
-            f"binary, which its file would name {new_name!r}. Declare a "
-            "cargo_names table that names this binary, so the press rewrites "
-            "the binary and its tokens together"
+            f"binary, which its file would name {new_name!r}. "
+            + (
+                "Declare a cargo_names table that names this binary, so the "
+                "press rewrites the binary and its tokens together"
+                if path in rewritten
+                else "The file is excluded from rewriting; remove the exclusion "
+                "or edit the token by hand"
+            )
             for path, old_text, new_text in new_texts
             if len(old_token.findall(old_text)) != len(new_token.findall(new_text))
         )
@@ -1991,7 +1997,9 @@ def cargo_path_splits(
                 rules.keep_names,
             )
         parsed = tomllib.loads(text)
-        problems.extend(_bin_env_splits(target, manifest, parsed, plan, new_texts))
+        problems.extend(
+            _bin_env_splits(target, manifest, parsed, plan, new_texts, rewritten)
+        )
         declared = declared_cargo_paths(parsed)
         try:
             new_parsed = tomllib.loads(new_text)
