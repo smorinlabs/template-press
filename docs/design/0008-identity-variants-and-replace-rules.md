@@ -51,6 +51,10 @@ retained decision record does not require those files to remain present.
    | `{cargo_ident_<role>_upper}` | that spelling uppercased | `ACME_CORE` |
 
    There is no `{cargo_exact_<role>_upper}`.
+
+   `{cargo_exact_<role>}` never fits a Rust identifier position. For a
+   `[[cargo_split]]` role the press refuses it in `.rs` files (exit 2 before
+   any write, naming file, line, and pattern); use `{cargo_ident_<role>}`.
 3. **Substring mode — secondary, per-field opt-in** (sec-02 ch-02-c).
    `[rules] substring_rewrite_fields = ["app_name"]` switches that field
    to plain substring replacement in content AND path components. Gated on

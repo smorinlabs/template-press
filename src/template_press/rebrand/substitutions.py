@@ -82,6 +82,7 @@ from template_press.rebrand.rules import (
     ReplaceRule,
     Rules,
     render_replace_pattern,
+    rule_matches_path,
 )
 from template_press.rebrand.rust_text import (
     cut_module_docs,
@@ -2078,6 +2079,35 @@ def _identifier_contexts(text: str, name: str) -> list[int]:
     return sorted(offsets)
 
 
+def _rule_hyphen_problems(
+    path: str,
+    text: str,
+    new: str,
+    role: str,
+    rules: Rules,
+    source: Identity,
+    destination: Identity,
+) -> list[str]:
+    """A ``[[replace]]`` rule must not write a split role's hyphenated name into
+    a ``.rs`` file: ``{cargo_exact_<role>}`` never fits a Rust identifier."""
+    found: list[str] = []
+    for rule in rules.replace:
+        if not rule.content or not rule_matches_path(rule, path):
+            continue
+        to_value = render_replace_pattern(rule.pattern, destination)
+        from_value = render_replace_pattern(rule.pattern, source)
+        if new not in to_value or from_value == to_value or from_value not in text:
+            continue
+        found.append(
+            f"{path}:{_line_of(text, text.index(from_value))}: [[replace]] rule "
+            f"{rule.pattern!r} would write {new!r}, the hyphenated name of "
+            f"[[cargo_split]] role {role!r}, into a Rust file, where only an "
+            f"identifier fits. Use {{cargo_ident_{role}}} in the pattern, or "
+            "scope the rule away from .rs files"
+        )
+    return found
+
+
 def cargo_split_target_problems(
     target: Path, source: Identity, destination: Identity, rules: Rules
 ) -> list[str]:
@@ -2161,6 +2191,12 @@ def cargo_split_target_problems(
                 rf"(?<![A-Za-z0-9_])mod\s+{re.escape(old)}\s*;", text
             ):
                 mod_declared.add(split.role)
+            if path.endswith(".rs") and "-" in new:
+                problems.extend(
+                    _rule_hyphen_problems(
+                        path, text, new, split.role, rules, source, destination
+                    )
+                )
             for start, end in disjoint_matches(
                 token_pattern(f"{CARGO_EXACT_PREFIX}{split.role}", old)
                 or re.compile(re.escape(old)),

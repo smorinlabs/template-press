@@ -576,6 +576,9 @@ reason = "glued token in generated fixtures"
   `{cargo_ident_core_upper}` renders `ACME_CORE`. There is no
   `{cargo_exact_<role>_upper}`. An identity without the role exits 2 before any
   write.
+  `{cargo_exact_<role>}` never fits a Rust identifier position: for a
+  `[[cargo_split]]` role, the press refuses it (exit 2, before any write) when
+  the rule applies to a `.rs` file. Use `{cargo_ident_<role>}` there.
 - `reason` (required): free-form; documents intent.
 - `files` (default: unscoped — all files): fnmatch globs (see the gotcha
   below).

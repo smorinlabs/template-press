@@ -258,3 +258,48 @@ def test_upper_placeholder_presses_the_sibling_env_var(tmp_path: Path) -> None:
         target, "remote", "set-url", "origin", "https://github.com/zeta-org/zeta-core"
     )
     assert verify_command(["--target", str(target)]) == 0
+
+
+# --- I1: a hyphenated render must not reach a .rs file ----------------------------
+
+EXACT_IN_RS = (
+    '\n[[replace]]\npattern = "{cargo_exact_core}::"\n'
+    'files = ["crates/*/src/*.rs"]\nreason = "x"\n'
+)
+
+
+def test_exact_placeholder_into_rs_file_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = _f3_target(tmp_path, REPLACE_RULES + EXACT_IN_RS)
+    assert split._press(target, _f3_answers(tmp_path)) == 2
+    err = capsys.readouterr().err
+    assert "crates/app/src/main.rs:2" in err
+    assert "{cargo_exact_core}::" in err
+    assert "{cargo_ident_core}" in err
+    assert split._status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
+def test_exact_placeholder_scoped_to_a_readme_still_presses(tmp_path: Path) -> None:
+    rules = (
+        REPLACE_RULES + '\n[[replace]]\npattern = "-p {cargo_exact_core}"\n'
+        'files = ["README.md"]\nreason = "x"\n'
+    )
+    target = _f3_target(tmp_path, rules)
+    assert split._press(target, _f3_answers(tmp_path)) == 0
+    assert "cargo test -p zeta-gadget" in (target / "README.md").read_text()
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_exact_placeholder_into_rs_file_never_breaks_real_cargo(
+    tmp_path: Path,
+) -> None:
+    split._require_cargo()
+    target = _f3_target(tmp_path, REPLACE_RULES + EXACT_IN_RS, lock=True)
+    split._assert_cargo(target, "test", "--offline")
+    assert split._press(target, _f3_answers(tmp_path)) == 2
+    assert split._status(target) == ""
+    split._assert_cargo(target, "test", "--offline")
