@@ -213,12 +213,16 @@ retained decision record does not require those files to remain present.
      close (a string, a raw string, a block comment); as always, a reading
      counts only if it returns to code at a line end, and the press writes a
      spelling only when the readings that count agree. A `mod name;`
-     declaration whose doc comment ends inside a string or a block comment
-     exits 2 itself, because the module's own file continues the text.
-   - **Limits.** The press does not see doc text that a macro produces. It
-     does not carry a `#[doc = ...]` attribute on a `mod name;` declaration
-     into the module's own file. An `ignore` fence is prose, so `cargo test --
-     --ignored` may fail on it after a press.
+     declaration exits 2 itself when its doc comment ends inside a string or
+     a block comment, or when it has such an attribute, because the module's
+     own file continues the text.
+   - **Macros.** A doc comment inside a macro call or a `macro_rules!`
+     definition is never proven prose: the macro may add doc text, such as a
+     fence line, around it.
+   - **Limits.** The press does not see doc text that a macro produces. If a
+     macro puts part of a string or a comment in front of a doc comment it is
+     given, the press reads that comment wrongly. An `ignore` fence is prose,
+     so `cargo test -- --ignored` may fail on it after a press.
 
    Real `cargo test` is the oracle for these rules in
    `tests/rebrand/test_cargo_split.py`: each layout that rustdoc compiles,
