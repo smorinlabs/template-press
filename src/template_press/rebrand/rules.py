@@ -22,6 +22,7 @@ from template_press.rebrand.identity import (
     REQUIRED_FIELDS,
     Identity,
     ValidationError,
+    cargo_ident,
     validate_cargo_role,
 )
 from template_press.rebrand.languages import (
@@ -35,7 +36,11 @@ RULES_REL = Path("press") / "press-rules.toml"
 
 SUPPORTED_PLATFORMS: frozenset[str] = frozenset({"darwin", "linux", "win32"})
 
-_PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
+_PLACEHOLDER_RE = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
+# {cargo_exact_<role>} and {cargo_ident_<role>}[_upper]: valid only in
+# [[replace]] patterns. The role is resolved against the identity at render time.
+_CARGO_PLACEHOLDER_RE = re.compile(r"cargo_(exact|ident)_([a-z][a-z0-9_]*)")
+_UPPER = "_upper"
 
 # Every {field} a [[replace]] pattern may reference: the six required
 # identity fields, the derived uppercase app form, and the optional
@@ -87,6 +92,28 @@ class CargoSplit:
     identifier_files: tuple[str, ...] = ()
 
 
+def _cargo_placeholder(inner: str) -> tuple[str, str, bool] | None:
+    """Split a cargo placeholder into (kind, role, upper), or None.
+
+    Only `cargo_ident_<role>` takes `_upper`; no role ends in `_upper`, so
+    `cargo_exact_<role>_upper` and a doubled suffix are not placeholders.
+    """
+    match = _CARGO_PLACEHOLDER_RE.fullmatch(inner)
+    if match is None:
+        return None
+    kind, role = match.groups()
+    upper = kind == "ident" and role.endswith(_UPPER)
+    if upper:
+        role = role[: -len(_UPPER)]
+    if not role or role.endswith(_UPPER) or not role[0].isalpha():
+        return None
+    return kind, role, upper
+
+
+def _is_replace_placeholder(inner: str) -> bool:
+    return inner in ALLOWED_PLACEHOLDERS or _cargo_placeholder(inner) is not None
+
+
 def render_replace_pattern(pattern: str, identity: Identity) -> str:
     """Substitute {field} placeholders with this identity's values.
 
@@ -94,9 +121,22 @@ def render_replace_pattern(pattern: str, identity: Identity) -> str:
     literal to find) and once with the DESTINATION (the literal to write).
     """
     values = identity.as_dict()
+    cargo = dict(identity.cargo_names)
 
     def _sub(m: re.Match[str]) -> str:
         name = m.group(1)
+        parts = _cargo_placeholder(name)
+        if parts is not None:
+            kind, role, upper = parts
+            if role not in cargo:
+                raise ValidationError(
+                    f"[[replace]] pattern {pattern!r} references {{{name}}} but "
+                    f"this identity declares no cargo_names role {role!r}"
+                )
+            if kind == "exact":
+                return cargo[role]
+            ident = cargo_ident(cargo[role])
+            return ident.upper() if upper else ident
         if name not in values:
             raise ValidationError(
                 f"[[replace]] pattern {pattern!r} references {{{name}}} but "
@@ -521,7 +561,7 @@ def _parse_replace(entry: object) -> ReplaceRule:
     # field — this subsumes the former unknown-name check.
     for token in brace_tokens:
         inner = token[1:-1]
-        if not re.fullmatch(r"[a-z_]+", inner) or inner not in ALLOWED_PLACEHOLDERS:
+        if not _is_replace_placeholder(inner):
             raise ValidationError(
                 f"{RULES_REL}: [[replace]] pattern {pattern!r} references an "
                 f"invalid or unknown placeholder {token!r}"

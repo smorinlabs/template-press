@@ -315,7 +315,10 @@ widget = "zeta-gadget"
   and `path` values change.
 - Every Cargo name found in the manifests must be a source value, and every
   source value must be found in a manifest. Otherwise the press exits 2.
-- `[[replace]]` patterns cannot reference `cargo_names`.
+- `[[replace]]` patterns may reference `cargo_names` roles with
+  `{cargo_exact_<role>}`, `{cargo_ident_<role>}`, and `{cargo_ident_<role>_upper}`
+  (see the `[[replace]]` section). `[[clean]]` paths may not. A role name may
+  not end in `_upper`.
 - Without a source config, the press proposes the table. A virtual workspace has
   no primary crate, so it exits 2 and asks for a source config.
 - A proposed role key is the old name's underscore form. It stays unchanged
@@ -509,9 +512,9 @@ identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadge
   `extern crate`, `use`, or a log filter such as `RUST_LOG=acme=debug` or
   `acme=info` (`env_logger` matches the module path `zeta_gadget`). The two
   remedies are to list the file in `identifier_files`, or to cover the span with
-  an exact `[[replace]]`. For a non-primary role, no placeholder renders the
-  crate name yet; `{cargo_exact_<role>}` and `{cargo_ident_<role>}`
-  placeholders arrive with P15-T10.
+  an exact `[[replace]]`. For any role, use `{cargo_ident_<role>}` in the
+  pattern, for example `extern crate {cargo_ident_core};` or
+  `{cargo_ident_core}::`, scoped with `files`.
 - Also refused before any write: an explicit `[lib] name = "acme"` (Cargo
   refuses a hyphen in a library name), a renamed path below `src/` other than
   `src/bin/<name>`, a renamed `acme.rs` or `acme/` anywhere when some `.rs`
@@ -566,7 +569,13 @@ reason = "glued token in generated fixtures"
   against the DESTINATION identity (the literal to write) — exact
   replacement, no fuzzy matching. Must reference at least one placeholder;
   valid placeholders are the six required fields above, plus
-  `app_name_upper`, `display_name`, `npm_name`, and `cli_name`.
+  `app_name_upper`, `display_name`, `npm_name`, and `cli_name`. A Cargo
+  target adds three role placeholders, valid only in `[[replace]]` patterns.
+  For role `core` with name `acme-core`: `{cargo_exact_core}` renders
+  `acme-core`, `{cargo_ident_core}` renders `acme_core`, and
+  `{cargo_ident_core_upper}` renders `ACME_CORE`. There is no
+  `{cargo_exact_<role>_upper}`. An identity without the role exits 2 before any
+  write.
 - `reason` (required): free-form; documents intent.
 - `files` (default: unscoped — all files): fnmatch globs (see the gotcha
   below).

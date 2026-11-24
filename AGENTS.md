@@ -191,6 +191,9 @@ identifier_files = ["docs/api.md"]
 ```
 
 After the press the block is inert and may be removed.
+A `[[replace]]` pattern may name a Cargo role with `{cargo_exact_<role>}`,
+`{cargo_ident_<role>}`, or `{cargo_ident_<role>_upper}`; this covers a span the
+strict refusals leave to the target author, and no role may end in `_upper`.
 `provision`/`status` verbs arrive with the M6 Provision phase.
 
 ## Single source of truth

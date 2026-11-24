@@ -19,7 +19,9 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 NPM_NAME_RE = re.compile(r"^(?:@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*$")
 NPM_NAME_MAX_LENGTH = 214
 CLI_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-CARGO_ROLE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+# A role may not end in "_upper": {cargo_ident_<role>_upper} would otherwise be
+# ambiguous between role "x" uppercased and a role literally named "x_upper".
+CARGO_ROLE_RE = re.compile(r"^(?!.*_upper$)[a-z][a-z0-9_]*$")
 # A leading underscore is allowed (maturin library names); a bare "_" is not.
 CARGO_NAME_RE = re.compile(r"^(?=.*[A-Za-z0-9])[A-Za-z_][A-Za-z0-9_-]*$")
 CARGO_EXACT_PREFIX = "cargo_exact_"
@@ -138,6 +140,11 @@ def validate_cli_name(name: str) -> str:
 
 
 def validate_cargo_role(role: str) -> str:
+    if role.endswith("_upper"):
+        raise ValidationError(
+            f"cargo_names role may not end in '_upper' (that suffix selects the "
+            f"uppercase form in [[replace]] placeholders): {role!r}"
+        )
     if not CARGO_ROLE_RE.fullmatch(role):
         raise ValidationError(
             f"cargo_names role must be lowercase letters, digits, and "

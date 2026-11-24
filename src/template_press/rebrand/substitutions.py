@@ -2235,9 +2235,10 @@ def cargo_split_target_problems(
                 "`use`, or a log filter such as RUST_LOG), but package_files "
                 f"gives it the package spelling. List the file in "
                 "identifier_files, or cover the span with an exact [[replace]] "
-                'rule scoped to the file (pattern "{package_name}::" when '
-                f"{old!r} is the package_name crate; placeholders for other "
-                "roles arrive with P15-T10)"
+                "rule scoped to the file, with a pattern such as "
+                '"{cargo_ident_<role>}::" or "extern crate {cargo_ident_<role>};" '
+                "(or {package_name} when "
+                f"{old!r} is the package_name crate)"
                 for offset in written
             )
     for manifest in cargo_manifest_files(target):

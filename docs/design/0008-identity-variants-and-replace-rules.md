@@ -37,6 +37,20 @@ retained decision record does not require those files to remain present.
    presses (press rewrites press-source.toml post-apply). Arguments
    (sec-07): `files` globs, `paths` (default false), `content` (default
    true), required `reason`. `count` was rejected — occurrence counts rot.
+
+   Cargo targets add three role placeholders, valid only in `[[replace]]`
+   patterns (P15-T10; `[[clean]]` paths still refuse them). A role is a key
+   of `[identity.cargo_names]`, and no role name may end in `_upper`, so
+   the suffix is unambiguous. An identity without the role exits 2 before
+   any write.
+
+   | Placeholder | Renders to | Role `core`, name `acme-core` |
+   |---|---|---|
+   | `{cargo_exact_<role>}` | the exact Cargo name | `acme-core` |
+   | `{cargo_ident_<role>}` | the identifier spelling (hyphens to underscores) | `acme_core` |
+   | `{cargo_ident_<role>_upper}` | that spelling uppercased | `ACME_CORE` |
+
+   There is no `{cargo_exact_<role>_upper}`.
 3. **Substring mode — secondary, per-field opt-in** (sec-02 ch-02-c).
    `[rules] substring_rewrite_fields = ["app_name"]` switches that field
    to plain substring replacement in content AND path components. Gated on
