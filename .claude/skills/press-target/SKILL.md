@@ -407,6 +407,7 @@ identifier_files = ["docs/api.md"]                   # fnmatch globs: zeta_gadge
 | Rust code in any `.rs` file, such as `acme::hi()` or `mod acme;` | `zeta_gadget` |
 | A `.rs` string Cargo proves, in code or in doc-comment text that rustdoc may compile: `feature = "acme"` inside `cfg(`, `cfg!(` or `cfg_attr(`; an `include_str!`/`include_bytes!`/`include!`/`#[path]` path to a file the press renames; or `"acme"` as the other side of an `==`, `!=`, `assert_eq!` or `assert_ne!` comparison with `env!("CARGO_PKG_NAME")` | `zeta-gadget` (the path follows the rename) |
 | Any other `.rs` string literal, such as `println!("acme")` or `#[command(name = "acme")]`, in code or in doc-comment text that rustdoc may compile | exit 2 before any write, with `file:line` |
+| A name in the arguments of a direct `stringify!` or `concat!` call, which turns it into text, in code or in doc-comment text that rustdoc may compile (there the arguments run to the end of the item's doc text when the press cannot find where the call ends; a call that another macro makes is not seen) | exit 2 before any write, with `file:line` |
 | Doc-comment text that rustdoc never compiles: prose and non-Rust fences in a `///` comment (see **Doc comments** below) | `zeta_gadget`, inside double quotes too |
 | `env!("CARGO_BIN_EXE_acme")` | `CARGO_BIN_EXE_zeta-gadget` |
 | Paths, such as `crates/acme` | `crates/zeta-gadget`; declared manifest paths follow |

@@ -168,7 +168,8 @@ is refused by default. A `[[cargo_split]]` block in `press/press-rules.toml`
 opts one role in. Manifests take `zeta-gadget`, and Rust code in `.rs` files
 takes `zeta_gadget`. A `.rs` string takes `zeta-gadget` only when Cargo proves
 it (a feature name inside `cfg`, a path to a renamed file, the other side of a
-`CARGO_PKG_NAME` comparison); any other string exits 2. Doc-comment text is
+`CARGO_PKG_NAME` comparison); any other string exits 2. A name in the
+arguments of `stringify!` or `concat!` also exits 2. Doc-comment text is
 read as Rust code under the same rules, because rustdoc compiles fenced and
 indented code blocks as doctests. It is read as prose only where the press
 proves that rustdoc compiles nothing: in a `///` comment that starts an item's

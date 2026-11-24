@@ -169,7 +169,12 @@ retained decision record does not require those files to remain present.
    a file the press renames (the string must resolve to that file's new
    path); and `"acme"` as the other side of an `==`, `!=`, `assert_eq!` or
    `assert_ne!` comparison with `env!("CARGO_PKG_NAME")`. Any other string
-   occurrence exits 2.
+   occurrence exits 2. So does every occurrence in the arguments of a direct
+   `stringify!` or `concat!` call, in code or in doc text that rustdoc may
+   compile (there the arguments run to the end of the item's doc text when
+   the press cannot find where the call ends), because the call turns the
+   name into text that neither spelling is proven for; a call that another
+   macro makes is not seen.
 
    Doc comments (`///`, `//!`, `/** */`, `/*! */`) follow the same string
    rules wherever rustdoc may compile them, because rustdoc compiles a doc
