@@ -45,6 +45,8 @@ class RustString:
     content_start: int
     content_end: int
     end: int
+    # Still open where its doc comment or code block ends: never provable.
+    open: bool = False
 
 
 def rust_strings(text: str) -> tuple[RustString, ...]:
@@ -57,12 +59,13 @@ def rust_strings(text: str) -> tuple[RustString, ...]:
             newline = text.find("\n", index)
             end = length if newline == -1 else newline
             if _is_doc(text, index, "/"):
-                found.extend(_doc_strings(text, index + 3, end))
+                segments, end = _doc_line_segments(text, index)
+                found.extend(_doc_strings(text, segments))
             index = end + 1
         elif text.startswith("/*", index):
             end = _block_comment_end(text, index)
             if _is_doc(text, index, "*") and end - index >= 5:
-                found.extend(_doc_strings(text, index + 3, end - 2))
+                found.extend(_doc_strings(text, _doc_block_segments(text, index, end)))
             index = end
         elif char == '"':
             found.append(_quoted(text, index, index))
@@ -96,17 +99,126 @@ def _is_doc(text: str, start: int, mark: str) -> bool:
     return third == "!" or (third == mark and text[start + 3 : start + 4] != mark)
 
 
-def _doc_strings(text: str, start: int, end: int) -> list[RustString]:
-    """Terminated string literals in a doc comment body, which rustdoc compiles."""
+Segment = tuple[int, int]
+_FENCE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})(.*)$")
+# Info-string tokens rustdoc compiles; ``ignore``, ``text``, and every other
+# language tag mean the block is not Rust.
+_COMPILED_TAGS = frozenset(
+    {"rust", "should_panic", "no_run", "compile_fail", "test_harness"}
+    | {"standalone_crate", "allow_fail"}
+)
+_EDITION_TAG = re.compile(r"edition\d{4}|E\d{4}")
+
+
+def _doc_line_segments(text: str, start: int) -> tuple[list[Segment], int]:
+    """Bodies of consecutive ``///`` (or ``//!``) lines, and where they end."""
+    prefix = text[start : start + 3]
+    segments: list[Segment] = []
+    position = start
+    while True:
+        newline = text.find("\n", position)
+        end = len(text) if newline == -1 else newline
+        segments.append((position + 3, end))
+        following = end + 1
+        lead = following
+        while lead < len(text) and text[lead] in " \t":
+            lead += 1
+        if (
+            following >= len(text)
+            or not text.startswith(prefix, lead)
+            or not _is_doc(text, lead, "/")
+        ):
+            return segments, end
+        position = lead
+
+
+def _doc_block_segments(text: str, start: int, end: int) -> list[Segment]:
+    """Lines of a ``/** */`` body, each without its leading `` * ``."""
+    segments: list[Segment] = []
+    position = start + 3
+    body_end = end - 2
+    while position <= body_end:
+        newline = text.find("\n", position, body_end)
+        line_end = body_end if newline == -1 else newline
+        lead = position
+        while lead < line_end and text[lead] in " \t":
+            lead += 1
+        if lead < line_end and text[lead] == "*":
+            lead += 1
+        segments.append((lead, line_end))
+        position = line_end + 1
+    return segments
+
+
+def _compiled_fence(info: str) -> bool:
+    tokens = [token for token in re.split(r"[\s,]+", info.strip()) if token]
+    return all(
+        token in _COMPILED_TAGS or _EDITION_TAG.fullmatch(token) for token in tokens
+    )
+
+
+def _doc_strings(text: str, segments: Sequence[Segment]) -> list[RustString]:
+    """String literals in the doc comment's fenced blocks that rustdoc compiles.
+
+    Each block is read across its lines without their comment prefix, so a
+    string may span lines. Prose and other fences hold no Rust strings.
+    """
+    found: list[RustString] = []
+    code: list[Segment] = []
+    fence: str | None = None
+    compiled = False
+    for segment in segments:
+        line = text[segment[0] : segment[1]]
+        match = _FENCE.match(line)
+        if fence is None:
+            if match:
+                fence, compiled, code = (
+                    match.group(1),
+                    _compiled_fence(match.group(2)),
+                    [],
+                )
+            continue
+        if (
+            match
+            and match.group(1)[0] == fence[0]
+            and len(match.group(1)) >= len(fence)
+            and not match.group(2).strip()
+        ):
+            if compiled:
+                found.extend(_code_strings(text, code))
+            fence = None
+            continue
+        code.append(segment)
+    if fence is not None and compiled:
+        found.extend(_code_strings(text, code))  # an unclosed fence runs to the end
+    return found
+
+
+def _code_strings(text: str, lines: Sequence[Segment]) -> list[RustString]:
+    """Lex the joined code lines, then map each literal back into ``text``."""
+    if not lines:
+        return []
+    joined = "\n".join(text[start:end] for start, end in lines)
+    starts: list[int] = []
+    offset = 0
+    for start, end in lines:
+        starts.append(offset)
+        offset += end - start + 1
+
+    def real(virtual: int) -> int:
+        index = max(i for i, value in enumerate(starts) if value <= virtual)
+        start, end = lines[index]
+        return min(start + virtual - starts[index], end)
+
     return [
         RustString(
-            literal.start + start,
-            literal.content_start + start,
-            literal.content_end + start,
-            literal.end + start,
+            real(literal.start),
+            real(literal.content_start),
+            real(literal.content_end),
+            real(literal.end),
+            open=literal.end <= literal.content_end or literal.open,
         )
-        for literal in rust_strings(text[start:end])
-        if literal.end > literal.content_end
+        for literal in rust_strings(joined)
     ]
 
 
@@ -169,6 +281,8 @@ def string_role(text: str, literal: RustString, name: str) -> StringRole:
     an ``include_*!`` or ``#[path]`` argument. ``pkg_name``: the whole literal
     is compared on a line that reads ``CARGO_PKG_NAME``.
     """
+    if literal.open:
+        return "other"
     before = text[: literal.start]
     content = text[literal.content_start : literal.content_end]
     if _FEATURE_BEFORE.search(before) and content == name:

@@ -887,6 +887,78 @@ def test_round_two_unprovable_strings_are_refused(
     assert "Rust string literal" in err
 
 
+# --- fix round 3: only compiled doctest fences take the string rules -----------
+
+DOC_PRESS_CASES = {
+    # Prose outside a fence is not compiled: it keeps the identifier spelling.
+    "prose_quote": (
+        '/// The "acme" crate says hello.\n',
+        '/// The "zeta_gadget" crate says hello.',
+    ),
+    # Fences that rustdoc does not compile are prose too.
+    "text_fence": (
+        '/// ```text\n/// say "acme"\n/// ```\n',
+        '/// say "zeta_gadget"',
+    ),
+    "ignore_fence": (
+        '/// ```ignore\n/// let s = "acme";\n/// ```\n',
+        '/// let s = "zeta_gadget";',
+    ),
+    # A compiled block read across its doc lines, with a provable string.
+    "block_star_feature": (
+        '/**\n * ```\n * assert!(cfg!(feature = "acme"));\n * ```\n */\n',
+        ' * assert!(cfg!(feature = "zeta-gadget"));',
+    ),
+}
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("case", sorted(DOC_PRESS_CASES))
+def test_doc_fences_follow_rustdoc(case: str, tmp_path: Path) -> None:
+    _require_cargo()
+    lead, written = DOC_PRESS_CASES[case]
+    files = {
+        "Cargo.toml": FEATURE_PKG,
+        "src/lib.rs": lead + PLAIN_LIB,
+        "README.md": "# acme-repo, by acmectl\n",
+    }
+    target = _round_target(tmp_path, files, lock=True)
+    _assert_cargo(target, "test", "--offline")
+
+    _press_and_prove(target, _zeta(tmp_path), ZETA)
+
+    assert written in (target / "src/lib.rs").read_text()
+
+
+@pytest.mark.parametrize(
+    ("lib", "line"),
+    [
+        # R1: a doctest string spanning two doc lines is lexed as one string.
+        (
+            '/// ```\n/// let s = "acme\n/// tail";\n'
+            '/// assert!(s.starts_with(env!("CARGO_PKG_NAME")));\n/// ```\n',
+            2,
+        ),
+        # A string still open when the doc comment ends is refused.
+        ('/// ```\n/// let s = "acme\n', 2),
+        # Tagged fences that rustdoc compiles.
+        ('/// ```rust,no_run\n/// println!("acme");\n/// ```\n', 2),
+        ('/// ```should_panic\n/// panic!("acme");\n/// ```\n', 2),
+        ('//! ```compile_fail\n//! let x: i32 = "acme";\n//! ```\n', 2),
+    ],
+)
+def test_compiled_doc_fence_strings_are_refused(
+    lib: str, line: int, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = _lib_crate(**{"src/lib.rs": lib + PLAIN_LIB})
+    files["Cargo.toml"] = FEATURE_PKG
+    err = _refusal(tmp_path, files, capsys)
+    assert f"src/lib.rs:{line}:" in err
+    assert "Rust string literal" in err
+
+
 # --- identity and rules units ----------------------------------------------------
 
 
