@@ -85,7 +85,9 @@ from template_press.rebrand.rules import (
 )
 from template_press.rebrand.rust_text import (
     cut_module_docs,
+    quoted_spans,
     rust_strings,
+    span_within,
     split_rust_replacements,
     string_at,
     string_role,
@@ -2138,6 +2140,7 @@ def cargo_split_target_problems(
         )
         kept = kept_spans(new_text, rules.keep_names)
         strings = rust_strings(new_text) if path.endswith(".rs") else ()
+        quoted = quoted_spans(new_text) if path.endswith(".rs") else ()
         if path.endswith(".rs"):
             problems.extend(
                 f"{path}:{_line_of(text, offset)}: the documentation above this "
@@ -2164,6 +2167,16 @@ def cargo_split_target_problems(
                 kept,
             ):
                 where = f"{path}:{_line_of(new_text, start)}"
+                if span_within(quoted, (start, end)):
+                    problems.append(
+                        f"{where}: {old!r} is in the arguments of a `stringify!` "
+                        "or `concat!` call, which turns them into text, so the "
+                        f"press cannot choose {new!r} or {cargo_ident(new)!r}. In "
+                        "a doc comment, a call that the press cannot find the end "
+                        "of holds the rest of the item's doc comments. Edit the "
+                        "call by hand before pressing"
+                    )
+                    continue
                 literal = string_at(strings, (start, end))
                 if literal is not None:
                     place, remedy = (

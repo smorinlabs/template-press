@@ -4,7 +4,8 @@ A hyphen-free crate name in a ``.rs`` file is a Rust identifier, so it takes
 the underscore spelling, except inside a string literal. A string holds a
 Cargo name, a path, or prose. The press gives it a spelling only where Cargo
 proves which one is right; any other string occurrence is left untouched, so
-the split preflight refuses it before any write.
+the split preflight refuses it before any write. So is every occurrence in
+the arguments of ``stringify!`` or ``concat!``, which turn code into text.
 
 A doc comment is Rust code wherever rustdoc compiles it as a doctest. The
 press does not parse Markdown, so it reads doc text as code from every line
@@ -52,6 +53,11 @@ _PATH_BEFORE = re.compile(
     r"(?:\b(?:include_str|include_bytes|include)!\s*\(\s*|#!?\[\s*path\s*=\s*)$"
 )
 
+# Macros that turn their arguments into text. A crate name there is neither an
+# identifier nor a string that Cargo reads, so no spelling is provable.
+_QUOTING_MACROS = frozenset({"stringify", "concat"})
+_QUOTING_NAME = re.compile(r"\b(?:stringify|concat)\b")
+_OPENERS = frozenset("([{")
 _ATTRIBUTE = re.compile(r"#!?\s*\[")
 # An attribute that adds doc text the press cannot read: ``doc = ...`` in any
 # form, or a macro variable that may expand to one.
@@ -130,9 +136,27 @@ def cut_module_docs(text: str) -> tuple[int, ...]:
     return _scan(text)[1]
 
 
-def _scan(text: str) -> tuple[tuple[RustString, ...], tuple[int, ...]]:
+def quoted_spans(text: str) -> tuple[Span, ...]:
+    """The arguments of each ``stringify!`` and ``concat!`` call in ``text``.
+
+    The call turns them into text, so no spelling of a crate name there is
+    provable. In a doc comment that rustdoc may compile, a span runs as far as
+    the call may reach.
+    """
+    return _scan(text)[2]
+
+
+def span_within(spans: Sequence[Span], span: Span) -> bool:
+    """Whether one of ``spans`` holds ``span``."""
+    return any(low <= span[0] and span[1] <= high for low, high in spans)
+
+
+def _scan(
+    text: str,
+) -> tuple[tuple[RustString, ...], tuple[int, ...], tuple[Span, ...]]:
     found: list[RustString] = []
     cut: list[int] = []
+    quoted: list[Span] = []
     docs: dict[int, list[RustString]] = {}
     index, length = 0, len(text)
     last = ""  # the last code character, outside comments and plain attributes
@@ -143,7 +167,11 @@ def _scan(text: str) -> tuple[tuple[RustString, ...], tuple[int, ...]]:
     # For each open bracket, whether a macro call or definition holds it. A
     # macro may add doc text around the doc comments it is given.
     macros: list[bool] = []
+    # For each open bracket, where a quoting macro opens it, or -1.
+    calls: list[int] = []
+    word = ""  # the last code token, past spaces and comments, if it is a word
     bang = False  # the code ends with ``name!``, or ``name! name``
+    quoting = False  # the code ends with ``stringify!`` or ``concat!``
     while index < length:
         if text.startswith(("//", "/*"), index):
             end = _comment_end(text, index)
@@ -157,6 +185,7 @@ def _scan(text: str) -> tuple[tuple[RustString, ...], tuple[int, ...]]:
                         unread or (inner and pending),
                     )
                     docs.update(cluster.literals)
+                    quoted += cluster.quoted
                     pending = not inner and (cluster.hidden or cluster.cut)
                     module = _MODULE_FILE.match(text, cluster.end)
                     if cluster.cut and not inner and module:
@@ -182,17 +211,24 @@ def _scan(text: str) -> tuple[tuple[RustString, ...], tuple[int, ...]]:
         char = text[start]
         if char in "{([":
             macros.append(bang or any(macros[-1:]))
+            calls.append(start if quoting else -1)
         elif char in "})]":
             del macros[-1:]
+            if calls and (opened := calls.pop()) >= 0:
+                quoted.append((opened, index))
         if char == "!":
-            bang = bool(_IDENT_CHARS.match(text[start - 1 : start]))
+            bang = bool(word)
         elif not (char.isspace() or _IDENT_CHARS.match(char)) or literal:
             bang = False
+        if not char.isspace():
+            quoting = char == "!" and word in _QUOTING_MACROS
+            word = text[start:index] if _IDENT_CHARS.match(char) and not literal else ""
         if start >= attribute_end and not char.isspace():
             last = text[index - 1]
             unread = False
             pending = pending and last not in ";}"
-    return tuple(found), tuple(sorted(set(cut)))
+    quoted += [(opened, length) for opened in calls if opened >= 0]
+    return tuple(found), tuple(sorted(set(cut))), tuple(quoted)
 
 
 def _item_start(text: str, position: int) -> int:
@@ -299,6 +335,7 @@ class _Cluster:
     end: int  # where the item's code begins
     hidden: bool  # it holds doc text the press cannot read
     cut: bool  # it may end inside a string or a comment that later text closes
+    quoted: list[Span]  # where a quoting macro's arguments may hold it
 
 
 def _doc_cluster(text: str, index: int, clean: bool, unread: bool) -> _Cluster:
@@ -355,10 +392,10 @@ def _doc_cluster(text: str, index: int, clean: bool, unread: bool) -> _Cluster:
     # so nothing after that text can be read.
     sealed = sealed and not after_hidden
     unread_from = len(lines) if sealed or not unknown else min(unknown)
-    literals, cut = _doc_literals(
+    literals, cut, quoted = _doc_literals(
         text, lines, owners, restarts, whole, sealed, unread_from, unknown
     )
-    return _Cluster(literals, position, hidden, cut)
+    return _Cluster(literals, position, hidden, cut, quoted)
 
 
 def _doc_lines(text: str, start: int, end: int) -> list[Segment]:
@@ -380,7 +417,7 @@ def _doc_literals(
     sealed: bool,
     unread_from: int,
     unknown: set[int],
-) -> tuple[dict[int, list[RustString]], bool]:
+) -> tuple[dict[int, list[RustString]], bool, list[Span]]:
     """Read the joined doc lines as code wherever a code block may hold them.
 
     While the Markdown structure is ``proven``, the press knows where each
@@ -397,7 +434,8 @@ def _doc_literals(
     read, so each of those lines is unread as a whole. Before that, such text
     leaves only the lexer state of an ``unknown`` line in doubt: one more
     reading starts there in each state that the later text can close. Also
-    returns whether the text may end inside a string or a comment.
+    returns whether the text may end inside a string or a comment, and where
+    the lines read as code may sit in a quoting macro's arguments.
     """
     bodies = [text[low:high] for low, high in lines]
     widths = [len(body) - len(body.lstrip(" ")) for body in bodies if body.strip()]
@@ -493,7 +531,44 @@ def _doc_literals(
         found[owners[number]] += _agreed(
             [reading for reading in binding if reading[2]], doc, number
         )
-    return found, cut
+    code = [lines[number] for number, row in lexed if row]
+    return found, cut, _doc_calls(text, code, len(restarts) > 1)
+
+
+def _doc_calls(text: str, lines: Sequence[Segment], apart: bool) -> list[Span]:
+    """Where doc lines read as code may sit in a quoting macro's arguments.
+
+    The lines are read as code from each macro name on, which is exact
+    wherever the name is code. A call runs to the last line when the lines do
+    not close it, or when they are ``apart``: an attribute between them may
+    add a bracket.
+    """
+    pieces: list[str] = []
+    base = position = lines[0][0] if lines else 0
+    for low, high in lines:
+        pieces += [re.sub(r"[^\n]", " ", text[position:low]), text[low:high]]
+        position = high
+    view = "".join(pieces)  # the lines, each at its place in the file
+    calls: list[Span] = []
+    for name in _QUOTING_NAME.finditer(view):
+        bang = _item_start(view, name.end())  # past spaces and comments
+        opener = _item_start(view, bang + 1)
+        if view[bang : bang + 1] == "!" and view[opener : opener + 1] in _OPENERS:
+            end = len(view) if apart else _group_end(view, opener + 1)
+            calls.append((base + name.start(), base + end))
+    return calls
+
+
+def _group_end(text: str, index: int) -> int:
+    """Where the bracket group that is open at ``index`` closes, read as code."""
+    depth = 1
+    while index < len(text) and depth:
+        if text.startswith(("//", "/*"), index):
+            index = _comment_end(text, index)
+            continue
+        depth += (text[index] in "([{") - (text[index] in ")]}")
+        index = _token(text, index)[0]
+    return index
 
 
 def _open_states(doc: str) -> list[_State] | None:
@@ -798,11 +873,13 @@ def split_rust_replacements(
     text: str, spans: Sequence[Span], name: str, identifier: str, package: str
 ) -> list[str | None]:
     """The spelling for each matched span; ``None`` leaves it unchanged."""
-    strings = rust_strings(text)
+    strings, _, quoted = _scan(text)
     out: list[str | None] = []
     for span in spans:
         literal = string_at(strings, span)
-        if literal is None:
+        if span_within(quoted, span):
+            out.append(None)
+        elif literal is None:
             out.append(identifier)
         elif string_role(text, literal, name) == "other":
             out.append(None)
