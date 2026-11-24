@@ -168,7 +168,7 @@ is refused by default. A `[[cargo_split]]` block in `press/press-rules.toml`
 opts one role in. Manifests take `zeta-gadget`, and Rust code in `.rs` files
 takes `zeta_gadget`. A `.rs` string takes `zeta-gadget` only when Cargo proves
 it (a feature name inside `cfg`, a path to a renamed file, the other side of a
-`CARGO_PKG_NAME` comparison), including strings in doc comments;
+`CARGO_PKG_NAME` comparison), including strings in compiled doctest blocks;
 any other string exits 2. The block's `package_files` and `identifier_files`
 globs name every other file that holds the crate name. Any other occurrence,
 and any identifier context (`::`, `use`, `extern crate`, `RUST_LOG`) in a

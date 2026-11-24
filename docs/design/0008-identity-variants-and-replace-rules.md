@@ -168,9 +168,13 @@ retained decision record does not require those files to remain present.
    `cfg(`, `cfg!(` or `cfg_attr(`; an `include_*!` or `#[path]` string naming
    a file the press renames (the string must resolve to that file's new
    path); and `"acme"` as the other side of an `==`, `!=`, `assert_eq!` or
-   `assert_ne!` comparison with `env!("CARGO_PKG_NAME")`. Strings inside doc
-   comments (`///`, `//!`, `/**`, `/*!`), which rustdoc compiles, follow the
-   same rules. Any other string occurrence exits 2.
+   `assert_ne!` comparison with `env!("CARGO_PKG_NAME")`. In doc comments
+   (`///`, `//!`, `/**`, `/*!`), the same rules apply only inside fenced code
+   blocks that rustdoc compiles: no tag, or only tags such as `rust`,
+   `should_panic`, `no_run`, and `compile_fail`. A block is read across its
+   lines without the comment prefix, and a string still open at the end of the
+   block is refused. Prose and `ignore` or `text` fences keep the identifier
+   spelling. Any other string occurrence exits 2.
    `CARGO_BIN_EXE_acme` becomes `CARGO_BIN_EXE_zeta-gadget`. Paths take the
    package spelling, so `crates/acme` becomes `crates/zeta-gadget` and declared
    manifest paths follow. A file matched by `package_files` or
