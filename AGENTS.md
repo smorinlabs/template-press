@@ -195,6 +195,7 @@ it (a feature name inside `cfg`, a path to a renamed file, the other side of a
 on either side); any other string exits 2. A name in the arguments of a
 direct `stringify!` or `concat!` call also exits 2, and so does a rename such
 as `use core::stringify as s;`; a call that another macro makes is not seen.
+A character literal of the name in code, such as `'x'` for a crate `x`, exits 2.
 The press also cannot see code that compares the crate and package names
 without spelling either, such as `module_path!()`,
 `core::any::type_name::<T>()`, or `env!("CARGO_CRATE_NAME")` against

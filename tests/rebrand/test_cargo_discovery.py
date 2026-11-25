@@ -39,7 +39,13 @@ from .conftest import posix_only
 from .test_cargo_source_paths import CORE_DEST, CORE_SOURCE
 from .test_cargo_source_paths import _answers as _paths_answers
 from .test_cargo_source_paths import _seed as _paths_seed
-from .test_cargo_split import _assert_cargo, _package, _require_cargo, _status
+from .test_cargo_split import (
+    _assert_cargo,
+    _package,
+    _require_cargo,
+    _set_origin,
+    _status,
+)
 from .test_cargo_split import _press as _cli_press
 
 OWNER = "acme-org"
@@ -1670,16 +1676,22 @@ def test_destination_crate_named_by_a_rust_keyword_is_refused(
 def test_keyword_source_name_that_does_not_change_is_not_refused(
     tmp_path: Path,
 ) -> None:
-    """Only a rewrite to a keyword is refused, not a source name kept as is."""
+    """Only a rewrite to a keyword is refused, not a source name kept as is:
+    a binary named ``gen``, a keyword only from edition 2024, stays ``gen``."""
     target = tmp_path / "target-repo"
     target.mkdir()
     _paths_seed(
         target,
-        {"Cargo.toml": _package("acme-core"), "src/lib.rs": _KEYWORD_LIB},
+        {
+            "Cargo.toml": _package("acme-core")
+            + '\n[[bin]]\nname = "gen"\npath = "src/main.rs"\n',
+            "src/lib.rs": _KEYWORD_LIB,
+            "src/main.rs": _KEYWORD_MAIN,
+        },
         identity=CORE_SOURCE,
-        names={"core": "acme-core"},
+        names={"core": "acme-core", "tool": "gen"},
     )
-    answers = _paths_answers(tmp_path, CORE_DEST, {"core": "zeta-core"})
+    answers = _paths_answers(tmp_path, CORE_DEST, {"core": "zeta-core", "tool": "gen"})
 
     assert _cli_press(target, answers) == 0
 
@@ -1723,6 +1735,7 @@ def _respelled_files(case: str) -> dict[str, str]:
         + '\n[dependencies]\nacme-core = { path = "../acme-core" }\n',
         "widget/src/lib.rs": "pub fn w() -> u8 {\n    acme_core::hi()\n}\n",
         "widget/tests/t.rs": "#[test]\nfn t() {\n    assert_eq!(acme_widget::w(), 1);\n}\n",
+        "README.md": "ships acmectl\n",  # so press verify can find app_name
     }
 
 
@@ -1794,4 +1807,6 @@ def test_hyphenated_name_declared_by_its_underscore_form_matches_real_cargo(
         assert _status(target) == ""
     else:
         assert (target / RECEIPT_REL).is_file()
+        _set_origin(target, {**CORE_DEST, "repo_name": "zeta-widget"})
+        assert verify_command(["--target", str(target)]) == 0
     _assert_cargo(target, "test", "--offline", "--workspace")

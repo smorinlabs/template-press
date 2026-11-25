@@ -237,7 +237,9 @@ retained decision record does not require those files to remain present.
    compile (there the arguments run to the end of the item's doc text when
    the press cannot find where the call ends), because the call turns the
    name into text that neither spelling is proven for; a call that another
-   macro makes is not seen. A rename of either macro anywhere in a `.rs` file,
+   macro makes is not seen. A character literal of the name in code, such as
+   `'x'` for a crate `x`, exits 2, because neither spelling fits between
+   single quotes. A rename of either macro anywhere in a `.rs` file,
    such as `use core::stringify as s;` or `use core::{stringify as s};`, exits
    2 at the rename, because a call through the new name, in that file or
    another, is not seen either.
