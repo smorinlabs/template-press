@@ -689,6 +689,22 @@ CHAR_CASES = {
     "lifetime": ("pub fn f<'x>(s: &'x str) -> &'x str {\n    s\n}\n", 0),
     "line_comment": ("// a char such as 'x' is fine here\n", 0),
     "doc_prose": ("/// Returns 'x' as prose.\npub fn g() {}\n", 0),
+    # Cycle 5 thread 4698809961: rustdoc compiles these as doctests.
+    "doctest_fence": (
+        "/// ```\n/// let c: char = 'x';\n/// assert_eq!(c, 'x');\n/// ```\n"
+        "pub fn d() {}\n",
+        2,
+    ),
+    "doctest_indented": (
+        "/// Hi.\n///\n///     let c: char = 'x';\n///     assert_eq!(c, 'x');\n"
+        "pub fn d() {}\n",
+        2,
+    ),
+    "doctest_block": (
+        "/**\n```\nlet c: char = 'x';\nassert_eq!(c, 'x');\n```\n*/\npub fn d() {}\n",
+        2,
+    ),
+    "text_fence": ("/// ```text\n/// 'x'\n/// ```\npub fn d() {}\n", 0),
 }
 
 
@@ -718,7 +734,9 @@ def test_char_literal_of_the_crate_name_is_refused(
     assert _press(target, answers) == expected
 
     if expected:
-        assert "src/lib.rs:4:" in capsys.readouterr().err
+        lines = CHAR_CASES[case][0].split("\n")
+        line = 4 + next(n for n, text in enumerate(lines) if "'x'" in text)
+        assert f"src/lib.rs:{line}:" in capsys.readouterr().err
         assert _status(target) == ""
         assert not (target / RECEIPT_REL).exists()
 
@@ -726,7 +744,7 @@ def test_char_literal_of_the_crate_name_is_refused(
 @pytest.mark.slow
 @posix_only
 @pytest.mark.xdist_group(name="shared-tool-caches")
-@pytest.mark.parametrize("case", ["char_literal", "lifetime"])
+@pytest.mark.parametrize("case", ["char_literal", "doctest_fence", "lifetime"])
 def test_char_literal_refusal_matches_real_cargo(case: str, tmp_path: Path) -> None:
     """Real Cargo: the old receipt wrote ``'zeta_gadget'``, which does not
     compile; a lifetime of the same name still presses and builds."""

@@ -418,10 +418,11 @@ def span_within(spans: Sequence[Span], span: Span) -> bool:
 
 def _scan(
     text: str,
-) -> tuple[tuple[RustString, ...], tuple[int, ...], tuple[Span, ...]]:
+) -> tuple[tuple[RustString, ...], tuple[int, ...], tuple[Span, ...], tuple[Span, ...]]:
     found: list[RustString] = []
     cut: list[int] = []
     quoted: list[Span] = []
+    chars: list[Span] = []  # character literals in doc lines read as code
     docs: dict[int, list[RustString]] = {}
     index, length = 0, len(text)
     last = ""  # the last code character, outside comments and plain attributes
@@ -457,6 +458,7 @@ def _scan(
                     )
                     docs.update(cluster.literals)
                     quoted += cluster.quoted
+                    chars += cluster.chars
                     pending = not inner and (cluster.hidden or cluster.cut)
                     called = not inner and cluster.calling
                     module = _MODULE_FILE.match(text, cluster.end)
@@ -511,7 +513,7 @@ def _scan(
             called = called and last not in ";}"
     if held:
         quoted.append((segment, length))
-    return tuple(found), tuple(sorted(set(cut))), tuple(quoted)
+    return tuple(found), tuple(sorted(set(cut))), tuple(quoted), tuple(chars)
 
 
 def _item_start(text: str, position: int) -> int:
@@ -638,6 +640,7 @@ class _Cluster:
     cut: bool  # it may end inside a string or a comment that later text closes
     quoted: list[Span]  # where a quoting macro's arguments may hold it
     calling: bool  # it may end inside such arguments, which later text closes
+    chars: list[Span]  # the character literals of lines it may compile as code
 
 
 def _doc_cluster(
@@ -700,13 +703,13 @@ def _doc_cluster(
     # so nothing after that text can be read.
     sealed = sealed and not after_hidden
     unread_from = len(lines) if sealed or not unknown else min(unknown)
-    literals, cut, quoted, open_end = _doc_literals(
+    literals, cut, quoted, open_end, chars = _doc_literals(
         text, lines, owners, restarts, whole, sealed, unread_from, unknown
     )
     if open_from is not None and open_from < len(lines):
         quoted.append((lines[open_from][0], lines[-1][1]))
     calling = not sealed and (open_end or open_from is not None)
-    return _Cluster(literals, position, hidden, cut, quoted, calling)
+    return _Cluster(literals, position, hidden, cut, quoted, calling, chars)
 
 
 def _doc_lines(text: str, start: int, end: int) -> list[Segment]:
@@ -728,7 +731,7 @@ def _doc_literals(
     sealed: bool,
     unread_from: int,
     unknown: set[int],
-) -> tuple[dict[int, list[RustString]], bool, list[Span], bool]:
+) -> tuple[dict[int, list[RustString]], bool, list[Span], bool, list[Span]]:
     """Read the joined doc lines as code wherever a code block may hold them.
 
     While the Markdown structure is ``proven``, the press knows where each
@@ -747,7 +750,7 @@ def _doc_literals(
     reading starts there in each state that the later text can close. Also
     returns whether the text may end inside a string or a comment, where the
     lines read as code may sit in a quoting macro's arguments, and whether
-    they may end there.
+    they may end there, and the character literals of the lines read as code.
     """
     bodies = [text[low:high] for low, high in lines]
     widths = [len(body) - len(body.lstrip(" ")) for body in bodies if body.strip()]
@@ -845,7 +848,10 @@ def _doc_literals(
         )
     code = [lines[number] for number, row in lexed if row]
     breaks = [lines[number][0] for number in restarts if number]
-    return found, cut, *_doc_calls(text, code, breaks)
+    chars = [
+        m.span() for low, high in code for m in _CHAR_LITERAL.finditer(text, low, high)
+    ]
+    return found, cut, *_doc_calls(text, code, breaks), chars
 
 
 def _doc_calls(
@@ -1292,8 +1298,8 @@ def split_rust_replacements(
     text: str, spans: Sequence[Span], name: str, identifier: str, package: str
 ) -> list[str | None]:
     """The spelling for each matched span; ``None`` leaves it unchanged."""
-    strings, _, quoted = _scan(text)
-    chars = _char_literals(text)
+    strings, _, quoted, doc_chars = _scan(text)
+    chars = _char_literals(text) + doc_chars
     out: list[str | None] = []
     for span in spans:
         literal = string_at(strings, span)
