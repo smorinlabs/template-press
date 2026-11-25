@@ -35,6 +35,13 @@ from template_press.rebrand.rules import load_rules
 from template_press.rebrand.substitutions import check_target_keep_names
 from template_press.rebrand.verify_cli import verify_command
 
+from .conftest import posix_only
+from .test_cargo_source_paths import CORE_DEST, CORE_SOURCE
+from .test_cargo_source_paths import _answers as _paths_answers
+from .test_cargo_source_paths import _seed as _paths_seed
+from .test_cargo_split import _assert_cargo, _package, _require_cargo, _status
+from .test_cargo_split import _press as _cli_press
+
 OWNER = "acme-org"
 AUTHOR = 'authors = ["Ada Example <ada@example.test>"]\n'
 
@@ -1616,3 +1623,81 @@ def test_bin_env_token_in_an_excluded_dir_is_refused(tmp_path, capsys) -> None:
     assert "CARGO_BIN_EXE_acme" in out
     # M4: no table can help a file the press does not rewrite.
     assert "excluded from rewriting; remove the exclusion" in out
+
+
+# --- F3: a destination crate name that is a Rust keyword -------------------------
+
+_KEYWORD_LIB = "pub fn hi() -> u8 {\n    1\n}\n"
+_KEYWORD_MAIN = "fn main() {\n    let _ = acme_core::hi();\n}\n"
+
+
+def _keyword_target(tmp_path: Path, *, table: bool) -> tuple[Path, Path]:
+    """A crate whose destination name is the keyword ``type``."""
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    package = "acme-core" if table else "acme_core"
+    _paths_seed(
+        target,
+        {
+            "Cargo.toml": _package(package),
+            "src/lib.rs": _KEYWORD_LIB,
+            "src/main.rs": _KEYWORD_MAIN,
+        },
+        names={"core": "acme-core"} if table else None,
+    )
+    answers = _paths_answers(
+        tmp_path,
+        {**CORE_DEST, "package_name": "type"},
+        {"core": "type"} if table else None,
+    )
+    return target, answers
+
+
+@pytest.mark.parametrize("table", [True, False], ids=["table", "tableless"])
+def test_destination_crate_named_by_a_rust_keyword_is_refused(
+    table: bool, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target, answers = _keyword_target(tmp_path, table=table)
+
+    assert _cli_press(target, answers) == 2
+
+    out = capsys.readouterr()
+    assert "['type'], a Rust keyword" in out.out + out.err
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
+def test_keyword_source_name_that_does_not_change_is_not_refused(
+    tmp_path: Path,
+) -> None:
+    """Only a rewrite to a keyword is refused, not a source name kept as is."""
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _paths_seed(
+        target,
+        {"Cargo.toml": _package("acme-core"), "src/lib.rs": _KEYWORD_LIB},
+        identity=CORE_SOURCE,
+        names={"core": "acme-core"},
+    )
+    answers = _paths_answers(tmp_path, CORE_DEST, {"core": "zeta-core"})
+
+    assert _cli_press(target, answers) == 0
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("table", [True, False], ids=["table", "tableless"])
+def test_keyword_destination_refusal_matches_real_cargo(
+    table: bool, tmp_path: Path
+) -> None:
+    """Real Cargo: the old receipt wrote ``type::hi()``, which does not parse."""
+    _require_cargo()
+    target, answers = _keyword_target(tmp_path, table=table)
+    _assert_cargo(target, "test", "--offline")
+
+    assert _cli_press(target, answers) == 2
+
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
+    _assert_cargo(target, "test", "--offline")

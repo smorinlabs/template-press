@@ -409,6 +409,16 @@ def _undeclared_lock_problem(target: Path, rules: Rules) -> str | None:
     )
 
 
+# Strict, reserved, and 2018+ keywords. A crate so named can only be spelled
+# ``r#name`` in code (``self``, ``super``, ``crate``, ``Self`` not even that).
+_RUST_KEYWORDS = frozenset(
+    "as async await break const continue crate dyn else enum extern false fn for "
+    "gen if impl in let loop match mod move mut pub ref return self Self static "
+    "struct super trait true try type unsafe use where while abstract become box "
+    "do final macro override priv typeof unsized virtual yield".split()
+)
+
+
 def cargo_problems(
     target: Path, source: Identity, dest: Identity | None, rules: Rules
 ) -> list[str]:
@@ -419,10 +429,22 @@ def cargo_problems(
     default library of package ``acme-core``.
     """
     facts = read_cargo_facts(target)
+    moved = None if dest is None else identity_row_rewriter(source, dest, target, rules)
+    if moved is not None:
+        keywords = sorted(
+            ({cargo_ident(moved(name)) for name in facts.names} & _RUST_KEYWORDS)
+            - {cargo_ident(name) for name in facts.names}
+        )
+        if keywords:
+            return [
+                f"cargo_names: the press would name a crate {keywords!r}, a Rust "
+                "keyword that code can only spell as a raw identifier, which the "
+                "press does not write. Choose another name"
+            ]
     if not source.cargo_names:
-        if dest is None:
+        if dest is None or moved is None:
             return []
-        rewrite = identity_row_rewriter(source, dest, target, rules)
+        rewrite = moved
         changing = _changing_values(source, dest)
         broken = [
             name
