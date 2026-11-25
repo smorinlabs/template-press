@@ -679,6 +679,69 @@ def _lib_crate(**extra: str) -> dict[str, str]:
     }
 
 
+# F4: a one-letter crate ``x`` whose name is also a character literal. The
+# email moves off ``example.test``, which holds the letter.
+ONE_LETTER = {**ACME, "package_name": "x", "email": "acme@mail.test"}
+ONE_LETTER_LIB = "pub fn hi() -> u8 {\n    1\n}\n"
+CHAR_CASES = {
+    "char_literal": ("pub const C: char = 'x';\n", 2),
+    "lifetime": ("pub fn f<'x>(s: &'x str) -> &'x str {\n    s\n}\n", 0),
+    "line_comment": ("// a char such as 'x' is fine here\n", 0),
+    "doc_prose": ("/// Returns 'x' as prose.\npub fn g() {}\n", 0),
+}
+
+
+def _one_letter(tmp_path: Path, case: str) -> tuple[Path, Path]:
+    files = {
+        "Cargo.toml": _package("x"),
+        "src/lib.rs": ONE_LETTER_LIB + CHAR_CASES[case][0],
+    }
+    target = _round_target(tmp_path, files, names={"core": "x"}, identity=ONE_LETTER)
+    answers = _answers(
+        tmp_path,
+        "zeta.toml",
+        {**ZETA, "email": "zeta@mail.test"},
+        {"core": "zeta-gadget"},
+    )
+    return target, answers
+
+
+@pytest.mark.parametrize("case", sorted(CHAR_CASES))
+def test_char_literal_of_the_crate_name_is_refused(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Neither spelling fits between two single quotes in code."""
+    target, answers = _one_letter(tmp_path, case)
+    expected = CHAR_CASES[case][1]
+
+    assert _press(target, answers) == expected
+
+    if expected:
+        assert "src/lib.rs:4:" in capsys.readouterr().err
+        assert _status(target) == ""
+        assert not (target / RECEIPT_REL).exists()
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("case", ["char_literal", "lifetime"])
+def test_char_literal_refusal_matches_real_cargo(case: str, tmp_path: Path) -> None:
+    """Real Cargo: the old receipt wrote ``'zeta_gadget'``, which does not
+    compile; a lifetime of the same name still presses and builds."""
+    _require_cargo()
+    target, answers = _one_letter(tmp_path, case)
+    _assert_cargo(target, "test", "--offline")
+
+    assert _press(target, answers) == CHAR_CASES[case][1]
+
+    if case == "lifetime":
+        assert "'zeta_gadget" in (target / "src/lib.rs").read_text()
+    else:
+        assert _status(target) == ""
+    _assert_cargo(target, "test", "--offline")
+
+
 def test_unprovable_rust_string_is_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

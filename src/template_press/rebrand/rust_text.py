@@ -1144,16 +1144,34 @@ def _compared_with_pkg_name(text: str, literal: RustString) -> bool:
     return bool(_ASSERT_BEFORE.search(before) and _PKG_AFTER_ARG.match(text, start))
 
 
+def _char_literals(text: str) -> tuple[Span, ...]:
+    """The span of each character literal in code, outside comments."""
+    found: list[Span] = []
+    index = 0
+    while index < len(text):
+        if text.startswith(("//", "/*"), index):
+            index = _comment_end(text, index)
+            continue
+        end, _ = _token(text, index)
+        if text[index] == "'" and end > index + 1:
+            found.append((index, end))
+        index = end
+    return tuple(found)
+
+
 def split_rust_replacements(
     text: str, spans: Sequence[Span], name: str, identifier: str, package: str
 ) -> list[str | None]:
     """The spelling for each matched span; ``None`` leaves it unchanged."""
     strings, _, quoted = _scan(text)
+    chars = _char_literals(text)
     out: list[str | None] = []
     for span in spans:
         literal = string_at(strings, span)
         if span_within(quoted, span):
             out.append(None)
+        elif span_within(chars, span):
+            out.append(None)  # a char literal: neither spelling fits
         elif literal is None:
             out.append(identifier)
         elif string_role(text, literal, name) == "other":
