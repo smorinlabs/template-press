@@ -56,3 +56,4 @@ This branch rebases on each before its dependent task starts.
 - [ ] [P15-T14] Make doc-comment scanning linear in block length: keep closure information apart from per-line starts (bot thread 4689117709)
 - [ ] [P15-T15] Check Rust-declared paths whose file a path-only rule moves while the argument text stays the same (bot thread 4689117731)
 - [ ] [P15-T16] Apply the rustdoc rules only to include_str! files that are doc text, without missing concat!/cfg_attr doc forms (final review N6, bot thread 4689117753)
+- [ ] [P15-T17] Resolve a #[path] that uses .. inside a renamed inline module against the real directory, not its normalized form (review 3 I2)

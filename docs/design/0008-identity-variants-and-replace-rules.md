@@ -192,6 +192,9 @@ retained decision record does not require those files to remain present.
      to `std::fs::read_to_string`;
    - with `autobins = false`, a file already named for the destination binary:
      renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt.
+   - a `#[path]` value that uses `..`, inside an inline module that a rename changes, such as `pub mod acmelabs { #[path = "../shared.rs"] pub mod x; }` when `acmelabs` is renamed to `zetalabs`: Rust then looks for `src/zetalabs/../shared.rs`, which needs a `src/zetalabs/` directory, so `cargo check` can fail after a receipt. `main` behaves the same way.
+
+   A module that a `#[cfg(...)]` attribute turns off, with no file on disk, is refused with exit 2 before any write when it sits inside a renamed inline module or is the renamed module itself, even where the rename would be correct: `mod acmelabs { #[cfg(any())] mod x; }` and `#[cfg(any())] mod acmelabs;`.
 
    Spec: [Rust and Cargo
    targets](../superpowers/specs/2026-11-22-rust-cargo-targets-design.md).

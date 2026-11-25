@@ -181,7 +181,7 @@ excluded from rewriting; a `.rs` file no crate root reaches, such as
 `build.rs` passes to `std::fs::read_to_string`. With
 `autobins = false`, a file already named for the destination binary is not
 detected: renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt. See the
-`press-target` skill for the full rules.
+`press-target` skill for the full rules. Two inline-module shapes remain open: a `#[path]` value that uses `..` inside a renamed inline module is not checked, so a receipt can precede a failed `cargo check` (`main` behaves the same way), and a `#[cfg(...)]`-disabled `mod` with no file on disk, inside a renamed inline module or as the renamed module itself, is refused with exit 2 before any write even when the rename would be correct.
 
 A hyphen-free crate name pressed to a hyphenated one (`acme` to `zeta-gadget`)
 is refused by default. A `[[cargo_split]]` block in `press/press-rules.toml`
