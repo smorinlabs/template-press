@@ -910,6 +910,11 @@ UNUSED_ROOTS = {
         "src/lib.rs": LIB + 'pub const F: &str = include_str!("fixture.rs");\n',
         "src/fixture.rs": "mod acmelabs;\n",
     },
+    # Cycle 3 F4: an inline #[path] override with no child names no directory.
+    "inline_path_override_without_children": {
+        "src/lib.rs": LIB
+        + '#[path = "acmelabs"]\npub mod outer {\n    pub fn f() {}\n}\n',
+    },
     # A [lib] path replaces src/lib.rs, so Cargo never compiles it.
     "lib_path_unused_srclib": {
         "Cargo.toml": _package("acme-core") + '\n[lib]\npath = "actual.rs"\n',

@@ -2314,6 +2314,8 @@ def _rust_source_path_splits(
             plan.translate(resolved) == moved for resolved, moved in found
         ):
             continue
+        if not found and old_item.kind == "inline_dir":
+            continue  # no child resolves against it; each child is judged itself
         if value != new_value:
             problems.append(
                 f"{path}:{_line_of(text, old_item.literal.start)}: the Rust path "
