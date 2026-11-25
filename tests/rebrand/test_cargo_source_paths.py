@@ -840,6 +840,117 @@ def test_target_file_cargo_does_not_discover_presses_and_builds(
     _assert_cargo(target, "test", "--offline", "--all-targets")
 
 
+# --- Cycle 2 F3: a default crate root that Cargo does not select -----------------
+
+MAIN_INCLUDE = f"fn main() {{\n    let _ = {FIXTURE_INCLUDE};\n}}\n"
+UNUSED_ROOTS = {
+    # A [lib] path replaces src/lib.rs, so Cargo never compiles it.
+    "lib_path_unused_srclib": {
+        "Cargo.toml": _package("acme-core") + '\n[lib]\npath = "actual.rs"\n',
+        "actual.rs": LIB,
+        "src/lib.rs": f"pub const D: &str = {FIXTURE_INCLUDE};\n",
+    },
+    # autobins = false with no [[bin]]: Cargo builds no binary.
+    "autobins_false_unused_main": {
+        "Cargo.toml": _package("acme-core") + "autobins = false\n",
+        "src/lib.rs": LIB,
+        "src/main.rs": MAIN_INCLUDE,
+    },
+}
+USED_ROOTS = {
+    "autobins_false_named_main": (
+        _package("acme-core")
+        + 'autobins = false\n\n[[bin]]\nname = "acme-core"\npath = "src/main.rs"\n',
+        "src/main.rs",
+    ),
+    # A pathless [[bin]] may still be inferred at src/main.rs.
+    "autobins_false_pathless_bin": (
+        _package("acme-core") + 'autobins = false\n\n[[bin]]\nname = "acme-core"\n',
+        "src/main.rs",
+    ),
+    "lib_table_without_path": (
+        _package("acme-core") + '\n[lib]\ncrate-type = ["rlib"]\n',
+        "src/lib.rs",
+    ),
+}
+
+
+def _used_root_files(case: str) -> dict[str, str]:
+    manifest, root = USED_ROOTS[case]
+    files = {"Cargo.toml": manifest, "src/lib.rs": LIB}
+    if root == "src/main.rs":
+        files["src/main.rs"] = MAIN_INCLUDE
+    else:
+        files["src/lib.rs"] = f"pub const D: &str = {FIXTURE_INCLUDE};\n"
+    return {**files, "data/acmelabs.txt": "x\n"}
+
+
+@pytest.mark.parametrize("table", [True, False], ids=["table", "tableless"])
+@pytest.mark.parametrize("case", sorted(UNUSED_ROOTS))
+def test_default_root_cargo_does_not_select_is_not_judged(
+    case: str, table: bool, tmp_path: Path
+) -> None:
+    """Base ``10b4f9b`` presses these targets healthy."""
+    files = {**UNUSED_ROOTS[case], "data/acmelabs.txt": "x\n"}
+    target = _source_path_target(tmp_path, files, table=table)
+
+    assert _press(target, _source_path_answers(tmp_path, table=table)) == 0
+
+    assert (target / RECEIPT_REL).is_file()
+
+
+@pytest.mark.parametrize("case", sorted(USED_ROOTS))
+def test_default_root_cargo_selects_is_still_judged(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = _source_path_target(tmp_path, _used_root_files(case), table=False)
+
+    assert _press(target, _source_path_answers(tmp_path, table=False)) == 2
+
+    out = capsys.readouterr()
+    root = USED_ROOTS[case][1]
+    line = 2 if root == "src/main.rs" else 1
+    assert f"cargo paths: {root}:{line}: the Rust path" in out.out + out.err
+    assert _status(target) == ""
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("case", sorted(UNUSED_ROOTS))
+def test_default_root_cargo_does_not_select_presses_and_builds(
+    case: str, tmp_path: Path
+) -> None:
+    """Real Cargo: the table-less form presses healthy, as on base ``10b4f9b``."""
+    _require_cargo()
+    files = {**UNUSED_ROOTS[case], "data/acmelabs.txt": "x\n"}
+    target = _source_path_target(tmp_path, files, table=False)
+    _assert_cargo(target, "test", "--offline", "--all-targets")
+
+    assert _press(target, _source_path_answers(tmp_path, table=False)) == 0
+
+    assert (target / RECEIPT_REL).is_file()
+    _assert_cargo(target, "test", "--offline", "--all-targets")
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("case", sorted(USED_ROOTS))
+def test_default_root_cargo_selects_refusal_matches_real_cargo(
+    case: str, tmp_path: Path
+) -> None:
+    """Real Cargo compiles the root, so the refusal guards a real build."""
+    _require_cargo()
+    target = _source_path_target(tmp_path, _used_root_files(case), table=False)
+    _assert_cargo(target, "test", "--offline", "--all-targets")
+
+    assert _press(target, _source_path_answers(tmp_path, table=False)) == 2
+
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
+
+
 # --- F2: the legacy underscore dependency tables ----------------------------------
 
 HELPER_MANIFEST = '[package]\nname = "helper"\nversion = "0.1.0"\nedition = "2021"\n'

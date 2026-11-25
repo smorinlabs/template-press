@@ -2157,9 +2157,18 @@ def _compiled_rust_files(
     queue: list[str] = []
     for manifest, parsed in crates:
         directory = posixpath.dirname(manifest)
+        package = parsed.get("package")
+        lib, bins = parsed.get("lib"), parsed.get("bin")
+        roots = ["build.rs"]
+        if not (isinstance(lib, dict) and isinstance(lib.get("path"), str)):
+            roots.append("src/lib.rs")  # a [lib] path replaces Cargo's default
+        if not (isinstance(package, dict) and package.get("autobins") is False) or (
+            isinstance(bins, list)
+            and any(not (isinstance(b, dict) and "path" in b) for b in bins)
+        ):
+            roots.append("src/main.rs")  # a pathless [[bin]] may still infer it
         queue.extend(
-            posixpath.normpath(posixpath.join(directory, root))
-            for root in ("src/lib.rs", "src/main.rs", "build.rs")
+            posixpath.normpath(posixpath.join(directory, root)) for root in roots
         )
         queue.extend(
             posixpath.normpath(posixpath.join(directory, declared.value))
@@ -2170,7 +2179,6 @@ def _compiled_rust_files(
             posixpath.normpath(posixpath.join(directory, file))
             for file in named_target_files(parsed)
         )
-        package = parsed.get("package")
         for sub, auto in _TARGET_DIRS.items():
             if isinstance(package, dict) and package.get(auto) is False:
                 continue  # Cargo builds only the targets the manifest names
