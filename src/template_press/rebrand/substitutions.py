@@ -92,6 +92,7 @@ from template_press.rebrand.rust_text import (
     cut_module_docs,
     quoted_spans,
     quoting_renames,
+    rust_code_view,
     rust_path_literals,
     rust_source_structure,
     rust_strings,
@@ -2205,6 +2206,7 @@ def _compiled_rust_files(
         except (OSError, UnicodeDecodeError):
             continue
         mods, path_literals = rust_source_structure(text)
+        code = rust_code_view(text)
         for module in mods:
             if not module.attributed:
                 queue.extend(
@@ -2219,8 +2221,8 @@ def _compiled_rust_files(
             value = text[item.literal.content_start : item.literal.content_end]
             if item.kind == "include" and not value.endswith(".rs"):
                 continue
-            if item.kind == "include" and _DATA_INCLUDE.search(
-                text, max(item.literal.start - 64, 0), item.literal.start
+            if item.kind == "include" and _opens_with(
+                _DATA_INCLUDE, code, item.literal.start
             ):
                 continue  # include_str!/include_bytes! read data, not Rust
             places = (
@@ -2443,6 +2445,15 @@ _INCLUDE_STR = re.compile(r"\binclude_str\s*!\s*[(\[{]\s*$")
 _DATA_INCLUDE = re.compile(r"\binclude_(?:str|bytes)\s*!\s*[(\[{]\s*$")
 
 
+def _opens_with(macro: re.Pattern[str], code: str, start: int) -> bool:
+    """Whether ``macro``'s call opens right before ``start`` in ``code``,
+    past any whitespace and blanked comments."""
+    end = start
+    while end and code[end - 1].isspace():
+        end -= 1
+    return macro.search(code, max(end - 64, 0), end) is not None
+
+
 def _doc_included_files(target: Path, paths: Sequence[str]) -> dict[str, str]:
     """Files a ``.rs`` file reads with ``include_str!``, each with that
     ``file:line``. rustdoc compiles such a file's code blocks when the string
@@ -2458,10 +2469,9 @@ def _doc_included_files(target: Path, paths: Sequence[str]) -> dict[str, str]:
             continue
         if "include_str" not in text:
             continue
+        code = rust_code_view(text)
         for literal in rust_strings(text):
-            if literal.doc or not _INCLUDE_STR.search(
-                text, max(literal.start - 64, 0), literal.start
-            ):
+            if literal.doc or not _opens_with(_INCLUDE_STR, code, literal.start):
                 continue
             value = text[literal.content_start : literal.content_end]
             resolved = posixpath.normpath(

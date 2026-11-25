@@ -273,6 +273,11 @@ def _code_view(text: str) -> tuple[str, dict[int, RustString]]:
     return "".join(pieces), literals
 
 
+def rust_code_view(text: str) -> str:
+    """``text`` with comments blanked, offset for offset (see ``_code_view``)."""
+    return _code_view(text)[0]
+
+
 def _mod_path_attributes(
     text: str,
     code: str,

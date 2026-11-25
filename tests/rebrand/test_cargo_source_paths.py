@@ -910,6 +910,19 @@ UNUSED_ROOTS = {
         "src/lib.rs": LIB + 'pub const F: &str = include_str!("fixture.rs");\n',
         "src/fixture.rs": "mod acmelabs;\n",
     },
+    # Cycle 4 thread 4697845632: a comment or long whitespace keeps it data.
+    "include_str_rs_fixture_comment": {
+        "src/lib.rs": LIB
+        + 'pub const F: &str = include_str!(/* data */ "fixture.rs");\n',
+        "src/fixture.rs": "mod acmelabs;\n",
+    },
+    "include_str_rs_fixture_spaced": {
+        "src/lib.rs": LIB
+        + "pub const F: &str = include_str!("
+        + " " * 80
+        + '"fixture.rs");\n',
+        "src/fixture.rs": "mod acmelabs;\n",
+    },
     # Cycle 3 F4: an inline #[path] override with no child names no directory.
     "inline_path_override_without_children": {
         "src/lib.rs": LIB
