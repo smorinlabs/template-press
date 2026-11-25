@@ -964,7 +964,7 @@ def compiled_markdown_lines(text: str) -> frozenset[int]:
                 found.add(number)
             continue
         opened = _FENCE.match(body) if len(line) - len(body) < 4 else None
-        if opened:
+        if opened and (opened[1][0] == "~" or "`" not in opened[2]):
             fence = opened[1]
             compiled = not _never_compiled(opened[2].strip())
         elif _FENCE_MARK.search(line):

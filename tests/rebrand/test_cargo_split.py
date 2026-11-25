@@ -2390,3 +2390,45 @@ def test_crate_name_as_a_literal_prefix_refusal_matches_real_cargo(
     assert _status(target) == ""
     assert not (target / RECEIPT_REL).exists()
     _assert_cargo(target, "test", "--offline")
+
+
+# Cycle 3 F6: a backtick opener whose info string holds a backtick opens no fence.
+FALSE_OPENER_README = (
+    "# acme\n\nSome text.\n\n```a`b\n```\nlet acme = 1;\nassert_eq!(acme, 1);\n```\n"
+)
+
+
+def test_backtick_in_info_string_opens_no_markdown_fence() -> None:
+    lines = compiled_markdown_lines("```a`b\n```\nlet acme = 1;\n```\n")
+    assert 3 in lines
+
+
+def _false_opener_crate() -> dict[str, str]:
+    return {
+        "Cargo.toml": _package("acme"),
+        "src/lib.rs": '#![doc = include_str!("../README.md")]\n' + PLAIN_LIB,
+        "README.md": FALSE_OPENER_README,
+    }
+
+
+def test_doc_included_fence_after_a_false_opener_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    err = _refusal(tmp_path, _false_opener_crate(), capsys, split=PKG_README)
+    assert "README.md:7:" in err
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_false_opener_refusal_matches_real_cargo(tmp_path: Path) -> None:
+    """Real Cargo: the old receipt wrote ``let zeta-gadget = 1;`` into the
+    doctest, and ``cargo test --doc`` failed."""
+    _require_cargo()
+    target = _round_target(tmp_path, _false_opener_crate(), split=PKG_README)
+    _assert_cargo(target, "test", "--offline", "--doc")
+
+    assert _press(target, _zeta(tmp_path)) == 2
+
+    assert _status(target) == ""
+    _assert_cargo(target, "test", "--offline", "--doc")
