@@ -282,7 +282,8 @@ SOURCE_PATH_CASES = {
         {
             "src/lib.rs": LIB + '#[path = "gen/x.rs"]\npub mod x;\n',
             "src/gen/x.rs": "pub mod acmelabs;\n",
-            "src/gen/x/acmelabs.rs": "pub fn org() {}\n",
+            # A #[path] file is a mod.rs-like owner: its child sits beside it.
+            "src/gen/acmelabs.rs": "pub fn org() {}\n",
         },
         "src/gen/x.rs:1:",
     ),
@@ -695,6 +696,7 @@ def test_inline_path_attr_tableless_presses_and_builds(
         "renamed_inline_mod_unchanged_child_owner",
         "renamed_inline_mod_unchanged_path_attr_owner",
         "unicode_inline_mod_reached_include_owner",
+        "path_attr_reached_mod_owner",
         "include_rs_reached_include_owner",
         "path_attr_non_rs_bridge_owner",
     ],
