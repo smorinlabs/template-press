@@ -1701,3 +1701,97 @@ def test_keyword_destination_refusal_matches_real_cargo(
     assert not (target / RECEIPT_REL).exists()
     assert _status(target) == ""
     _assert_cargo(target, "test", "--offline")
+
+
+# --- F5: a hyphenated package that only an underscore role value matches ---------
+
+_SPELLING_LIB = "pub fn hi() -> u8 {\n    1\n}\n"
+
+
+def _respelled_files(case: str) -> dict[str, str]:
+    if case == "primary":
+        return {
+            "Cargo.toml": _package("acme-core"),
+            "src/lib.rs": _SPELLING_LIB,
+            "src/main.rs": _KEYWORD_MAIN,
+        }
+    return {
+        "Cargo.toml": '[workspace]\nresolver = "2"\nmembers = ["acme-core", "widget"]\n',
+        "acme-core/Cargo.toml": _package("acme-core"),
+        "acme-core/src/lib.rs": _SPELLING_LIB,
+        "widget/Cargo.toml": _package("acme-widget")
+        + '\n[dependencies]\nacme-core = { path = "../acme-core" }\n',
+        "widget/src/lib.rs": "pub fn w() -> u8 {\n    acme_core::hi()\n}\n",
+        "widget/tests/t.rs": "#[test]\nfn t() {\n    assert_eq!(acme_widget::w(), 1);\n}\n",
+    }
+
+
+_RESPELLED = {
+    # (source table, destination table, extra identity rows, press exit)
+    "primary": ({"core": "acme_core"}, {"core": "zeta_core"}, {}, 2),
+    "secondary": (
+        {"core": "acme-core", "widget": "acme_widget"},
+        {"core": "zeta-core", "widget": "zeta_widget"},
+        {},
+        2,
+    ),
+    # The repo_name row moves the package name with its identifier.
+    "secondary_moved_by_repo_row": (
+        {"core": "acme-core", "widget": "acme_widget"},
+        {"core": "zeta-core", "widget": "zeta_widget"},
+        {"repo_name": ("acme-widget", "zeta-widget")},
+        0,
+    ),
+}
+
+
+def _respelled_target(tmp_path: Path, case: str) -> tuple[Path, Path, int]:
+    names, dest_names, rows, code = _RESPELLED[case]
+    files = _respelled_files("primary" if case == "primary" else "secondary")
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    source = {**CORE_SOURCE, **{k: old for k, (old, _new) in rows.items()}}
+    dest = {**CORE_DEST, **{k: new for k, (_old, new) in rows.items()}}
+    _paths_seed(target, files, identity=source, names=names)
+    return target, _paths_answers(tmp_path, dest, dest_names), code
+
+
+@pytest.mark.parametrize("case", sorted(_RESPELLED))
+def test_hyphenated_name_declared_only_by_its_underscore_form(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The rows rewrite ``acme_widget`` but not ``acme-widget``, so the
+    package name would stay behind while its identifier moves."""
+    target, answers, code = _respelled_target(tmp_path, case)
+
+    assert _cli_press(target, answers) == code
+
+    if code:
+        out = capsys.readouterr()
+        assert "with a hyphen, but the matching role values have none" in (
+            out.out + out.err
+        )
+        assert _status(target) == ""
+        assert not (target / RECEIPT_REL).exists()
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("case", ["secondary", "secondary_moved_by_repo_row"])
+def test_hyphenated_name_declared_by_its_underscore_form_matches_real_cargo(
+    case: str, tmp_path: Path
+) -> None:
+    """Real Cargo: the old receipt left ``acme-widget`` while tests called
+    ``zeta_widget``; the repo_name variant presses and builds."""
+    _require_cargo()
+    target, answers, code = _respelled_target(tmp_path, case)
+    _assert_cargo(target, "test", "--offline", "--workspace")
+
+    assert _cli_press(target, answers) == code
+
+    if code:
+        assert _status(target) == ""
+    else:
+        assert (target / RECEIPT_REL).is_file()
+    _assert_cargo(target, "test", "--offline", "--workspace")

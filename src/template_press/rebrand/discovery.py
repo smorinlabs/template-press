@@ -475,6 +475,23 @@ def cargo_problems(
         unloadable = [n for n in undeclared if not CARGO_NAME_RE.fullmatch(n)]
         if unloadable:
             out.append(f"cargo_names: {_table_limit(unloadable)}")
+    if moved is not None:
+        exact = {name for _role, name in source.cargo_names}
+        respelled = [
+            name
+            for name in facts.names
+            if "-" in name
+            and name not in exact
+            and cargo_ident(name) in declared
+            and cargo_ident(moved(name)) != moved(cargo_ident(name))
+        ]
+        if respelled:
+            out.append(
+                f"cargo_names: target names {respelled!r} with a hyphen, but the "
+                "matching role values have none, so the press would rename the "
+                "crate's Rust identifier without its package name; declare each "
+                "role with the hyphenated name"
+            )
     missing = [n for _r, n in source.cargo_names if cargo_ident(n) not in discovered]
     if missing:
         out.append(
