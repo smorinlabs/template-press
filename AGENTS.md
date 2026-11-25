@@ -161,12 +161,17 @@ with exit 2 before any write, a rewrite that would separate a path a manifest
 declares or Cargo infers (`members`, `exclude`, dependency `path`, target `path`
 or name, `build`, `package.workspace`) from the file or directory it names, or
 a path Rust source declares with a plain string (the file of `mod name;`,
-`#[path = "..."]`, and `include_str!`, `include_bytes!`, or `include!`
-arguments) from its file, and
-a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. A path
-read at run time, such as a string `build.rs` passes to
-`std::fs::read_to_string`, is not checked. See the `press-target` skill for the
-full rules.
+`#[path = "..."]` or `#[cfg_attr(<cond>, path = "...")]`, and `include_str!`,
+`include_bytes!`, or `include!` arguments) from its file, and
+a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. Rust
+source is read only in `.rs` files Cargo compiles: crate roots and target
+files, and the files they reach through `mod` or a Rust path. Not checked: a
+path a macro builds, such as
+`include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`; a `.rs` file
+excluded from rewriting; a `.rs` file no crate root reaches, such as
+`tests/fixtures/sample.rs`; and a path read at run time, such as a string
+`build.rs` passes to `std::fs::read_to_string`. See the `press-target` skill
+for the full rules.
 
 A hyphen-free crate name pressed to a hyphenated one (`acme` to `zeta-gadget`)
 is refused by default. A `[[cargo_split]]` block in `press/press-rules.toml`

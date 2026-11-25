@@ -584,7 +584,7 @@ These stop the press before any write:
 | A hyphen-free source name takes a hyphenated destination, without `[[cargo_split]]` | `acme_core` to `zeta-core` | 2 |
 | A source or destination name equals a non-local dependency | crate pressed to `padkit` beside `padkit = "1"` | 2 |
 | A rewrite would separate a declared or name-inferred Cargo path from its file (`cargo paths:`) | `owner = "acme"` rewrites `[lib] path = "lib/acme-x.rs"`, but no row renames the file | 2 |
-| A rewrite would separate a path that Rust source declares from its file (`cargo paths:`): the file of `mod name;`, a `#[path = "..."]` value, or an `include_str!`/`include_bytes!`/`include!` argument | `owner = "acmelabs"` rewrites `pub mod acmelabs;` or `include_str!("../data/acmelabs.txt")`, but no row renames the file | 2 |
+| A rewrite would separate a path that Rust source declares from its file (`cargo paths:`): the file of `mod name;`, a `#[path = "..."]` or `#[cfg_attr(<cond>, path = "...")]` value, or an `include_str!`/`include_bytes!`/`include!` argument | `owner = "acmelabs"` rewrites `pub mod acmelabs;` or `include_str!("../data/acmelabs.txt")`, but no row renames the file | 2 |
 | A `CARGO_BIN_EXE_<name>` token would not match its auto-discovered binary (`cargo paths:`) | `src/bin/acme.rs` renames to `zeta.rs`, but the token in an excluded file stays | 2 |
 | Versioned string that extends a declared name | `acme-core-0.1.0` in a README | 1 |
 
@@ -595,15 +595,24 @@ name to `keep_names`. For a binary token, declare a `cargo_names` table that
 names the binary; when the token sits in an excluded file, remove the
 exclusion or edit the token by hand.
 
-Limit: the press checks only paths that a manifest declares or Cargo infers,
-and paths that Rust source declares with a plain string literal. A path built
-by a macro, such as `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`,
-a `mod name;` inside an inline module (`mod outer { mod name; }`, which is
-refused as not found), and a `.rs` file excluded from rewriting are not
-checked in this way. A path that code reads at run
-time, such as `std::fs::read_to_string("data/acmelabs.txt")` in `build.rs`, is
-not checked, so an `owner`, `author`, or `email` row that rewrites it without
-renaming the file gives a receipt for a build that then fails.
+Limits: the press checks only paths that a manifest declares or Cargo infers,
+and paths that Rust source declares with a plain string literal in a `.rs`
+file Cargo compiles. Such a file is a crate root or target file that Cargo
+infers or a manifest declares (`src/lib.rs`, `src/main.rs`, `src/bin/`,
+`tests/`, `benches/`, `examples/`, a target `path`, `build.rs`), or a file one
+of those reaches through `mod` (inline modules included) or a Rust path. These
+are not checked:
+
+- a path built by a macro, such as
+  `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`;
+- a `.rs` file excluded from rewriting;
+- a `.rs` file no crate root reaches, such as `tests/fixtures/sample.rs`,
+  which Cargo does not compile;
+- a path that code reads at run time, such as
+  `std::fs::read_to_string("data/acmelabs.txt")` in `build.rs`.
+
+An `owner`, `author`, or `email` row that rewrites such a path without
+renaming its file can give a receipt for a build that then fails.
 
 ## Rules authoring (`press/press-rules.toml`)
 

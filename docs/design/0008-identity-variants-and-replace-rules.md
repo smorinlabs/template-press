@@ -168,15 +168,21 @@ retained decision record does not require those files to remain present.
    A rewrite that would separate a path from its file also exits 2, with
    `file:line`, on every Rust press (`cargo paths:`). This covers paths a
    manifest declares or Cargo infers, and paths Rust source declares with a
-   plain string literal: the file of `mod name;`, a `#[path = "..."]` value,
-   and an `include_str!`, `include_bytes!`, or `include!` argument. A path a
-   macro builds, such as `include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
-   "/x"))`, is not checked. The usual cause
-   is a content-only row, such as `owner = "acmelabs"`, that rewrites
-   `pub mod acmelabs;` while no row renames `src/acmelabs.rs`. Limit: a path
-   that code reads at run time, such as a string `build.rs` passes to
-   `std::fs::read_to_string`, is not checked, so such a rewrite still gets a
-   receipt for a build that then fails.
+   plain string literal: the file of `mod name;`, a `#[path = "..."]` or
+   `#[cfg_attr(<cond>, path = "...")]` value, and an `include_str!`,
+   `include_bytes!`, or `include!` argument. Rust source is read only in a
+   `.rs` file Cargo compiles: a crate root or target file that Cargo infers or
+   a manifest declares, or a file one of those reaches through `mod` (inline
+   modules included) or a Rust path. The usual cause is a content-only row,
+   such as `owner = "acmelabs"`, that rewrites `pub mod acmelabs;` while no row
+   renames `src/acmelabs.rs`. Limits: these are not checked, so such a rewrite
+   there can still get a receipt for a build that then fails:
+   - a path a macro builds, such as
+     `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`;
+   - a `.rs` file excluded from rewriting;
+   - a `.rs` file no crate root reaches, such as `tests/fixtures/sample.rs`;
+   - a path that code reads at run time, such as a string `build.rs` passes
+     to `std::fs::read_to_string`.
    Spec: [Rust and Cargo
    targets](../superpowers/specs/2026-11-22-rust-cargo-targets-design.md).
 
