@@ -2165,9 +2165,23 @@ def _compiled_rust_files(
         build = package.get("build") if isinstance(package, dict) else None
         # ``build = false`` turns the script off; a string is declared below.
         roots = [] if build is False or isinstance(build, str) else ["build.rs"]
-        if not (isinstance(lib, dict) and isinstance(lib.get("path"), str)):
+        auto = package if isinstance(package, dict) else {}
+        if not (isinstance(lib, dict) and isinstance(lib.get("path"), str)) and (
+            isinstance(lib, dict) or auto.get("autolib") is not False
+        ):
             roots.append("src/lib.rs")  # a [lib] path replaces Cargo's default
-        if not (isinstance(package, dict) and package.get("autobins") is False) or (
+        # A [[bin]] with the package's name and a path replaces src/main.rs.
+        claimed = (
+            isinstance(bins, list)
+            and "name" in auto
+            and any(
+                isinstance(b, dict)
+                and b.get("name") == auto.get("name")
+                and "path" in b
+                for b in bins
+            )
+        )
+        if (auto.get("autobins") is not False and not claimed) or (
             isinstance(bins, list)
             and any(not (isinstance(b, dict) and "path" in b) for b in bins)
         ):

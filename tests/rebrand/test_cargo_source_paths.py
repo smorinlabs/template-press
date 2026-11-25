@@ -941,6 +941,20 @@ UNUSED_ROOTS = {
         "src/lib.rs": LIB,
         "src/main.rs": MAIN_INCLUDE,
     },
+    # Cycle 5 thread 4698809971: autolib = false with no [lib] turns it off.
+    "autolib_false_unused_srclib": {
+        "Cargo.toml": _package("acme-core") + "autolib = false\n",
+        "src/main.rs": "fn main() {}\n",
+        "src/lib.rs": f"pub const D: &str = {FIXTURE_INCLUDE};\n",
+    },
+    # A [[bin]] with the package's name and a path replaces src/main.rs.
+    "named_bin_path_unused_main": {
+        "Cargo.toml": _package("acme-core")
+        + '\n[[bin]]\nname = "acme-core"\npath = "actual.rs"\n',
+        "actual.rs": "fn main() {}\n",
+        "src/lib.rs": LIB,
+        "src/main.rs": MAIN_INCLUDE,
+    },
 }
 USED_ROOTS = {
     "autobins_false_named_main": (
@@ -957,6 +971,16 @@ USED_ROOTS = {
         _package("acme-core") + '\n[lib]\ncrate-type = ["rlib"]\n',
         "src/lib.rs",
     ),
+    # A [lib] table keeps src/lib.rs under autolib = false.
+    "autolib_false_lib_table": (
+        _package("acme-core") + 'autolib = false\n\n[lib]\ncrate-type = ["rlib"]\n',
+        "src/lib.rs",
+    ),
+    # A [[bin]] with another name leaves src/main.rs inferred.
+    "other_named_bin_path": (
+        _package("acme-core") + '\n[[bin]]\nname = "other"\npath = "actual.rs"\n',
+        "src/main.rs",
+    ),
     # Cycle 3 F1 controls: Cargo runs these build scripts.
     "build_true": (_package("acme-core") + "build = true\n", "build.rs"),
     "custom_build_script": (
@@ -971,6 +995,8 @@ def _used_root_files(case: str) -> dict[str, str]:
     files = {"Cargo.toml": manifest, "src/lib.rs": LIB}
     if root == "src/main.rs":
         files["src/main.rs"] = MAIN_INCLUDE
+        if "actual.rs" in manifest:
+            files["actual.rs"] = "fn main() {}\n"
     elif root == "build.rs":
         files[root] = BUILD_INCLUDE.format("")
     elif root == "scripts/build.rs":
