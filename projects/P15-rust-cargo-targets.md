@@ -51,7 +51,7 @@ This branch rebases on each before its dependent task starts.
 - [x] [P15-T11] Follow Rust's path rules for inline modules in the source-path check (final re-review 3 F1-F3)
       Also: Unicode inline module names (bot thread 4689117701).
       Also: `#[path]` values inside inline modules (bot thread 4689117747).
-- [ ] [P15-T12] Apply Cargo's edition-2015 auto-discovery default (resolving an inherited workspace edition) in bin discovery and the compiled-file walk (bot thread 4689117656)
+- [ ] [P15-T12] Apply Cargo's edition-2015 auto-discovery default (resolving an inherited workspace edition) in bin discovery and the compiled-file walk, including the legacy fallback for a pathless `[[bin]]`: `src/<name>.rs` in a package without a lib, then `src/main.rs`, then `src/bin/main.rs` (bot threads 4689117656, 4690594456)
 - [ ] [P15-T13] Refuse an inferred-target rename whose destination name has both src/bin/<name>.rs and src/bin/<name>/main.rs after the press (bot thread 4689117676)
 - [ ] [P15-T14] Make doc-comment scanning linear in block length: keep closure information apart from per-line starts (bot thread 4689117709)
 - [ ] [P15-T15] Check Rust-declared paths whose file a path-only rule moves while the argument text stays the same (bot thread 4689117731)
