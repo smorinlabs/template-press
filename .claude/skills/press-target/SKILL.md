@@ -587,6 +587,7 @@ These stop the press before any write:
 | A hyphen-free source name takes a hyphenated destination, without `[[cargo_split]]` | `acme_core` to `zeta-core` | 2 |
 | A source or destination name equals a non-local dependency | crate pressed to `padkit` beside `padkit = "1"` | 2 |
 | A rewrite would separate a declared or name-inferred Cargo path from its file (`cargo paths:`) | `owner = "acme"` rewrites `[lib] path = "lib/acme-x.rs"`, but no row renames the file | 2 |
+| An inferred or auto-discovered target rename would leave multiple candidate files for the same target name (`cargo paths:`) | `acme-cli` renames to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists (or `src/main.rs` collides with `src/bin/<pkg>`, or the same two-file shape under `tests/`, `examples/`, or `benches/`, even with `autobins = false` or another `auto* = false` flag) | 2 |
 | A rewrite would separate a path that Rust source declares from its file (`cargo paths:`): the file of `mod name;`, a `#[path = "..."]` or `#[cfg_attr(<cond>, path = "...")]` value, or an `include_str!`/`include_bytes!`/`include!` argument | `owner = "acmelabs"` rewrites `pub mod acmelabs;` or `include_str!("../data/acmelabs.txt")`, but no row renames the file | 2 |
 | A `CARGO_BIN_EXE_<name>` token would not match its auto-discovered binary (`cargo paths:`) | `src/bin/acme.rs` renames to `zeta.rs`, but the token in an excluded file stays | 2 |
 | Versioned string that extends a declared name | `acme-core-0.1.0` in a README | 1 |
@@ -594,7 +595,9 @@ These stop the press before any write:
 For the first two, press in two steps through an intermediate identity. For a
 versioned string, edit the text or add the exact token to `keep_names`. For a
 `cargo paths:` refusal, rename the path so a path row moves it, or add the shared
-name to `keep_names`. For a binary token, declare a `cargo_names` table that
+name to `keep_names`; when it reports multiple candidate target files, declare
+an explicit `path` on the target table, remove the extra file, or choose another
+name. For a binary token, declare a `cargo_names` table that
 names the binary; when the token sits in an excluded file, remove the
 exclusion or edit the token by hand.
 
@@ -622,9 +625,7 @@ paths are read from every dependency table, including the pre-2024
   so a rename that splits it from its file can still get a receipt;
 - a renamed inline module around an unchanged child, such as
   `mod acmelabs { mod x; }` becoming `mod zetalabs { mod x; }`, so the crate
-  can fail to build after a receipt;
-- with `autobins = false`, a file already named for the destination binary:
-  renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt.
+  can fail to build after a receipt.
 
 A `#[path]` attribute on an inline module whose child module is renamed, such
 as `#[path = "p"] mod outer { mod acme_core; }`, is refused with exit 2, even

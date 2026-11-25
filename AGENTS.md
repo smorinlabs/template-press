@@ -166,7 +166,11 @@ table, including the pre-2024 `[dev_dependencies]` and `[build_dependencies]`
 spellings, target `path` or name, `build`, `package.workspace`) from the file or directory it names, or
 a path Rust source declares with a plain string (the file of `mod name;`,
 `#[path = "..."]` or `#[cfg_attr(<cond>, path = "...")]`, and `include_str!`,
-`include_bytes!`, or `include!` arguments) from its file, and
+`include_bytes!`, or `include!` arguments) from its file, an inferred or
+auto-discovered target rename that would leave multiple candidate files
+(`<dir>/<name>.rs` and `<dir>/<name>/main.rs`, or `src/main.rs` with
+`src/bin/<pkg>`) for the same target name after the press (even under
+`autobins = false` or another `auto* = false` flag), and
 a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. Rust
 source is read only in `.rs` files Cargo compiles: crate roots and target
 files (under `autotests = false` or another `auto*` flag set to false, only the
@@ -179,9 +183,7 @@ excluded from rewriting; a `.rs` file no crate root reaches, such as
 there can still get a receipt that fails to build: a `#[path]` module inside or
 on an inline `mod name { ... }` block, and a renamed inline module around an
 unchanged child; a `#[path]` on an inline module whose child module is renamed
-is refused with exit 2 even when the rename would be correct. With
-`autobins = false`, a file already named for the destination binary is not
-detected: renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt. See the
+is refused with exit 2 even when the rename would be correct. See the
 `press-target` skill for the full rules.
 
 A hyphen-free crate name pressed to a hyphenated one (`acme` to `zeta-gadget`)

@@ -173,7 +173,12 @@ retained decision record does not require those files to remain present.
    manifest declares or Cargo infers, and paths Rust source declares with a
    plain string literal: the file of `mod name;`, a `#[path = "..."]` or
    `#[cfg_attr(<cond>, path = "...")]` value, and an `include_str!`,
-   `include_bytes!`, or `include!` argument. Rust source is read only in a
+   `include_bytes!`, or `include!` argument. It also refuses (exit 2 before any
+   write, naming all colliding files) an inferred-target or auto-discovered
+   rename that would leave multiple candidate files (`<dir>/<name>.rs` and
+   `<dir>/<name>/main.rs`, or `src/main.rs` for a `[[bin]]` matching
+   `[package].name`) for the same target name after the press, including under
+   `autobins = false` or another `auto* = false` flag. Rust source is read only in a
    `.rs` file Cargo compiles: a crate root or target file that Cargo infers or
    a manifest declares, or a file one of those reaches through `mod` or
    `#[path]`, but not through Rust's path rule for a module nested in an inline
@@ -196,9 +201,7 @@ retained decision record does not require those files to remain present.
      its file can still get a receipt;
    - a renamed inline module around an unchanged child, such as
      `mod acmelabs { mod x; }` becoming `mod zetalabs { mod x; }`, so the crate
-     can fail to build after a receipt;
-   - with `autobins = false`, a file already named for the destination binary:
-     renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt.
+     can fail to build after a receipt.
 
    A `#[path]` attribute on an inline module whose child module is renamed,
    such as `#[path = "p"] mod outer { mod acme_core; }`, is refused with exit 2,
