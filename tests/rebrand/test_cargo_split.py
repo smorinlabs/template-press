@@ -1935,6 +1935,24 @@ def test_doc_included_package_file_prose_keeps_the_package_spelling(
     assert "zeta-gadget" in (target / "README.md").read_text()
 
 
+@pytest.mark.parametrize(
+    "include",
+    ['include_str!("../README.md")', 'include_str ! ("../README.md")'],
+    ids=["plain", "spaced_bang"],
+)
+def test_doc_include_with_a_spaced_bang_is_still_read_as_rustdoc(
+    include: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """F1: rustc accepts whitespace before the ``!`` of a doc include."""
+    files = {
+        "Cargo.toml": _package("acme"),
+        "src/lib.rs": f"#![doc = {include}]\n" + PLAIN_LIB,
+        "README.md": "# acme-repo\n\n```rust\nassert_eq!(acme ::hi(), 1);\n```\n",
+    }
+    err = _refusal(tmp_path, files, capsys, split=PKG_README)
+    assert "README.md:4:" in err
+
+
 @pytest.mark.slow
 @posix_only
 @pytest.mark.xdist_group(name="shared-tool-caches")

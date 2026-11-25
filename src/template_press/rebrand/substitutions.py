@@ -2297,7 +2297,7 @@ def _identifier_contexts(text: str, name: str) -> list[int]:
     return sorted(offsets)
 
 
-_INCLUDE_STR = re.compile(r"\binclude_str!\s*\(\s*$")
+_INCLUDE_STR = re.compile(r"\binclude_str\s*!\s*\(\s*$")
 
 
 def _doc_included_files(target: Path, paths: Sequence[str]) -> dict[str, str]:

@@ -57,7 +57,7 @@ _OPERAND_START = re.compile(
     r"(?:(?:^|[(,{;\[])|(?<![=!<>])=|&&|\|\||!|\b(?:if|while|return|match))\s*$"
 )
 _PATH_BEFORE = re.compile(
-    r"(?:\b(?:include_str|include_bytes|include)!\s*\(\s*|#!?\[\s*path\s*=\s*)$"
+    r"(?:\b(?:include_str|include_bytes|include)\s*!\s*\(\s*|#!?\[\s*path\s*=\s*)$"
 )
 # ``path = `` as a direct argument of ``cfg_attr(...)``: the platform-module
 # form of ``#[path]``. A ``path`` nested deeper is another attribute's value.

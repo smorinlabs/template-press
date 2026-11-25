@@ -210,6 +210,15 @@ SOURCE_PATH_CASES = {
         },
         "src/lib.rs:4:",
     ),
+    # F1: rustfmt removes the space, but rustc accepts ``include_str ! (...)``.
+    "include_spaced_bang_owner": (
+        {
+            "src/lib.rs": LIB
+            + 'pub const T: &str = include_str ! ("../data/acmelabs.txt");\n',
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/lib.rs:4:",
+    ),
     "include_bytes_owner": (
         {
             "src/lib.rs": LIB
@@ -457,7 +466,14 @@ def test_rust_source_paths_that_follow_their_files_build(
 @posix_only
 @pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize(
-    "case", ["mod_owner", "include_owner", "path_attr_owner", "cfg_attr_path_owner"]
+    "case",
+    [
+        "mod_owner",
+        "include_owner",
+        "include_spaced_bang_owner",
+        "path_attr_owner",
+        "cfg_attr_path_owner",
+    ],
 )
 def test_rust_source_path_refusal_matches_real_cargo(case: str, tmp_path: Path) -> None:
     """Real Cargo: the crate builds before, and the press refuses the rewrite
