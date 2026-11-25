@@ -31,6 +31,7 @@ from template_press.rebrand.identity import (
 )
 from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.rules import CargoSplit, load_rules
+from template_press.rebrand.rust_text import compiled_markdown_lines
 from template_press.rebrand.verify_cli import verify_command
 
 from .conftest import _git, posix_only
@@ -2014,6 +2015,49 @@ def test_doc_include_with_a_spaced_bang_is_still_read_as_rustdoc(
     }
     err = _refusal(tmp_path, files, capsys, split=PKG_README)
     assert "README.md:4:" in err
+
+
+# F6: CommonMark closes a fence only with a line indented under four spaces.
+FOUR_SPACE_README = (
+    "# acme-repo\n\n```rust\n/*\n    ```\n*/\n"
+    'assert_eq!("acme", env!("CARGO_PKG_NAME").replace(\'-\', "_"));\n```\n'
+)
+
+
+def test_four_space_fence_line_does_not_close_a_rust_fence() -> None:
+    text = "```rust\n/*\n    ```\n*/\nlet x = 1;\n```\nprose\n"
+    assert compiled_markdown_lines(text) == frozenset({2, 3, 4, 5})
+
+
+def _four_space_crate() -> dict[str, str]:
+    return {
+        "Cargo.toml": _package("acme"),
+        "src/lib.rs": '#![doc = include_str!("../README.md")]\n' + PLAIN_LIB,
+        "README.md": FOUR_SPACE_README,
+    }
+
+
+def test_doc_included_fence_with_a_four_space_fence_line_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    err = _refusal(tmp_path, _four_space_crate(), capsys, split=PKG_README)
+    assert "README.md:7:" in err
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_four_space_fence_refusal_matches_real_cargo(tmp_path: Path) -> None:
+    """Real Cargo: the old receipt wrote ``"zeta-gadget"`` into the doctest,
+    and ``cargo test --doc`` failed."""
+    _require_cargo()
+    target = _round_target(tmp_path, _four_space_crate(), split=PKG_README)
+    _assert_cargo(target, "test", "--offline", "--doc")
+
+    assert _press(target, _zeta(tmp_path)) == 2
+
+    assert _status(target) == ""
+    _assert_cargo(target, "test", "--offline", "--doc")
 
 
 @pytest.mark.slow

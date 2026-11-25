@@ -834,7 +834,7 @@ def compiled_markdown_lines(text: str) -> frozenset[int]:
             found.add(number)
             continue
         if fence:
-            if _closes(body, fence):
+            if len(line) - len(body) < 4 and _closes(body, fence):
                 fence = ""
             elif compiled:
                 found.add(number)
