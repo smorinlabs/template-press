@@ -603,8 +603,9 @@ and paths that Rust source declares with a plain string literal in a `.rs`
 file Cargo compiles. Such a file is a crate root or target file that Cargo
 infers or a manifest declares (`src/lib.rs`, `src/main.rs`, `src/bin/`,
 `tests/`, `benches/`, `examples/`, a target `path`, `build.rs`), or a file one
-of those reaches through `mod` or `#[path]`, but not through Rust's path rule for
-a module nested in an inline `mod name { ... }` block. Under `autotests = false`
+of those reaches through `mod` (including inline `mod name { ... }` blocks and
+their `#[path]` attributes), `#[path]`, `#[cfg_attr(<cond>, path = "...")]`, or
+`include!`. Under `autotests = false`
 or another `auto*` flag set to false, Cargo builds only the targets the
 manifest names in that directory, so only those files are read. Dependency
 paths are read from every dependency table, including the pre-2024
@@ -617,18 +618,8 @@ paths are read from every dependency table, including the pre-2024
   which Cargo does not compile;
 - a path that code reads at run time, such as
   `std::fs::read_to_string("data/acmelabs.txt")` in `build.rs`;
-- a `#[path]` module inside or on an inline module, such as
-  `mod outer { #[path = "x.rs"] mod x; }` or `#[path = "p"] mod outer { mod inner; }`,
-  so a rename that splits it from its file can still get a receipt;
-- a renamed inline module around an unchanged child, such as
-  `mod acmelabs { mod x; }` becoming `mod zetalabs { mod x; }`, so the crate
-  can fail to build after a receipt;
 - with `autobins = false`, a file already named for the destination binary:
   renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt.
-
-A `#[path]` attribute on an inline module whose child module is renamed, such
-as `#[path = "p"] mod outer { mod acme_core; }`, is refused with exit 2, even
-when the press would have been correct.
 
 An `owner`, `author`, or `email` row that rewrites such a path without
 renaming its file can give a receipt for a build that then fails.

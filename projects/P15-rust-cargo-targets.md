@@ -48,7 +48,7 @@ This branch rebases on each before its dependent task starts.
       unreferenced `testdata/acme-sample/Cargo.toml` are falsely refused.
 - [x] [P15-T09] One-press rename of a hyphen-free crate to a hyphenated name ([[cargo_split]])
 - [x] [P15-T10] Cargo placeholders in [[replace]] ({cargo_exact_<role>}, {cargo_ident_<role>}, {cargo_ident_<role>_upper})
-- [ ] [P15-T11] Follow Rust's path rules for inline modules in the source-path check (final re-review 3 F1-F3)
+- [x] [P15-T11] Follow Rust's path rules for inline modules in the source-path check (final re-review 3 F1-F3)
       Also: Unicode inline module names (bot thread 4689117701).
       Also: `#[path]` values inside inline modules (bot thread 4689117747).
 - [ ] [P15-T12] Apply Cargo's edition-2015 auto-discovery default (resolving an inherited workspace edition) in bin discovery and the compiled-file walk (bot thread 4689117656)

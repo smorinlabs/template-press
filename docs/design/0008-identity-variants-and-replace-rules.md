@@ -175,9 +175,9 @@ retained decision record does not require those files to remain present.
    `#[cfg_attr(<cond>, path = "...")]` value, and an `include_str!`,
    `include_bytes!`, or `include!` argument. Rust source is read only in a
    `.rs` file Cargo compiles: a crate root or target file that Cargo infers or
-   a manifest declares, or a file one of those reaches through `mod` or
-   `#[path]`, but not through Rust's path rule for a module nested in an inline
-   `mod name { ... }` block. Under `autotests = false` or another `auto*` flag
+   a manifest declares, or a file one of those reaches through `mod` (including
+   inline `mod name { ... }` blocks and their `#[path]` attributes), `#[path]`,
+   `#[cfg_attr(<cond>, path = "...")]`, or `include!`. Under `autotests = false` or another `auto*` flag
    set to false, only the targets the manifest names in that directory are
    read. Dependency paths are read from every dependency table, including the
    pre-2024 `[dev_dependencies]` and `[build_dependencies]` spellings. The usual cause is a content-only row,
@@ -190,19 +190,9 @@ retained decision record does not require those files to remain present.
    - a `.rs` file no crate root reaches, such as `tests/fixtures/sample.rs`;
    - a path that code reads at run time, such as a string `build.rs` passes
      to `std::fs::read_to_string`;
-   - a `#[path]` module inside or on an inline module, such as
-     `mod outer { #[path = "x.rs"] mod x; }` or
-     `#[path = "p"] mod outer { mod inner; }`, so a rename that splits it from
-     its file can still get a receipt;
-   - a renamed inline module around an unchanged child, such as
-     `mod acmelabs { mod x; }` becoming `mod zetalabs { mod x; }`, so the crate
-     can fail to build after a receipt;
    - with `autobins = false`, a file already named for the destination binary:
      renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt.
 
-   A `#[path]` attribute on an inline module whose child module is renamed,
-   such as `#[path = "p"] mod outer { mod acme_core; }`, is refused with exit 2,
-   even when the press would have been correct.
    Spec: [Rust and Cargo
    targets](../superpowers/specs/2026-11-22-rust-cargo-targets-design.md).
 

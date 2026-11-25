@@ -170,16 +170,15 @@ a path Rust source declares with a plain string (the file of `mod name;`,
 a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. Rust
 source is read only in `.rs` files Cargo compiles: crate roots and target
 files (under `autotests = false` or another `auto*` flag set to false, only the
-targets the manifest names in that directory), and the files they reach through `mod` or `#[path]`, but not through Rust's path rule for a module nested in an inline `mod name { ... }` block. Not checked: a
+targets the manifest names in that directory), and the files they reach through
+`mod` (including inline `mod name { ... }` blocks and their `#[path]`
+attributes), `#[path]`, `#[cfg_attr(<cond>, path = "...")]`, or `include!`. Not
+checked: a
 path a macro builds, such as
 `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`; a `.rs` file
 excluded from rewriting; a `.rs` file no crate root reaches, such as
 `tests/fixtures/sample.rs`; and a path read at run time, such as a string
-`build.rs` passes to `std::fs::read_to_string`. Also not checked, so a rewrite
-there can still get a receipt that fails to build: a `#[path]` module inside or
-on an inline `mod name { ... }` block, and a renamed inline module around an
-unchanged child; a `#[path]` on an inline module whose child module is renamed
-is refused with exit 2 even when the rename would be correct. With
+`build.rs` passes to `std::fs::read_to_string`. With
 `autobins = false`, a file already named for the destination binary is not
 detected: renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt. See the
 `press-target` skill for the full rules.
