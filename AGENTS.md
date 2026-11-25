@@ -129,13 +129,104 @@ identity validation → apply → verify → receipt). Command shape:
 `uv run press rebrand …`). The design contract is
 [`docs/design/0006-external-target-model.md`](docs/design/0006-external-target-model.md).
 The identity-field set (six required plus optional `display_name`, `npm_name`,
-and `cli_name`) and the target-authored `press/press-rules.toml` mechanisms
-(`[[replace]]` exact rules, `substring_rewrite_fields`, `keep_names`) are
-specified in
+`cli_name`, and `cargo_names`) and the target-authored `press/press-rules.toml`
+mechanisms (`[[replace]]` exact rules, `substring_rewrite_fields`, `keep_names`,
+`[[cargo_split]]`) are specified in
 [`docs/design/0008-identity-variants-and-replace-rules.md`](docs/design/0008-identity-variants-and-replace-rules.md).
 A target with several language manifests must declare `[rules] languages` in
 `press/press-rules.toml`, or `press rebrand` and `press verify` exit 2. npm
 and Bun targets are covered in the `press-target` skill.
+
+Rust targets, both single-crate and workspace, declare each exact Cargo name in
+`[identity.cargo_names]` and `[answers.cargo_names]`. When another identity
+manifest exists, list `"rust"` in `[rules] languages`, or omit it when
+`Cargo.toml` is tooling only. Put an independent sibling crate in `keep_names`.
+A tracked `Cargo.lock` needs this declaration:
+
+```toml
+[rules]
+extra_exclude_files = ["Cargo.lock"]
+
+[[regenerate]]
+file = "Cargo.lock"
+command = ["cargo", "update", "--workspace", "--offline"]
+```
+
+The command environment passes `HOME` but not `CARGO_HOME`, so a custom Cargo
+home needs dependencies vendored or cached in the default location. The press
+deliberately refuses a destination that extends a source name or contains
+another field's source spelling, a destination crate name that is a Rust
+keyword such as `type`, a crate whose Rust identifier would be left behind
+(including a hyphenated crate that a role spells only with underscores, as
+`acme_widget` for `acme-widget`), and a versioned string such as
+`acme-core-0.1.0`. It also refuses,
+with exit 2 before any write, a rewrite that would separate a path a manifest
+declares or Cargo infers (`members`, `exclude`, dependency `path` in any dependency
+table, including the pre-2024 `[dev_dependencies]` and `[build_dependencies]`
+spellings, target `path` or name, `build`, `package.workspace`) from the file or directory it names, or
+a path Rust source declares with a plain string (the file of `mod name;`,
+`#[path = "..."]` or `#[cfg_attr(<cond>, path = "...")]`, and `include_str!`,
+`include_bytes!`, or `include!` arguments) from its file, and
+a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. Rust
+source is read only in `.rs` files Cargo compiles: crate roots and target
+files (under `autotests = false` or another `auto*` flag set to false, only the
+targets the manifest names in that directory), and the files they reach through
+`mod` (including inline `mod name { ... }` blocks and their `#[path]`
+attributes), `#[path]`, `#[cfg_attr(<cond>, path = "...")]`, or `include!`. Not
+checked: a
+path a macro builds, such as
+`include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`; a `.rs` file
+excluded from rewriting; a `.rs` file no crate root reaches, such as
+`tests/fixtures/sample.rs`; and a path read at run time, such as a string
+`build.rs` passes to `std::fs::read_to_string`. With
+`autobins = false`, a file already named for the destination binary is not
+detected: renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt. See the
+`press-target` skill for the full rules. Two inline-module shapes remain open: a `#[path]` value that uses `..` inside a renamed inline module is not checked, so a receipt can precede a failed `cargo check` (`main` behaves the same way), and a `#[cfg(...)]`-disabled `mod` with no file on disk, inside a renamed inline module or as the renamed module itself, is refused with exit 2 before any write even when the rename would be correct.
+
+A hyphen-free crate name pressed to a hyphenated one (`acme` to `zeta-gadget`)
+is refused by default. A `[[cargo_split]]` block in `press/press-rules.toml`
+opts one role in. `[[cargo_split]]` is experimental: its spelling proofs may
+miss Rust shapes, and if it writes a receipt and `cargo test` then fails, that
+is a bug to report. Manifests take `zeta-gadget`, and Rust code in `.rs` files
+takes `zeta_gadget`. A `.rs` string takes `zeta-gadget` only when Cargo proves
+it (a feature name inside `cfg`, a path to a renamed file, the other side of a
+`CARGO_PKG_NAME` comparison whose operands are both bare, with no method call
+on either side); any other string exits 2. A name in the arguments of a
+direct `stringify!` or `concat!` call also exits 2, and so does a rename such
+as `use core::stringify as s;`; a call that another macro makes is not seen.
+A character literal of the name in code, such as `'x'` for a crate `x`, exits 2.
+The press also cannot see code that compares the crate and package names
+without spelling either, such as `module_path!()`,
+`core::any::type_name::<T>()`, or `env!("CARGO_CRATE_NAME")` against
+`env!("CARGO_PKG_NAME")`; such a test fails after a split press although the
+press wrote a receipt. Doc-comment text is
+read as Rust code under the same rules, because rustdoc compiles fenced and
+indented code blocks as doctests. It is read as prose only where the press
+proves that rustdoc compiles nothing: in a `///` comment that starts an item's
+documentation, a prose line with no tab and no run of four spaces, and a fence
+tagged `ignore` or with non-Rust language names such as `text` or `toml`. A
+`///` comment below a `#[doc = ...]` attribute that is not a plain string,
+such as `include_str!(...)`, exits 2 wherever it holds the name. The block's
+`package_files` and `identifier_files` globs name every other file that holds
+the crate name.
+Any other occurrence, and any identifier context (`::`, `use`, `extern crate`,
+`RUST_LOG`) in a `package_files` file, exits 2 before any write, with
+`file:line`. In a `package_files` file that a `.rs` file reads with
+`include_str!`, such as a README behind `#![doc = include_str!("../README.md")]`,
+so does `zeta-gadget` on any line of a code block rustdoc may compile; list
+such a file in `identifier_files` instead:
+
+```toml
+[[cargo_split]]
+role = "core"
+package_files = ["README.md"]
+identifier_files = ["docs/api.md"]
+```
+
+After the press the block is inert and may be removed.
+A `[[replace]]` pattern may name a Cargo role with `{cargo_exact_<role>}`,
+`{cargo_ident_<role>}`, or `{cargo_ident_<role>_upper}`; this covers a span the
+strict refusals leave to the target author, and no role may end in `_upper`.
 `provision`/`status` verbs arrive with the M6 Provision phase.
 
 ## Single source of truth

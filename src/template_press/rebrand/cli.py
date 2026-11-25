@@ -29,6 +29,10 @@ from template_press.rebrand.config import (
 )
 from template_press.rebrand.discovery import (
     Discovered,
+    cargo_problems,
+    cargo_proposal,
+    cargo_role_table,
+    cargo_warnings,
     discover,
     manifest_warnings,
     mismatches,
@@ -45,6 +49,10 @@ from template_press.rebrand.engine import (
 from template_press.rebrand.identity import (
     Identity,
     ValidationError,
+    cargo_ident,
+    cargo_identity_problem,
+    cargo_split_problems,
+    cargo_split_roles,
 )
 from template_press.rebrand.keep_names import (
     render_stale,
@@ -52,6 +60,7 @@ from template_press.rebrand.keep_names import (
     validate_keep_names,
 )
 from template_press.rebrand.languages import (
+    LanguageDecision,
     check_target_languages,
     render_ignored_languages,
 )
@@ -123,6 +132,7 @@ from template_press.rebrand.safety import (
 from template_press.rebrand.sandbox import make_sandbox
 from template_press.rebrand.substitutions import (
     SubstitutionTable,
+    cargo_split_target_problems,
     check_target_keep_names,
     declared_rule_triples,
     revalidate_substitution_table,
@@ -437,7 +447,8 @@ def _resolve_source(
     accept_discovery: bool,
     dest: Identity | None,
     accept_origin_mismatch: bool,
-    languages: Sequence[str],
+    languages: LanguageDecision,
+    rules: Rules,
 ) -> tuple[Identity, bool, OriginDecision, Discovered] | int:
     """Resolve the FROM identity; second element = write source-config later.
 
@@ -448,7 +459,7 @@ def _resolve_source(
     """
     write_pending = False
     source = load_source_config(target, override)
-    found = discover(target, languages)
+    found = discover(target, languages.checked, {d.language for d in languages.ignored})
     if source is None:
         proposal: dict[str, str | None]
         if found.source_kind == "node":
@@ -490,6 +501,23 @@ def _resolve_source(
                     f"missing keys to package.json or write the source-config "
                     f"by hand."
                 )
+        elif found.source_kind == "cargo" and found.cargo is not None:
+            if found.cargo.primary is None:
+                return _fail(
+                    f"no source-config at {SOURCE_CONFIG_REL} and the root "
+                    "Cargo.toml is a virtual workspace with no primary crate. "
+                    "Write the source-config by hand, naming one member as "
+                    "package_name and every crate in [identity.cargo_names]."
+                )
+            proposal = cargo_proposal(found.cargo, found.owner, found.repo_name)
+            unresolved = [k for k, v in proposal.items() if v is None]
+            if unresolved:
+                return _fail(
+                    f"no source-config at {SOURCE_CONFIG_REL} and Cargo.toml "
+                    f"could not resolve: {', '.join(unresolved)}. Add the "
+                    "missing keys to Cargo.toml or write the source-config by "
+                    "hand."
+                )
         else:
             proposal = {
                 "package_name": found.package_name,
@@ -523,7 +551,8 @@ def _resolve_source(
                 proposal["cli_name"] = bins[0] if bins else None
         try:
             candidate = Identity.from_mapping(
-                {k: v for k, v in proposal.items() if v is not None}
+                {k: v for k, v in proposal.items() if v is not None},
+                cargo_role_table(found.cargo) if found.cargo is not None else None,
             )
             candidate.validate()
         except ValidationError as exc:
@@ -533,6 +562,8 @@ def _resolve_source(
     problems, origin = _relax_origin_guard(
         source, found, dest, mismatches(source, found), accept_origin_mismatch
     )
+    if found.cargo is not None:
+        problems = [*problems, *cargo_problems(target, source, dest, rules)]
     if problems:
         print(
             "error: source-config does not match the target "
@@ -541,6 +572,9 @@ def _resolve_source(
         for p in problems:
             print(f"  {p}")
         return 2
+    if found.cargo is not None:
+        for warning in cargo_warnings(target, source, rules, dest):
+            print(warning, file=sys.stderr)
     return source, write_pending, origin, found
 
 
@@ -594,6 +628,31 @@ def display_name_problem(source: Identity, dest: Identity) -> str | None:
                     f"source {field_name} equals source {other} "
                     f"({value!r}) but the answers give them different values "
                     f"({dest_values[field_name]!r} vs {dest_values[other]!r}) "
+                    f"— keep them equal in [answers]"
+                )
+    dest_cargo = dict(dest.cargo_names)
+    for role, name in source.cargo_names:
+        new = dest_cargo.get(role)
+        if new is None:
+            continue
+        for other, value in source_values.items():
+            if other == "app_name_upper":
+                continue
+            if value not in (name, cargo_ident(name)):
+                continue
+            # An exact match keeps its spelling; an identifier match keeps its form.
+            expected = new if value == name else cargo_ident(new)
+            # A hyphen-free source text is both forms, so either may follow. It
+            # takes a hyphenated destination only through [[cargo_split]],
+            # which cargo_identity_problem checks next.
+            allowed = (
+                {new, cargo_ident(new)} if name == cargo_ident(name) else {expected}
+            )
+            if dest_values.get(other) not in allowed:
+                return (
+                    f"source cargo_names role {role!r} ({name!r}) matches source "
+                    f"{other} ({value!r}), but the answers give "
+                    f"{dest_values.get(other)!r} where {expected!r} is required "
                     f"— keep them equal in [answers]"
                 )
     return None
@@ -773,7 +832,8 @@ def main(argv: list[str] | None = None) -> int:
             args.accept_discovery,
             dest,
             args.accept_origin_mismatch,
-            languages.checked,
+            languages,
+            rules,
         )
         if isinstance(resolved, int):
             return resolved
@@ -792,9 +852,26 @@ def main(argv: list[str] | None = None) -> int:
         if dest is None:
             return _fail("--config ANSWERS.toml is required")
 
+        split_declared = [split.role for split in rules.cargo_split]
+        split_roles = cargo_split_roles(source, dest, split_declared)
         display_problem = display_name_problem(source, dest)
         if display_problem is not None:
             return _fail(display_problem)
+        split_problems, split_warnings = cargo_split_problems(
+            source, dest, split_declared, pressed=receipt_present(target)
+        )
+        other_languages = sorted({"python", "node"} & set(languages.checked))
+        if split_declared and other_languages:
+            split_problems.append(
+                f"[[cargo_split]] supports Rust-only targets, but this press also "
+                f"checks {other_languages!r}, whose names would take the package "
+                "spelling"
+            )
+        if split_problems:
+            return _fail("\n  ".join(split_problems))
+        cargo_problem = cargo_identity_problem(source, dest, split_roles=split_roles)
+        if cargo_problem is not None:
+            return _fail(cargo_problem)
 
         if source == dest:
             message = (
@@ -817,6 +894,16 @@ def main(argv: list[str] | None = None) -> int:
         # by build_plan before any write.  Keeping the target rules here ensures
         # the adapter preserves each field's effective substring posture.
         validate_keep_names(rules.keep_names, source, dest)
+        split_target = cargo_split_target_problems(target, source, dest, rules)
+        if split_target:
+            print(
+                "error: [[cargo_split]] cannot choose every spelling — nothing "
+                "written:",
+                file=sys.stderr,
+            )
+            for problem in split_target:
+                print(f"  {problem}", file=sys.stderr)
+            return 2
         prior_removed = removed_files_from_receipt(receipt_text)
         removal_plan = plan_removals(
             target,
@@ -833,6 +920,7 @@ def main(argv: list[str] | None = None) -> int:
             dest,
             rules,
             frozenset(member.current_file for member in removal_plan.members),
+            languages.checked,
         )
         if keep_check.undeclared:
             print(render_undeclared(keep_check.undeclared, source), file=sys.stderr)
@@ -954,6 +1042,8 @@ def main(argv: list[str] | None = None) -> int:
         # stream.
         for line in render_ignored_languages(languages):
             print(line, file=sys.stderr)
+        for warning in split_warnings:
+            print(warning, file=sys.stderr)
         for line in render_stale(keep_check.stale):
             print(line, file=sys.stderr)
         for notice in _render_origin_notices(origin, source, dest):

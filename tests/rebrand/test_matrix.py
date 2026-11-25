@@ -161,7 +161,38 @@ def test_ci_provisions_bun_for_native_r3(workflow_name: str, job_name: str) -> N
     assert bun["with"]["bun-version"] == "1.3.14"
 
 
+def test_matrix_script_runs_live_tests_in_parallel() -> None:
+    script = (REPO_ROOT / "scripts/rebrand_matrix.sh").read_text(encoding="utf-8")
+    commands = [
+        shlex.split(line)
+        for line in script.splitlines()
+        if line.startswith("uv run pytest ")
+    ]
+    assert len(commands) == 3
+    for command in commands:
+        assert command[command.index("-n") + 1] == "auto"
+        # `load` would ignore xdist_group and let shared-cache tests overlap.
+        assert command[command.index("--dist") + 1] == "loadgroup"
+
+
+@pytest.mark.parametrize(
+    "test",
+    [
+        pytest.param(lambda: test_r3_self_press_native, id="r3"),
+        pytest.param(lambda: test_r1b_declared_blueprint_presses_clean, id="r1b"),
+    ],
+)
+def test_regenerating_matrix_tests_share_one_worker(test) -> None:
+    """Both run `uv lock` and `bun install` against the user's shared caches,
+    and R1b accepts exit 1, so an overlap failure could pass unnoticed."""
+    groups = [
+        mark.kwargs["name"] for mark in test().pytestmark if mark.name == "xdist_group"
+    ]
+    assert groups == ["shared-tool-caches"]
+
+
 @pytest.mark.live
+@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_r3_self_press_native(tmp_path: Path) -> None:
     """Execute the checked-in declaration selected by this native host."""
 
@@ -294,6 +325,7 @@ def test_r1a_undeclared_blueprint_refused_loudly(tmp_path: Path, capsys):
 
 @pytest.mark.live
 @posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_r1b_declared_blueprint_presses_clean(tmp_path: Path):
     """The declared pipeline against the real blueprint: CHANGELOG resets to
     the stub (G1), lockfiles regenerate under the pressed identity (G2).

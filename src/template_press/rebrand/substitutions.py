@@ -4,21 +4,42 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import posixpath
 import re
 import stat
 import tomllib
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
+from template_press.rebrand.cargo_manifest import (
+    DeclaredPath,
+    Table,
+    auto_discovered_bins,
+    cargo_manifest_files,
+    declared_cargo_paths,
+    inferred_target_paths,
+    named_target_files,
+    read_cargo_facts,
+)
 from template_press.rebrand.identity import (
+    CARGO_BIN_ENV_TAG,
+    CARGO_EXACT_PREFIX,
+    CARGO_IDENT_PREFIX,
     DISPLAY_FORM_NAMES,
     Identity,
     ValidationError,
+    cargo_bin_env_pairs,
+    cargo_field_values,
+    cargo_ident,
+    cargo_name_pairs,
+    cargo_split_roles,
     display_forms,
     distinct_hyphen_form,
+    exact_name_rank,
     field_renames_paths,
+    is_cargo_field,
     occurs,
     pair_renames_paths,
     replace_token,
@@ -31,6 +52,7 @@ from template_press.rebrand.inventory import (
     WorktreeKind,
     capture_surface_snapshot,
     rewrite_surface_texts,
+    select_content_rewrite_entries,
     select_rename_entries,
     select_symlink_entries,
 )
@@ -58,9 +80,25 @@ from template_press.rebrand.pipeline import (
     validate_pipeline,
 )
 from template_press.rebrand.rules import (
+    CargoSplit,
     ReplaceRule,
     Rules,
     render_replace_pattern,
+    rule_matches_path,
+)
+from template_press.rebrand.rust_text import (
+    InlineModule,
+    compiled_markdown_lines,
+    cut_module_docs,
+    quoted_spans,
+    quoting_renames,
+    rust_code_view,
+    rust_path_literals,
+    rust_source_structure,
+    rust_strings,
+    span_within,
+    split_rust_replacements,
+    string_at,
 )
 from template_press.rebrand.safety import (
     RenameClosureUnauthorized,
@@ -116,6 +154,9 @@ class RenderedSubstitution:
     rewrite_surfaces: frozenset[Surface]
     hunts: tuple[HuntPolicy, ...]
     scope: Scope
+    # Set only on a [[cargo_split]] row for ``.rs`` files: the package spelling
+    # that a provable string literal takes instead of ``to_value``.
+    package_value: str | None = None
 
 
 @dataclass(frozen=True)
@@ -251,6 +292,8 @@ def _rewrite_outside_kept(
     neighbors.
     """
 
+    if row.package_value is not None:
+        return _rewrite_rust_split(row, text, kept)
     replaced: list[tuple[int, int]] = []
     if row.provenance[0].kind == "manifest_name":
         span = _project_name_span(text, row.from_value, row.to_value)
@@ -272,6 +315,40 @@ def _rewrite_outside_kept(
             ) or re.compile(re.escape(row.from_value))
         replaced = disjoint_matches(pattern, text, kept)
     return splice_outside_kept(text, replaced, row.to_value, kept)
+
+
+def _rewrite_rust_split(
+    row: RenderedSubstitution, text: str, kept: Sequence[tuple[int, int]]
+) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """Identifier spelling in Rust code, package spelling in provable strings.
+
+    A string occurrence with no provable spelling stays as it is, so the split
+    preflight reports it before any write.
+    """
+    field = row.matcher.identity_field or ""
+    pattern = token_pattern(field, row.from_value) or re.compile(
+        re.escape(row.from_value)
+    )
+    spans = disjoint_matches(pattern, text, kept)
+    choices = split_rust_replacements(
+        text, spans, row.from_value, row.to_value, row.package_value or ""
+    )
+    pieces: list[str] = []
+    copied = 0
+    shifts: list[tuple[int, int]] = []
+    for (start, end), choice in zip(spans, choices, strict=True):
+        if choice is None:
+            continue
+        pieces += [text[copied:start], choice]
+        copied = end
+        shifts.append((end, len(choice) - (end - start)))
+    pieces.append(text[copied:])
+    shifted = tuple(
+        (low + delta, high + delta)
+        for low, high in kept
+        for delta in (sum(d for end, d in shifts if end <= low),)
+    )
+    return "".join(pieces), shifted
 
 
 def rewrite_file(
@@ -305,6 +382,8 @@ def rewrite_with_row(row: RenderedSubstitution, text: str) -> str:
 
     if row.provenance[0].kind == "manifest_name":
         return _rewrite_project_name(text, row.from_value, row.to_value)
+    if row.package_value is not None:
+        return _rewrite_rust_split(row, text, ())[0]
     if row.matcher.algorithm == "literal" or row.matcher.substring:
         return text.replace(row.from_value, row.to_value)
     if row.matcher.algorithm != "conservative":
@@ -1118,8 +1197,120 @@ def _declared_rows(
     return rows
 
 
-def _identity_rows(
+SplitSpelling = Literal["package", "identifier", "both"]
+# The path-only row of a [[cargo_split]] role carries this row_id suffix.
+SPLIT_PATH_ROW_SUFFIX = ":path"
+# The ``.rs`` content row of a [[cargo_split]] role carries this suffix.
+SPLIT_RUST_ROW_SUFFIX = ":rust"
+
+
+def split_spelling(split: CargoSplit, posix: str) -> SplitSpelling | None:
+    """Which spelling a ``[[cargo_split]]`` press writes into one file.
+
+    Cargo manifests and ``.rs`` files are classified by structure, which takes
+    precedence over the declared glob lists.
+    """
+    if posixpath.basename(posix) == "Cargo.toml":
+        return "package"
+    if posix.endswith(".rs"):
+        return "identifier"
+    package = any(fnmatch.fnmatchcase(posix, glob) for glob in split.package_files)
+    ident = any(fnmatch.fnmatchcase(posix, glob) for glob in split.identifier_files)
+    if package and ident:
+        return "both"
+    if package:
+        return "package"
+    return "identifier" if ident else None
+
+
+def active_cargo_splits(
     source: Identity, destination: Identity, rules: Rules
+) -> tuple[CargoSplit, ...]:
+    """The declared splits whose role this press really splits."""
+    roles = cargo_split_roles(
+        source, destination, (split.role for split in rules.cargo_split)
+    )
+    return tuple(split for split in rules.cargo_split if split.role in roles)
+
+
+def _content_surface_paths(target: Path, rules: Rules) -> tuple[str, ...]:
+    snapshot = capture_surface_snapshot(target)
+    return tuple(
+        entry.rel.as_posix()
+        for entry in select_content_rewrite_entries(
+            snapshot,
+            exclude_files=rules.exclude_files,
+            exclude_dirs=rules.exclude_dirs,
+            root_control=ROOT_CONTROL,
+        )
+    )
+
+
+def _split_rows(
+    row: RenderedSubstitution,
+    split: CargoSplit,
+    destination_name: str,
+    paths: Sequence[str],
+) -> list[RenderedSubstitution]:
+    """Replace one unscoped exact row with the rows a split press runs.
+
+    Content rows take exact file scopes, so the shared validator can prove
+    they never meet. The package spelling alone renames paths.
+    """
+    scoped = {
+        spelling: tuple(
+            path for path in paths if split_spelling(split, path) == spelling
+        )
+        for spelling in ("package", "identifier")
+    }
+    rust = tuple(path for path in scoped["identifier"] if path.endswith(".rs"))
+    declared = tuple(path for path in scoped["identifier"] if path not in rust)
+    field = f"{CARGO_IDENT_PREFIX}{split.role}"
+    ident_matcher = MatcherSpec("conservative", field, row.matcher.substring)
+    rows: list[RenderedSubstitution] = []
+    if scoped["package"]:
+        rows.append(
+            replace(
+                row,
+                rewrite_surfaces=frozenset({"content"}),
+                scope=Scope(scoped["package"]),
+            )
+        )
+    for files, suffix, package_value in (
+        (rust, SPLIT_RUST_ROW_SUFFIX, destination_name),
+        (declared, "", None),
+    ):
+        if not files:
+            continue
+        rows.append(
+            RenderedSubstitution(
+                row_id=f"identity:{field}{suffix}",
+                provenance=(Provenance(kind="identity", name=field),),
+                matcher=ident_matcher,
+                from_value=row.from_value,
+                to_value=cargo_ident(destination_name),
+                rewrite_surfaces=frozenset({"content"}),
+                hunts=_identity_hunts(field, ident_matcher, renames_paths=False),
+                scope=Scope(files),
+                package_value=package_value,
+            )
+        )
+    if "path" in row.rewrite_surfaces:
+        rows.append(
+            replace(
+                row,
+                row_id=f"{row.row_id}{SPLIT_PATH_ROW_SUFFIX}",
+                rewrite_surfaces=frozenset({"path"}),
+            )
+        )
+    return rows
+
+
+def _identity_rows(
+    source: Identity,
+    destination: Identity,
+    rules: Rules,
+    target: Path | None = None,
 ) -> list[RenderedSubstitution]:
     source_values = source.as_dict()
     destination_values = destination.as_dict()
@@ -1151,7 +1342,14 @@ def _identity_rows(
                 )
             )
 
-    values.sort(key=lambda item: (-len(item[1]), item[0] != "npm_name"))
+    values.extend(
+        (tag, from_value, to_value, False, False)
+        for tag, from_value, to_value in (
+            *cargo_name_pairs(source, destination),
+            *cargo_bin_env_pairs(source, destination),
+        )
+    )
+    values.sort(key=lambda item: (-len(item[1]), exact_name_rank(item[0])))
     rows: list[RenderedSubstitution] = []
     for field, from_value, to_value, enabled_display, disabled_display in values:
         display = field.startswith("display_name_")
@@ -1181,7 +1379,20 @@ def _identity_rows(
                 scope=Scope(),
             )
         )
-    return rows
+    splits = active_cargo_splits(source, destination, rules)
+    if not splits:
+        return rows
+    paths = _content_surface_paths(target, rules) if target is not None else ()
+    wanted = dict(destination.cargo_names)
+    by_field = {f"{CARGO_EXACT_PREFIX}{split.role}": split for split in splits}
+    split_rows: list[RenderedSubstitution] = []
+    for row in rows:
+        split = by_field.get(row.provenance[0].name)
+        if split is None:
+            split_rows.append(row)
+        else:
+            split_rows.extend(_split_rows(row, split, wanted[split.role], paths))
+    return split_rows
 
 
 def _manifest_text(target: Path | None, rules: Rules) -> tuple[str, str] | None:
@@ -1301,16 +1512,7 @@ def _merge_row_metadata(
     hunts = tuple(
         dict.fromkeys(item for row in (owner, *additions) for item in row.hunts)
     )
-    return RenderedSubstitution(
-        row_id=owner.row_id,
-        provenance=provenance,
-        matcher=owner.matcher,
-        from_value=owner.from_value,
-        to_value=owner.to_value,
-        rewrite_surfaces=owner.rewrite_surfaces,
-        hunts=hunts,
-        scope=owner.scope,
-    )
+    return replace(owner, provenance=provenance, hunts=hunts)
 
 
 def _collapse_display_rows(
@@ -1380,11 +1582,29 @@ def _normalize_rows(
             None,
         )
         # A cli_name or npm_name equal to a content-only field (owner, author)
-        # keeps its own row, or merging would drop its path rename.
-        if duplicate_index is None or (
-            row.provenance[0].name in ("npm_name", "cli_name")
-            and "path" in row.rewrite_surfaces
-            and "path" not in identity_owners[duplicate_index].rewrite_surfaces
+        # keeps its own row, or merging would drop its path rename. A substring
+        # field keeps its own row beside a stricter Cargo owner, or merging
+        # would drop its glued matches at table level. A real press rewrites
+        # such a match only for a single-part value; the keep-names preflight
+        # refuses a glued token around a multi-part value.
+        if (
+            duplicate_index is None
+            or (
+                row.provenance[0].name in ("npm_name", "cli_name")
+                and "path" in row.rewrite_surfaces
+                and "path" not in identity_owners[duplicate_index].rewrite_surfaces
+            )
+            or (
+                row.matcher.substring
+                and is_cargo_field(identity_owners[duplicate_index].provenance[0].name)
+            )
+            # A [[cargo_split]] path row keeps the path surface its scoped
+            # content row lacks, and each scoped split row keeps its own files.
+            or row.row_id.endswith(SPLIT_PATH_ROW_SUFFIX)
+            or (
+                bool(row.scope.files)
+                and row.scope != identity_owners[duplicate_index].scope
+            )
         ):
             identity_owners.append(row)
             continue
@@ -1442,8 +1662,12 @@ def _validate_rows(
         provenance = row.provenance[0]
         if provenance.kind == "replace_rule" and "path" in row.rewrite_surfaces:
             validator_surfaces.add("symlink")
-        if provenance.kind == "identity" and not provenance.name.startswith(
-            "display_name_"
+        # A scoped identity row is a [[cargo_split]] content row; its path
+        # row alone models symlink text.
+        if (
+            provenance.kind == "identity"
+            and not provenance.name.startswith("display_name_")
+            and not row.scope.files
         ):
             validator_surfaces.add("symlink")
         candidates.append(
@@ -1478,6 +1702,7 @@ def _validate_rows(
                 for form in rules.display_forms
             }
         )
+    destination_sinks.update(cargo_field_values(destination))
     keep_arguments = {"keep_names": rules.keep_names} if rules.keep_names else {}
     pipeline_validator(
         tuple(candidates),
@@ -1506,6 +1731,76 @@ def _validate_rows(
     )
 
 
+def _stale_emission(row: RenderedSubstitution, output: str) -> ValidationError:
+    return ValidationError(
+        f"stale-source emission: {row.row_id} source {row.from_value!r} is still "
+        f"found in destination value {output!r}; press in two steps via an "
+        "intermediate identity"
+    )
+
+
+def _refuse_cargo_owner_stale_output(
+    rows: tuple[RenderedSubstitution, ...], destination: Identity
+) -> None:
+    """Refuse output that a field merged into a Cargo row would report as a leak.
+
+    A merged field keeps its looser doctor hunt, so ``acme_core_next`` would be
+    written by the Cargo row and then fail on ``package_name`` ``acme_core``.
+
+    The regeneration and reset hunts are paranoid, so ``-`` and ``_`` count as
+    boundaries. A destination Cargo name that extends a source name
+    (``acme-widget-next``) would land in a regenerated ``Cargo.lock`` and fail
+    that scan after the writes, so every hunt is checked against the
+    destination Cargo names. Other fields' outputs stay doctor-only: they do
+    not reach a lockfile, and a kept word in an email domain is legitimate.
+    """
+
+    cargo_outputs = set(cargo_field_values(destination).values())
+    outputs = {
+        row.to_value
+        for row in rows
+        if row.rewrite_surfaces
+        and not row.provenance[0].name.startswith(CARGO_BIN_ENV_TAG)
+    } | cargo_outputs
+    for row in rows:
+        if not is_cargo_field(row.provenance[0].name):
+            continue
+        for policy in row.hunts:
+            candidates = outputs if policy.consumer == "doctor" else cargo_outputs
+            for output in sorted(candidates):
+                if hunt_occurs(row, policy, output):
+                    raise _stale_emission(row, output)
+
+
+def _refuse_regenerated_cargo_leak(
+    rows: tuple[RenderedSubstitution, ...], destination: Identity, rules: Rules
+) -> None:
+    """Refuse a destination Cargo name that holds another field's source value.
+
+    A Cargo name lands in a regenerated ``Cargo.lock``, so ``acmerepo`` would
+    fail the paranoid ``repo_name`` ``acme-repo`` hunt after the writes. Runs
+    after pipeline validation, whose stability refusals are more specific.
+    """
+
+    cargo_outputs = sorted(set(cargo_field_values(destination).values()))
+    if not cargo_outputs:
+        return
+    regenerated = tuple(rule.file for rule in rules.regenerate) or ("Cargo.lock",)
+    for row in rows:
+        if is_cargo_field(row.provenance[0].name) or not any(
+            row_matches_scope(row, path) for path in regenerated
+        ):
+            continue
+        for policy in row.hunts:
+            if policy.consumer != "regeneration":
+                continue
+            for output in cargo_outputs:
+                if hunt_occurs(
+                    row, policy, output, kept_spans(output, rules.keep_names)
+                ):
+                    raise _stale_emission(row, output)
+
+
 def _compiled_rows(
     source: Identity, destination: Identity, target: Path | None, rules: Rules
 ) -> tuple[RenderedSubstitution, ...]:
@@ -1518,13 +1813,1049 @@ def _compiled_rows(
         ],
         sorted(
             [
-                *_identity_rows(source, destination, rules),
+                *_identity_rows(source, destination, rules, target),
                 *_hyphen_rows(source, destination, target, rules),
             ],
             key=lambda row: -len(row.from_value),
         ),
         rules,
     )
+
+
+def identity_row_rewriter(
+    source: Identity, destination: Identity, target: Path | None, rules: Rules
+) -> Callable[[str], str]:
+    """Apply the identity rows a press would really run on content, in order."""
+
+    rows = _normalize_rows(
+        [],
+        sorted(
+            [
+                *_identity_rows(source, destination, rules, target),
+                *_hyphen_rows(source, destination, target, rules),
+            ],
+            key=lambda row: -len(row.from_value),
+        ),
+        rules,
+    )
+    active = tuple(row for row in rows if "content" in row.rewrite_surfaces)
+
+    def rewrite(text: str) -> str:
+        for row in active:
+            text = rewrite_with_row(row, text)
+        return text
+
+    return rewrite
+
+
+def _declared_path_follows(
+    before: DeclaredPath,
+    after: DeclaredPath,
+    manifest: str,
+    plan: RenamePlan,
+    directories: frozenset[str],
+) -> bool:
+    """Whether the rewritten string still names what the old string named."""
+    old = posixpath.normpath(posixpath.join(posixpath.dirname(manifest), before.value))
+    new = posixpath.normpath(
+        posixpath.join(posixpath.dirname(plan.translate(manifest)), after.value)
+    )
+    if not before.is_glob:
+        return plan.translate(old) == new
+    if old == os.pardir or old.startswith(f"{os.pardir}/") or old.startswith("/"):
+        return before.value == after.value  # the press renames nothing out there
+    matched = {
+        plan.translate(path)
+        for path in directories
+        if PurePosixPath(path).full_match(old)
+    }
+    moved = {plan.translate(path) for path in directories}
+    return matched == {path for path in moved if PurePosixPath(path).full_match(new)}
+
+
+def _rewritten_texts_with_bin_env(
+    target: Path,
+    rows: Sequence[RenderedSubstitution],
+    snapshot: SurfaceSnapshot,
+    rewritten: Collection[str],
+    removed: tuple[set[str], tuple[str, ...]],
+    rules: Rules,
+) -> tuple[tuple[str, str, str], ...]:
+    """``(path, text, text after the press)`` of kept files naming a binary.
+
+    Every tracked file counts; one excluded from rewriting keeps its text.
+    """
+    found: list[tuple[str, str, str]] = []
+    for entry in snapshot.entries:
+        path = entry.rel.as_posix()
+        if (
+            not entry.tracked
+            or entry.worktree_kind != "file"
+            or path in removed[0]
+            or path.startswith(removed[1])
+        ):
+            continue
+        try:
+            text = read_regular_nofollow(target / path).decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if "CARGO_BIN_EXE_" not in text:
+            continue
+        new_text = text
+        if path in rewritten:
+            scoped = (row for row in rows if row_matches_scope(row, path))
+            new_text = rewrite_file(scoped, text, rules.keep_names)[0]
+        found.append((path, text, new_text))
+    return tuple(found)
+
+
+def _bin_env_splits(
+    target: Path,
+    manifest: str,
+    data: dict[str, object],
+    plan: RenamePlan,
+    new_texts: Sequence[tuple[str, str, str]],
+    rewritten: frozenset[str] | set[str],
+) -> list[str]:
+    """``env!`` tokens the rewrite moves away from an auto-discovered binary.
+
+    The binary's name is its file stem, so it changes only if the file renames.
+    """
+    base = posixpath.dirname(manifest)
+    problems: list[str] = []
+    for name, rel in auto_discovered_bins(target / base, data):
+        moved = PurePosixPath(plan.translate(posixpath.join(base, rel)))
+        new_name = moved.stem if rel.endswith(".rs") else moved.name
+        old_token = re.compile(rf"CARGO_BIN_EXE_{re.escape(name)}(?![\w-])")
+        new_token = re.compile(rf"CARGO_BIN_EXE_{re.escape(new_name)}(?![\w-])")
+        problems.extend(
+            f"{path}: CARGO_BIN_EXE_{name} tokens would not match the "
+            f"binary, which its file would name {new_name!r}. "
+            + (
+                "Declare a cargo_names table that names this binary, so the "
+                "press rewrites the binary and its tokens together"
+                if path in rewritten
+                else "The file is excluded from rewriting; remove the exclusion "
+                "or edit the token by hand"
+            )
+            for path, old_text, new_text in new_texts
+            if len(old_token.findall(old_text)) != len(new_token.findall(new_text))
+        )
+    return problems
+
+
+def cargo_path_splits(
+    target: Path, source: Identity, destination: Identity, rules: Rules
+) -> list[str]:
+    """Declared Cargo paths this press would separate from their files.
+
+    Both halves come from what the press really runs: the whole-manifest content
+    rewrite and the rename plan. A table or plan that cannot compile is left for
+    the plan step, which reports it.
+    """
+    snapshot = capture_surface_snapshot(target)
+    selection = {
+        "exclude_files": rules.exclude_files,
+        "exclude_dirs": rules.exclude_dirs,
+        "root_control": ROOT_CONTROL,
+    }
+    try:
+        rows = _compiled_rows(source, destination, target, rules)
+        plan = _compile_rename_plan(
+            rows,
+            SurfaceSnapshot(
+                entries=select_rename_entries(snapshot, **selection),
+                visibility_inputs=snapshot.visibility_inputs,
+            ),
+            rules.keep_names,
+        )
+    except ValidationError:
+        return []
+    rewritten = {
+        entry.rel.as_posix()
+        for entry in select_content_rewrite_entries(snapshot, **selection)
+    }
+    removed_files = {str(rule.file) for rule in rules.remove}
+    removed_dirs = tuple(f"{rule.dir}/" for rule in rules.remove_dirs)
+    directories = frozenset(
+        parent.as_posix()
+        for entry in snapshot.entries
+        for parent in entry.rel.parents
+        if parent != Path()
+    )
+    removed = (removed_files, removed_dirs)
+    content_rows = tuple(row for row in rows if "content" in row.rewrite_surfaces)
+    new_texts = _rewritten_texts_with_bin_env(
+        target, content_rows, snapshot, rewritten, removed, rules
+    )
+    problems: list[str] = []
+    crates: list[tuple[str, Table]] = []
+    for manifest in cargo_manifest_files(target):
+        if manifest in removed_files or manifest.startswith(removed_dirs):
+            continue
+        text = read_regular_nofollow(target / manifest).decode("utf-8")
+        new_text = text
+        if manifest in rewritten:
+            new_text, _ = rewrite_file(
+                (row for row in content_rows if row_matches_scope(row, manifest)),
+                text,
+                rules.keep_names,
+            )
+        parsed = tomllib.loads(text)
+        crates.append((manifest, parsed))
+        problems.extend(
+            _bin_env_splits(target, manifest, parsed, plan, new_texts, rewritten)
+        )
+        declared = declared_cargo_paths(parsed)
+        try:
+            new_parsed = tomllib.loads(new_text)
+        except tomllib.TOMLDecodeError as exc:
+            problems.append(f"{manifest}: the rewrite breaks its TOML: {exc}")
+            continue
+        rewritten_paths = declared_cargo_paths(new_parsed)
+        inferred = inferred_target_paths(
+            parsed, new_parsed, target / posixpath.dirname(manifest)
+        )
+        if len(rewritten_paths) != len(declared) or inferred is None:
+            problems.append(f"{manifest}: the rewrite changes its declared paths")
+            continue
+        problems.extend(
+            f"{manifest}: {before.key} {before.value!r} would become "
+            f"{after.value!r}, but the press would not move what it points at "
+            "to match. Rename the path so a press moves it, or add the shared "
+            "name to keep_names"
+            for before, after in (
+                *zip(declared, rewritten_paths, strict=True),
+                *inferred,
+            )
+            if not _declared_path_follows(before, after, manifest, plan, directories)
+        )
+    split_tokens = _split_tokens(source, destination, rules)
+    files = frozenset(
+        entry.rel.as_posix()
+        for entry in snapshot.entries
+        if entry.worktree_kind == "file"
+    )
+    source_problems: dict[str, list[str]] = {}
+    for path in sorted(rewritten):
+        if (
+            not path.endswith(".rs")
+            or path in removed_files
+            or path.startswith(removed_dirs)
+        ):
+            continue
+        try:
+            text = read_regular_nofollow(target / path).decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        new_text, _ = rewrite_file(
+            (row for row in content_rows if row_matches_scope(row, path)),
+            text,
+            rules.keep_names,
+        )
+        if new_text != text and (
+            found := _rust_source_path_splits(
+                path, text, new_text, plan, files, directories, split_tokens
+            )
+        ):
+            source_problems[path] = found
+    if source_problems:
+        # Only a file Cargo compiles can break the build; a fixture can't.
+        compiled = _compiled_rust_files(target, crates, files)
+        for path, found in source_problems.items():
+            if path in compiled:
+                problems.extend(found)
+    return problems
+
+
+_MODULE_SHAPES = ("{}.rs", "{}/mod.rs")
+# Directories whose ``*.rs`` and ``*/main.rs`` files Cargo makes targets, each
+# with the ``[package]`` flag that turns that discovery off.
+_TARGET_DIRS = {
+    "src/bin": "autobins",
+    "tests": "autotests",
+    "benches": "autobenches",
+    "examples": "autoexamples",
+}
+
+
+def _inline_dirs(path: str, inline: Sequence[InlineModule]) -> tuple[str, ...]:
+    """Candidate directories for a non-empty chain of enclosing inline modules.
+
+    The outermost inline module's ``#[path]`` / ``#[cfg_attr(..., path)]``
+    anchors at ``dirname(path)`` even in a non-mod-rs file. Its fallback name
+    uses both ``base`` (mod-rs) and ``base/<stem>`` (non-mod-rs). Each nested
+    inline module extends every parent directory by its own path override(s)
+    and, when it has no unconditional ``#[path]``, by its name.
+    """
+    base = posixpath.dirname(path)
+    stem = PurePosixPath(path).stem
+    first, *rest = inline
+    explicit = (
+        (first.path, *first.conditional_paths)
+        if first.path is not None
+        else first.conditional_paths
+    )
+    dirs = [posixpath.normpath(posixpath.join(base, value)) for value in explicit]
+    if first.path is None:
+        dirs.append(posixpath.normpath(posixpath.join(base, first.name)))
+        dirs.append(posixpath.normpath(posixpath.join(base, stem, first.name)))
+    for mod in rest:
+        steps = (
+            (mod.path, *mod.conditional_paths)
+            if mod.path is not None
+            else (*mod.conditional_paths, mod.name)
+        )
+        dirs = [
+            posixpath.normpath(posixpath.join(parent, step))
+            for parent in dirs
+            for step in steps
+        ]
+    return tuple(dirs)
+
+
+def _module_places(path: str, inline: Sequence[InlineModule]) -> tuple[str, ...]:
+    """The directories a ``mod name;`` in ``path`` may name a file in.
+
+    A crate root or ``mod.rs`` keeps its modules beside it, and any other file
+    keeps them below its stem. Enclosing inline modules follow Rust's path
+    rules, including any ``#[path]`` or ``#[cfg_attr(..., path)]`` overrides.
+    """
+    if inline:
+        return _inline_dirs(path, inline)
+    base = posixpath.dirname(path)
+    return (base, posixpath.join(base, PurePosixPath(path).stem))
+
+
+def _path_attr_dirs(path: str, inline: Sequence[InlineModule]) -> tuple[str, ...]:
+    """The directories a ``#[path]`` attribute in ``path`` resolves against.
+
+    Outside any inline module, ``#[path]`` resolves against ``dirname(path)``
+    even in a non-mod-rs file. Inside inline modules, it follows their chain.
+    """
+    if inline:
+        return _inline_dirs(path, inline)
+    return (posixpath.dirname(path),)
+
+
+def _effective_inline(
+    inline: Sequence[InlineModule],
+) -> tuple[tuple[str, ...], ...]:
+    """Effective directory steps of each enclosing inline module."""
+    return tuple(
+        (mod.path, *mod.conditional_paths)
+        if mod.path is not None
+        else (*mod.conditional_paths, mod.name)
+        for mod in inline
+    )
+
+
+def _compiled_rust_files(
+    target: Path, crates: Sequence[tuple[str, Table]], files: frozenset[str]
+) -> frozenset[str]:
+    """The ``.rs`` files Cargo compiles: each crate root it infers or a manifest
+    declares, and every file those reach through ``mod`` or a Rust path."""
+    queue: list[str] = []
+    for manifest, parsed in crates:
+        directory = posixpath.dirname(manifest)
+        package = parsed.get("package")
+        if not isinstance(package, dict) and "project" not in parsed:
+            continue  # a virtual manifest has no targets of its own
+        lib, bins = parsed.get("lib"), parsed.get("bin")
+        build = package.get("build") if isinstance(package, dict) else None
+        # ``build = false`` turns the script off; a string is declared below.
+        roots = [] if build is False or isinstance(build, str) else ["build.rs"]
+        auto = package if isinstance(package, dict) else {}
+        if not (isinstance(lib, dict) and isinstance(lib.get("path"), str)) and (
+            isinstance(lib, dict) or auto.get("autolib") is not False
+        ):
+            roots.append("src/lib.rs")  # a [lib] path replaces Cargo's default
+        # A [[bin]] with the package's name and a path replaces src/main.rs.
+        claimed = (
+            isinstance(bins, list)
+            and "name" in auto
+            and any(
+                isinstance(b, dict)
+                and b.get("name") == auto.get("name")
+                and "path" in b
+                for b in bins
+            )
+        )
+        if (auto.get("autobins") is not False and not claimed) or (
+            isinstance(bins, list)
+            and any(not (isinstance(b, dict) and "path" in b) for b in bins)
+        ):
+            roots.append("src/main.rs")  # a pathless [[bin]] may still infer it
+        queue.extend(
+            posixpath.normpath(posixpath.join(directory, root)) for root in roots
+        )
+        queue.extend(
+            posixpath.normpath(posixpath.join(directory, declared.value))
+            for declared in declared_cargo_paths(parsed)
+            if declared.kind in {"target", "build"}
+        )
+        queue.extend(
+            posixpath.normpath(posixpath.join(directory, file))
+            for file in named_target_files(parsed)
+        )
+        for sub, auto in _TARGET_DIRS.items():
+            if isinstance(package, dict) and package.get(auto) is False:
+                continue  # Cargo builds only the targets the manifest names
+            prefix = posixpath.join(directory, sub) + "/"
+            for file in files:
+                rest = file[len(prefix) :] if file.startswith(prefix) else ""
+                parts = rest.split("/")
+                if (len(parts) == 1 and rest.endswith(".rs")) or (
+                    len(parts) == 2 and parts[1] == "main.rs"
+                ):
+                    queue.append(file)
+    reached: set[str] = set()
+    while queue:
+        path = queue.pop()
+        if path in reached or path not in files:
+            continue
+        reached.add(path)
+        try:
+            text = read_regular_nofollow(target / path).decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        mods, path_literals = rust_source_structure(text)
+        code = rust_code_view(text)
+        for module in mods:
+            if not module.attributed:
+                queue.extend(
+                    posixpath.normpath(posixpath.join(place, shape.format(module.name)))
+                    for place in _module_places(path, module.inline)
+                    for shape in _MODULE_SHAPES
+                )
+        base = posixpath.dirname(path)
+        for item in path_literals:
+            if item.kind == "inline_dir":
+                continue  # directory override; child mods/paths carry it in item.inline
+            value = text[item.literal.content_start : item.literal.content_end]
+            if item.kind == "include" and not value.endswith(".rs"):
+                continue
+            if item.kind == "include" and _opens_with(
+                _DATA_INCLUDE, code, item.literal.start
+            ):
+                continue  # include_str!/include_bytes! read data, not Rust
+            places = (
+                (base,)
+                if item.kind == "include"
+                else _path_attr_dirs(path, item.inline)
+            )
+            queue.extend(
+                posixpath.normpath(posixpath.join(place, value)) for place in places
+            )
+    return frozenset(reached)
+
+
+def _split_tokens(
+    source: Identity, destination: Identity, rules: Rules
+) -> tuple[re.Pattern[str], ...]:
+    """The crate names a ``[[cargo_split]]`` press checks with its own rules."""
+    names = dict(source.cargo_names)
+    return tuple(
+        token_pattern(f"{CARGO_EXACT_PREFIX}{split.role}", names[split.role])
+        or re.compile(re.escape(names[split.role]))
+        for split in active_cargo_splits(source, destination, rules)
+    )
+
+
+def _rust_source_path_splits(
+    path: str,
+    text: str,
+    new_text: str,
+    plan: RenamePlan,
+    files: frozenset[str],
+    directories: frozenset[str],
+    split_tokens: Sequence[re.Pattern[str]],
+) -> list[str]:
+    """Paths Rust source declares that the rewrite would separate from their files.
+
+    These are the file of a ``mod name;``, a ``#[path]`` value, and an
+    ``include_str!``, ``include_bytes!``, or ``include!`` argument. Each is
+    judged when the rewrite changes it or its effective enclosing inline-module
+    directories: it must still name the file or directory it named, at that
+    target's planned new path. A crate name that a ``[[cargo_split]]`` role
+    splits is left to the split preflight.
+    """
+
+    def split_owned(value: str) -> bool:
+        return any(token.search(value) for token in split_tokens)
+
+    problems: list[str] = []
+    new_path = plan.translate(path)
+    base, new_base = posixpath.dirname(path), posixpath.dirname(new_path)
+    old_mods, old_paths = rust_source_structure(text)
+    new_mods, new_paths = rust_source_structure(new_text)
+    if len(old_paths) != len(new_paths) or len(old_mods) != len(new_mods):
+        return [f"{path}: the rewrite changes which Rust paths the file declares"]
+    for old_item, new_item in zip(old_paths, new_paths, strict=True):
+        if old_item.kind != new_item.kind:
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        value = text[old_item.literal.content_start : old_item.literal.content_end]
+        new_value = new_text[
+            new_item.literal.content_start : new_item.literal.content_end
+        ]
+        inline_changed = old_item.kind != "include" and _effective_inline(
+            old_item.inline
+        ) != _effective_inline(new_item.inline)
+        if value == new_value and not inline_changed:
+            continue
+        if split_owned(value):
+            continue  # checked by _rust_path_problems with the same inline rules
+        old_dirs = (
+            (base,)
+            if old_item.kind == "include"
+            else _path_attr_dirs(path, old_item.inline)
+        )
+        new_dirs = (
+            (new_base,)
+            if new_item.kind == "include"
+            else _path_attr_dirs(new_path, new_item.inline)
+        )
+        if len(old_dirs) != len(new_dirs):
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        targets = directories if old_item.kind == "inline_dir" else files
+        found = [
+            (
+                posixpath.normpath(posixpath.join(old_dir, value)),
+                posixpath.normpath(posixpath.join(new_dir, new_value)),
+            )
+            for old_dir, new_dir in zip(old_dirs, new_dirs, strict=True)
+            if posixpath.normpath(posixpath.join(old_dir, value)) in targets
+        ]
+        if found and all(
+            plan.translate(resolved) == moved for resolved, moved in found
+        ):
+            continue
+        if not found and old_item.kind == "inline_dir":
+            continue  # no child resolves against it; each child is judged itself
+        if value != new_value:
+            problems.append(
+                f"{path}:{_line_of(text, old_item.literal.start)}: the Rust path "
+                f"{value!r} would become {new_value!r}, but the press would not move "
+                "the file it names to match. Rename the file so a press moves it, add "
+                "the shared name to keep_names, or edit the path by hand before "
+                "pressing"
+            )
+        else:
+            problems.append(
+                f"{path}:{_line_of(text, old_item.literal.start)}: the Rust path "
+                f"{value!r} sits inside a renamed inline module, but the press would "
+                "not move the file it names to match. Rename the directory so a press "
+                "moves it, add the shared name to keep_names, or edit the module by "
+                "hand before pressing"
+            )
+    join = posixpath.join
+    for old_mod, new_mod in zip(old_mods, new_mods, strict=True):
+        name, new_name = old_mod.name, new_mod.name
+        inline_changed = _effective_inline(old_mod.inline) != _effective_inline(
+            new_mod.inline
+        )
+        if (name == new_name and not inline_changed) or old_mod.attributed:
+            continue
+        if name != new_name and split_owned(name) and not inline_changed:
+            continue
+        old_dirs = _module_places(path, old_mod.inline)
+        new_dirs = _module_places(new_path, new_mod.inline)
+        if len(old_dirs) != len(new_dirs):
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        found_mods = [
+            (posixpath.normpath(join(old_dir, shape.format(name))), new_dir, shape)
+            for old_dir, new_dir in zip(old_dirs, new_dirs, strict=True)
+            for shape in _MODULE_SHAPES
+            if posixpath.normpath(join(old_dir, shape.format(name))) in files
+        ]
+        if (found_mods or old_mod.conditional) and all(
+            plan.translate(file)
+            == posixpath.normpath(join(new_dir, shape.format(new_name)))
+            for file, new_dir, shape in found_mods
+        ):
+            # A ``cfg_attr`` path with no name-based file leaves nothing to move.
+            continue
+        if name != new_name:
+            problems.append(
+                f"{path}:{_line_of(text, old_mod.offset)}: `mod {name};` would become "
+                f"`mod {new_name};`, but the press would not rename the module's "
+                "file to match. Rename the file so a press moves it, add the shared "
+                "name to keep_names, or edit the module by hand before pressing"
+            )
+        else:
+            problems.append(
+                f"{path}:{_line_of(text, old_mod.offset)}: `mod {name};` sits inside "
+                "a renamed inline module, but the press would not move the module's "
+                "file to match. Rename the directory so a press moves it, add the "
+                "shared name to keep_names, or edit the module by hand before pressing"
+            )
+    return problems
+
+
+def _line_of(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
+
+def _module_rename_problem(
+    step: RenameStep, old_name: str, new_name: str, mod_declared: bool
+) -> str | None:
+    """A rename that would give a Rust module path the package spelling.
+
+    ``src/bin/<name>`` names a binary, which may hold a hyphen; any other
+    renamed component below ``src/`` is a module that ``mod <name>;`` names.
+    Anywhere else, such as ``tests/<name>/mod.rs``, a component is a module
+    when some ``.rs`` file declares ``mod <name>;``.
+    """
+    parts = PurePosixPath(step.old_prefix).parts
+    parents = parts[:-1]
+    leaf = parts[-1]
+    named = leaf == old_name or leaf == f"{old_name}.rs"
+    problem = (
+        f"{step.old_prefix}: renaming it to {step.new_prefix!r} gives a Rust "
+        f"module path the package spelling {new_name!r}, which `mod` cannot "
+        "name. Rename the module first"
+    )
+    if mod_declared and named:
+        return problem
+    if "src" not in parents:
+        return None
+    below = parents[len(parents) - parents[::-1].index("src") :]
+    return None if below == ("bin",) else problem
+
+
+_LOG_LEVELS = "error|warn|info|debug|trace|off"
+_RUST_LOG = re.compile(r"RUST_LOG=[\"']?([^\s\"']*)")
+
+
+def _identifier_contexts(text: str, name: str) -> list[int]:
+    """Offsets where ``name`` sits in a position only a Rust identifier fits.
+
+    These are a path (``name::``), ``extern crate name``, ``use name``, and a
+    log filter target (``name=debug`` or a ``RUST_LOG`` directive).
+    """
+    token = re.escape(name)
+    edge = r"(?![A-Za-z0-9_-])"
+    patterns = (
+        rf"(?<![A-Za-z0-9_-]){token}::",
+        rf"\bextern\s+crate\s+(?P<n>{token}){edge}",
+        rf"\buse\s+(?P<n>{token}){edge}",
+        rf"(?<![A-Za-z0-9_-]){token}=(?:{_LOG_LEVELS})\b",
+    )
+    offsets = set()
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE if "=" in pattern else 0):
+            offsets.add(match.start("n") if "?P<n>" in pattern else match.start())
+    for match in _RUST_LOG.finditer(text):
+        position = match.start(1)
+        for directive in match.group(1).split(","):
+            target = directive.split("=", 1)[0]
+            if target == name or target.startswith(f"{name}::"):
+                offsets.add(position)
+            position += len(directive) + 1
+    return sorted(offsets)
+
+
+_INCLUDE_STR = re.compile(r"\binclude_str\s*!\s*[(\[{]\s*$")
+_DATA_INCLUDE = re.compile(r"\binclude_(?:str|bytes)\s*!\s*[(\[{]\s*$")
+
+
+def _opens_with(macro: re.Pattern[str], code: str, start: int) -> bool:
+    """Whether ``macro``'s call opens right before ``start`` in ``code``,
+    past any whitespace and blanked comments."""
+    end = start
+    while end and code[end - 1].isspace():
+        end -= 1
+    return macro.search(code, max(end - 64, 0), end) is not None
+
+
+def _doc_included_files(target: Path, paths: Sequence[str]) -> dict[str, str]:
+    """Files a ``.rs`` file reads with ``include_str!``, each with that
+    ``file:line``. rustdoc compiles such a file's code blocks when the string
+    is doc text, as in ``#![doc = include_str!("../README.md")]``.
+    """
+    found: dict[str, str] = {}
+    for path in paths:
+        if not path.endswith(".rs"):
+            continue
+        try:
+            text = read_regular_nofollow(target / path).decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if "include_str" not in text:
+            continue
+        code = rust_code_view(text)
+        for literal in rust_strings(text):
+            if literal.doc or not _opens_with(_INCLUDE_STR, code, literal.start):
+                continue
+            value = text[literal.content_start : literal.content_end]
+            resolved = posixpath.normpath(
+                posixpath.join(posixpath.dirname(path), value)
+            )
+            found.setdefault(resolved, f"{path}:{_line_of(text, literal.start)}")
+    return found
+
+
+def _doc_included_problems(
+    path: str, text: str, new_text: str, new: str, role: str, where: str
+) -> list[str]:
+    """Package spellings the press would write where rustdoc compiles Rust.
+
+    In a doc-included ``package_files`` file, that is any line of a code block
+    rustdoc may compile, and any position only a Rust identifier fits.
+    """
+    old_lines, new_lines = text.split("\n"), new_text.split("\n")
+    if len(old_lines) != len(new_lines):
+        return [f"{path}: the rewrite changes its line count; edit it by hand"]
+    lines = {
+        number
+        for number in compiled_markdown_lines(text)
+        if new_lines[number - 1].count(new) > old_lines[number - 1].count(new)
+    }
+    if len(_identifier_contexts(new_text, new)) > len(_identifier_contexts(text, new)):
+        lines.update(
+            _line_of(new_text, offset) for offset in _identifier_contexts(new_text, new)
+        )
+    return [
+        f"{path}:{line}: {new!r} would sit in a code block that rustdoc compiles "
+        f"as Rust, or where only a Rust identifier fits, because {where} includes "
+        "this file with include_str!, but package_files gives it the package "
+        "spelling. List the file in identifier_files instead, and cover each "
+        "span that needs the package spelling, such as a `cargo add` line, with "
+        f'an exact [[replace]] rule such as "cargo add {{cargo_exact_{role}}}"'
+        for line in sorted(lines)
+    ]
+
+
+def _rule_hyphen_problems(
+    path: str,
+    text: str,
+    new: str,
+    role: str,
+    rules: Rules,
+    source: Identity,
+    destination: Identity,
+) -> list[str]:
+    """A ``[[replace]]`` rule must not write a split role's hyphenated name into
+    a ``.rs`` file: ``{cargo_exact_<role>}`` never fits a Rust identifier."""
+    found: list[str] = []
+    for rule in rules.replace:
+        if not rule.content or not rule_matches_path(rule, path):
+            continue
+        to_value = render_replace_pattern(rule.pattern, destination)
+        from_value = render_replace_pattern(rule.pattern, source)
+        if new not in to_value or from_value == to_value or from_value not in text:
+            continue
+        found.append(
+            f"{path}:{_line_of(text, text.index(from_value))}: [[replace]] rule "
+            f"{rule.pattern!r} would write {new!r}, the hyphenated name of "
+            f"[[cargo_split]] role {role!r}, into a Rust file, where only an "
+            f"identifier fits. Use {{cargo_ident_{role}}} in the pattern, or "
+            "scope the rule away from .rs files"
+        )
+    return found
+
+
+def cargo_split_target_problems(
+    target: Path, source: Identity, destination: Identity, rules: Rules
+) -> list[str]:
+    """Why this target's ``[[cargo_split]]`` press cannot choose every spelling.
+
+    Each check reads what the press really runs: every occurrence the ordered
+    rows leave behind is a file nobody declared, listed by ``file:line``.
+    """
+    splits = active_cargo_splits(source, destination, rules)
+    if not splits:
+        return []
+    old_names, new_names = dict(source.cargo_names), dict(destination.cargo_names)
+    removed = frozenset(rule.file for rule in rules.remove)
+    removed_dirs = tuple(f"{rule.dir}/" for rule in rules.remove_dirs)
+    problems: list[str] = []
+    paths = [
+        path
+        for path in _content_surface_paths(target, rules)
+        if path not in removed and not path.startswith(removed_dirs)
+    ]
+    for split in splits:
+        problems.extend(
+            f"{path}: matches both package_files and identifier_files of "
+            f"[[cargo_split]] role {split.role!r}; a file takes one spelling"
+            for path in paths
+            if split_spelling(split, path) == "both"
+        )
+    if problems:
+        return problems
+    rows = _compiled_rows(source, destination, target, rules)
+    rename_snapshot = capture_surface_snapshot(target)
+    try:
+        plan: RenamePlan | None = _compile_rename_plan(
+            rows,
+            SurfaceSnapshot(
+                entries=select_rename_entries(
+                    rename_snapshot,
+                    exclude_files=rules.exclude_files,
+                    exclude_dirs=rules.exclude_dirs,
+                    root_control=ROOT_CONTROL,
+                ),
+                visibility_inputs=rename_snapshot.visibility_inputs,
+            ),
+            rules.keep_names,
+        )
+    except ValidationError:
+        plan = None  # the plan step reports an uncompilable plan
+    surface = frozenset(entry.rel.as_posix() for entry in rename_snapshot.entries)
+    directories = frozenset(
+        parent.as_posix()
+        for entry in rename_snapshot.entries
+        for parent in entry.rel.parents
+        if parent != Path()
+    )
+    content_rows = tuple(row for row in rows if "content" in row.rewrite_surfaces)
+    mod_declared: set[str] = set()
+    included = _doc_included_files(target, paths)
+    for path in paths:
+        try:
+            text = read_regular_nofollow(target / path).decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        new_text, _ = rewrite_file(
+            (row for row in content_rows if row_matches_scope(row, path)),
+            text,
+            rules.keep_names,
+        )
+        kept = kept_spans(new_text, rules.keep_names)
+        strings = rust_strings(new_text) if path.endswith(".rs") else ()
+        quoted = quoted_spans(new_text) if path.endswith(".rs") else ()
+        if path.endswith(".rs"):
+            problems.extend(
+                f"{path}:{_line_of(text, offset)}: the documentation above this "
+                "`mod` declaration may end inside a Rust string literal, a block "
+                "comment, or the arguments of a `stringify!` or `concat!` call: "
+                "its doc comment ends that way, or a `#[doc = ...]` attribute "
+                "there is not a plain string or names one of those macros. rustdoc "
+                "joins the doc comment of the module's own file to it, so the "
+                "press cannot read that file's doc comment. Close the string or "
+                "comment, or move the attribute into the module's file, below "
+                "its doc comment"
+                for offset in cut_module_docs(text)
+            )
+            problems.extend(
+                f"{path}:{_line_of(text, offset)}: renames `stringify!` or "
+                "`concat!`. A call through the new name, in this file or another, "
+                "turns its arguments into text that the press cannot see, so it "
+                "cannot choose a spelling there. Call the macro by its own name "
+                "before pressing"
+                for offset in quoting_renames(text)
+            )
+        for split in splits:
+            old, new = old_names[split.role], new_names[split.role]
+            role = f"[[cargo_split]] role {split.role!r}"
+            if path.endswith(".rs") and re.search(
+                rf"(?<![A-Za-z0-9_])mod\s+{re.escape(old)}\s*;", text
+            ):
+                mod_declared.add(split.role)
+            if path.endswith(".rs") and "-" in new:
+                problems.extend(
+                    _rule_hyphen_problems(
+                        path, text, new, split.role, rules, source, destination
+                    )
+                )
+            for start, end in disjoint_matches(
+                token_pattern(f"{CARGO_EXACT_PREFIX}{split.role}", old)
+                or re.compile(re.escape(old)),
+                new_text,
+                kept,
+            ):
+                where = f"{path}:{_line_of(new_text, start)}"
+                literal = string_at(strings, (start, end))
+                unread = literal is not None and literal.unread
+                if span_within(quoted, (start, end)) and not unread:
+                    problems.append(
+                        f"{where}: {old!r} is in the arguments of a `stringify!` "
+                        "or `concat!` call, which turns them into text, so the "
+                        f"press cannot choose {new!r} or {cargo_ident(new)!r}. In "
+                        "a doc comment, a call that the press cannot find the end "
+                        "of holds the rest of the item's doc comments. Edit the "
+                        "call by hand before pressing"
+                    )
+                    continue
+                if literal is not None:
+                    place, remedy = (
+                        "inside a Rust string literal",
+                        "Edit the string by hand before pressing",
+                    )
+                    if literal.unread:
+                        problems.append(
+                            f"{where}: {old!r} is in a doc comment that follows a "
+                            "`#[doc = ...]` attribute the press cannot read: its "
+                            "value is not a plain string, or holds a quote, a "
+                            "backslash, or a block-comment marker. A string or a "
+                            "comment from that text may still be open here, so "
+                            f"the press cannot choose {new!r} or "
+                            f"{cargo_ident(new)!r}. Move the attribute below the "
+                            "doc comment, or edit the comment by hand before "
+                            "pressing"
+                        )
+                        continue
+                    if literal.doc:
+                        place = (
+                            "in a doc comment that rustdoc may compile as a "
+                            "doctest, where it would sit in a Rust string literal"
+                        )
+                        remedy = (
+                            "Edit the comment by hand before pressing: prose that "
+                            "names the crate in backticks, without double quotes, "
+                            f"takes {cargo_ident(new)!r}"
+                        )
+                    problems.append(
+                        f"{where}: {old!r} is {place} that the press cannot prove "
+                        "is a Cargo feature name, a path to a file it renames, or "
+                        "a CARGO_PKG_NAME comparison, so it cannot choose "
+                        f"{new!r} or {cargo_ident(new)!r}. {remedy}"
+                    )
+                    continue
+                problems.append(
+                    f"{where}: {old!r} is in no {role} list, so the press cannot "
+                    f"tell whether to write {new!r} or {cargo_ident(new)!r}. Add "
+                    "the file to package_files or identifier_files"
+                )
+            if path.endswith(".rs") and plan is not None:
+                problems.extend(
+                    _rust_path_problems(
+                        path, text, new_text, old, plan, surface, directories
+                    )
+                )
+            if split_spelling(split, path) != "package" or path.endswith("Cargo.toml"):
+                continue
+            if path in included:
+                problems.extend(
+                    _doc_included_problems(
+                        path, text, new_text, new, split.role, included[path]
+                    )
+                )
+                continue
+            written = _identifier_contexts(new_text, new)
+            if len(written) <= len(_identifier_contexts(text, new)):
+                continue  # the press wrote none of them
+            problems.extend(
+                f"{path}:{_line_of(new_text, offset)}: {new!r} would sit where "
+                "only a Rust identifier fits (a `::` path, `extern crate`, "
+                "`use`, or a log filter such as RUST_LOG), but package_files "
+                f"gives it the package spelling. List the file in "
+                "identifier_files, or cover the span with an exact [[replace]] "
+                "rule scoped to the file, with a pattern such as "
+                '"{cargo_ident_<role>}::" or "extern crate {cargo_ident_<role>};" '
+                "(or {package_name} when "
+                f"{old!r} is the package_name crate)"
+                for offset in written
+            )
+    for manifest in cargo_manifest_files(target):
+        if manifest in removed or manifest.startswith(removed_dirs):
+            continue
+        data = tomllib.loads(read_regular_nofollow(target / manifest).decode("utf-8"))
+        lib = data.get("lib")
+        lib_name = lib.get("name") if isinstance(lib, dict) else None
+        for split in splits:
+            if lib_name == old_names[split.role]:
+                problems.append(
+                    f"{manifest}: [lib] name {lib_name!r} would take the package "
+                    f"spelling {new_names[split.role]!r}, and Cargo refuses a "
+                    "hyphen in a library name. Remove the explicit [lib] name, "
+                    "which defaults to the package name's underscore form"
+                )
+    if plan is None:
+        return problems
+    split_path_rows = {
+        f"identity:{CARGO_EXACT_PREFIX}{split.role}{SPLIT_PATH_ROW_SUFFIX}": split
+        for split in splits
+    }
+    for step in plan.steps:
+        for row_id in step.row_ids:
+            split = split_path_rows.get(row_id)
+            if split is None:
+                continue
+            problem = _module_rename_problem(
+                step,
+                old_names[split.role],
+                new_names[split.role],
+                split.role in mod_declared,
+            )
+            if problem is not None:
+                problems.append(problem)
+    return problems
+
+
+def _rust_path_problems(
+    path: str,
+    text: str,
+    new_text: str,
+    old: str,
+    plan: RenamePlan,
+    surface: frozenset[str],
+    directories: frozenset[str],
+) -> list[str]:
+    """Rewritten path strings that no longer name the file they named.
+
+    ``include_*!`` resolves against the source file's directory; ``#[path]``
+    resolves against any enclosing inline-module directories. The string is
+    provable only when it named a file or directory on the surface and its
+    rewrite names that target's planned new path from the file's new location.
+    """
+    token = token_pattern(f"{CARGO_EXACT_PREFIX}x", old) or re.compile(re.escape(old))
+    old_items = rust_path_literals(text)
+    new_items = rust_path_literals(new_text)
+    if len(old_items) != len(new_items):
+        return [f"{path}: the rewrite changes which Rust paths the file declares"]
+    new_path = plan.translate(path)
+    base, new_base = posixpath.dirname(path), posixpath.dirname(new_path)
+    problems: list[str] = []
+    for old_item, new_item in zip(old_items, new_items, strict=True):
+        if not token.search(
+            text, old_item.literal.content_start, old_item.literal.content_end
+        ):
+            continue
+        if old_item.kind != new_item.kind:
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        value = text[old_item.literal.content_start : old_item.literal.content_end]
+        new_value = new_text[
+            new_item.literal.content_start : new_item.literal.content_end
+        ]
+        old_dirs = (
+            (base,)
+            if old_item.kind == "include"
+            else _path_attr_dirs(path, old_item.inline)
+        )
+        new_dirs = (
+            (new_base,)
+            if new_item.kind == "include"
+            else _path_attr_dirs(new_path, new_item.inline)
+        )
+        if len(old_dirs) != len(new_dirs):
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        targets = directories if old_item.kind == "inline_dir" else surface
+        found = [
+            (
+                posixpath.normpath(posixpath.join(old_dir, value)),
+                posixpath.normpath(posixpath.join(new_dir, new_value)),
+            )
+            for old_dir, new_dir in zip(old_dirs, new_dirs, strict=True)
+            if posixpath.normpath(posixpath.join(old_dir, value)) in targets
+        ]
+        if found and all(
+            plan.translate(resolved) == moved for resolved, moved in found
+        ):
+            continue
+        line = _line_of(text, old_item.literal.start)
+        problems.append(
+            f"{path}:{line}: the path string {value!r} names "
+            + (
+                "no file the press keeps"
+                if not found
+                else "a file whose rename the rewritten string would not follow"
+            )
+            + ", so the press cannot prove its spelling. Edit the string by hand "
+            "before pressing"
+        )
+    return problems
 
 
 def _identity_row_pattern(row: RenderedSubstitution) -> re.Pattern[str]:
@@ -1549,18 +2880,37 @@ def _checked_dependency_names(
     return () if manifest is None else manifest.dependency_names
 
 
+def _checked_cargo_dependency_names(
+    target: Path,
+    source: Identity,
+    removed: frozenset[str],
+    languages: Sequence[str],
+) -> tuple[str, ...]:
+    """Non-local Cargo dependencies, when a Cargo table meets a checked manifest."""
+
+    if (
+        not source.cargo_names
+        or "Cargo.toml" in removed
+        or "rust" not in languages
+        or not os.path.lexists(target / "Cargo.toml")
+    ):
+        return ()
+    return read_cargo_facts(target).external_dependencies
+
+
 def check_target_keep_names(
     target: Path,
     source: Identity,
     destination: Identity,
     rules: Rules,
     removed: frozenset[str],
+    languages: Sequence[str],
 ) -> KeepCheck:
     """Run the keep-name preflight with this press's real rewrite rows."""
 
     rows = (
         *_declared_rows(source, destination, rules),
-        *_identity_rows(source, destination, rules),
+        *_identity_rows(source, destination, rules, target),
         *_hyphen_rows(source, destination, target, rules),
     )
     # Equal-valued fields collapse to one owner row, so only the compiled rows
@@ -1612,6 +2962,9 @@ def check_target_keep_names(
         rules.keep_names,
         rewritten=rewritten,
         dependency_names=_checked_dependency_names(target, rules, removed),
+        cargo_dependency_names=_checked_cargo_dependency_names(
+            target, source, removed, languages
+        ),
     )
 
 
@@ -1631,6 +2984,7 @@ def compile_substitution_table(
     source.validate()
     destination.validate()
     rows = _compiled_rows(source, destination, target, rules)
+    _refuse_cargo_owner_stale_output(rows, destination)
     rename_snapshot = SurfaceSnapshot(
         entries=select_rename_entries(
             snapshot,
@@ -1651,6 +3005,7 @@ def compile_substitution_table(
         pipeline_validator,
         tuple(source for _link, source, _destination in virtual_translations),
     )
+    _refuse_regenerated_cargo_leak(rows, destination, rules)
     rename_plan = _compile_rename_plan(rows, rename_snapshot, rules.keep_names)
     rename_plan = replace(
         rename_plan,

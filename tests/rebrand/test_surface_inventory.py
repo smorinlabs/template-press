@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import os
 import subprocess
@@ -1752,16 +1753,80 @@ def test_config_source_state_batches_rev_parse_queries(
     # Two bracketed candidates, each stamping the config sources before and
     # after its listing: four _config_source_state calls. The before/after
     # comparison is the mutation guard and keeps running twice per candidate;
-    # only the transport collapses, so each call fetches its four repository
-    # paths in ONE spawn. The shared-index path may legitimately be empty and
-    # stays a separate spawn. _visibility_inputs adds one info/exclude lookup
-    # per call (four per snapshot).
-    batched = [
-        cmd for cmd in rev_parse if "--git-dir" in cmd and "--git-common-dir" in cmd
-    ]
-    assert len(batched) == 4
-    assert sum("--shared-index-path" in cmd for cmd in rev_parse) == 4
-    assert len(rev_parse) == 12
+    # only the transport collapses, so each call fetches its repository paths,
+    # info/exclude, and the empty shared-index answer in ONE spawn.
+    assert len(rev_parse) == 4
+    for cmd in rev_parse:
+        assert "--git-dir" in cmd
+        assert "--git-common-dir" in cmd
+        assert "info/exclude" in cmd
+        assert "--shared-index-path" in cmd
+
+
+def test_repository_paths_fall_back_when_a_split_index_adds_a_line(
+    src_target: Path,
+) -> None:
+    _git(src_target, "update-index", "--split-index")
+
+    paths = inventory._repository_paths(src_target)
+
+    assert paths.shared_index is not None
+    assert paths.shared_index.name.startswith("sharedindex.")
+    assert paths.info_exclude == src_target / ".git" / "info" / "exclude"
+    assert capture_surface_snapshot(src_target).entries
+
+
+def test_repository_paths_fall_back_when_a_path_embeds_a_newline(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git_dir = src_target / "with\nnewline" / ".git"
+    head = git_dir / "HEAD"
+    index = git_dir / "index"
+    exclude = git_dir / "info" / "exclude"
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run_git(_target: Path, *args: str, **_kwargs):
+        calls.append(args)
+        if "--git-dir" in args and "--git-common-dir" in args:
+            joined = "\n".join(map(str, (git_dir, git_dir, head, index, exclude)))
+            return _fake_git_output(f"{joined}\n".encode())
+        if "--shared-index-path" in args:
+            return _fake_git_output(b"")
+        if "--git-dir" in args or "--git-common-dir" in args:
+            return _fake_git_output(f"{git_dir}\n".encode())
+        path = {"HEAD": head, "index": index, "info/exclude": exclude}[args[-1]]
+        return _fake_git_output(f"{path}\n".encode())
+
+    monkeypatch.setattr(inventory, "_run_git", fake_run_git)
+
+    paths = inventory._repository_paths(src_target)
+
+    assert paths == inventory._RepositoryPaths(
+        git_dir, git_dir, head, index, exclude, None
+    )
+    assert len(calls) > 1
+
+
+def test_info_exclude_path_change_during_capture_is_refused(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_paths = inventory._repository_paths
+    calls = 0
+
+    def moving_exclude(target: Path):
+        nonlocal calls
+        calls += 1
+        paths = real_paths(target)
+        if calls == 2:
+            return dataclasses.replace(
+                paths, info_exclude=target / "elsewhere" / "exclude"
+            )
+        return paths
+
+    monkeypatch.setattr(inventory, "_repository_paths", moving_exclude)
+
+    with pytest.raises(SafetyError, match="config or index inputs changed"):
+        capture_surface_snapshot(src_target)
 
 
 @posix_only

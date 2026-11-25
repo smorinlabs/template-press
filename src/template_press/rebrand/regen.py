@@ -30,6 +30,7 @@ from template_press.rebrand.engine import (
 from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
     Identity,
+    cargo_name_pairs,
     display_forms,
 )
 from template_press.rebrand.inventory import (
@@ -800,7 +801,9 @@ def changed_identity_pairs(source: Identity, dest: Identity) -> list[tuple[str, 
     verifier's rule; feeding the full source identity would turn a retained
     author in a correct fresh lockfile into a false leak)."""
     src, dst = _expanded_fields(source), _expanded_fields(dest)
-    return [(f, src[f]) for f in src if f in dst and dst[f] != src[f]]
+    changed = [(f, src[f]) for f in src if f in dst and dst[f] != src[f]]
+    changed.extend((tag, cur) for tag, cur, _new in cargo_name_pairs(source, dest))
+    return changed
 
 
 def _expanded_fields(identity: Identity) -> dict[str, str]:

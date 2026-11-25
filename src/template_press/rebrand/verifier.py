@@ -41,7 +41,11 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from template_press.rebrand.identity import Identity
+from template_press.rebrand.identity import (
+    CARGO_EXACT_PREFIX,
+    Identity,
+    cargo_ident,
+)
 from template_press.rebrand.inventory import (
     SurfaceSnapshot,
     _run_git,
@@ -56,6 +60,7 @@ from template_press.rebrand.keep_names import (
     kept_spans,
     matches_outside_kept,
 )
+from template_press.rebrand.matcher import identity_pattern
 from template_press.rebrand.pathing import (
     ROOT_CONTROL,
     exempt_regenerated_paths,
@@ -469,7 +474,10 @@ def _rule_scan_specs(
 
 
 def _changed_fields(
-    source: Identity, dest: Identity, fields: Sequence[str]
+    source: Identity,
+    dest: Identity,
+    fields: Sequence[str],
+    substring_fields: Collection[str] = frozenset(),
 ) -> list[tuple[str, str]]:
     """(field, source_value) pairs for fields that actually differ.
 
@@ -477,9 +485,55 @@ def _changed_fields(
     leak — its token legitimately remains everywhere — so it is never
     scanned for. Total under the sparse identity dicts: a field absent on
     either side (optional `display_name`) is simply not scanned.
+
+    A declared Cargo name the press changes is always hunted, whatever
+    ``fields`` selects. One ``cargo_exact_<role>`` hunt covers both spellings
+    because the matcher treats ``-`` and ``_`` alike. It is skipped when a
+    selected boundary-matched field already has the identical pattern, so one
+    occurrence never yields two findings that a single ignore could not
+    suppress. A substring field is a literal hunt and covers one spelling only.
     """
     src, dst = source.as_dict(), dest.as_dict()
-    return [(f, src[f]) for f in fields if f in src and f in dst and src[f] != dst[f]]
+    changed = [
+        (f, src[f]) for f in fields if f in src and f in dst and src[f] != dst[f]
+    ]
+    hunted = {
+        identity_pattern(f, value).pattern
+        for f, value in changed
+        if f not in substring_fields
+    }
+    dest_names = dict(dest.cargo_names)
+    for role, name in source.cargo_names:
+        if dest_names.get(role, name) == name:
+            continue
+        field = f"{CARGO_EXACT_PREFIX}{role}"
+        pattern = identity_pattern(field, name).pattern
+        if pattern not in hunted:
+            hunted.add(pattern)
+            changed.append((field, name))
+    return changed
+
+
+def _cargo_literals(
+    source: Identity, dest: Identity
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    """``(field, name, spellings)`` per changed Cargo name, longest name first.
+
+    A binary has no word boundaries, so a compiled symbol such as
+    ``_ZN11acme_widget4main`` needs a literal needle for each spelling. This
+    list includes names whose boundary hunt is covered by another field.
+    """
+    dest_names = dict(dest.cargo_names)
+    literals = [
+        (
+            f"{CARGO_EXACT_PREFIX}{role}",
+            name,
+            tuple(sorted({name, cargo_ident(name), name.replace("_", "-")})),
+        )
+        for role, name in source.cargo_names
+        if dest_names.get(role, name) != name
+    ]
+    return tuple(sorted(literals, key=lambda item: (-len(item[1]), item[0])))
 
 
 def _substring_occurrences(
@@ -699,6 +753,7 @@ def _scan_binary(
     changed: list[tuple[str, str]],
     substring_fields: Collection[str],
     keep_names: Sequence[str] = (),
+    cargo_literals: Sequence[tuple[str, str, tuple[str, ...]]] = (),
 ) -> list[Finding]:
     """Byte-scan a non-UTF-8 file for surviving identity — VARIANT-aware.
 
@@ -753,6 +808,24 @@ def _scan_binary(
         findings.extend(
             Finding(posix, f, value, "binary", None, idx, "") for idx in sorted(offsets)
         )
+    reported: dict[str, set[int | None]] = {}
+    for finding in findings:
+        reported.setdefault(finding.field, set()).add(finding.col)
+    for field, name, spellings in cargo_literals:
+        offsets = set()
+        for spelling in spellings:
+            raw = re.compile(re.escape(spelling))
+            offsets.update(
+                start for start, _end in matches_outside_kept(raw, latin1, kept)
+            )
+        # A shorter field at this offset must not hide the crate name: that
+        # field can be ignored on its own, which would turn the scan clean.
+        offsets -= reported.get(field, set())
+        reported.setdefault(field, set()).update(offsets)
+        findings.extend(
+            Finding(posix, field, name, "binary", None, idx, "")
+            for idx in sorted(offsets)
+        )
     return findings
 
 
@@ -765,6 +838,7 @@ def _scan_file(
     rule_specs: Sequence[_RuleScanSpec],
     renamed: list[tuple[str, str]],
     keep_names: Sequence[str],
+    cargo_literals: Sequence[tuple[str, str, tuple[str, ...]]] = (),
 ) -> list[Finding]:
     path = target / rel
     try:
@@ -789,7 +863,9 @@ def _scan_file(
         # more than it can via the token pass, so a rule-literal scan of
         # binary bytes is not attempted (mirrors `doctor.find_leaks`, which
         # only rule-scans `_read_for_scan`-returned TEXT).
-        return _scan_binary(data, posix, changed, substring_fields, keep_names)
+        return _scan_binary(
+            data, posix, changed, substring_fields, keep_names, cargo_literals
+        )
     return _scan_content(
         text, posix, changed, substring_fields, rule_specs, renamed, keep_names
     )
@@ -840,7 +916,8 @@ def scan(
     stable by selected path and then scan order (path components followed by
     symlink, content, or binary evidence).
     """
-    changed = _changed_fields(source, dest, fields)
+    changed = _changed_fields(source, dest, fields, substring_fields)
+    cargo_literals = _cargo_literals(source, dest)
     renamed = renamed or []
     findings: list[Finding] = []
     # `renamed` also drives the regeneration exemption (P04 D3): declared
@@ -930,6 +1007,7 @@ def scan(
                 rule_specs,
                 renamed,
                 rules.keep_names,
+                cargo_literals,
             )
         )
     return attach_ignore_hints(target, findings, untracked, core_excludes)

@@ -20,7 +20,12 @@ from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
     Identity,
     ValidationError,
+    cargo_bin_env_pairs,
+    cargo_field_values,
+    cargo_name_pairs,
+    cargo_split_roles,
     display_forms,
+    exact_name_rank,
     pair_renames_paths,
     replace_token,
     token_pattern,
@@ -488,6 +493,8 @@ def _raw_replacement_pairs(
         for form in display_form_names:
             if sf[form] != df[form]:
                 pairs.append((f"display_name_{form}", sf[form], df[form]))
+    pairs.extend(cargo_name_pairs(source, dest))
+    pairs.extend(cargo_bin_env_pairs(source, dest))
     display_seen: set[str] = set()
     coalesced: list[tuple[str, str, str]] = []
     for tag, cur, repl in pairs:
@@ -514,7 +521,7 @@ def _raw_replacement_pairs(
             continue
         seen[cur] = (tag, repl)
         deduped.append((tag, cur, repl))
-    deduped.sort(key=lambda t: (-len(t[1]), t[0] != "npm_name"))
+    deduped.sort(key=lambda t: (-len(t[1]), exact_name_rank(t[0])))
     return deduped
 
 
@@ -641,6 +648,19 @@ def _pipeline_inputs(
         )
 
     raw_pairs = _raw_replacement_pairs(source, dest, rules.display_forms)
+    # A [[cargo_split]] press writes a split crate's identifier spelling only in
+    # scoped files, so the package_name pair that equals it is not unscoped.
+    split_sources = {
+        name
+        for role, name in source.cargo_names
+        if role
+        in cargo_split_roles(source, dest, (split.role for split in rules.cargo_split))
+    }
+    raw_pairs = [
+        pair
+        for pair in raw_pairs
+        if not (pair[0] == "package_name" and pair[1] in split_sources)
+    ]
     provenance_by_values: dict[tuple[str, str], list[str]] = {}
     for tag, cur, repl in raw_pairs:
         provenance_by_values.setdefault((cur, repl), []).append(f"identity:{tag}")
@@ -690,6 +710,7 @@ def _validated_replacements(
                 for form in rules.display_forms
             }
         )
+    destination_values.update(cargo_field_values(dest))
     stability_sinks = tuple(
         StabilitySink(
             sink_id=f"destination:{field}",

@@ -22,6 +22,8 @@ from template_press.rebrand.engine import (
 from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
     Identity,
+    cargo_field_values,
+    cargo_name_pairs,
     display_forms,
     field_renames_paths,
     occurs,
@@ -410,6 +412,9 @@ def find_leaks(
             for form in display_form_names:
                 dest_fields[f"display_name_{form}"] = df[form]
         fields = {k: v for k, v in fields.items() if dest_fields.get(k) != v}
+        fields.update({tag: cur for tag, cur, _new in cargo_name_pairs(source, dest)})
+    else:
+        fields.update(cargo_field_values(source))
     # Path-component scans must cover display-form fields too (Fix 2): the
     # doctor already expands display_name into its exact forms for the
     # content/symlink scans above, but a leftover PyLaunchBlueprint/ dir

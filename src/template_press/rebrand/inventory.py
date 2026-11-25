@@ -132,6 +132,19 @@ class _ConfigSourceState:
     index_inputs: tuple[_NodeStamp, ...]
     shared_indexes: tuple[_SharedIndexStamp, ...]
     include_paths: tuple[Path, ...]
+    info_exclude: Path
+
+
+@dataclass(frozen=True)
+class _RepositoryPaths:
+    """Repository paths resolved by Git at one observation point."""
+
+    git_dir: Path
+    common_dir: Path
+    head: Path
+    index: Path
+    info_exclude: Path
+    shared_index: Path | None
 
 
 def _run_git(
@@ -723,20 +736,57 @@ def _nearest_real_parent(path: Path) -> Path:
     return nearest
 
 
+def _repository_paths(target: Path) -> _RepositoryPaths:
+    """Resolve repository paths in one spawn when Git's framing is unambiguous.
+
+    Exactly five lines means five single-line paths and no shared index. A
+    sixth line can be a shared index or a path containing LF, so anything else
+    uses the per-query resolution below.
+    """
+
+    queries: tuple[tuple[str, ...], ...] = (
+        ("--git-dir",),
+        ("--git-common-dir",),
+        ("--git-path", "HEAD"),
+        ("--git-path", "index"),
+        ("--git-path", "info/exclude"),
+    )
+    prefix = ("rev-parse", "--path-format=absolute")
+    flags = (flag for query in queries for flag in query)
+    batched = _run_git(target, *prefix, *flags, "--shared-index-path")
+    lines = batched.stdout[:-1].split(b"\n")
+    if batched.stdout.endswith(b"\n") and len(lines) == len(queries):
+        resolved = [Path(line.decode("utf-8", "surrogateescape")) for line in lines]
+        git_dir, common_dir, head, index, info_exclude = (
+            path if path.is_absolute() else target / path for path in resolved
+        )
+        return _RepositoryPaths(git_dir, common_dir, head, index, info_exclude, None)
+
+    git_dir, common_dir, head, index, info_exclude = _absolute_git_paths(
+        target, *prefix, queries=queries
+    )
+    shared_result = _run_git(target, "rev-parse", "--shared-index-path")
+    if shared_result.stdout and not shared_result.stdout.endswith(b"\n"):
+        raise SafetyError("malformed newline-terminated shared-index path")
+    shared_raw = shared_result.stdout[:-1] if shared_result.stdout else b""
+    shared_text = shared_raw.decode("utf-8", "surrogateescape")
+    shared_index: Path | None = None
+    if shared_text:
+        shared = Path(shared_text)
+        shared_index = shared if shared.is_absolute() else target / shared
+    return _RepositoryPaths(
+        git_dir, common_dir, head, index, info_exclude, shared_index
+    )
+
+
 def _config_source_state(target: Path) -> _ConfigSourceState:
     sources, includes, effective_sha256 = _config_source_paths(target)
     parents = {_nearest_real_parent(path) for path in includes}
-    git_dir, common_dir, head, index = _absolute_git_paths(
-        target,
-        "rev-parse",
-        "--path-format=absolute",
-        queries=(
-            ("--git-dir",),
-            ("--git-common-dir",),
-            ("--git-path", "HEAD"),
-            ("--git-path", "index"),
-        ),
-    )
+    repository = _repository_paths(target)
+    git_dir = repository.git_dir
+    common_dir = repository.common_dir
+    head = repository.head
+    index = repository.index
     condition_paths = {
         target,
         target / ".git",
@@ -747,18 +797,11 @@ def _config_source_state(target: Path) -> _ConfigSourceState:
         head,
         head.parent,
     }
-    shared_result = _run_git(target, "rev-parse", "--shared-index-path")
-    if shared_result.stdout and not shared_result.stdout.endswith(b"\n"):
-        raise SafetyError("malformed newline-terminated shared-index path")
-    shared_raw = shared_result.stdout[:-1] if shared_result.stdout else b""
-    shared_text = shared_raw.decode("utf-8", "surrogateescape")
     index_paths = {index, index.parent}
     shared_paths: set[Path] = set()
-    if shared_text:
-        shared = Path(shared_text)
-        shared = shared if shared.is_absolute() else target / shared
-        shared_paths.add(shared)
-        index_paths.add(shared.parent)
+    if repository.shared_index is not None:
+        shared_paths.add(repository.shared_index)
+        index_paths.add(repository.shared_index.parent)
     return _ConfigSourceState(
         tuple(_config_source_stamp(path) for path in sources),
         effective_sha256,
@@ -767,6 +810,7 @@ def _config_source_state(target: Path) -> _ConfigSourceState:
         tuple(_node_stamp(path) for path in sorted(index_paths)),
         tuple(_shared_index_stamp(path) for path in sorted(shared_paths)),
         includes,
+        repository.info_exclude,
     )
 
 
@@ -845,6 +889,7 @@ def _visibility_inputs(
     target: Path,
     entries: tuple[SurfaceEntry, ...],
     core_excludes: Path | None,
+    info_exclude: Path,
 ) -> _VisibilityState:
     (
         gitignore_paths,
@@ -853,9 +898,6 @@ def _visibility_inputs(
         repository_markers,
     ) = _active_gitignore_paths(target, entries, core_excludes)
     items = [_fingerprint_visibility("gitignore", path) for path in gitignore_paths]
-    info_exclude = _absolute_git_path(
-        target, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"
-    )
     items.append(_fingerprint_visibility("info_exclude", info_exclude))
     if core_excludes is not None:
         items.append(_fingerprint_visibility("core_excludes_file", core_excludes))
@@ -970,10 +1012,15 @@ def _capture_candidate(
     core_excludes_before = _core_excludes_path(target)
     if seed_entries is None:
         seed_entries = _enumerate_entries(target, core_excludes_before)
-    visibility_before = _visibility_inputs(target, seed_entries, core_excludes_before)
+    # config_after below re-resolves info/exclude, so a moved path is refused.
+    visibility_before = _visibility_inputs(
+        target, seed_entries, core_excludes_before, config_before.info_exclude
+    )
     entries = _enumerate_entries(target, core_excludes_before)
     core_excludes_after = _core_excludes_path(target)
-    visibility_after = _visibility_inputs(target, entries, core_excludes_after)
+    visibility_after = _visibility_inputs(
+        target, entries, core_excludes_after, config_before.info_exclude
+    )
     _validate_embedded_repository_entries(
         target, entries, visibility_after.repository_markers
     )

@@ -7,6 +7,7 @@ DEST mirrors the potato identity used by the EMPIRICAL_BUGS.md live matrix.
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
 import subprocess
@@ -129,9 +130,30 @@ def _git(repo: Path, *args: str) -> None:
     )
 
 
+_TARGET_TEMPLATE_ROOT: Path | None = None
+_TARGET_TEMPLATES: dict[str, Path] = {}
+
+
+def _store_target_template(repo: Path, layout: str) -> None:
+    """Keep one pristine repo per layout for this pytest process."""
+    global _TARGET_TEMPLATE_ROOT
+    if _TARGET_TEMPLATE_ROOT is None:
+        _TARGET_TEMPLATE_ROOT = Path(tempfile.mkdtemp(prefix="press-target-templates-"))
+        atexit.register(shutil.rmtree, _TARGET_TEMPLATE_ROOT, ignore_errors=True)
+    template = _TARGET_TEMPLATE_ROOT / layout
+    shutil.copytree(repo, template, symlinks=True)
+    _TARGET_TEMPLATES[layout] = template
+
+
 def make_target(base: Path, layout: str = "src") -> Path:
     """Build a committed mini target repo. layout: 'src' or 'flat'."""
     repo = base / "target"
+    template = _TARGET_TEMPLATES.get(layout)
+    if template is not None:
+        shutil.copytree(template, repo, symlinks=True, dirs_exist_ok=True)
+        # A copy has new inodes and ctimes, so refresh the index stat data.
+        _git(repo, "update-index", "-q", "--refresh")
+        return repo
     pkg_root = repo / "src" if layout == "src" else repo
     pkg = pkg_root / "demo_widget"
     pkg.mkdir(parents=True)
@@ -146,6 +168,8 @@ def make_target(base: Path, layout: str = "src") -> Path:
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test")
+    # Background maintenance can change .git while the template is copied.
+    _git(repo, "config", "maintenance.auto", "false")
     _git(
         repo,
         "remote",
@@ -155,6 +179,7 @@ def make_target(base: Path, layout: str = "src") -> Path:
     )
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "init fixture")
+    _store_target_template(repo, layout)
     return repo
 
 

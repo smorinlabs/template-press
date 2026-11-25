@@ -20,9 +20,13 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 from template_press.rebrand.identity import (
+    CARGO_BIN_EXE_PREFIX,
     Identity,
     ValidationError,
+    cargo_field_values,
+    cargo_ident,
     display_forms,
+    is_cargo_field,
     token_pattern,
 )
 from template_press.rebrand.matcher import (
@@ -51,7 +55,7 @@ class UndeclaredName:
 
     path: str
     where: str  # "content" | "path" | "symlink"
-    field: str  # "npm_name" | "cli_name"
+    field: str  # "npm_name" | "cli_name" | a ``cargo_*`` row tag
     token: str
 
 
@@ -235,6 +239,7 @@ def _identity_forms(identity: Identity) -> frozenset[str]:
     forms.add(identity.package_name.replace("_", "-"))
     if identity.display_name is not None:
         forms.update(display_forms(identity.display_name).values())
+    forms.update(cargo_field_values(identity).values())
     return frozenset(forms)
 
 
@@ -294,13 +299,21 @@ def _complete_name_pattern(field: str, value: str) -> re.Pattern[str]:
 
 
 def _contained_source_name(name: str, source: Identity) -> tuple[str, str] | None:
-    """The source ``npm_name`` or ``cli_name`` complete inside ``name``, if any.
+    """The source ``npm_name``, ``cli_name``, or Cargo name inside ``name``, if any.
 
     An unscoped value that is the basename of ``@scope/value`` is not contained:
     that spelling names a different package and may be kept.
     """
-    for field in ("npm_name", "cli_name"):
-        value = getattr(source, field)
+    core = _identity_core(name)
+    if core.startswith(CARGO_BIN_EXE_PREFIX):
+        for field, value in cargo_field_values(source).items():
+            if core == f"{CARGO_BIN_EXE_PREFIX}{value}":
+                return field, value
+    candidates = (
+        *((field, getattr(source, field)) for field in ("npm_name", "cli_name")),
+        *cargo_field_values(source).items(),
+    )
+    for field, value in candidates:
         if value is None:
             continue
         for match in _complete_name_pattern(field, value).finditer(name):
@@ -431,6 +444,8 @@ def _sibling_tokens(
     identity_forms: frozenset[str],
     rewritten: RewrittenForms,
     kept: Sequence[Span],
+    *,
+    exempt_other_case: bool = False,
 ) -> list[str]:
     """Tokens joining ``value`` to another name part, unless a row rewrites them.
 
@@ -445,7 +460,9 @@ def _sibling_tokens(
     A glued token is still reported when it is exactly an identity form that no
     row rewrites on this surface, because that form would survive the press.
     An unscoped value that is the basename of ``@scope/value`` is a sibling too:
-    it names a different package.
+    it names a different package. With ``exempt_other_case``, a spelling in
+    another case (``ACME`` for ``acme``) is exempt when a row rewrites exactly
+    that span, because a Cargo name row is case-sensitive and cannot own it.
     """
     tokens: list[str] = []
     occupied: list[Span] | None = None
@@ -484,6 +501,12 @@ def _sibling_tokens(
                 and _row_rewrites(rewritten.patterns, text, match.span())
             ):
                 continue
+            if (
+                exempt_other_case
+                and match.group() != value
+                and _row_rewrites(rewritten.patterns, text, match.span())
+            ):
+                continue
         token = text[start:end]
         if not outside_kept(((start, end),), kept):
             continue
@@ -518,6 +541,33 @@ def _extended_dependencies(
                 yield UndeclaredName("package.json", "content", field, dependency)
 
 
+def _extended_cargo_dependencies(
+    dependencies: Iterable[str],
+    source: Identity,
+    names: Sequence[str],
+    subject: RewrittenForms,
+) -> Iterable[UndeclaredName]:
+    """Cargo dependencies whose name extends a declared Cargo name with a separator.
+
+    Compared in underscore form, because Cargo treats ``-`` and ``_`` alike.
+    """
+    values = cargo_field_values(source)
+    for dependency in dependencies:
+        if dependency in subject.tokens or dependency in subject.literals:
+            continue
+        ident = cargo_ident(dependency)
+        kept = kept_spans(dependency, names)
+        for field, value in values.items():
+            base = cargo_ident(value)
+            if (
+                ident.startswith(base)
+                and ident[len(base) : len(base) + 1] == "_"
+                and outside_kept(((0, len(base)),), kept)
+            ):
+                yield UndeclaredName("Cargo.toml", "content", field, dependency)
+                break
+
+
 def check_keep_surfaces(
     surfaces: Iterable[tuple[str, str, str]],
     source: Identity,
@@ -525,6 +575,7 @@ def check_keep_surfaces(
     *,
     rewritten: RewrittenLookup | None = None,
     dependency_names: Sequence[str] = (),
+    cargo_dependency_names: Sequence[str] = (),
 ) -> KeepCheck:
     """Find undeclared names and stale entries on ``(path, where, text)`` rows.
 
@@ -534,19 +585,28 @@ def check_keep_surfaces(
     Matching ignores case because the paranoid verifier does too. An entry
     found on no surface is stale. ``dependency_names`` are the root manifest's
     dependency keys: only that evidence separates the package ``name.extra``
-    from an ordinary file such as ``name.js``.
+    from an ordinary file such as ``name.js``. ``cargo_dependency_names`` are
+    the non-local Cargo dependencies; one extending a declared Cargo name is
+    reported even when its manifest is outside the rewrite surface.
     """
-    values = tuple(
-        (field, value)
-        for field, value in (
-            ("npm_name", source.npm_name),
-            ("cli_name", source.cli_name),
-        )
-        if value is not None
+    values = (
+        *(
+            (field, value)
+            for field, value in (
+                ("npm_name", source.npm_name),
+                ("cli_name", source.cli_name),
+            )
+            if value is not None
+        ),
+        *cargo_field_values(source).items(),
     )
     if not values and not names:
         return KeepCheck((), ())
     forms = _identity_forms(source)
+    bin_env_tokens = {
+        f"{CARGO_BIN_EXE_PREFIX}{value}"
+        for value in cargo_field_values(source).values()
+    }
     undeclared: dict[tuple[str, str, str], UndeclaredName] = {}
     unseen = dict.fromkeys(names)
     for path, where, text in surfaces:
@@ -558,7 +618,16 @@ def check_keep_surfaces(
             rewritten(path, where, text) if rewritten is not None else RewrittenForms()
         )
         for field, value in values:
-            for token in _sibling_tokens(text, value, forms, subject, kept):
+            for token in _sibling_tokens(
+                text,
+                value,
+                forms,
+                subject,
+                kept,
+                exempt_other_case=is_cargo_field(field),
+            ):
+                if token in bin_env_tokens:
+                    continue  # rewritten by its own row, or its name is unchanged
                 undeclared.setdefault(
                     (path, where, token), UndeclaredName(path, where, field, token)
                 )
@@ -567,19 +636,36 @@ def check_keep_surfaces(
         if rewritten is not None and dependency_names
         else RewrittenForms()
     )
+    node_values = tuple(item for item in values if not is_cargo_field(item[0]))
     for item in _extended_dependencies(
-        dependency_names, values, names, manifest_subject
+        dependency_names, node_values, names, manifest_subject
     ):
         undeclared.setdefault((item.path, item.where, item.token), item)
+    cargo_subject = (
+        rewritten("Cargo.toml", "content", "")
+        if rewritten is not None and cargo_dependency_names
+        else RewrittenForms()
+    )
+    reported = {item.token for item in undeclared.values()}
+    for item in _extended_cargo_dependencies(
+        cargo_dependency_names, source, names, cargo_subject
+    ):
+        if item.token not in reported:
+            undeclared.setdefault((item.path, item.where, item.token), item)
     return KeepCheck(tuple(undeclared.values()), tuple(unseen))
 
 
 def render_undeclared(findings: Sequence[UndeclaredName], source: Identity) -> str:
     """The exit-1 refusal: each exact token and the line that would keep it."""
     identity = _identity_forms(source)
+    declared = (
+        "npm_name, cli_name, or Cargo name"
+        if any(is_cargo_field(item.field) for item in findings)
+        else "npm_name or cli_name"
+    )
     lines = [
-        f"error: {len(findings)} undeclared name(s) contain a declared npm_name "
-        "or cli_name; nothing written, no receipt.",
+        f"error: {len(findings)} undeclared name(s) contain a declared "
+        f"{declared}; nothing written, no receipt.",
     ]
     for item in findings[:_REPORT_LIMIT]:
         path = item.path if item.path.isprintable() else repr(item.path)

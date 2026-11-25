@@ -51,6 +51,8 @@ from pathlib import Path
 from template_press.rebrand.config import SOURCE_CONFIG_REL, load_source_config
 from template_press.rebrand.discovery import (
     Discovered,
+    cargo_problems,
+    cargo_warnings,
     discover,
     manifest_warnings,
     mismatches,
@@ -62,7 +64,12 @@ from template_press.rebrand.engine import (
     scan_paths,
     translate_path,
 )
-from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.identity import (
+    Identity,
+    ValidationError,
+    cargo_ident,
+    cargo_identity_problem,
+)
 from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_map
 from template_press.rebrand.inventory import (
     capture_surface_snapshot,
@@ -75,6 +82,7 @@ from template_press.rebrand.keep_names import (
     validate_keep_names,
 )
 from template_press.rebrand.languages import (
+    LanguageDecision,
     check_target_languages,
     render_ignored_languages,
 )
@@ -271,7 +279,7 @@ def _preflight(
     scan_fields: Sequence[str],
     substring_fields: frozenset[str],
     accepted_origin: dict[str, str],
-    languages: Sequence[str],
+    languages: LanguageDecision,
 ) -> tuple[list[str], dict[str, str]]:
     """Consistency + presence check against the REAL target; problems -> 2.
 
@@ -294,13 +302,30 @@ def _preflight(
     ``--accept-origin-mismatch`` press; the second return value names the
     fields whose mismatch it waived (see ``_honor_accepted_origin``).
     """
-    found = discover(target, languages)
+    found = discover(target, languages.checked, {d.language for d in languages.ignored})
     for warning in manifest_warnings(source, found):
         print(warning, file=sys.stderr)
     problems, honored = _honor_accepted_origin(
         list(mismatches(source, found)), found, accepted_origin
     )
+    # Checked against the destination the sandbox will press toward, so a bad
+    # table exits 2 here with its own message, before any sandbox exists.
+    if source.cargo_names:
+        table_problem = cargo_identity_problem(source, synthesize_dest(source))
+        if table_problem is not None:
+            problems.append(table_problem)
     discovered = _discovered_map(found)
+    if found.cargo is not None:
+        # The no-table refusal needs the real destination, so it runs in rebrand.
+        if source.cargo_names:
+            problems.extend(cargo_problems(target, source, None, rules))
+        for warning in cargo_warnings(target, source, rules):
+            print(warning, file=sys.stderr)
+        # A crate name confirms the identifier form, which no text need contain.
+        idents = {cargo_ident(name) for name in found.cargo.names}
+        for field_name in ("package_name", "app_name"):
+            if getattr(source, field_name) in idents:
+                discovered[field_name] = getattr(source, field_name)
     declared = source.as_dict()
     # Only scanned fields that discovery can confirm (skip derived forms like
     # ``app_name_upper`` that are not independently discoverable).
@@ -347,7 +372,11 @@ def _preflight(
 
 
 def _equal_pair(source: Identity) -> tuple[str, str] | None:
-    """The first pair of SOURCE fields sharing the same value, or None."""
+    """The first pair of SOURCE fields sharing the same value, or None.
+
+    ``cargo_names`` is deliberately out of scope: a crate named after the repo
+    is the normal Cargo layout, and synthesis preserves that equality.
+    """
     items = list(source.as_dict_prompted().items())
     for i in range(len(items)):
         for j in range(i + 1, len(items)):
@@ -554,7 +583,7 @@ def verify_command(argv: list[str] | None = None) -> int:
             scan_fields,
             scan_substring,
             accepted_origin,
-            languages.checked,
+            languages,
         )
     except _CONFIG_ERRORS as exc:
         return _fail(f"preflight failed: {exc}")
@@ -606,6 +635,7 @@ def verify_command(argv: list[str] | None = None) -> int:
             synth,
             rules,
             frozenset(member.current_file for member in removal_plan.members),
+            languages.checked,
         )
         if keep_check.undeclared:
             if args.as_json:

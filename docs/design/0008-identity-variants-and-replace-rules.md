@@ -37,6 +37,24 @@ retained decision record does not require those files to remain present.
    presses (press rewrites press-source.toml post-apply). Arguments
    (sec-07): `files` globs, `paths` (default false), `content` (default
    true), required `reason`. `count` was rejected — occurrence counts rot.
+
+   Cargo targets add three role placeholders, valid only in `[[replace]]`
+   patterns (P15-T10; `[[clean]]` paths still refuse them). A role is a key
+   of `[identity.cargo_names]`, and no role name may end in `_upper`, so
+   the suffix is unambiguous. An identity without the role exits 2 before
+   any write.
+
+   | Placeholder | Renders to | Role `core`, name `acme-core` |
+   |---|---|---|
+   | `{cargo_exact_<role>}` | the exact Cargo name | `acme-core` |
+   | `{cargo_ident_<role>}` | the identifier spelling (hyphens to underscores) | `acme_core` |
+   | `{cargo_ident_<role>_upper}` | that spelling uppercased | `ACME_CORE` |
+
+   There is no `{cargo_exact_<role>_upper}`.
+
+   `{cargo_exact_<role>}` never fits a Rust identifier position. For a
+   `[[cargo_split]]` role the press refuses it in `.rs` files (exit 2 before
+   any write, naming file, line, and pattern); use `{cargo_ident_<role>}`.
 3. **Substring mode — secondary, per-field opt-in** (sec-02 ch-02-c).
    `[rules] substring_rewrite_fields = ["app_name"]` switches that field
    to plain substring replacement in content AND path components. Gated on
@@ -103,6 +121,232 @@ retained decision record does not require those files to remain present.
    `press verify` exits 0; non-UTF-8 files are scanned only by `press verify`.
    Spec: [TypeScript and Bun
    targets](../superpowers/specs/2026-11-22-typescript-bun-targets-design.md).
+
+7. **Exact Cargo names (P15, approved 2026-11-22).** `cargo_names` is an
+   optional table of stable role to exact Cargo package, library, or binary
+   name, declared on both sides or neither (one side only is exit 2). Each role
+   rewrites its exact name and its underscore form, in content and paths, with
+   `[A-Za-z0-9_-]` boundaries. So `acme-core/serde`, `dep:acme-core`, and
+   `acme_core::hi` match, and the sibling `acme-core-extra` does not.
+   `package_name` must be the underscore form of one source value, and its
+   destination must be the underscore form of the same role's destination.
+
+   Rust is a `[rules] languages` value. A sole root `Cargo.toml` activates it.
+   A target with another identity manifest declares `["python", "rust"]` to
+   check both, or omits `"rust"` when `Cargo.toml` is tooling only. An
+   independent sibling crate is declared in `keep_names`.
+
+   Two more table refusals exit 2 before any write. A hyphen-free source name
+   cannot take a hyphenated destination, because text cannot separate its
+   package spelling from its Rust identifier. A source or destination name
+   cannot equal a non-local dependency, because Cargo would resolve the wrong
+   crate.
+
+   A target with `cargo_names` and a tracked `Cargo.lock` must declare
+   regeneration, or the press exits 2 and prints the block:
+
+   ```toml
+   [rules]
+   extra_exclude_files = ["Cargo.lock"]
+
+   [[regenerate]]
+   file = "Cargo.lock"
+   command = ["cargo", "update", "--workspace", "--offline"]
+   ```
+
+   That command keeps locked third-party versions, which
+   `cargo generate-lockfile` would move. Its environment passes `HOME` but not
+   `CARGO_HOME`, so a custom Cargo home needs dependencies vendored or cached in
+   the default location.
+
+   Deliberate refusals before any write: a destination that extends a source
+   name or contains another field's source spelling (exit 2), a destination
+   crate name that is a Rust keyword such as `type` (exit 2), a crate whose
+   Rust identifier would be left behind (exit 2, including a hyphenated crate
+   that a role spells only with underscores, as `acme_widget` for
+   `acme-widget`), and a versioned string such
+   as `acme-core-0.1.0` (sibling preflight, exit 1, unless the exact token is in
+   `keep_names`). The verifier derives its Cargo hunts directly from `Identity`.
+
+   A rewrite that would separate a path from its file also exits 2, with
+   `file:line`, on every Rust press (`cargo paths:`). This covers paths a
+   manifest declares or Cargo infers, and paths Rust source declares with a
+   plain string literal: the file of `mod name;`, a `#[path = "..."]` or
+   `#[cfg_attr(<cond>, path = "...")]` value, and an `include_str!`,
+   `include_bytes!`, or `include!` argument. Rust source is read only in a
+   `.rs` file Cargo compiles: a crate root or target file that Cargo infers or
+   a manifest declares, or a file one of those reaches through `mod` (including
+   inline `mod name { ... }` blocks and their `#[path]` attributes), `#[path]`,
+   `#[cfg_attr(<cond>, path = "...")]`, or `include!`. Under `autotests = false` or another `auto*` flag
+   set to false, only the targets the manifest names in that directory are
+   read. Dependency paths are read from every dependency table, including the
+   pre-2024 `[dev_dependencies]` and `[build_dependencies]` spellings. The usual cause is a content-only row,
+   such as `owner = "acmelabs"`, that rewrites `pub mod acmelabs;` while no row
+   renames `src/acmelabs.rs`. Limits: these are not checked, so such a rewrite
+   there can still get a receipt for a build that then fails:
+   - a path a macro builds, such as
+     `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`;
+   - a `.rs` file excluded from rewriting;
+   - a `.rs` file no crate root reaches, such as `tests/fixtures/sample.rs`;
+   - a path that code reads at run time, such as a string `build.rs` passes
+     to `std::fs::read_to_string`;
+   - with `autobins = false`, a file already named for the destination binary:
+     renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt.
+   - a `#[path]` value that uses `..`, inside an inline module that a rename changes, such as `pub mod acmelabs { #[path = "../shared.rs"] pub mod x; }` when `acmelabs` is renamed to `zetalabs`: Rust then looks for `src/zetalabs/../shared.rs`, which needs a `src/zetalabs/` directory, so `cargo check` can fail after a receipt. `main` behaves the same way.
+
+   A module that a `#[cfg(...)]` attribute turns off, with no file on disk, is refused with exit 2 before any write when it sits inside a renamed inline module or is the renamed module itself, even where the rename would be correct: `mod acmelabs { #[cfg(any())] mod x; }` and `#[cfg(any())] mod acmelabs;`.
+
+   Spec: [Rust and Cargo
+   targets](../superpowers/specs/2026-11-22-rust-cargo-targets-design.md).
+
+8. **`[[cargo_split]]`: one-press rename of a hyphen-free crate (P15-T09,
+   owner decision Q2.A).** The hyphen-free refusal stays the default.
+   `[[cargo_split]]` is experimental: its spelling proofs may miss Rust shapes
+   that real targets use. If it writes a receipt and `cargo test` then fails,
+   that is a bug to report. A target opts in per role in
+   `press/press-rules.toml`:
+
+   ```toml
+   [[cargo_split]]
+   role = "core"                                       # a cargo_names role
+   package_files = ["README.md", "scripts/release.sh"]  # fnmatch globs
+   identifier_files = ["docs/api.md"]
+   ```
+
+   With `core = "acme"` pressed to `core = "zeta-gadget"`, every `Cargo.toml`
+   takes the package spelling `zeta-gadget`, and Rust code in every `.rs` file
+   takes the identifier spelling `zeta_gadget`. That structural rule outranks
+   the globs. Inside a `.rs` string literal, the press writes `zeta-gadget`
+   only where real Cargo proves it right: a `feature = "acme"` value inside
+   `cfg(`, `cfg!(` or `cfg_attr(`; an `include_*!` or `#[path]` string naming
+   a file the press renames (the string must resolve to that file's new
+   path); and `"acme"` as the other side of an `==`, `!=`, `assert_eq!` or
+   `assert_ne!` comparison with `env!("CARGO_PKG_NAME")`, when both operands
+   are bare: a method call, an index, or an operator on either side, as in
+   `"acme" == env!("CARGO_PKG_NAME").replace('-', "_")`, changes the value
+   compared, so the string is not proven. Any other string
+   occurrence exits 2. So does every occurrence in the arguments of a direct
+   `stringify!` or `concat!` call, in code or in doc text that rustdoc may
+   compile (there the arguments run to the end of the item's doc text when
+   the press cannot find where the call ends), because the call turns the
+   name into text that neither spelling is proven for; a call that another
+   macro makes is not seen. A character literal of the name in code, such as
+   `'x'` for a crate `x`, exits 2, because neither spelling fits between
+   single quotes. A rename of either macro anywhere in a `.rs` file,
+   such as `use core::stringify as s;` or `use core::{stringify as s};`, exits
+   2 at the rename, because a call through the new name, in that file or
+   another, is not seen either.
+
+   Doc comments (`///`, `//!`, `/** */`, `/*! */`) follow the same string
+   rules wherever rustdoc may compile them, because rustdoc compiles a doc
+   comment's fenced and indented code blocks as doctests. The press does not
+   parse Markdown, so the rule is fail-closed: doc text is Rust code unless
+   the press proves that rustdoc compiles nothing there.
+
+   - **Joined text.** rustdoc joins an item's doc comments across blank lines,
+     plain comments, and attributes. The press reads them as one text.
+   - **Prose, proven.** Only a run of `///` comments that starts an item's
+     documentation can be proven: it has no `#[doc = ...]` attribute beside
+     it, no tab, and a common indent of at most three spaces. In it, a line
+     outside every fence with no run of four spaces is prose. So is a fence
+     at the left margin whose tags are all non-Rust language names
+     (`NOT_RUST_TAGS` in `rust_text.py`, such as `text`, `toml`, `sh`), or
+     that has the tag `ignore` and no `ignore-<target>` tag. Prose takes the
+     identifier spelling, inside double quotes too.
+   - **Everything else is code.** That covers `//!`, `/** */` and `/*! */`
+     comments (rustdoc joins an inner comment to the item's outer comment,
+     which may be in another file); a fence with an unknown or misspelt tag;
+     a line with a run of four spaces; and the text after a line that starts
+     with `<` or after a fence that is not at the left margin, because an HTML
+     block, a list, or a block quote can change where a fence ends.
+   - **Readings.** Where the structure is not proven, a code block may start
+     at the first line, after any fence line, or at any line with a run of
+     four spaces. The press lexes the text from each such start. It writes a
+     string's spelling only when every reading agrees on the literal and its
+     role; otherwise it exits 2. A reading in which the text sits in a
+     comment does not count, and neither does a reading that never returns to
+     code at a line end, because that doctest cannot compile.
+   - **Unread text.** A string or a comment may start in doc text that the
+     press cannot read and end in a doc comment. Unread text is a
+     `#[doc = ...]` attribute whose value is not a plain string free of
+     quotes, backslashes, and block-comment markers (`include_str!`,
+     `concat!`, a string with an escaped quote), and an outer doc comment that
+     ends inside a string or a block comment. After unread text, the lexer
+     state is unknown. In a `///` comment the string may close only in later
+     doc text, so the press refuses every occurrence of the name below the
+     attribute, in code position too. A `//!` comment ends the item's doc
+     text, so there the press adds one reading for each state the comment can
+     close (a string, a raw string, a block comment); as always, a reading
+     counts only if it returns to code at a line end, and the press writes a
+     spelling only when the readings that count agree. A `mod name;`
+     declaration exits 2 itself when its doc comment ends inside a string or
+     a block comment, or when it has such an attribute, because the module's
+     own file continues the text.
+   - **Macros.** A doc comment inside a macro call or a `macro_rules!`
+     definition is never proven prose: the macro may add doc text, such as a
+     fence line, around it.
+   - **Limits.** The press does not see doc text that a macro produces. If a
+     macro puts part of a string or a comment in front of a doc comment it is
+     given, the press reads that comment wrongly. An `ignore` fence is prose,
+     so `cargo test -- --ignored` may fail on it after a press.
+   - **Limits: code that names no crate token.** The press cannot see code
+     that expects the crate name and the package name to be equal without
+     spelling either one: `module_path!()`, `core::any::type_name::<T>()`,
+     or `env!("CARGO_CRATE_NAME")` compared with `env!("CARGO_PKG_NAME")`.
+     After a split press those differ (`zeta_gadget` and `zeta-gadget`), so
+     such a test fails although the press wrote a receipt. The same holds for
+     a target's own macro that forwards its arguments to `stringify!` or
+     `concat!`: the press sees only direct calls.
+
+   Real `cargo test` is the oracle for these rules in
+   `tests/rebrand/test_cargo_split.py`: each layout that rustdoc compiles,
+   and each exempt tag, is pressed and then tested.
+
+   `CARGO_BIN_EXE_acme` becomes `CARGO_BIN_EXE_zeta-gadget`. Paths take the
+   package spelling, so `crates/acme` becomes `crates/zeta-gadget` and declared
+   manifest paths follow. A file matched by `package_files` or
+   `identifier_files` takes that spelling.
+
+   Before any write, the press exits 2 and lists `file:line` for each
+   occurrence that the ordered rows leave behind. These checks also exit 2:
+
+   - a file that matches both lists;
+   - an explicit `[lib] name = "acme"`, because Cargo refuses a hyphen in a
+     library name;
+   - a renamed path below `src/`, other than `src/bin/<name>`, and a renamed
+     `acme.rs` or `acme/` anywhere when a `.rs` file declares `mod acme;`;
+   - a `package_files` file whose rewrite puts `zeta-gadget` where only an
+     identifier fits: `::` paths, `extern crate`, `use`, and log filters such
+     as `RUST_LOG=acme=debug`; the remedies are `identifier_files` or an exact
+     `[[replace]]`;
+   - a `package_files` file that a `.rs` file reads with `include_str!`, such
+     as a README behind `#![doc = include_str!("../README.md")]`, when its
+     rewrite puts `zeta-gadget` on a line of a code block rustdoc may compile
+     (every fence except `ignore` and the non-Rust tags, and every line with a
+     tab or four spaces in a row) or at an identifier position. rustdoc
+     compiles every position there, so no `[[replace]]` rule can be right; the
+     remedy is `identifier_files` plus an exact `{cargo_exact_<role>}` rule for
+     each span that needs the package spelling. Limits: the press finds such a
+     file only through a plain string argument to `include_str!`, and it does
+     not read the file as Rust, so under `identifier_files` a string literal in
+     one of its code blocks takes the identifier spelling without the `.rs`
+     string rules;
+   - a target that also checks `python` or `node`.
+
+   A file holding both spellings works only when the split crate is the
+   `package_name` crate. List the file in `package_files`, and add an exact
+   `[[replace]]` rule scoped to it, such as `pattern = "{package_name}::hi"`.
+   Declared rules run first and write `zeta_gadget::hi`. A non-primary role
+   cannot do this yet, because `[[replace]]` cannot reference `cargo_names`;
+   P15-T10 adds `{cargo_exact_<role>}` and `{cargo_ident_<role>}`.
+
+   The block is validated against both tables. Its role must exist in both
+   tables. The source must have no hyphen and the destination must have one;
+   otherwise the block is refused as unnecessary. After a press, a block left
+   in place is inert: when a receipt exists and the source already has a
+   hyphen, the press prints a warning instead of refusing. The receipt and the
+   rewritten `press-source.toml` record the hyphenated name, so later presses
+   use the normal two-spelling rows. `press verify` ignores the block.
 
 ## Independence guardrail (P06 D2)
 

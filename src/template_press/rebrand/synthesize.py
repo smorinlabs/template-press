@@ -59,15 +59,19 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 
 from template_press.rebrand.identity import (
     DISPLAY_FORM_NAMES,
+    OPTIONAL_FIELDS,
     REQUIRED_FIELDS,
     VALIDATORS,
     Identity,
     ValidationError,
+    cargo_ident,
+    cargo_identity_problem,
     display_forms,
 )
 
@@ -87,6 +91,8 @@ _EMAIL_TLD_LEN = 3
 # collision is resolved within a handful of attempts (see module docstring
 # point 4); 1000 is a generous margin, not a tuned/expected value.
 _MAX_ATTEMPTS = 1000
+# Tried in order for a non-primary Cargo suffix, so `x1` is the usual result.
+_CARGO_SUFFIX_LETTERS = "xyzwvutsrqponmlkjihgfedcba"
 
 
 def synthesize_dest(source: Identity) -> Identity:
@@ -106,6 +112,7 @@ def synthesize_dest(source: Identity) -> Identity:
     variant_inputs = list(values.values())
     if display is not None:
         variant_inputs.append(display)
+    variant_inputs.extend(name for _role, name in source.cargo_names)
     variants = _source_variants(variant_inputs)
     prefix = _safe_prefix(variants)
 
@@ -116,9 +123,12 @@ def synthesize_dest(source: Identity) -> Identity:
     else:
         dest = _synthesize_plain(values, display, prefix, variants)
     dest = _with_exact_names(source, dest, prefix, variants)
+    dest = _with_cargo_names(source, dest, variants)
 
     dest.validate()
-    _assert_equality_signature(source, dest)
+    # An invalid table is reported by cargo_identity_problem with its own text.
+    if cargo_identity_problem(source, source) is None:
+        _assert_equality_signature(source, dest)
     return dest
 
 
@@ -141,8 +151,10 @@ def _synthesize_plain(
     for value, fields in classes.items():
         dest_by_value[value] = _synth_value(value, fields, prefix, used, variants)
 
-    return Identity(
-        **{field: dest_by_value[values[field]] for field in REQUIRED_FIELDS},
+    return replace(
+        Identity.from_mapping(
+            {field: dest_by_value[values[field]] for field in REQUIRED_FIELDS}
+        ),
         display_name=(
             _synth_display(display, variants, used) if display is not None else None
         ),
@@ -178,6 +190,166 @@ def _with_exact_names(
             used.add(minted)
         names[field] = by_value[value]
     return replace(dest, **names)
+
+
+def _shaped_like(token: str, name: str) -> str:
+    """``token`` cut into ``name``'s words, joined by ``name``'s separators."""
+    parts = re.split(r"([-_]+)", name)
+    words = [word for word in parts[0::2] if word]
+    text = token
+    while len(text) < len(words):
+        text += hashlib.sha256(text.encode()).hexdigest()
+    size = len(text) // len(words)
+    cuts = [text[i * size : (i + 1) * size] for i in range(len(words) - 1)]
+    cuts.append(text[(len(words) - 1) * size :])
+    shaped = cuts[0]
+    for separator, piece in zip(parts[1::2], [*cuts[1:], ""], strict=False):
+        shaped += separator + piece
+    return shaped
+
+
+def _mint_cargo_name(
+    stem: str, separator: str, taken: set[str], variants: frozenset[str]
+) -> str:
+    """The first ``<stem><separator><letter><number>`` free of source text."""
+    for letter, number in itertools.product(_CARGO_SUFFIX_LETTERS, range(1, 100)):
+        name = f"{stem}{separator}{letter}{number}"
+        ident = cargo_ident(name)
+        if ident not in taken and not (
+            _collides(name, variants) or _collides(ident, variants)
+        ):
+            taken.add(ident)
+            return name
+    raise ValidationError(
+        f"synthesize: could not derive a containment-free Cargo name from {stem!r}"
+    )
+
+
+def _with_hyphens(name: str, ident: str) -> str:
+    """``ident`` with a hyphen wherever ``name`` has one, when lengths agree."""
+    if len(name) != len(ident):
+        return ident
+    return "".join(
+        "-" if theirs == "-" else ours for theirs, ours in zip(name, ident, strict=True)
+    )
+
+
+def _display_tied_name(name: str, source: Identity, dest: Identity) -> str | None:
+    """The destination display form a Cargo name must share, if any."""
+    if source.display_name is None or dest.display_name is None:
+        return None
+    source_forms = display_forms(source.display_name)
+    dest_forms = display_forms(dest.display_name)
+    for form in DISPLAY_FORM_NAMES:
+        if source_forms[form] == name:
+            return dest_forms[form]
+        if source_forms[form] == cargo_ident(name):
+            return _with_hyphens(name, dest_forms[form])
+    return None
+
+
+def _cargo_destinations(
+    source: Identity, dest: Identity, variants: frozenset[str]
+) -> dict[str, str]:
+    """A synthetic Cargo name per role, shaped so both spellings stay coherent.
+
+    The primary role carries the package destination, so its underscore form
+    is the destination ``package_name``. A name equal to a display form or to
+    ``app_name_upper`` takes that slot's destination. Other roles add a
+    generated suffix, never role text. A separator-free name tied to a field
+    that cannot hold an underscore (``owner``, ``repo_name``, directly or
+    through ``app_name_upper``) is glued.
+    """
+    primary = next(
+        (
+            (role, name)
+            for role, name in source.cargo_names
+            if cargo_ident(name) == source.package_name
+        ),
+        None,
+    )
+    base = dest.package_name
+    if primary is not None:
+        base = _display_tied_name(primary[1], source, dest) or _shaped_like(
+            dest.package_name, primary[1]
+        )
+    ident = cargo_ident(base)
+    names: dict[str, str] = {primary[0]: base} if primary else {}
+    for role, name in source.cargo_names:
+        if (
+            role not in names
+            and (tied := _display_tied_name(name, source, dest)) is not None
+        ):
+            names[role] = tied
+    taken = {cargo_ident(name) for name in names.values()} | {ident}
+    no_underscore = (source.owner, source.repo_name)
+    upper_tied = source.app_name_upper in no_underscore
+    deferred: list[tuple[str, str]] = []
+    for role, name in source.cargo_names:
+        if role in names:
+            continue
+        if cargo_ident(name) == source.app_name_upper:
+            deferred.append((role, name))
+        elif "-" in name:
+            names[role] = _mint_cargo_name(
+                ident.replace("_", "-"), "-", taken, variants
+            )
+        elif "_" not in name and (
+            name in no_underscore or (name == source.app_name and upper_tied)
+        ):
+            names[role] = _mint_cargo_name(ident.replace("_", ""), "", taken, variants)
+        else:
+            names[role] = _mint_cargo_name(ident, "_", taken, variants)
+    app_dest = next(
+        (
+            cargo_ident(names[role])
+            for role, name in source.cargo_names
+            if role in names and cargo_ident(name) == source.app_name
+        ),
+        dest.app_name,
+    )
+    for role, name in deferred:
+        names[role] = _with_hyphens(name, app_dest.upper())
+    return names
+
+
+def _with_cargo_names(
+    source: Identity, dest: Identity, variants: frozenset[str]
+) -> Identity:
+    """Add the Cargo table, moving any field that shares a Cargo source value.
+
+    One source value has one destination in the rewrite table, so a field equal
+    to a Cargo name in either spelling takes that name's matching spelling.
+    """
+    if not source.cargo_names:
+        return dest
+    names = _cargo_destinations(source, dest, variants)
+    moved: dict[str, str] = {}
+    for role, name in source.cargo_names:
+        moved[name] = names[role]
+        moved[cargo_ident(name)] = cargo_ident(names[role])
+    if source.app_name in moved:
+        moved[source.app_name_upper] = moved[source.app_name].upper()
+    changes: dict[str, str] = {
+        field: moved[value]
+        for field in (*REQUIRED_FIELDS, *OPTIONAL_FIELDS)
+        if (value := getattr(source, field)) is not None and value in moved
+    }
+    result = replace(dest, **changes, cargo_names=tuple(sorted(names.items())))
+    source_slots = _slot_values(source)
+    unrelated = {
+        value
+        for slot, value in _slot_values(result).items()
+        if source_slots[slot] not in moved
+    }
+    for name in names.values():
+        forms = {name, cargo_ident(name)}
+        if forms & unrelated or any(_collides(form, variants) for form in forms):
+            raise ValidationError(
+                f"synthesize: Cargo destination {name!r} collides with another "
+                "synthetic or source identity value"
+            )
+    return result
 
 
 # --- #46: equality-signature preservation across derived slots -------------
@@ -230,6 +402,15 @@ def _is_entangled(slots: list[str]) -> bool:
     return bool(derived) and len(slots) > 1
 
 
+def _signature_values(identity: Identity) -> dict[str, str]:
+    """Every rewrite slot plus both spellings of each Cargo name."""
+    values = _slot_values(identity)
+    for role, name in identity.cargo_names:
+        values[f"cargo_exact_{role}"] = name
+        values[f"cargo_ident_{role}"] = cargo_ident(name)
+    return values
+
+
 def _assert_equality_signature(source: Identity, dest: Identity) -> None:
     """Two-way equality-signature postcondition: for EVERY pair of emitted
     rewrite slots, source-equality and dest-equality must coincide.
@@ -243,7 +424,7 @@ def _assert_equality_signature(source: Identity, dest: Identity) -> None:
     `_synthesize_entangled`'s solver is designed to never produce one, so
     this is the unreachable backstop, not the primary correctness mechanism).
     """
-    src, dst = _slot_values(source), _slot_values(dest)
+    src, dst = _signature_values(source), _signature_values(dest)
     for left, right in itertools.combinations(src, 2):
         if (src[left] == src[right]) != (dst[left] == dst[right]):
             raise ValidationError(
@@ -349,8 +530,10 @@ def _synthesize_entangled(
             "resolved class value and app_name's derived uppercase form"
         )
 
-    return Identity(
-        **{f: dest_class_value[values[f]] for f in REQUIRED_FIELDS},
+    return replace(
+        Identity.from_mapping(
+            {f: dest_class_value[values[f]] for f in REQUIRED_FIELDS}
+        ),
         display_name=dest_display,
     )
 

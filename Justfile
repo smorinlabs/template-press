@@ -254,7 +254,7 @@ matrix:
 
 # Run all checks
 [group('test'), group('dev'), group('quick start')]
-@check: (test "-n" "auto") lint typecheck check-yaml check-spelling check-editorconfig
+@check: lint typecheck check-yaml check-spelling check-editorconfig (test "-n" "auto")
     echo "All checks passed!"
 
 alias ca := check

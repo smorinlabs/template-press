@@ -22,6 +22,8 @@ from template_press.rebrand.identity import (
     REQUIRED_FIELDS,
     Identity,
     ValidationError,
+    cargo_ident,
+    validate_cargo_role,
 )
 from template_press.rebrand.languages import (
     KNOWN_LANGUAGES,
@@ -34,7 +36,11 @@ RULES_REL = Path("press") / "press-rules.toml"
 
 SUPPORTED_PLATFORMS: frozenset[str] = frozenset({"darwin", "linux", "win32"})
 
-_PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
+_PLACEHOLDER_RE = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
+# {cargo_exact_<role>} and {cargo_ident_<role>}[_upper]: valid only in
+# [[replace]] patterns. The role is resolved against the identity at render time.
+_CARGO_PLACEHOLDER_RE = re.compile(r"cargo_(exact|ident)_([a-z][a-z0-9_]*)")
+_UPPER = "_upper"
 
 # Every {field} a [[replace]] pattern may reference: the six required
 # identity fields, the derived uppercase app form, and the optional
@@ -48,6 +54,7 @@ ALLOWED_PLACEHOLDERS: frozenset[str] = frozenset(REQUIRED_FIELDS) | {
 }
 
 _REPLACE_KEYS = frozenset({"pattern", "files", "paths", "content", "reason"})
+_CARGO_SPLIT_KEYS = frozenset({"role", "package_files", "identifier_files"})
 
 
 @dataclass(frozen=True)
@@ -70,6 +77,43 @@ class ReplaceRule:
     content: bool = True
 
 
+@dataclass(frozen=True)
+class CargoSplit:
+    """Opt-in for pressing a hyphen-free crate name to a hyphenated one.
+
+    The source name spells the package and the Rust identifier identically,
+    so text alone cannot choose. Cargo manifests take the package spelling and
+    ``.rs`` files the identifier spelling; the two glob lists name the other
+    files that hold the crate name.
+    """
+
+    role: str
+    package_files: tuple[str, ...] = ()
+    identifier_files: tuple[str, ...] = ()
+
+
+def _cargo_placeholder(inner: str) -> tuple[str, str, bool] | None:
+    """Split a cargo placeholder into (kind, role, upper), or None.
+
+    Only `cargo_ident_<role>` takes `_upper`; no role ends in `_upper`, so
+    `cargo_exact_<role>_upper` and a doubled suffix are not placeholders.
+    """
+    match = _CARGO_PLACEHOLDER_RE.fullmatch(inner)
+    if match is None:
+        return None
+    kind, role = match.groups()
+    upper = kind == "ident" and role.endswith(_UPPER)
+    if upper:
+        role = role[: -len(_UPPER)]
+    if not role or role.endswith(_UPPER) or not role[0].isalpha():
+        return None
+    return kind, role, upper
+
+
+def _is_replace_placeholder(inner: str) -> bool:
+    return inner in ALLOWED_PLACEHOLDERS or _cargo_placeholder(inner) is not None
+
+
 def render_replace_pattern(pattern: str, identity: Identity) -> str:
     """Substitute {field} placeholders with this identity's values.
 
@@ -77,9 +121,22 @@ def render_replace_pattern(pattern: str, identity: Identity) -> str:
     literal to find) and once with the DESTINATION (the literal to write).
     """
     values = identity.as_dict()
+    cargo = dict(identity.cargo_names)
 
     def _sub(m: re.Match[str]) -> str:
         name = m.group(1)
+        parts = _cargo_placeholder(name)
+        if parts is not None:
+            kind, role, upper = parts
+            if role not in cargo:
+                raise ValidationError(
+                    f"[[replace]] pattern {pattern!r} references {{{name}}} but "
+                    f"this identity declares no cargo_names role {role!r}"
+                )
+            if kind == "exact":
+                return cargo[role]
+            ident = cargo_ident(cargo[role])
+            return ident.upper() if upper else ident
         if name not in values:
             raise ValidationError(
                 f"[[replace]] pattern {pattern!r} references {{{name}}} but "
@@ -278,6 +335,8 @@ class Rules:
     # Exact names independent of the identity; every rewrite row leaves them
     # unchanged. Appended last for positional safety.
     keep_names: tuple[str, ...] = ()
+    # Declared [[cargo_split]] opt-ins, appended last for positional safety.
+    cargo_split: tuple[CargoSplit, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -351,6 +410,16 @@ _SUGGESTION_NOTES: dict[str, str] = {
 }
 
 
+_CARGO_LOCK = "Cargo.lock"
+# `cargo update --workspace` keeps locked dependency versions and rewrites only
+# the workspace members, which `generate-lockfile` would re-resolve.
+_CARGO_LOCK_SUGGESTION = (
+    '[rules]\nextra_exclude_files = ["Cargo.lock"]\n\n'
+    '[[regenerate]]\nfile = "Cargo.lock"\n'
+    'command = ["cargo", "update", "--workspace", "--offline"]\n'
+)
+
+
 def regenerate_suggestion(file: str) -> str | None:
     """A paste-ready [[regenerate]] block for a known root lockfile, else None.
 
@@ -358,6 +427,8 @@ def regenerate_suggestion(file: str) -> str | None:
     root and could not rebuild a lockfile in a subdirectory.
     """
 
+    if file == _CARGO_LOCK:
+        return _CARGO_LOCK_SUGGESTION
     command = _LOCKFILE_COMMANDS.get(file)
     if command is None:
         return None
@@ -388,12 +459,22 @@ _RULES_KEYS = frozenset(
 # The exact set of ROOT-level tables press-rules.toml legitimately carries —
 # every table some loader in this codebase actually reads from the file:
 # [rules], [[replace]], [[regenerate]], [[reset]], [[remove]], [[edit]], and
-# [[clean]]
+# [[clean]], and [[cargo_split]]
 # here, [verify] in verify_cli.py's _load_verify_config (same file). An
 # unknown root key (e.g. a `[[replace]]` typo like `[[replcae]]`) must fail
 # loud instead of silently loading as zero rules.
 _ROOT_KEYS = frozenset(
-    {"rules", "replace", "verify", "regenerate", "reset", "remove", "edit", "clean"}
+    {
+        "rules",
+        "replace",
+        "verify",
+        "regenerate",
+        "reset",
+        "remove",
+        "edit",
+        "clean",
+        "cargo_split",
+    }
 )
 _REMOVE_KEYS = frozenset({"file", "dir", "reason", "platforms"})
 
@@ -480,7 +561,7 @@ def _parse_replace(entry: object) -> ReplaceRule:
     # field — this subsumes the former unknown-name check.
     for token in brace_tokens:
         inner = token[1:-1]
-        if not re.fullmatch(r"[a-z_]+", inner) or inner not in ALLOWED_PLACEHOLDERS:
+        if not _is_replace_placeholder(inner):
             raise ValidationError(
                 f"{RULES_REL}: [[replace]] pattern {pattern!r} references an "
                 f"invalid or unknown placeholder {token!r}"
@@ -520,6 +601,47 @@ def _parse_replace(entry: object) -> ReplaceRule:
         paths=paths,
         content=content,
     )
+
+
+def _parse_cargo_splits(raw: object) -> tuple[CargoSplit, ...]:
+    """Structural ``[[cargo_split]]`` checks; identity checks need the tables."""
+
+    prefix = f"{RULES_REL}: [[cargo_split]]"
+    if not isinstance(raw, list) or any(not isinstance(e, dict) for e in raw):
+        raise ValidationError(f"{prefix} must be an array of tables")
+    splits: list[CargoSplit] = []
+    for entry in raw:
+        unknown = set(entry) - _CARGO_SPLIT_KEYS
+        if unknown:
+            raise ValidationError(
+                f"{prefix} unknown key(s): {', '.join(sorted(unknown))}"
+            )
+        role = entry.get("role")
+        if not isinstance(role, str):
+            raise ValidationError(f"{prefix} role must be a cargo_names role string")
+        validate_cargo_role(role)
+        if any(split.role == role for split in splits):
+            raise ValidationError(f"{prefix} role {role!r} is declared twice")
+        lists: dict[str, tuple[str, ...]] = {}
+        for key in ("package_files", "identifier_files"):
+            value = entry.get(key, [])
+            if not isinstance(value, list) or not all(
+                isinstance(item, str) and item for item in value
+            ):
+                raise ValidationError(
+                    f"{prefix} {role!r}: {key} must be a list of non-empty glob strings"
+                )
+            lists[key] = tuple(dict.fromkeys(value))
+        both = sorted(set(lists["package_files"]) & set(lists["identifier_files"]))
+        if both:
+            raise ValidationError(
+                f"{prefix} {role!r}: glob(s) {both!r} are in both package_files "
+                "and identifier_files; a file takes one spelling"
+            )
+        splits.append(
+            CargoSplit(role, lists["package_files"], lists["identifier_files"])
+        )
+    return tuple(splits)
 
 
 def _legacy_regenerate_error(value: object) -> ValidationError:
@@ -1496,6 +1618,7 @@ def _parse_rules(target: Path) -> _ParsedRules:
             display_forms=tuple(dict.fromkeys(display_forms_list)),
             languages=languages,
             keep_names=tuple(dict.fromkeys(_str_list(table, "keep_names", []))),
+            cargo_split=_parse_cargo_splits(data.get("cargo_split", [])),
         ),
         regenerate=regenerate,
         reset=reset,

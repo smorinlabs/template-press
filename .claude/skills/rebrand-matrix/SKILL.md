@@ -23,7 +23,10 @@ The empirical harness from EMPIRICAL_BUGS.md as a repeatable check:
 ## Run
 
 `just matrix` (live: clones py-launch-blueprint; needs network), or only the
-pytest half: `uv run pytest tests/rebrand/test_matrix.py -m live -q`.
+pytest half:
+`uv run pytest tests/rebrand/test_matrix.py -m live -q -n auto --dist loadgroup`.
+Keep `--dist loadgroup`: R1b and R3 share the user's uv and bun caches, so their
+`xdist_group` keeps them on one worker.
 
 R3's self-press runs this repo's declared regenerations (`uv lock` and
 `scripts/regen-bun-lock.sh` — see `press/press-rules.toml`), so uv and

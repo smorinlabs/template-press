@@ -31,7 +31,7 @@ def _write_rules(target: Path, body: str) -> Path:
 
 def test_language_constants() -> None:
     assert KNOWN_LANGUAGES == ("python", "node", "rust")
-    assert SUPPORTED_LANGUAGES == frozenset({"python", "node"})
+    assert SUPPORTED_LANGUAGES == frozenset({"python", "node", "rust"})
 
 
 def test_rules_languages_defaults_to_none(tmp_path: Path) -> None:
@@ -61,10 +61,9 @@ def test_rules_languages_accepts_node(tmp_path: Path, value: str) -> None:
 
 
 @pytest.mark.parametrize("value", ['["rust"]', '["python", "rust"]'])
-def test_rules_languages_reserved_not_supported(tmp_path: Path, value: str) -> None:
+def test_rules_languages_accepts_rust(tmp_path: Path, value: str) -> None:
     target = _write_rules(tmp_path, f"[rules]\nlanguages = {value}\n")
-    with pytest.raises(ValidationError, match="not supported by this press version"):
-        load_rules(target)
+    assert "rust" in (load_rules(target).languages or ())
 
 
 # --- Detection and resolution ------------------------------------------------
@@ -164,7 +163,7 @@ def test_undeclared_multi_language_refused(tmp_path: Path) -> None:
     assert 'languages = ["python", "node"]' in message
 
 
-def test_undeclared_paste_line_lists_only_supported_languages(
+def test_undeclared_paste_line_lists_each_detected_language(
     tmp_path: Path,
 ) -> None:
     _write(tmp_path, "package.json", '{"name": "a"}')
@@ -174,8 +173,28 @@ def test_undeclared_paste_line_lists_only_supported_languages(
     message = str(exc.value)
     assert "package.json" in message
     assert "Cargo.toml" in message
-    assert 'languages = ["node"]' in message
-    assert "rust" not in message
+    assert 'languages = ["node"] when Cargo.toml is tooling only' in message
+    assert 'languages = ["node", "rust"] when both manifests' in message
+
+
+def test_undeclared_python_and_rust_offers_tooling_only_path(tmp_path: Path) -> None:
+    _write(tmp_path, "pyproject.toml", '[project]\nname = "a"\n')
+    _write(tmp_path, "Cargo.toml", '[package]\nname = "a"\n')
+    with pytest.raises(ValidationError) as exc:
+        check_target_languages(tmp_path, None, [])
+    message = str(exc.value)
+    assert 'languages = ["python"] when Cargo.toml is tooling only' in message
+    assert 'languages = ["python", "rust"] when both manifests' in message
+
+
+def test_undeclared_three_languages_offers_tooling_only_path(tmp_path: Path) -> None:
+    _py_and_node(tmp_path)
+    _write(tmp_path, "Cargo.toml", '[package]\nname = "a"\n')
+    with pytest.raises(ValidationError) as exc:
+        check_target_languages(tmp_path, None, [])
+    message = str(exc.value)
+    assert 'languages = ["python", "node"] when Cargo.toml is tooling only' in message
+    assert 'languages = ["python", "node", "rust"] when all manifests' in message
 
 
 def test_single_language_undeclared_continues(tmp_path: Path) -> None:
