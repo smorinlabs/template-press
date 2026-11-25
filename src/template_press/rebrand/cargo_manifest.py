@@ -445,9 +445,15 @@ def cargo_manifest_files(target: Path) -> tuple[str, ...]:
                 continue
             seen.add(key)
             if _through_symlink(root, dependency):
-                # The press writes no file through a symlink, so this manifest
-                # is not rewritten and is left to Cargo, as on base.
-                continue
+                # The press writes no file through a symlink. A directory the
+                # link reaches inside the root is rewritten at its real path,
+                # so its manifest is read there; one outside is left to Cargo.
+                real = dependency.resolve()
+                real_key = os.path.relpath(real, root)
+                if real_key in seen or _through_symlink(root, real):
+                    continue
+                seen.add(real_key)
+                dependency = real
             manifests.append((dependency, _member_manifest(root, dependency)))
     return tuple(
         Path(os.path.relpath(directory / _MANIFEST, root)).as_posix()

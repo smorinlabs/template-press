@@ -126,6 +126,65 @@ def test_symlinked_path_dependency_still_builds(tmp_path: Path) -> None:
     _assert_cargo(target, "check", "--offline")
 
 
+def _symlinked_dependency_with_lib_path(target: Path) -> None:
+    """N3: the symlink points into the tracked tree, and the press rewrites the
+    dependency's manifest through its real path."""
+    _seed(
+        target,
+        {
+            "Cargo.toml": _package("acme-core").replace("acme-repo", "acme-core")
+            + '\n[dependencies]\nhelper = { path = "vendor/helper" }\n',
+            "src/lib.rs": "pub fn hi() -> u8 { helper::one() }\n",
+            "third_party/helper/Cargo.toml": (
+                '[package]\nname = "helper"\nversion = "0.1.0"\nedition = "2021"\n'
+                '[lib]\npath = "src/acmelabs.rs"\n'
+            ),
+            "third_party/helper/src/acmelabs.rs": "pub fn one() -> u8 { 1 }\n",
+            "NOTES.txt": "ships acmectl\n",
+        },
+        identity={**CORE_SOURCE, "repo_name": "acme-core"},
+        links={"vendor": "third_party"},
+    )
+
+
+def test_symlinked_path_dependency_manifest_is_still_cross_checked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _symlinked_dependency_with_lib_path(target)
+    answers = _answers(tmp_path, {**CORE_DEST, "repo_name": "zeta-core"}, None)
+
+    assert _press(target, answers) == 2
+
+    out = capsys.readouterr()
+    assert "cargo paths: third_party/helper/Cargo.toml: [lib] path" in (
+        out.out + out.err
+    )
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_symlinked_path_dependency_refusal_matches_real_cargo(tmp_path: Path) -> None:
+    """Real Cargo: base and the I6 skip wrote a receipt here, then ``cargo
+    check`` failed on ``vendor/helper/src/zetalabs.rs``."""
+    _require_cargo()
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _symlinked_dependency_with_lib_path(target)
+    _assert_cargo(target, "check", "--offline")
+    answers = _answers(tmp_path, {**CORE_DEST, "repo_name": "zeta-core"}, None)
+
+    assert _press(target, answers) == 2
+
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
+    _assert_cargo(target, "check", "--offline")
+
+
 # --- R38 (I5): content-only rows inside paths Rust source declares ---------------
 
 SOURCE_PATH_CASES = {
