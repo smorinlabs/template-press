@@ -286,6 +286,97 @@ SOURCE_PATH_CASES = {
         },
         "src/gen/x.rs:1:",
     ),
+    # Q1: #[path] inside an inline module split by a content-only row.
+    "inline_path_attr_owner": (
+        {
+            "src/lib.rs": LIB
+            + 'pub mod outer {\n    #[path = "acmelabs.rs"]\n    pub mod details;\n}\n',
+            "src/outer/acmelabs.rs": "pub fn org() {}\n",
+        },
+        "src/lib.rs:5:",
+    ),
+    # Q1 guard: an unrelated file at src/ does not satisfy #[path] inside mod outer.
+    "inline_path_attr_wrong_dir_not_fooled": (
+        {
+            "src/lib.rs": LIB
+            + 'pub mod outer {\n    #[path = "acme-core.rs"]\n    pub mod details;\n}\n',
+            "src/acme-core.rs": "pub fn stray() {}\n",
+        },
+        "src/lib.rs:5:",
+    ),
+    # P15-T11 F1a: #[path] inside an inline module is reached by the compiled walk.
+    "inline_path_attr_reached_include_owner": (
+        {
+            "src/lib.rs": LIB
+            + 'pub mod outer {\n    #[path = "x.rs"]\n    pub mod x;\n}\n',
+            "src/outer/x.rs": (
+                'pub const T: &str = include_str!("../../data/acmelabs.txt");\n'
+            ),
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/outer/x.rs:1:",
+    ),
+    # P15-T11 F1b: #[path] on an inline module is followed by the compiled walk.
+    "path_attr_on_inline_reached_include_owner": (
+        {
+            "src/lib.rs": LIB
+            + '#[path = "p"]\npub mod outer {\n    pub mod inner;\n}\n',
+            "src/p/inner.rs": (
+                'pub const T: &str = include_str!("../../data/acmelabs.txt");\n'
+            ),
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/p/inner.rs:1:",
+    ),
+    # P15-T11 F1: #[cfg_attr(..., path = ...)] on an inline module is followed too.
+    "cfg_attr_path_on_inline_reached_include_owner": (
+        {
+            "src/lib.rs": LIB
+            + '#[cfg_attr(all(), path = "p")]\npub mod outer {\n    pub mod inner;\n}\n',
+            "src/p/inner.rs": (
+                'pub const T: &str = include_str!("../../data/acmelabs.txt");\n'
+            ),
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/p/inner.rs:1:",
+    ),
+    # P15-T11 F2: a renamed inline module around an unchanged child module.
+    "renamed_inline_mod_unchanged_child_owner": (
+        {
+            "src/lib.rs": LIB + "pub mod acmelabs {\n    pub mod x;\n}\n",
+            "src/acmelabs/x.rs": "pub fn org() {}\n",
+        },
+        "src/lib.rs:5:",
+    ),
+    # P15-T11 F2: a renamed inline module around an unchanged #[path] child.
+    "renamed_inline_mod_unchanged_path_attr_owner": (
+        {
+            "src/lib.rs": LIB
+            + 'pub mod acmelabs {\n    #[path = "x.rs"]\n    pub mod y;\n}\n',
+            "src/acmelabs/x.rs": "pub fn org() {}\n",
+        },
+        "src/lib.rs:5:",
+    ),
+    # P15-T11 F3: #[path = "dir"] on an inline module split from its directory.
+    "path_attr_on_inline_dir_owner": (
+        {
+            "src/lib.rs": LIB
+            + '#[path = "acmelabs"]\npub mod outer {\n    pub mod inner;\n}\n',
+            "src/acmelabs/inner.rs": "pub fn org() {}\n",
+        },
+        "src/lib.rs:4:",
+    ),
+    # P15-T11 Unicode: a Unicode inline module is tracked by the compiled walk.
+    "unicode_inline_mod_reached_include_owner": (
+        {
+            "src/lib.rs": LIB + "pub mod café {\n    pub mod inner;\n}\n",
+            "src/café/inner.rs": (
+                'pub const T: &str = include_str!("../../data/acmelabs.txt");\n'
+            ),
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/café/inner.rs:1:",
+    ),
 }
 
 
@@ -424,6 +515,64 @@ FOLLOWING_PATHS = {
         "src/lib.rs": LIB + 'pub const T: &str = include_str!("t.txt");\n',
         "src/t.txt": "x\n",
     },
+    # Q1: #[path] inside an inline module resolves against the inline directory.
+    "inline_path_attr_renamed": {
+        "src/lib.rs": LIB
+        + 'pub mod outer {\n    #[path = "acme-core.rs"]\n    pub mod details;\n}\n',
+        "src/outer/acme-core.rs": "pub fn d() -> u8 { 1 }\n",
+    },
+    "inline_path_attr_renamed_below_module_file": {
+        "src/lib.rs": LIB + "pub mod top;\n",
+        "src/top.rs": (
+            'pub mod outer {\n    #[path = "acme-core.rs"]\n    pub mod details;\n}\n'
+        ),
+        "src/top/outer/acme-core.rs": "pub fn d() -> u8 { 1 }\n",
+    },
+    "inline_cfg_attr_path_renamed": {
+        "src/lib.rs": LIB
+        + 'pub mod outer {\n    #[cfg_attr(all(), path = "acme-core.rs")]\n'
+        + "    pub mod details;\n}\n",
+        "src/outer/acme-core.rs": "pub fn d() -> u8 { 1 }\n",
+    },
+    # P15-T11 F3: #[path] on an inline module with a renamed child or directory.
+    "path_attr_on_inline_mod_renamed_child": {
+        "src/lib.rs": LIB
+        + '#[path = "p"]\npub mod outer {\n    pub mod acme_core;\n}\n',
+        "src/p/acme_core.rs": "pub fn f() -> u8 { 1 }\n",
+    },
+    "path_attr_on_inline_mod_with_inline_path_attr_renamed": {
+        "src/lib.rs": LIB
+        + '#[path = "p"]\npub mod outer {\n    #[path = "acme-core.rs"]\n'
+        + "    pub mod details;\n}\n",
+        "src/p/acme-core.rs": "pub fn d() -> u8 { 1 }\n",
+    },
+    "path_attr_on_inline_mod_renamed_dir": {
+        "src/lib.rs": LIB
+        + '#[path = "acme_core"]\npub mod outer {\n    pub mod inner;\n}\n',
+        "src/acme_core/inner.rs": "pub fn f() -> u8 { 1 }\n",
+    },
+    # P15-T11 F2 healthy counterpart: renamed inline module moves with its directory.
+    "renamed_inline_mod_with_its_dir": {
+        "src/lib.rs": LIB + "pub mod acme_core {\n    pub mod inner;\n}\n",
+        "src/acme_core/inner.rs": "pub fn f() -> u8 { 1 }\n",
+    },
+    # P15-T11 F2+F3 guard: unconditional #[path] keeps the child's directory unchanged.
+    "path_attr_on_renamed_inline_mod_keeps_child": {
+        "src/lib.rs": LIB
+        + '#[path = "p"]\npub mod acmelabs {\n    pub mod inner;\n}\n',
+        "src/p/inner.rs": "pub fn f() -> u8 { 1 }\n",
+    },
+    # P15-T11 Unicode: Unicode inline module around a renamed child.
+    "unicode_inline_mod_renamed_child": {
+        "src/lib.rs": LIB + "pub mod café {\n    pub mod acme_core;\n}\n",
+        "src/café/acme_core.rs": "pub fn f() -> u8 { 1 }\n",
+    },
+    # Regression guard: include_str! inside an inline module still uses the file's dir.
+    "inline_include_str_still_uses_file_dir": {
+        "src/lib.rs": LIB
+        + 'pub mod outer {\n    pub const T: &str = include_str!("acme_core.txt");\n}\n',
+        "src/acme_core.txt": "x\n",
+    },
 }
 
 
@@ -447,6 +596,13 @@ def test_rust_source_paths_that_follow_their_files_press(
         "renamed_below_a_module_file",
         "inline_nested_mod",
         "fixture_rs_owner",
+        "inline_path_attr_renamed",
+        "inline_path_attr_renamed_below_module_file",
+        "path_attr_on_inline_mod_renamed_child",
+        "path_attr_on_inline_mod_renamed_dir",
+        "path_attr_on_renamed_inline_mod_keeps_child",
+        "renamed_inline_mod_with_its_dir",
+        "unicode_inline_mod_renamed_child",
     ],
 )
 def test_rust_source_paths_that_follow_their_files_build(
@@ -468,11 +624,41 @@ def test_rust_source_paths_that_follow_their_files_build(
 @pytest.mark.parametrize(
     "case",
     [
+        "inline_path_attr_renamed",
+        "path_attr_on_inline_mod_renamed_child",
+    ],
+)
+def test_inline_path_attr_tableless_presses_and_builds(
+    case: str, tmp_path: Path
+) -> None:
+    """Real Cargo: tableless Rust targets press and build as on base."""
+    _require_cargo()
+    target = _source_path_target(tmp_path, FOLLOWING_PATHS[case], table=False)
+    _assert_cargo(target, "test", "--offline")
+
+    assert _press(target, _source_path_answers(tmp_path, table=False)) == 0
+
+    assert (target / RECEIPT_REL).is_file()
+    _assert_cargo(target, "test", "--offline")
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize(
+    "case",
+    [
         "mod_owner",
         "include_owner",
         "include_spaced_bang_owner",
         "path_attr_owner",
         "cfg_attr_path_owner",
+        "inline_path_attr_owner",
+        "inline_path_attr_reached_include_owner",
+        "path_attr_on_inline_reached_include_owner",
+        "renamed_inline_mod_unchanged_child_owner",
+        "renamed_inline_mod_unchanged_path_attr_owner",
+        "unicode_inline_mod_reached_include_owner",
     ],
 )
 def test_rust_source_path_refusal_matches_real_cargo(case: str, tmp_path: Path) -> None:
@@ -659,3 +845,47 @@ def test_binary_token_in_an_excluded_file_names_the_exclusion(
     assert "excluded from rewriting; remove the exclusion" in message
     assert "Declare a cargo_names table" not in message
     assert _status(target) == ""
+
+
+def test_rust_source_structure_tracks_inline_paths_and_unicode() -> None:
+    from template_press.rebrand.rust_text import InlineModule, rust_source_structure
+
+    text = (
+        '// mod decoy { #[path = "nope.rs"] mod bad; }\n'
+        "pub const BRACE: char = '{';\n"
+        '#[path = "p"]\n'
+        '#[cfg_attr(unix, path = "u")]\n'
+        "pub mod outer {\n"
+        '    #[path = r#"x.rs"#]\n'
+        "    pub mod raw_child;\n"
+        '    pub const T: &str = include_str!("data.txt");\n'
+        '    # [ path = "spaced.rs" ]\n'
+        "    pub mod spaced;\n"
+        "}\n"
+        "pub mod café {\n"
+        "    pub mod inner;\n"
+        "}\n"
+    )
+    mods, paths = rust_source_structure(text)
+
+    outer = InlineModule("outer", path="p", conditional_paths=("u",))
+    cafe = InlineModule("café")
+    assert [(m.name, m.attributed, m.conditional, m.inline) for m in mods] == [
+        ("raw_child", True, False, (outer,)),
+        ("spaced", True, False, (outer,)),
+        ("inner", False, False, (cafe,)),
+    ]
+    assert [
+        (
+            p.kind,
+            text[p.literal.content_start : p.literal.content_end],
+            p.inline,
+        )
+        for p in paths
+    ] == [
+        ("inline_dir", "p", ()),
+        ("inline_dir", "u", ()),
+        ("module_path", "x.rs", (outer,)),
+        ("include", "data.txt", ()),
+        ("module_path", "spaced.rs", (outer,)),
+    ]

@@ -87,16 +87,17 @@ from template_press.rebrand.rules import (
     rule_matches_path,
 )
 from template_press.rebrand.rust_text import (
+    InlineModule,
     compiled_markdown_lines,
     cut_module_docs,
-    module_declarations,
     quoted_spans,
     quoting_renames,
+    rust_path_literals,
+    rust_source_structure,
     rust_strings,
     span_within,
     split_rust_replacements,
     string_at,
-    string_role,
 )
 from template_press.rebrand.safety import (
     RenameClosureUnauthorized,
@@ -2053,7 +2054,7 @@ def cargo_path_splits(
         )
         if new_text != text and (
             found := _rust_source_path_splits(
-                path, text, new_text, plan, files, split_tokens
+                path, text, new_text, plan, files, directories, split_tokens
             )
         ):
             source_problems[path] = found
@@ -2077,17 +2078,74 @@ _TARGET_DIRS = {
 }
 
 
-def _module_places(path: str, inline: Sequence[str]) -> tuple[str, str]:
-    """The two directories a ``mod name;`` in ``path`` may name a file in.
+def _inline_dirs(path: str, inline: Sequence[InlineModule]) -> tuple[str, ...]:
+    """Candidate directories for a non-empty chain of enclosing inline modules.
 
-    A crate root or ``mod.rs`` keeps its modules beside it, and any other file
-    keeps them below its stem. The enclosing inline modules add one directory
-    each. Both places are read, so neither is missed.
+    The outermost inline module's ``#[path]`` / ``#[cfg_attr(..., path)]``
+    anchors at ``dirname(path)`` even in a non-mod-rs file. Its fallback name
+    uses both ``base`` (mod-rs) and ``base/<stem>`` (non-mod-rs). Each nested
+    inline module extends every parent directory by its own path override(s)
+    and, when it has no unconditional ``#[path]``, by its name.
     """
     base = posixpath.dirname(path)
-    return (
-        posixpath.join(base, *inline),
-        posixpath.join(base, PurePosixPath(path).stem, *inline),
+    stem = PurePosixPath(path).stem
+    first, *rest = inline
+    explicit = (
+        (first.path, *first.conditional_paths)
+        if first.path is not None
+        else first.conditional_paths
+    )
+    dirs = [posixpath.normpath(posixpath.join(base, value)) for value in explicit]
+    if first.path is None:
+        dirs.append(posixpath.normpath(posixpath.join(base, first.name)))
+        dirs.append(posixpath.normpath(posixpath.join(base, stem, first.name)))
+    for mod in rest:
+        steps = (
+            (mod.path, *mod.conditional_paths)
+            if mod.path is not None
+            else (*mod.conditional_paths, mod.name)
+        )
+        dirs = [
+            posixpath.normpath(posixpath.join(parent, step))
+            for parent in dirs
+            for step in steps
+        ]
+    return tuple(dirs)
+
+
+def _module_places(path: str, inline: Sequence[InlineModule]) -> tuple[str, ...]:
+    """The directories a ``mod name;`` in ``path`` may name a file in.
+
+    A crate root or ``mod.rs`` keeps its modules beside it, and any other file
+    keeps them below its stem. Enclosing inline modules follow Rust's path
+    rules, including any ``#[path]`` or ``#[cfg_attr(..., path)]`` overrides.
+    """
+    if inline:
+        return _inline_dirs(path, inline)
+    base = posixpath.dirname(path)
+    return (base, posixpath.join(base, PurePosixPath(path).stem))
+
+
+def _path_attr_dirs(path: str, inline: Sequence[InlineModule]) -> tuple[str, ...]:
+    """The directories a ``#[path]`` attribute in ``path`` resolves against.
+
+    Outside any inline module, ``#[path]`` resolves against ``dirname(path)``
+    even in a non-mod-rs file. Inside inline modules, it follows their chain.
+    """
+    if inline:
+        return _inline_dirs(path, inline)
+    return (posixpath.dirname(path),)
+
+
+def _effective_inline(
+    inline: Sequence[InlineModule],
+) -> tuple[tuple[str, ...], ...]:
+    """Effective directory steps of each enclosing inline module."""
+    return tuple(
+        (mod.path, *mod.conditional_paths)
+        if mod.path is not None
+        else (*mod.conditional_paths, mod.name)
+        for mod in inline
     )
 
 
@@ -2134,7 +2192,8 @@ def _compiled_rust_files(
             text = read_regular_nofollow(target / path).decode("utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        for module in module_declarations(text):
+        mods, path_literals = rust_source_structure(text)
+        for module in mods:
             if not module.attributed:
                 queue.extend(
                     posixpath.normpath(posixpath.join(place, shape.format(module.name)))
@@ -2142,14 +2201,20 @@ def _compiled_rust_files(
                     for shape in _MODULE_SHAPES
                 )
         base = posixpath.dirname(path)
-        queue.extend(
-            posixpath.normpath(posixpath.join(base, value))
-            for literal in rust_strings(text)
-            if string_role(text, literal, "\0") == "path"
-            and (value := text[literal.content_start : literal.content_end]).endswith(
-                ".rs"
+        for item in path_literals:
+            if item.kind == "inline_dir":
+                continue  # directory override; child mods/paths carry it in item.inline
+            value = text[item.literal.content_start : item.literal.content_end]
+            if not value.endswith(".rs"):
+                continue
+            places = (
+                (base,)
+                if item.kind == "include"
+                else _path_attr_dirs(path, item.inline)
             )
-        )
+            queue.extend(
+                posixpath.normpath(posixpath.join(place, value)) for place in places
+            )
     return frozenset(reached)
 
 
@@ -2171,15 +2236,17 @@ def _rust_source_path_splits(
     new_text: str,
     plan: RenamePlan,
     files: frozenset[str],
+    directories: frozenset[str],
     split_tokens: Sequence[re.Pattern[str]],
 ) -> list[str]:
     """Paths Rust source declares that the rewrite would separate from their files.
 
     These are the file of a ``mod name;``, a ``#[path]`` value, and an
     ``include_str!``, ``include_bytes!``, or ``include!`` argument. Each is
-    judged only when the rewrite changes it: it must still name the file it
-    named, at that file's planned new path. A crate name that a
-    ``[[cargo_split]]`` role splits is left to the split preflight.
+    judged when the rewrite changes it or its effective enclosing inline-module
+    directories: it must still name the file or directory it named, at that
+    target's planned new path. A crate name that a ``[[cargo_split]]`` role
+    splits is left to the split preflight.
     """
 
     def split_owned(value: str) -> bool:
@@ -2188,63 +2255,106 @@ def _rust_source_path_splits(
     problems: list[str] = []
     new_path = plan.translate(path)
     base, new_base = posixpath.dirname(path), posixpath.dirname(new_path)
-    old_strings = [
-        literal
-        for literal in rust_strings(text)
-        if string_role(text, literal, "\0") == "path"
-    ]
-    new_strings = [
-        literal
-        for literal in rust_strings(new_text)
-        if string_role(new_text, literal, "\0") == "path"
-    ]
-    old_mods, new_mods = module_declarations(text), module_declarations(new_text)
-    if len(old_strings) != len(new_strings) or len(old_mods) != len(new_mods):
+    old_mods, old_paths = rust_source_structure(text)
+    new_mods, new_paths = rust_source_structure(new_text)
+    if len(old_paths) != len(new_paths) or len(old_mods) != len(new_mods):
         return [f"{path}: the rewrite changes which Rust paths the file declares"]
-    for old, new in zip(old_strings, new_strings, strict=True):
-        value = text[old.content_start : old.content_end]
-        new_value = new_text[new.content_start : new.content_end]
-        if value == new_value or split_owned(value):
+    for old_item, new_item in zip(old_paths, new_paths, strict=True):
+        if old_item.kind != new_item.kind:
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        value = text[old_item.literal.content_start : old_item.literal.content_end]
+        new_value = new_text[
+            new_item.literal.content_start : new_item.literal.content_end
+        ]
+        inline_changed = old_item.kind != "include" and _effective_inline(
+            old_item.inline
+        ) != _effective_inline(new_item.inline)
+        if value == new_value and not inline_changed:
             continue
-        resolved = posixpath.normpath(posixpath.join(base, value))
-        moved = posixpath.normpath(posixpath.join(new_base, new_value))
-        if resolved in files and plan.translate(resolved) == moved:
-            continue
-        problems.append(
-            f"{path}:{_line_of(text, old.start)}: the Rust path {value!r} would "
-            f"become {new_value!r}, but the press would not move the file it "
-            "names to match. Rename the file so a press moves it, add the shared "
-            "name to keep_names, or edit the path by hand before pressing"
+        if split_owned(value):
+            continue  # checked by _rust_path_problems with the same inline rules
+        old_dirs = (
+            (base,)
+            if old_item.kind == "include"
+            else _path_attr_dirs(path, old_item.inline)
         )
+        new_dirs = (
+            (new_base,)
+            if new_item.kind == "include"
+            else _path_attr_dirs(new_path, new_item.inline)
+        )
+        if len(old_dirs) != len(new_dirs):
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        targets = directories if old_item.kind == "inline_dir" else files
+        found = [
+            (
+                posixpath.normpath(posixpath.join(old_dir, value)),
+                posixpath.normpath(posixpath.join(new_dir, new_value)),
+            )
+            for old_dir, new_dir in zip(old_dirs, new_dirs, strict=True)
+            if posixpath.normpath(posixpath.join(old_dir, value)) in targets
+        ]
+        if found and all(
+            plan.translate(resolved) == moved for resolved, moved in found
+        ):
+            continue
+        if value != new_value:
+            problems.append(
+                f"{path}:{_line_of(text, old_item.literal.start)}: the Rust path "
+                f"{value!r} would become {new_value!r}, but the press would not move "
+                "the file it names to match. Rename the file so a press moves it, add "
+                "the shared name to keep_names, or edit the path by hand before "
+                "pressing"
+            )
+        else:
+            problems.append(
+                f"{path}:{_line_of(text, old_item.literal.start)}: the Rust path "
+                f"{value!r} sits inside a renamed inline module, but the press would "
+                "not move the file it names to match. Rename the directory so a press "
+                "moves it, add the shared name to keep_names, or edit the module by "
+                "hand before pressing"
+            )
     join = posixpath.join
     for old_mod, new_mod in zip(old_mods, new_mods, strict=True):
         name, new_name = old_mod.name, new_mod.name
-        if name == new_name or old_mod.attributed or split_owned(name):
-            continue
-        places = zip(
-            _module_places(path, old_mod.inline),
-            _module_places(new_path, new_mod.inline),
-            strict=True,
+        inline_changed = _effective_inline(old_mod.inline) != _effective_inline(
+            new_mod.inline
         )
-        found = [
+        if (name == new_name and not inline_changed) or old_mod.attributed:
+            continue
+        if name != new_name and split_owned(name) and not inline_changed:
+            continue
+        old_dirs = _module_places(path, old_mod.inline)
+        new_dirs = _module_places(new_path, new_mod.inline)
+        if len(old_dirs) != len(new_dirs):
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        found_mods = [
             (posixpath.normpath(join(old_dir, shape.format(name))), new_dir, shape)
-            for old_dir, new_dir in places
+            for old_dir, new_dir in zip(old_dirs, new_dirs, strict=True)
             for shape in _MODULE_SHAPES
             if posixpath.normpath(join(old_dir, shape.format(name))) in files
         ]
-        if (found or old_mod.conditional) and all(
+        if (found_mods or old_mod.conditional) and all(
             plan.translate(file)
             == posixpath.normpath(join(new_dir, shape.format(new_name)))
-            for file, new_dir, shape in found
+            for file, new_dir, shape in found_mods
         ):
             # A ``cfg_attr`` path with no name-based file leaves nothing to move.
             continue
-        problems.append(
-            f"{path}:{_line_of(text, old_mod.offset)}: `mod {name};` would become "
-            f"`mod {new_name};`, but the press would not rename the module's "
-            "file to match. Rename the file so a press moves it, add the shared "
-            "name to keep_names, or edit the module by hand before pressing"
-        )
+        if name != new_name:
+            problems.append(
+                f"{path}:{_line_of(text, old_mod.offset)}: `mod {name};` would become "
+                f"`mod {new_name};`, but the press would not rename the module's "
+                "file to match. Rename the file so a press moves it, add the shared "
+                "name to keep_names, or edit the module by hand before pressing"
+            )
+        else:
+            problems.append(
+                f"{path}:{_line_of(text, old_mod.offset)}: `mod {name};` sits inside "
+                "a renamed inline module, but the press would not move the module's "
+                "file to match. Rename the directory so a press moves it, add the "
+                "shared name to keep_names, or edit the module by hand before pressing"
+            )
     return problems
 
 
@@ -2450,6 +2560,12 @@ def cargo_split_target_problems(
     except ValidationError:
         plan = None  # the plan step reports an uncompilable plan
     surface = frozenset(entry.rel.as_posix() for entry in rename_snapshot.entries)
+    directories = frozenset(
+        parent.as_posix()
+        for entry in rename_snapshot.entries
+        for parent in entry.rel.parents
+        if parent != Path()
+    )
     content_rows = tuple(row for row in rows if "content" in row.rewrite_surfaces)
     mod_declared: set[str] = set()
     included = _doc_included_files(target, paths)
@@ -2561,7 +2677,9 @@ def cargo_split_target_problems(
                 )
             if path.endswith(".rs") and plan is not None:
                 problems.extend(
-                    _rust_path_problems(path, text, new_text, old, plan, surface)
+                    _rust_path_problems(
+                        path, text, new_text, old, plan, surface, directories
+                    )
                 )
             if split_spelling(split, path) != "package" or path.endswith("Cargo.toml"):
                 continue
@@ -2630,46 +2748,65 @@ def _rust_path_problems(
     old: str,
     plan: RenamePlan,
     surface: frozenset[str],
+    directories: frozenset[str],
 ) -> list[str]:
     """Rewritten path strings that no longer name the file they named.
 
-    ``include_*!`` and ``#[path]`` resolve against the source file's directory.
-    The string is provable only when it named a file on the surface and its
-    rewrite names that file's planned new path from the file's new location.
+    ``include_*!`` resolves against the source file's directory; ``#[path]``
+    resolves against any enclosing inline-module directories. The string is
+    provable only when it named a file or directory on the surface and its
+    rewrite names that target's planned new path from the file's new location.
     """
     token = token_pattern(f"{CARGO_EXACT_PREFIX}x", old) or re.compile(re.escape(old))
-    old_paths = [
-        text[literal.content_start : literal.content_end]
-        for literal in rust_strings(text)
-        if string_role(text, literal, old) == "path"
-        and token.search(text, literal.content_start, literal.content_end)
-    ]
-    new_paths = [
-        (literal, new_text[literal.content_start : literal.content_end])
-        for literal in rust_strings(new_text)
-        if string_role(new_text, literal, old) == "path"
-    ]
-    if not old_paths:
-        return []
-    base = posixpath.dirname(path)
-    new_base = posixpath.dirname(plan.translate(path))
+    old_items = rust_path_literals(text)
+    new_items = rust_path_literals(new_text)
+    if len(old_items) != len(new_items):
+        return [f"{path}: the rewrite changes which Rust paths the file declares"]
+    new_path = plan.translate(path)
+    base, new_base = posixpath.dirname(path), posixpath.dirname(new_path)
     problems: list[str] = []
-    for value in old_paths:
-        resolved = posixpath.normpath(posixpath.join(base, value))
-        moved = plan.translate(resolved)
-        rewritten = [
-            literal
-            for literal, new_value in new_paths
-            if posixpath.normpath(posixpath.join(new_base, new_value)) == moved
-        ]
-        if resolved in surface and rewritten:
+    for old_item, new_item in zip(old_items, new_items, strict=True):
+        if not token.search(
+            text, old_item.literal.content_start, old_item.literal.content_end
+        ):
             continue
-        line = _line_of(text, text.find(value))
+        if old_item.kind != new_item.kind:
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        value = text[old_item.literal.content_start : old_item.literal.content_end]
+        new_value = new_text[
+            new_item.literal.content_start : new_item.literal.content_end
+        ]
+        old_dirs = (
+            (base,)
+            if old_item.kind == "include"
+            else _path_attr_dirs(path, old_item.inline)
+        )
+        new_dirs = (
+            (new_base,)
+            if new_item.kind == "include"
+            else _path_attr_dirs(new_path, new_item.inline)
+        )
+        if len(old_dirs) != len(new_dirs):
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        targets = directories if old_item.kind == "inline_dir" else surface
+        found = [
+            (
+                posixpath.normpath(posixpath.join(old_dir, value)),
+                posixpath.normpath(posixpath.join(new_dir, new_value)),
+            )
+            for old_dir, new_dir in zip(old_dirs, new_dirs, strict=True)
+            if posixpath.normpath(posixpath.join(old_dir, value)) in targets
+        ]
+        if found and all(
+            plan.translate(resolved) == moved for resolved, moved in found
+        ):
+            continue
+        line = _line_of(text, old_item.literal.start)
         problems.append(
             f"{path}:{line}: the path string {value!r} names "
             + (
                 "no file the press keeps"
-                if resolved not in surface
+                if not found
                 else "a file whose rename the rewritten string would not follow"
             )
             + ", so the press cannot prove its spelling. Edit the string by hand "

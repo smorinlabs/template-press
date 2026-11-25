@@ -2219,3 +2219,38 @@ def test_rust_strings_read_hex_and_unicode_char_escapes() -> None:
     text = "eat!('\\x41'\"'\", '\\u{4_1}'\"'\"); let s = \"acme\";\n"
     contents = [text[s.content_start : s.content_end] for s in rust_strings(text)]
     assert contents == ["'", "'", "acme"]
+
+
+def test_split_path_attr_inside_inline_module_resolves_from_inline_dir(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    it_rs = 'mod outer {\n    #[path = "acme.rs"]\n    pub mod details;\n}\n'
+
+    healthy_root = tmp_path / "healthy"
+    healthy_root.mkdir()
+    healthy = _round_target(
+        healthy_root,
+        _lib_crate(
+            **{
+                "tests/it.rs": it_rs,
+                "tests/outer/acme.rs": "pub fn ok() -> u8 { 1 }\n",
+            }
+        ),
+    )
+    assert _press(healthy, _zeta(healthy_root)) == 0
+    assert (healthy / "tests/outer/zeta-gadget.rs").is_file()
+    assert '#[path = "zeta-gadget.rs"]' in (healthy / "tests/it.rs").read_text()
+
+    refused_root = tmp_path / "refused"
+    refused_root.mkdir()
+    err = _refusal(
+        refused_root,
+        _lib_crate(
+            **{
+                "tests/it.rs": it_rs,
+                "tests/acme.rs": "pub fn stray() -> u8 { 1 }\n",
+            }
+        ),
+        capsys,
+    )
+    assert "tests/it.rs:2:" in err

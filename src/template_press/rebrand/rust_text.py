@@ -56,8 +56,10 @@ _OPERAND_END = re.compile(r"\s*(?:[),;\]}{]|&&|\|\|)")
 _OPERAND_START = re.compile(
     r"(?:(?:^|[(,{;\[])|(?<![=!<>])=|&&|\|\||!|\b(?:if|while|return|match))\s*$"
 )
+_INCLUDE_BEFORE = re.compile(r"\b(?:include_str|include_bytes|include)\s*!\s*\(\s*$")
+_OUTER_PATH_ATTR_BEFORE = re.compile(r"#(?!\!)\s*\[\s*path\s*=\s*$")
 _PATH_BEFORE = re.compile(
-    r"(?:\b(?:include_str|include_bytes|include)\s*!\s*\(\s*|#!?\[\s*path\s*=\s*)$"
+    r"(?:\b(?:include_str|include_bytes|include)\s*!\s*\(\s*|#!?\s*\[\s*path\s*=\s*)$"
 )
 # ``path = `` as a direct argument of ``cfg_attr(...)``: the platform-module
 # form of ``#[path]``. A ``path`` nested deeper is another attribute's value.
@@ -191,14 +193,21 @@ def quoting_renames(text: str) -> tuple[int, ...]:
     )
 
 
-_MODULE_DECLARATION = re.compile(
-    r"(?<![A-Za-z0-9_])mod\s+(?:r#)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*;"
-)
+_MODULE_DECLARATION = re.compile(r"(?<!\w)(?<!r#)mod\s+(?:r#)?(?P<name>[^\W\d]\w*)\s*;")
 _PATH_ATTRIBUTE = re.compile(r"#\s*\[\s*path\s*=")
-_INLINE_MODULE = re.compile(
-    r"(?<![A-Za-z0-9_])mod\s+(?:r#)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\{"
-)
+_INLINE_MODULE = re.compile(r"(?<!\w)(?<!r#)mod\s+(?:r#)?(?P<name>[^\W\d]\w*)\s*\{")
 _PATH_VALUE = re.compile(r"\bpath\s*=\s*(?=\"\")")
+
+PathKind = Literal["include", "module_path", "inline_dir"]
+
+
+@dataclass(frozen=True)
+class InlineModule:
+    """One enclosing ``mod name { ... }`` block and any plain ``#[path]`` on it."""
+
+    name: str
+    path: str | None = None
+    conditional_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -216,16 +225,26 @@ class ModuleDeclaration:
     name: str
     attributed: bool
     conditional: bool
-    inline: tuple[str, ...]
+    inline: tuple[InlineModule, ...]
 
 
-def module_declarations(text: str) -> tuple[ModuleDeclaration, ...]:
-    """Each ``mod name;`` in code, with its enclosing inline modules.
+@dataclass(frozen=True)
+class RustPathLiteral:
+    """One path-role string literal with its Rust resolution context."""
 
-    Comments, doc comments, string literals, and character literals are
-    skipped, so a brace inside one opens no block.
+    literal: RustString
+    kind: PathKind
+    inline: tuple[InlineModule, ...]
+
+
+def _code_view(text: str) -> tuple[str, dict[int, RustString]]:
+    """``text`` with comments and chars blanked and strings reduced to ``""``.
+
+    Preserves 1-to-1 character offsets with ``text`` and returns each string
+    literal in real code keyed by its starting offset.
     """
     pieces: list[str] = []
+    literals: dict[int, RustString] = {}
     index = 0
     while index < len(text):
         if text.startswith(("//", "/*"), index):
@@ -235,47 +254,148 @@ def module_declarations(text: str) -> tuple[ModuleDeclaration, ...]:
             end, literal = _token(text, index)
             piece = text[index:end]
             if literal:
+                literals[index] = literal
                 # Keep the quotes, so that a ``#[path = "..."]`` stays visible.
-                pieces.append('""')
-                pieces.append(_blank(piece)[2:])
+                if len(piece) >= 2:
+                    pieces.append('""')
+                    pieces.append(_blank(piece)[2:])
+                else:
+                    pieces.append(_blank(piece))
             elif piece.startswith("'") and len(piece) > 1:
                 pieces.append(_blank(piece))  # a character literal
             else:
                 pieces.append(piece)
         index = end
-    code = "".join(pieces)
-    openers = {
-        match.end() - 1: match["name"] for match in _INLINE_MODULE.finditer(code)
-    }
-    events = sorted(
-        [(match.start(), match) for match in _MODULE_DECLARATION.finditer(code)]
-        + [(match.start(), None) for match in re.finditer(r"[{}]", code)],
-        key=lambda event: event[0],
+    return "".join(pieces), literals
+
+
+def _mod_path_attributes(
+    text: str,
+    code: str,
+    item_start: int,
+    mod_start: int,
+    literals: dict[int, RustString],
+) -> tuple[str | None, tuple[str, ...], tuple[int, ...]]:
+    """Plain-string ``#[path]`` and ``#[cfg_attr(..., path)]`` on one ``mod``."""
+    attributes = code[item_start:mod_start]
+    unconditional: str | None = None
+    conditional: list[str] = []
+    offsets: list[int] = []
+    for match in _PATH_VALUE.finditer(attributes):
+        lit_offset = item_start + match.end()
+        literal = literals.get(lit_offset)
+        if literal is None or literal.open:
+            continue
+        value = text[literal.content_start : literal.content_end]
+        if _OUTER_PATH_ATTR_BEFORE.search(attributes, 0, match.end()):
+            unconditional = value
+            offsets.append(lit_offset)
+        elif _cfg_attr_path(attributes, match.end()):
+            conditional.append(value)
+            offsets.append(lit_offset)
+    return unconditional, tuple(conditional), tuple(offsets)
+
+
+def _scan_modules(
+    text: str,
+) -> tuple[tuple[ModuleDeclaration, ...], tuple[RustPathLiteral, ...]]:
+    code, literals = _code_view(text)
+    inline_openers = {m.end() - 1: m for m in _INLINE_MODULE.finditer(code)}
+    all_path_strings = [
+        lit for lit in rust_strings(text) if string_role(text, lit, "\0") == "path"
+    ]
+    code_path_offsets = {lit.start for lit in all_path_strings if not lit.doc}
+
+    events: list[tuple[int, int, str, re.Match[str] | None]] = sorted(
+        [
+            *((m.start(), 0, "mod", m) for m in _MODULE_DECLARATION.finditer(code)),
+            *((offset, 0, "path_lit", None) for offset in code_path_offsets),
+            *((b.start(), 1, "brace", None) for b in re.finditer(r"[{}]", code)),
+        ],
+        key=lambda event: (event[0], event[1]),
     )
-    found: list[ModuleDeclaration] = []
-    stack: list[str | None] = []
-    for position, match in events:
-        if match is None:
-            if code[position] == "{":
-                stack.append(openers.get(position))
+
+    stack: list[InlineModule | None] = []
+    found_mods: list[ModuleDeclaration] = []
+    enclosing_at: dict[int, tuple[InlineModule, ...]] = {}
+    inline_dir_offsets: set[int] = set()
+
+    for pos, _, kind, payload in events:
+        if kind == "path_lit":
+            enclosing_at[pos] = tuple(m for m in stack if m is not None)
+        elif kind == "brace":
+            if code[pos] == "{":
+                opener = inline_openers.get(pos)
+                if opener is None:
+                    stack.append(None)
+                else:
+                    item = max(code.rfind(e, 0, opener.start()) for e in ";{}")
+                    path_val, cond_vals, attr_offsets = _mod_path_attributes(
+                        text, code, item + 1, opener.start(), literals
+                    )
+                    inline_dir_offsets.update(attr_offsets)
+                    stack.append(InlineModule(opener["name"], path_val, cond_vals))
             elif stack:
                 stack.pop()
-            continue
-        item = max(code.rfind(edge, 0, match.start()) for edge in ";{}")
-        attributes = code[item + 1 : match.start()]
-        found.append(
-            ModuleDeclaration(
-                match.start(),
-                match["name"],
-                bool(_PATH_ATTRIBUTE.search(attributes)),
-                any(
-                    _cfg_attr_path(attributes, value.end())
-                    for value in _PATH_VALUE.finditer(attributes)
-                ),
-                tuple(name for name in stack if name is not None),
+        elif payload is not None:
+            item = max(code.rfind(e, 0, payload.start()) for e in ";{}")
+            attrs = code[item + 1 : payload.start()]
+            _, cond_vals, _ = _mod_path_attributes(
+                text, code, item + 1, payload.start(), literals
             )
-        )
-    return tuple(found)
+            found_mods.append(
+                ModuleDeclaration(
+                    payload.start(),
+                    payload["name"],
+                    bool(_PATH_ATTRIBUTE.search(attrs)),
+                    bool(cond_vals),
+                    tuple(x for x in stack if x is not None),
+                )
+            )
+
+    found_paths: list[RustPathLiteral] = []
+    for lit in all_path_strings:
+        if lit.doc:
+            line_start = lit.doc[lit.line][0]
+            lit_kind: PathKind = (
+                "include"
+                if _INCLUDE_BEFORE.search(text, line_start, lit.start)
+                else "module_path"
+            )
+            found_paths.append(RustPathLiteral(lit, lit_kind, ()))
+        elif _INCLUDE_BEFORE.search(code, 0, lit.start):
+            found_paths.append(RustPathLiteral(lit, "include", ()))
+        elif lit.start in inline_dir_offsets:
+            found_paths.append(
+                RustPathLiteral(lit, "inline_dir", enclosing_at[lit.start])
+            )
+        else:
+            found_paths.append(
+                RustPathLiteral(lit, "module_path", enclosing_at[lit.start])
+            )
+
+    return tuple(found_mods), tuple(found_paths)
+
+
+def rust_source_structure(
+    text: str,
+) -> tuple[tuple[ModuleDeclaration, ...], tuple[RustPathLiteral, ...]]:
+    """Each ``mod name;`` and path-role string literal in ``text``."""
+    return _scan_modules(text)
+
+
+def module_declarations(text: str) -> tuple[ModuleDeclaration, ...]:
+    """Each ``mod name;`` in code, with its enclosing inline modules.
+
+    Comments, doc comments, string literals, and character literals are
+    skipped, so a brace inside one opens no block.
+    """
+    return _scan_modules(text)[0]
+
+
+def rust_path_literals(text: str) -> tuple[RustPathLiteral, ...]:
+    """Each path-role string literal in ``text`` with its Rust resolution context."""
+    return _scan_modules(text)[1]
 
 
 def _blank(piece: str) -> str:
