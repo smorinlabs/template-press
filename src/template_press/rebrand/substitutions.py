@@ -2158,8 +2158,12 @@ def _compiled_rust_files(
     for manifest, parsed in crates:
         directory = posixpath.dirname(manifest)
         package = parsed.get("package")
+        if not isinstance(package, dict) and "project" not in parsed:
+            continue  # a virtual manifest has no targets of its own
         lib, bins = parsed.get("lib"), parsed.get("bin")
-        roots = ["build.rs"]
+        build = package.get("build") if isinstance(package, dict) else None
+        # ``build = false`` turns the script off; a string is declared below.
+        roots = [] if build is False or isinstance(build, str) else ["build.rs"]
         if not (isinstance(lib, dict) and isinstance(lib.get("path"), str)):
             roots.append("src/lib.rs")  # a [lib] path replaces Cargo's default
         if not (isinstance(package, dict) and package.get("autobins") is False) or (

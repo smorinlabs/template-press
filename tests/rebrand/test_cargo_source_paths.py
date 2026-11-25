@@ -377,6 +377,19 @@ SOURCE_PATH_CASES = {
         },
         "src/café/inner.rs:1:",
     ),
+    # Cycle 3 F2 control: a virtual workspace's member crate is still walked.
+    "virtual_workspace_member_include_owner": (
+        {
+            "Cargo.toml": (
+                '[workspace]\nmembers = ["crates/acme-core"]\nresolver = "2"\n'
+            ),
+            "crates/acme-core/Cargo.toml": _package("acme-core"),
+            "crates/acme-core/src/lib.rs": LIB
+            + 'pub const T: &str = include_str!("../../../data/acmelabs.txt");\n',
+            "data/acmelabs.txt": "x\n",
+        },
+        "crates/acme-core/src/lib.rs:4:",
+    ),
 }
 
 
@@ -843,7 +856,28 @@ def test_target_file_cargo_does_not_discover_presses_and_builds(
 # --- Cycle 2 F3: a default crate root that Cargo does not select -----------------
 
 MAIN_INCLUDE = f"fn main() {{\n    let _ = {FIXTURE_INCLUDE};\n}}\n"
+BUILD_INCLUDE = 'fn main() {{\n    let _ = include_str!("{}data/acmelabs.txt");\n}}\n'
 UNUSED_ROOTS = {
+    # Cycle 3 F1: ``build = false`` turns the build script off.
+    "build_false_unused_build_rs": {
+        "Cargo.toml": _package("acme-core") + "build = false\n",
+        "src/lib.rs": LIB,
+        "build.rs": BUILD_INCLUDE.format(""),
+    },
+    # Cycle 3 F1: a custom ``build`` path replaces the root build.rs.
+    "custom_build_unused_build_rs": {
+        "Cargo.toml": _package("acme-core") + 'build = "scripts/build.rs"\n',
+        "src/lib.rs": LIB,
+        "scripts/build.rs": "fn main() {}\n",
+        "build.rs": BUILD_INCLUDE.format(""),
+    },
+    # Cycle 3 F2: a virtual manifest has no targets, so its src/lib.rs is a fixture.
+    "virtual_workspace_root_fixture": {
+        "Cargo.toml": '[workspace]\nmembers = ["crates/acme-core"]\nresolver = "2"\n',
+        "crates/acme-core/Cargo.toml": _package("acme-core"),
+        "crates/acme-core/src/lib.rs": LIB,
+        "src/lib.rs": f"pub const D: &str = {FIXTURE_INCLUDE};\n",
+    },
     # A [lib] path replaces src/lib.rs, so Cargo never compiles it.
     "lib_path_unused_srclib": {
         "Cargo.toml": _package("acme-core") + '\n[lib]\npath = "actual.rs"\n',
@@ -872,6 +906,12 @@ USED_ROOTS = {
         _package("acme-core") + '\n[lib]\ncrate-type = ["rlib"]\n',
         "src/lib.rs",
     ),
+    # Cycle 3 F1 controls: Cargo runs these build scripts.
+    "build_true": (_package("acme-core") + "build = true\n", "build.rs"),
+    "custom_build_script": (
+        _package("acme-core") + 'build = "scripts/build.rs"\n',
+        "scripts/build.rs",
+    ),
 }
 
 
@@ -880,6 +920,10 @@ def _used_root_files(case: str) -> dict[str, str]:
     files = {"Cargo.toml": manifest, "src/lib.rs": LIB}
     if root == "src/main.rs":
         files["src/main.rs"] = MAIN_INCLUDE
+    elif root == "build.rs":
+        files[root] = BUILD_INCLUDE.format("")
+    elif root == "scripts/build.rs":
+        files[root] = BUILD_INCLUDE.format("../")
     else:
         files["src/lib.rs"] = f"pub const D: &str = {FIXTURE_INCLUDE};\n"
     return {**files, "data/acmelabs.txt": "x\n"}
@@ -909,7 +953,7 @@ def test_default_root_cargo_selects_is_still_judged(
 
     out = capsys.readouterr()
     root = USED_ROOTS[case][1]
-    line = 2 if root == "src/main.rs" else 1
+    line = 1 if root == "src/lib.rs" else 2
     assert f"cargo paths: {root}:{line}: the Rust path" in out.out + out.err
     assert _status(target) == ""
 
