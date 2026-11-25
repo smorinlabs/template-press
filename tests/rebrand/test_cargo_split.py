@@ -2017,6 +2017,85 @@ def test_doc_include_with_a_spaced_bang_is_still_read_as_rustdoc(
     assert "README.md:4:" in err
 
 
+DELIMITERS = {"parens": ("(", ")"), "brackets": ("[", "]"), "braces": ("{", "}")}
+BARE_NAME_README = "# Demo\n\n```rust\nlet acme = 1;\nassert_eq!(acme, 1);\n```\n"
+
+
+def _delimited_readme_crate(delimiters: str) -> dict[str, str]:
+    """Cycle 2 F1: the fence has no ``::`` or ``use``, so only the doc-include
+    check can see that rustdoc compiles it."""
+    open_, close = DELIMITERS[delimiters]
+    return {
+        "Cargo.toml": _package("acme"),
+        "src/lib.rs": f'#![doc = include_str!{open_}"../README.md"{close}]\n'
+        + PLAIN_LIB,
+        "src/main.rs": 'fn main() {\n    println!("{} acmectl", acme::hi());\n}\n',
+        "README.md": BARE_NAME_README,
+    }
+
+
+@pytest.mark.parametrize("delimiters", sorted(DELIMITERS))
+def test_doc_include_with_any_delimiter_is_read_as_rustdoc(
+    delimiters: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = _delimited_readme_crate(delimiters)
+    err = _refusal(tmp_path, files, capsys, split=PKG_README)
+    assert "README.md:4: 'zeta-gadget' would sit in a code block" in err
+    assert "src/lib.rs:1" in err
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("delimiters", ["brackets", "braces"])
+def test_doc_include_delimiter_refusal_matches_real_cargo(
+    delimiters: str, tmp_path: Path
+) -> None:
+    """Real Cargo: the old receipt wrote ``let zeta-gadget = 1;`` into the
+    doctest, and ``cargo test`` failed (``0/0/yes/101``)."""
+    _require_cargo()
+    target = _round_target(
+        tmp_path, _delimited_readme_crate(delimiters), split=PKG_README
+    )
+    _assert_cargo(target, "test", "--offline")
+
+    assert _press(target, _zeta(tmp_path)) == 2
+
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
+    _assert_cargo(target, "test", "--offline")
+
+
+def _bracketed_include_crate() -> dict[str, str]:
+    files = _include_crate()
+    files["src/lib.rs"] = files["src/lib.rs"].replace(
+        'include_str!("../assets/acme.txt")', 'include_str!["../assets/acme.txt"]'
+    )
+    return files
+
+
+def test_split_bracketed_include_of_a_renamed_file_presses(tmp_path: Path) -> None:
+    """Cycle 2 F1: a bracketed include path is a path, so the press can prove it."""
+    target = _round_target(tmp_path, _bracketed_include_crate())
+
+    assert _press(target, _zeta(tmp_path)) == 0
+
+    assert (target / "assets/zeta-gadget.txt").is_file()
+    lib = (target / "src/lib.rs").read_text()
+    assert 'include_str!["../assets/zeta-gadget.txt"]' in lib
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_split_bracketed_include_of_a_renamed_file_builds(tmp_path: Path) -> None:
+    _require_cargo()
+    target = _round_target(tmp_path, _bracketed_include_crate(), lock=True)
+    _assert_cargo(target, "test", "--offline")
+
+    _press_and_prove(target, _zeta(tmp_path), ZETA)
+
+
 # F6: CommonMark closes a fence only with a line indented under four spaces.
 FOUR_SPACE_README = (
     "# acme-repo\n\n```rust\n/*\n    ```\n*/\n"

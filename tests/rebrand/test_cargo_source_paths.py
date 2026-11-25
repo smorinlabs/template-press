@@ -676,6 +676,86 @@ def test_rust_source_path_refusal_matches_real_cargo(case: str, tmp_path: Path) 
     assert _cargo(target, "test", "--offline").returncode == 0
 
 
+# --- Cycle 2 F1: include macros written with ``[...]`` or ``{...}`` --------------
+
+BRACKETED_INCLUDES = {
+    "include_str_brackets": (
+        {
+            "src/lib.rs": LIB
+            + 'pub const T: &str = include_str!["../data/acmelabs.txt"];\n',
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/lib.rs:4:",
+    ),
+    "include_str_braces": (
+        {
+            "src/lib.rs": LIB
+            + 'pub const T: &str = include_str!{"../data/acmelabs.txt"};\n',
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/lib.rs:4:",
+    ),
+    "include_bytes_brackets": (
+        {
+            "src/lib.rs": LIB
+            + 'pub const B: &[u8] = include_bytes!["../data/acmelabs.txt"];\n',
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/lib.rs:4:",
+    ),
+    # The compiled-file walk must follow a bracketed include! into its file.
+    "include_rs_brackets": (
+        {
+            "src/lib.rs": LIB + 'include!["acmelabs_inc.rs"];\n',
+            "src/acmelabs_inc.rs": (
+                'pub const E: &str = include_str!("../data/acmelabs.txt");\n'
+            ),
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/acmelabs_inc.rs:1:",
+    ),
+}
+
+
+@pytest.mark.parametrize("table", [True, False], ids=["table", "tableless"])
+@pytest.mark.parametrize("case", sorted(BRACKETED_INCLUDES))
+def test_bracketed_and_braced_include_paths_are_checked(
+    case: str, table: bool, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Rust accepts every macro delimiter, so each include form names a path."""
+    files, where = BRACKETED_INCLUDES[case]
+    target = _source_path_target(tmp_path, files, table=table)
+
+    assert _press(target, _source_path_answers(tmp_path, table=table)) == 2
+
+    out = capsys.readouterr()
+    assert f"cargo paths: {where} the Rust path '../data/acmelabs.txt'" in (
+        out.out + out.err
+    )
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("case", sorted(BRACKETED_INCLUDES))
+def test_bracketed_include_refusal_matches_real_cargo(
+    case: str, tmp_path: Path
+) -> None:
+    """Real Cargo: the old receipt left the file behind (``0/0/yes/101``)."""
+    _require_cargo()
+    files, _ = BRACKETED_INCLUDES[case]
+    target = _source_path_target(tmp_path, files, table=False)
+    _assert_cargo(target, "test", "--offline", "--all-targets")
+
+    assert _press(target, _source_path_answers(tmp_path, table=False)) == 2
+
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
+    _assert_cargo(target, "test", "--offline", "--all-targets")
+
+
 # --- F7: an ``auto*`` flag that turns off target discovery ----------------------
 
 FIXTURE_INCLUDE = 'include_str!("../data/acmelabs.txt")'
