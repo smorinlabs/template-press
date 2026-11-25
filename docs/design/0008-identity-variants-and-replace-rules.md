@@ -160,8 +160,11 @@ retained decision record does not require those files to remain present.
    the default location.
 
    Deliberate refusals before any write: a destination that extends a source
-   name or contains another field's source spelling (exit 2), a crate whose
-   Rust identifier would be left behind (exit 2), and a versioned string such
+   name or contains another field's source spelling (exit 2), a destination
+   crate name that is a Rust keyword such as `type` (exit 2), a crate whose
+   Rust identifier would be left behind (exit 2, including a hyphenated crate
+   that a role spells only with underscores, as `acme_widget` for
+   `acme-widget`), and a versioned string such
    as `acme-core-0.1.0` (sibling preflight, exit 1, unless the exact token is in
    `keep_names`). The verifier derives its Cargo hunts directly from `Identity`.
 
@@ -174,7 +177,10 @@ retained decision record does not require those files to remain present.
    `.rs` file Cargo compiles: a crate root or target file that Cargo infers or
    a manifest declares, or a file one of those reaches through `mod` or
    `#[path]`, but not through Rust's path rule for a module nested in an inline
-   `mod name { ... }` block. The usual cause is a content-only row,
+   `mod name { ... }` block. Under `autotests = false` or another `auto*` flag
+   set to false, only the targets the manifest names in that directory are
+   read. Dependency paths are read from every dependency table, including the
+   pre-2024 `[dev_dependencies]` and `[build_dependencies]` spellings. The usual cause is a content-only row,
    such as `owner = "acmelabs"`, that rewrites `pub mod acmelabs;` while no row
    renames `src/acmelabs.rs`. Limits: these are not checked, so such a rewrite
    there can still get a receipt for a build that then fails:
@@ -190,7 +196,9 @@ retained decision record does not require those files to remain present.
      its file can still get a receipt;
    - a renamed inline module around an unchanged child, such as
      `mod acmelabs { mod x; }` becoming `mod zetalabs { mod x; }`, so the crate
-     can fail to build after a receipt.
+     can fail to build after a receipt;
+   - with `autobins = false`, a file already named for the destination binary:
+     renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt.
 
    A `#[path]` attribute on an inline module whose child module is renamed,
    such as `#[path = "p"] mod outer { mod acme_core; }`, is refused with exit 2,

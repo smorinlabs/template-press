@@ -155,17 +155,22 @@ command = ["cargo", "update", "--workspace", "--offline"]
 The command environment passes `HOME` but not `CARGO_HOME`, so a custom Cargo
 home needs dependencies vendored or cached in the default location. The press
 deliberately refuses a destination that extends a source name or contains
-another field's source spelling, a crate whose Rust identifier would be left
-behind, and a versioned string such as `acme-core-0.1.0`. It also refuses,
+another field's source spelling, a destination crate name that is a Rust
+keyword such as `type`, a crate whose Rust identifier would be left behind
+(including a hyphenated crate that a role spells only with underscores, as
+`acme_widget` for `acme-widget`), and a versioned string such as
+`acme-core-0.1.0`. It also refuses,
 with exit 2 before any write, a rewrite that would separate a path a manifest
-declares or Cargo infers (`members`, `exclude`, dependency `path`, target `path`
-or name, `build`, `package.workspace`) from the file or directory it names, or
+declares or Cargo infers (`members`, `exclude`, dependency `path` in any dependency
+table, including the pre-2024 `[dev_dependencies]` and `[build_dependencies]`
+spellings, target `path` or name, `build`, `package.workspace`) from the file or directory it names, or
 a path Rust source declares with a plain string (the file of `mod name;`,
 `#[path = "..."]` or `#[cfg_attr(<cond>, path = "...")]`, and `include_str!`,
 `include_bytes!`, or `include!` arguments) from its file, and
 a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. Rust
 source is read only in `.rs` files Cargo compiles: crate roots and target
-files, and the files they reach through `mod` or `#[path]`, but not through Rust's path rule for a module nested in an inline `mod name { ... }` block. Not checked: a
+files (under `autotests = false` or another `auto*` flag set to false, only the
+targets the manifest names in that directory), and the files they reach through `mod` or `#[path]`, but not through Rust's path rule for a module nested in an inline `mod name { ... }` block. Not checked: a
 path a macro builds, such as
 `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`; a `.rs` file
 excluded from rewriting; a `.rs` file no crate root reaches, such as
@@ -174,7 +179,9 @@ excluded from rewriting; a `.rs` file no crate root reaches, such as
 there can still get a receipt that fails to build: a `#[path]` module inside or
 on an inline `mod name { ... }` block, and a renamed inline module around an
 unchanged child; a `#[path]` on an inline module whose child module is renamed
-is refused with exit 2 even when the rename would be correct. See the
+is refused with exit 2 even when the rename would be correct. With
+`autobins = false`, a file already named for the destination binary is not
+detected: renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt. See the
 `press-target` skill for the full rules.
 
 A hyphen-free crate name pressed to a hyphenated one (`acme` to `zeta-gadget`)

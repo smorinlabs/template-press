@@ -581,6 +581,8 @@ These stop the press before any write:
 | Destination extends a source name | `acme-core` to `acme-core-next` | 2 |
 | Destination contains another field's source spelling | `zeta-acme` when `app_name = "acme"` | 2 |
 | A crate's Rust identifier would be left behind | crate `acme-widget`, no table, `repo_name` changes | 2 |
+| A hyphenated crate is declared only by its underscore form, so its package name would stay behind | role `widget = "acme_widget"` for package `acme-widget` | 2 |
+| A destination crate name is a Rust keyword | `acme-core` to `type` | 2 |
 | A hyphen-free source name takes a hyphenated destination, without `[[cargo_split]]` | `acme_core` to `zeta-core` | 2 |
 | A source or destination name equals a non-local dependency | crate pressed to `padkit` beside `padkit = "1"` | 2 |
 | A rewrite would separate a declared or name-inferred Cargo path from its file (`cargo paths:`) | `owner = "acme"` rewrites `[lib] path = "lib/acme-x.rs"`, but no row renames the file | 2 |
@@ -601,7 +603,11 @@ file Cargo compiles. Such a file is a crate root or target file that Cargo
 infers or a manifest declares (`src/lib.rs`, `src/main.rs`, `src/bin/`,
 `tests/`, `benches/`, `examples/`, a target `path`, `build.rs`), or a file one
 of those reaches through `mod` or `#[path]`, but not through Rust's path rule for
-a module nested in an inline `mod name { ... }` block. These are not checked:
+a module nested in an inline `mod name { ... }` block. Under `autotests = false`
+or another `auto*` flag set to false, Cargo builds only the targets the
+manifest names in that directory, so only those files are read. Dependency
+paths are read from every dependency table, including the pre-2024
+`[dev_dependencies]` and `[build_dependencies]` spellings. These are not checked:
 
 - a path built by a macro, such as
   `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`;
@@ -615,7 +621,9 @@ a module nested in an inline `mod name { ... }` block. These are not checked:
   so a rename that splits it from its file can still get a receipt;
 - a renamed inline module around an unchanged child, such as
   `mod acmelabs { mod x; }` becoming `mod zetalabs { mod x; }`, so the crate
-  can fail to build after a receipt.
+  can fail to build after a receipt;
+- with `autobins = false`, a file already named for the destination binary:
+  renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt.
 
 A `#[path]` attribute on an inline module whose child module is renamed, such
 as `#[path = "p"] mod outer { mod acme_core; }`, is refused with exit 2, even
