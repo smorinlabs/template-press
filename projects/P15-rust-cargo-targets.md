@@ -57,3 +57,7 @@ This branch rebases on each before its dependent task starts.
 - [ ] [P15-T15] Check Rust-declared paths whose file a path-only rule moves while the argument text stays the same (bot thread 4689117731)
 - [ ] [P15-T16] Apply the rustdoc rules only to include_str! files that are doc text, without missing concat!/cfg_attr doc forms (final review N6, bot thread 4689117753)
 - [ ] [P15-T17] Resolve a #[path] that uses .. inside a renamed inline module against the real directory, not its normalized form (review 3 I2)
+- [ ] [P15-T18] Collect Rust path-literal candidates in one pass over the code view instead of a per-literal string_role prefix scan (quadratic: 8,000 literals take about 14 s) (bot thread 4691551858)
+- [ ] [P15-T19] Find a module's item boundary outside attribute token groups, so a brace inside another attribute (#[doc = concat!{...}]) does not drop its #[path] (bot thread 4691551866; same false receipt on main)
+- [ ] [P15-T21] Preflight CARGO_BIN_EXE_ tokens for declared [[bin]] targets and the conventional src/main.rs binary, so an excluded token is refused before any write instead of by the post-write doctor (bot thread 4691543021; with verify_ignore, same false receipt on main)
+- [ ] [P15-T22] Refuse a crate-name token that is the prefix of a string, byte, or C-string literal (r#"", b"", br"", b'', c"") in the generic Rust rewrite, not only under [[cargo_split]] (bot thread 4691543031; same false receipt on main for a table-less target)
