@@ -235,6 +235,23 @@ SOURCE_PATH_CASES = {
         },
         "src/lib.rs:4:",
     ),
+    # N4 guards: a false ``cfg_attr`` condition leaves the name-based file.
+    "cfg_attr_fallback_file_owner": (
+        {
+            "src/lib.rs": LIB
+            + '#[cfg_attr(any(), path = "other.rs")]\npub mod acmelabs;\n',
+            "src/acmelabs.rs": "pub fn org() {}\n",
+        },
+        "src/lib.rs:5:",
+    ),
+    "cfg_attr_fallback_reached_owner": (
+        {
+            "src/lib.rs": LIB + '#[cfg_attr(any(), path = "other.rs")]\npub mod imp;\n',
+            "src/imp.rs": "pub mod acmelabs;\n",
+            "src/imp/acmelabs.rs": "pub fn org() {}\n",
+        },
+        "src/imp.rs:1:",
+    ),
     # N2 guards: files Cargo compiles are still checked.
     "test_dir_main_mod_owner": (
         {
@@ -379,6 +396,12 @@ FOLLOWING_PATHS = {
     "fixture_rs_owner": {
         "src/lib.rs": LIB,
         "tests/fixtures/sample.rs": "mod acmelabs;\n",
+    },
+    # N4: a renamed module whose only file is its cfg_attr path.
+    "cfg_attr_renamed_module": {
+        "src/lib.rs": LIB
+        + '#[cfg_attr(all(), path = "imp/acme_core.rs")]\npub mod acme_core;\n',
+        "src/imp/acme_core.rs": "pub fn f() {}\n",
     },
     # N4: a path attribute nested deeper than cfg_attr's own arguments is not
     # the module's path.

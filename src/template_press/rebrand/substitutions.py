@@ -2218,11 +2218,12 @@ def _rust_source_path_splits(
             for shape in _MODULE_SHAPES
             if posixpath.normpath(join(old_dir, shape.format(name))) in files
         ]
-        if found and all(
+        if (found or old_mod.conditional) and all(
             plan.translate(file)
             == posixpath.normpath(join(new_dir, shape.format(new_name)))
             for file, new_dir, shape in found
         ):
+            # A ``cfg_attr`` path with no name-based file leaves nothing to move.
             continue
         problems.append(
             f"{path}:{_line_of(text, old_mod.offset)}: `mod {name};` would become "

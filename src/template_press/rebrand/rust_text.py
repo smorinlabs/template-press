@@ -206,13 +206,16 @@ class ModuleDeclaration:
     """One ``mod name;`` in code.
 
     ``inline`` names the inline ``mod outer { ... }`` blocks around it, from
-    the outermost in. ``attributed`` says whether a ``#[path = ...]`` or
-    ``#[cfg_attr(..., path = ...)]`` attribute gives its file instead.
+    the outermost in. ``attributed`` says whether a ``#[path = ...]``
+    attribute gives its file instead. ``conditional`` says whether a
+    ``#[cfg_attr(..., path = ...)]`` attribute may; when its condition is
+    false, the name-based file is compiled.
     """
 
     offset: int
     name: str
     attributed: bool
+    conditional: bool
     inline: tuple[str, ...]
 
 
@@ -260,15 +263,15 @@ def module_declarations(text: str) -> tuple[ModuleDeclaration, ...]:
             continue
         item = max(code.rfind(edge, 0, match.start()) for edge in ";{}")
         attributes = code[item + 1 : match.start()]
-        attributed = bool(_PATH_ATTRIBUTE.search(attributes)) or any(
-            _cfg_attr_path(attributes, value.end())
-            for value in _PATH_VALUE.finditer(attributes)
-        )
         found.append(
             ModuleDeclaration(
                 match.start(),
                 match["name"],
-                attributed,
+                bool(_PATH_ATTRIBUTE.search(attributes)),
+                any(
+                    _cfg_attr_path(attributes, value.end())
+                    for value in _PATH_VALUE.finditer(attributes)
+                ),
                 tuple(name for name in stack if name is not None),
             )
         )
