@@ -470,6 +470,17 @@ def _claimed_section_paths(data: Table, section: str) -> frozenset[str]:
     )
 
 
+def declared_target_names(data: Table) -> frozenset[tuple[str, str]]:
+    """``(section, name)`` of every explicit target table, pathed or pathless."""
+    found: set[tuple[str, str]] = set()
+    for section in _TARGET_SECTIONS:
+        entries = data.get(section)
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(name := _table(entry).get("name"), str):
+                found.add((section, name))
+    return frozenset(found)
+
+
 def auto_target_sections(
     data: Table,
 ) -> list[tuple[str, str, str, frozenset[str], str | None]]:

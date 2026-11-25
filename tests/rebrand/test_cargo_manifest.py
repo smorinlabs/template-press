@@ -9,6 +9,7 @@ import pytest
 
 from template_press.rebrand.cargo_manifest import (
     auto_target_sections,
+    declared_target_names,
     inferred_target_candidates,
     read_cargo_facts,
 )
@@ -413,3 +414,21 @@ def test_auto_target_sections_honors_flags_and_claimed_paths() -> None:
     ]
     virtual = tomllib.loads('[workspace]\nmembers = ["crates/*"]\n')
     assert auto_target_sections(virtual) == []
+
+
+def test_declared_target_names_collects_pathed_and_pathless() -> None:
+    manifest = tomllib.loads(
+        _pkg("acme-core")
+        + '[[bin]]\nname = "acme-cli"\n'
+        + '[[test]]\nname = "acme-it"\npath = "tests/custom.rs"\n'
+        + '[[example]]\nname = "acme-ex"\npath = "examples/custom.rs"\n'
+        + '[[bench]]\nname = "acme-b"\n'
+    )
+    assert declared_target_names(manifest) == frozenset(
+        {
+            ("bin", "acme-cli"),
+            ("test", "acme-it"),
+            ("example", "acme-ex"),
+            ("bench", "acme-b"),
+        }
+    )

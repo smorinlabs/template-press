@@ -959,6 +959,30 @@ def test_inferred_target_collision_in_renamed_workspace_member_is_refused(
             {"core": "zeta-core"},
             id="claimed_other_shape_under_auto_on",
         ),
+        pytest.param(
+            {
+                "Cargo.toml": _package("acme-core")
+                + '\n[[test]]\nname = "acme-core"\npath = "tests/custom.rs"\n',
+                "src/lib.rs": LIB,
+                "tests/custom.rs": TEST_RS,
+                "tests/acme-core.rs": TEST_RS,
+                "tests/zeta-core/main.rs": TEST_RS,
+            },
+            CORE_NAMES,
+            {"core": "zeta-core"},
+            id="explicit_pathed_overrides_auto_name",
+        ),
+        pytest.param(
+            {
+                "Cargo.toml": _package("acme-core"),
+                "src/lib.rs": LIB,
+                "tests/.acme-core.rs": TEST_RS,
+                "tests/.zeta-core/main.rs": TEST_RS,
+            },
+            CORE_NAMES,
+            {"core": "zeta-core"},
+            id="hidden_dot_entries_ignored_by_auto_discovery",
+        ),
     ],
 )
 def test_inferred_target_collision_respects_remove_auto_off_and_claimed(

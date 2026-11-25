@@ -20,6 +20,7 @@ from template_press.rebrand.cargo_manifest import (
     auto_target_sections,
     cargo_manifest_files,
     declared_cargo_paths,
+    declared_target_names,
     inferred_target_candidates,
     inferred_target_paths,
     named_target_files,
@@ -1936,12 +1937,10 @@ def _inferred_target_collisions(
     # Cargo resolves these even when auto* = false.
     old_targets = inferred_target_candidates(before)
     new_targets = inferred_target_candidates(after)
-    explicit_unpathed: set[tuple[str, str]] = set()
 
     for (_sec, old_name, _old_cands), (section, new_name, new_cands) in zip(
         old_targets, new_targets, strict=True
     ):
-        explicit_unpathed.add((section, new_name))
         present: list[str] = []
         touched = old_name != new_name
         for crate_rel in new_cands:
@@ -1974,6 +1973,9 @@ def _inferred_target_collisions(
     # --- Pass 2: Auto-discovered targets when auto* is not False ---
     # Catches tests/, examples/, benches/, and table-less src/bin/ collisions
     # where Cargo rejects duplicate auto-discovered target names.
+    # Cargo suppresses auto-discovered targets whose name is declared by any
+    # explicit target table (pathed or pathless) and ignores leading-dot names.
+    explicit_targets = declared_target_names(after)
     for section, base, auto_flag, claimed, pkg_name in auto_target_sections(after):
         prefix = f"{new_dir}/{base}/" if new_dir else f"{base}/"
         by_stem: dict[str, dict[str, bool]] = {}
@@ -1988,6 +1990,8 @@ def _inferred_target_collisions(
             elif len(parts) == 2 and parts[1] == "main.rs":
                 stem = parts[0]
             else:
+                continue
+            if not stem or stem.startswith("."):
                 continue
             crate_rel = f"{base}/{rest}"
             if crate_rel in claimed:
@@ -2012,8 +2016,8 @@ def _inferred_target_collisions(
                 by_stem.setdefault(pkg_name, {})["src/main.rs"] = main_moved
 
         for stem, entries in sorted(by_stem.items()):
-            if (section, stem) in explicit_unpathed:
-                continue  # already checked in Pass 1
+            if (section, stem) in explicit_targets:
+                continue  # pathless checked in Pass 1; pathed overrides auto name
             if not any(entries.values()):
                 continue  # untouched pre-existing files; do not blame the press
             # Also probe opposite shape(s) on disk for Git-ignored orphans.
