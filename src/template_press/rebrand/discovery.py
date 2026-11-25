@@ -432,8 +432,12 @@ def cargo_problems(
     moved = None if dest is None else identity_row_rewriter(source, dest, target, rules)
     if moved is not None:
         keywords = sorted(
-            ({cargo_ident(moved(name)) for name in facts.names} & _RUST_KEYWORDS)
-            - {cargo_ident(name) for name in facts.names}
+            {
+                cargo_ident(moved(name))
+                for name in facts.names
+                if cargo_ident(moved(name)) != cargo_ident(name)
+            }
+            & _RUST_KEYWORDS
         )
         if keywords:
             return [
