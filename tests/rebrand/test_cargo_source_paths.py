@@ -490,6 +490,69 @@ def test_rust_source_path_refusal_matches_real_cargo(case: str, tmp_path: Path) 
     assert _cargo(target, "test", "--offline").returncode == 0
 
 
+# --- F2: the legacy underscore dependency tables ----------------------------------
+
+HELPER_MANIFEST = '[package]\nname = "helper"\nversion = "0.1.0"\nedition = "2021"\n'
+
+
+def _legacy_dependency_files(section: str) -> dict[str, str]:
+    files = {
+        "Cargo.toml": _package("acme-core")
+        + f'\n[{section}]\nhelper = {{ path = "acmelabs-helper" }}\n',
+        "src/lib.rs": "pub fn hi() -> u8 { 1 }\n",
+        "acmelabs-helper/Cargo.toml": HELPER_MANIFEST,
+        "acmelabs-helper/src/lib.rs": "pub fn one() -> u8 { 1 }\n",
+    }
+    if section.startswith("build"):
+        files["build.rs"] = "fn main() { let _ = helper::one(); }\n"
+    else:
+        files["tests/t.rs"] = "#[test]\nfn t() { assert_eq!(helper::one(), 1); }\n"
+    return files
+
+
+LEGACY_SECTIONS = ["dev_dependencies", "build_dependencies", "dev-dependencies"]
+
+
+@pytest.mark.parametrize("section", LEGACY_SECTIONS)
+def test_owner_row_in_a_legacy_dependency_table_path_is_refused(
+    section: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Cargo before edition 2024 reads ``[dev_dependencies]`` and
+    ``[build_dependencies]`` like their hyphenated spellings."""
+    target = _source_path_target(
+        tmp_path, _legacy_dependency_files(section), table=True
+    )
+
+    assert _press(target, _source_path_answers(tmp_path, table=True)) == 2
+
+    out = capsys.readouterr()
+    assert "dependency 'helper' path" in out.out + out.err
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("section", ["dev_dependencies", "build_dependencies"])
+def test_legacy_dependency_table_refusal_matches_real_cargo(
+    section: str, tmp_path: Path
+) -> None:
+    """Real Cargo: the old receipt left ``helper`` at a path that no longer
+    existed, and ``cargo test`` failed."""
+    _require_cargo()
+    target = _source_path_target(
+        tmp_path, _legacy_dependency_files(section), table=True
+    )
+    _assert_cargo(target, "test", "--offline")
+
+    assert _press(target, _source_path_answers(tmp_path, table=True)) == 2
+
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
+    _assert_cargo(target, "test", "--offline")
+
+
 # --- M4: a binary token in a file the press does not rewrite ---------------------
 
 

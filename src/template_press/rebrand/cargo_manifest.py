@@ -23,7 +23,15 @@ from template_press.rebrand.safety import (
 )
 
 _MANIFEST = "Cargo.toml"
-_DEPENDENCY_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
+# Cargo before edition 2024 also reads the underscore spellings. Reading both
+# tables when a manifest has both only adds checks.
+_DEPENDENCY_SECTIONS = (
+    "dependencies",
+    "dev-dependencies",
+    "build-dependencies",
+    "dev_dependencies",
+    "build_dependencies",
+)
 _TARGET_SECTIONS = ("bin", "test", "example", "bench")
 _INFERRED_DIRS = {
     "bin": "src/bin",
