@@ -2333,3 +2333,60 @@ def test_split_path_attr_inside_inline_module_resolves_from_inline_dir(
         capsys,
     )
     assert "tests/it.rs:2:" in err
+
+
+# Cycle 3 F5: a one- or two-letter crate name that is a literal's prefix.
+PREFIX_CASES = {
+    "raw_string": ("r", "&'static str", 'r#"hello"#'),
+    "byte_string": ("b", "&'static [u8]", 'b"hello"'),
+    "raw_byte_string": ("br", "&'static [u8]", 'br"hello"'),
+    "byte_char": ("b", "u8", "b'x'"),
+    "c_string": ("c", "&'static core::ffi::CStr", 'c"hi"'),
+}
+
+
+def _prefix_target(tmp_path: Path, case: str) -> Path:
+    name, kind, literal = PREFIX_CASES[case]
+    files = {
+        "Cargo.toml": _package(name),
+        "src/lib.rs": f"pub fn hi() -> {kind} {{\n    {literal}\n}}\n",
+    }
+    return _round_target(
+        tmp_path, files, names={"core": name}, identity={**ACME, "package_name": name}
+    )
+
+
+@pytest.mark.parametrize("case", sorted(PREFIX_CASES))
+def test_crate_name_as_a_literal_prefix_is_refused(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Neither spelling may replace the prefix of a string or char literal."""
+    target = _prefix_target(tmp_path, case)
+
+    assert _press(target, _zeta(tmp_path)) == 2
+
+    name = PREFIX_CASES[case][0]
+    expected = f"src/lib.rs:2: {name!r} is in no [[cargo_split]] role"
+    assert expected in capsys.readouterr().err
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("case", sorted(PREFIX_CASES))
+def test_crate_name_as_a_literal_prefix_refusal_matches_real_cargo(
+    case: str, tmp_path: Path
+) -> None:
+    """Real Cargo: the old receipt wrote ``zeta_gadget#"hello"#`` and the like,
+    which does not compile."""
+    _require_cargo()
+    target = _prefix_target(tmp_path, case)
+    _assert_cargo(target, "test", "--offline")
+
+    assert _press(target, _zeta(tmp_path)) == 2
+
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+    _assert_cargo(target, "test", "--offline")

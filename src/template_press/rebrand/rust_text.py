@@ -1296,6 +1296,10 @@ def split_rust_replacements(
             out.append(None)
         elif span_within(chars, span):
             out.append(None)  # a char literal: neither spelling fits
+        elif any(s.start <= span[0] < s.content_start for s in strings) or any(
+            low == span[1] for low, _ in chars
+        ):
+            out.append(None)  # a literal prefix such as r#"..."#, b"..." or b'x'
         elif literal is None:
             out.append(identifier)
         elif string_role(text, literal, name) == "other":
