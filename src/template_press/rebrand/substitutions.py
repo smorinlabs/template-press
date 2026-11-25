@@ -15,6 +15,7 @@ from typing import Literal
 
 from template_press.rebrand.cargo_manifest import (
     DeclaredPath,
+    Table,
     auto_discovered_bins,
     cargo_manifest_files,
     declared_cargo_paths,
@@ -1985,6 +1986,7 @@ def cargo_path_splits(
         target, content_rows, snapshot, rewritten, removed, rules
     )
     problems: list[str] = []
+    crates: list[tuple[str, Table]] = []
     for manifest in cargo_manifest_files(target):
         if manifest in removed_files or manifest.startswith(removed_dirs):
             continue
@@ -1997,6 +1999,7 @@ def cargo_path_splits(
                 rules.keep_names,
             )
         parsed = tomllib.loads(text)
+        crates.append((manifest, parsed))
         problems.extend(
             _bin_env_splits(target, manifest, parsed, plan, new_texts, rewritten)
         )
@@ -2030,6 +2033,7 @@ def cargo_path_splits(
         for entry in snapshot.entries
         if entry.worktree_kind == "file"
     )
+    source_problems: dict[str, list[str]] = {}
     for path in sorted(rewritten):
         if (
             not path.endswith(".rs")
@@ -2046,13 +2050,93 @@ def cargo_path_splits(
             text,
             rules.keep_names,
         )
-        if new_text != text:
-            problems.extend(
-                _rust_source_path_splits(
-                    path, text, new_text, plan, files, split_tokens
-                )
+        if new_text != text and (
+            found := _rust_source_path_splits(
+                path, text, new_text, plan, files, split_tokens
             )
+        ):
+            source_problems[path] = found
+    if source_problems:
+        # Only a file Cargo compiles can break the build; a fixture can't.
+        compiled = _compiled_rust_files(target, crates, files)
+        for path, found in source_problems.items():
+            if path in compiled:
+                problems.extend(found)
     return problems
+
+
+_MODULE_SHAPES = ("{}.rs", "{}/mod.rs")
+# Directories whose ``*.rs`` and ``*/main.rs`` files Cargo makes targets.
+_TARGET_DIRS = ("src/bin", "tests", "benches", "examples")
+
+
+def _module_places(path: str, inline: Sequence[str]) -> tuple[str, str]:
+    """The two directories a ``mod name;`` in ``path`` may name a file in.
+
+    A crate root or ``mod.rs`` keeps its modules beside it, and any other file
+    keeps them below its stem. The enclosing inline modules add one directory
+    each. Both places are read, so neither is missed.
+    """
+    base = posixpath.dirname(path)
+    return (
+        posixpath.join(base, *inline),
+        posixpath.join(base, PurePosixPath(path).stem, *inline),
+    )
+
+
+def _compiled_rust_files(
+    target: Path, crates: Sequence[tuple[str, Table]], files: frozenset[str]
+) -> frozenset[str]:
+    """The ``.rs`` files Cargo compiles: each crate root it infers or a manifest
+    declares, and every file those reach through ``mod`` or a Rust path."""
+    queue: list[str] = []
+    for manifest, parsed in crates:
+        directory = posixpath.dirname(manifest)
+        queue.extend(
+            posixpath.normpath(posixpath.join(directory, root))
+            for root in ("src/lib.rs", "src/main.rs", "build.rs")
+        )
+        queue.extend(
+            posixpath.normpath(posixpath.join(directory, declared.value))
+            for declared in declared_cargo_paths(parsed)
+            if declared.kind in {"target", "build"}
+        )
+        for sub in _TARGET_DIRS:
+            prefix = posixpath.join(directory, sub) + "/"
+            for file in files:
+                rest = file[len(prefix) :] if file.startswith(prefix) else ""
+                parts = rest.split("/")
+                if (len(parts) == 1 and rest.endswith(".rs")) or (
+                    len(parts) == 2 and parts[1] == "main.rs"
+                ):
+                    queue.append(file)
+    reached: set[str] = set()
+    while queue:
+        path = queue.pop()
+        if path in reached or path not in files:
+            continue
+        reached.add(path)
+        try:
+            text = read_regular_nofollow(target / path).decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for module in module_declarations(text):
+            if not module.attributed:
+                queue.extend(
+                    posixpath.normpath(posixpath.join(place, shape.format(module.name)))
+                    for place in _module_places(path, module.inline)
+                    for shape in _MODULE_SHAPES
+                )
+        base = posixpath.dirname(path)
+        queue.extend(
+            posixpath.normpath(posixpath.join(base, value))
+            for literal in rust_strings(text)
+            if string_role(text, literal, "\0") == "path"
+            and (value := text[literal.content_start : literal.content_end]).endswith(
+                ".rs"
+            )
+        )
+    return frozenset(reached)
 
 
 def _split_tokens(
@@ -2118,21 +2202,20 @@ def _rust_source_path_splits(
             "names to match. Rename the file so a press moves it, add the shared "
             "name to keep_names, or edit the path by hand before pressing"
         )
-    stem = PurePosixPath(path).stem
-    new_stem = PurePosixPath(new_path).stem
-    for (offset, name, attributed), (_, new_name, _) in zip(
-        old_mods, new_mods, strict=True
-    ):
-        if name == new_name or attributed or split_owned(name):
+    join = posixpath.join
+    for old_mod, new_mod in zip(old_mods, new_mods, strict=True):
+        name, new_name = old_mod.name, new_mod.name
+        if name == new_name or old_mod.attributed or split_owned(name):
             continue
-        # A module file sits beside a crate root or ``mod.rs`` and below
-        # any other file's stem; both places are read, so neither is missed.
-        join = posixpath.join
-        places = ((base, new_base), (join(base, stem), join(new_base, new_stem)))
+        places = zip(
+            _module_places(path, old_mod.inline),
+            _module_places(new_path, new_mod.inline),
+            strict=True,
+        )
         found = [
             (posixpath.normpath(join(old_dir, shape.format(name))), new_dir, shape)
             for old_dir, new_dir in places
-            for shape in ("{}.rs", "{}/mod.rs")
+            for shape in _MODULE_SHAPES
             if posixpath.normpath(join(old_dir, shape.format(name))) in files
         ]
         if found and all(
@@ -2142,7 +2225,7 @@ def _rust_source_path_splits(
         ):
             continue
         problems.append(
-            f"{path}:{_line_of(text, offset)}: `mod {name};` would become "
+            f"{path}:{_line_of(text, old_mod.offset)}: `mod {name};` would become "
             f"`mod {new_name};`, but the press would not rename the module's "
             "file to match. Rename the file so a press moves it, add the shared "
             "name to keep_names, or edit the module by hand before pressing"

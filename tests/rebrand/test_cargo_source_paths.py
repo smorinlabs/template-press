@@ -167,6 +167,40 @@ SOURCE_PATH_CASES = {
         },
         "src/outer.rs:1:",
     ),
+    # N4: the platform-module form of ``#[path]``.
+    "cfg_attr_path_owner": (
+        {
+            "src/lib.rs": LIB
+            + '#[cfg_attr(all(), path = "acmelabs_imp.rs")]\npub mod imp;\n',
+            "src/acmelabs_imp.rs": "pub fn f() {}\n",
+        },
+        "src/lib.rs:4:",
+    ),
+    # N2 guards: files Cargo compiles are still checked.
+    "test_dir_main_mod_owner": (
+        {
+            "src/lib.rs": LIB,
+            "tests/it/main.rs": "mod acmelabs;\n",
+            "tests/it/acmelabs.rs": "#[test]\nfn t() {}\n",
+        },
+        "tests/it/main.rs:1:",
+    ),
+    "declared_lib_path_mod_owner": (
+        {
+            "Cargo.toml": _package("acme-core") + '\n[lib]\npath = "code/root.rs"\n',
+            "code/root.rs": "pub mod acmelabs;\n",
+            "code/acmelabs.rs": "pub fn org() {}\n",
+        },
+        "code/root.rs:1:",
+    ),
+    "path_attr_reached_mod_owner": (
+        {
+            "src/lib.rs": LIB + '#[path = "gen/x.rs"]\npub mod x;\n',
+            "src/gen/x.rs": "pub mod acmelabs;\n",
+            "src/gen/x/acmelabs.rs": "pub fn org() {}\n",
+        },
+        "src/gen/x.rs:1:",
+    ),
 }
 
 
@@ -177,10 +211,14 @@ def _source_path_target(tmp_path: Path, files: dict[str, str], *, table: bool) -
         _seed(target, {"Cargo.toml": _package("acme-core"), **files}, names=CORE_NAMES)
         return target
     # Without a table, the repo_name row is the one that rewrites the crate name.
-    manifest = _package("acme-core").replace("acme-repo", "acme-core")
+    files = {
+        "Cargo.toml": _package("acme-core"),
+        **files,
+    }
+    files["Cargo.toml"] = files["Cargo.toml"].replace("acme-repo", "acme-core")
     _seed(
         target,
-        {"Cargo.toml": manifest, **files},
+        files,
         identity={**CORE_SOURCE, "repo_name": "acme-core"},
     )
     return target
@@ -207,6 +245,29 @@ def test_content_row_inside_a_rust_source_path_is_refused(
     assert f"cargo paths: {where}" in out.out + out.err
     assert _status(target) == ""
     assert not (target / RECEIPT_REL).exists()
+
+
+def test_content_row_in_a_workspace_member_module_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """N2 guard: a member crate's module tree is compiled, so it is checked."""
+    files = {
+        "Cargo.toml": '[workspace]\nmembers = ["crates/helper"]\n\n'
+        + _package("acme-core"),
+        "src/lib.rs": LIB,
+        "crates/helper/Cargo.toml": (
+            '[package]\nname = "helper"\nversion = "0.1.0"\nedition = "2021"\n'
+        ),
+        "crates/helper/src/lib.rs": "pub mod acmelabs;\n",
+        "crates/helper/src/acmelabs.rs": "pub fn org() {}\n",
+    }
+    target = _source_path_target(tmp_path, files, table=False)
+
+    assert _press(target, _source_path_answers(tmp_path, table=False)) == 2
+
+    out = capsys.readouterr()
+    assert "cargo paths: crates/helper/src/lib.rs:1:" in out.out + out.err
+    assert _status(target) == ""
 
 
 FOLLOWING_PATHS = {
@@ -237,6 +298,36 @@ FOLLOWING_PATHS = {
     "inline_module": {
         "src/lib.rs": LIB + "pub mod acmelabs {\n    pub fn org() {}\n}\n"
     },
+    # N1: a module file below an enclosing inline module.
+    "inline_nested_mod": {
+        "src/lib.rs": LIB + "pub mod outer {\n    pub mod acme_core;\n}\n",
+        "src/outer/acme_core.rs": "pub fn f() -> u8 { 1 }\n",
+    },
+    # N1: brace-like character literals do not move the inline module.
+    "inline_nested_mod_after_char_braces": {
+        "src/lib.rs": LIB
+        + "pub const OPEN: char = '{';\npub const CLOSE: u8 = b'}';\n"
+        + "pub mod outer {\n    pub mod inner {\n        pub mod acme_core;\n    }\n}\n",
+        "src/outer/inner/acme_core.rs": "pub fn f() -> u8 { 1 }\n",
+    },
+    # N1: below a non-root file, the inline module sits under the file's stem.
+    "inline_nested_mod_below_a_module_file": {
+        "src/lib.rs": LIB + "pub mod outer;\n",
+        "src/outer.rs": "pub mod inner {\n    pub mod acme_core;\n}\n",
+        "src/outer/inner/acme_core.rs": "pub fn f() -> u8 { 1 }\n",
+    },
+    # N2: Cargo never compiles a fixture below tests/, so its mod is not judged.
+    "fixture_rs_owner": {
+        "src/lib.rs": LIB,
+        "tests/fixtures/sample.rs": "mod acmelabs;\n",
+    },
+    # N4: a path attribute nested deeper than cfg_attr's own arguments is not
+    # the module's path.
+    "cfg_attr_nested_path_argument": {
+        "src/lib.rs": LIB
+        + "macro_rules! keep { ($($t:tt)*) => {}; }\n"
+        + 'keep!(#[cfg_attr(all(), other(path = "acmelabs.rs"))] mod imp;);\n',
+    },
     # A path no row changes.
     "unchanged_path": {
         "src/lib.rs": LIB + 'pub const T: &str = include_str!("t.txt");\n',
@@ -259,7 +350,13 @@ def test_rust_source_paths_that_follow_their_files_press(
 @posix_only
 @pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize(
-    "case", ["renamed_beside_a_root_file", "renamed_below_a_module_file"]
+    "case",
+    [
+        "renamed_beside_a_root_file",
+        "renamed_below_a_module_file",
+        "inline_nested_mod",
+        "fixture_rs_owner",
+    ],
 )
 def test_rust_source_paths_that_follow_their_files_build(
     case: str, tmp_path: Path
@@ -277,7 +374,9 @@ def test_rust_source_paths_that_follow_their_files_build(
 @pytest.mark.slow
 @posix_only
 @pytest.mark.xdist_group(name="shared-tool-caches")
-@pytest.mark.parametrize("case", ["mod_owner", "include_owner", "path_attr_owner"])
+@pytest.mark.parametrize(
+    "case", ["mod_owner", "include_owner", "path_attr_owner", "cfg_attr_path_owner"]
+)
 def test_rust_source_path_refusal_matches_real_cargo(case: str, tmp_path: Path) -> None:
     """Real Cargo: the crate builds before, and the press refuses the rewrite
     that the reviewer's probe showed breaks the build (``0/0/yes/101``)."""

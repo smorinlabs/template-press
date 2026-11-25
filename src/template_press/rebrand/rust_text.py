@@ -59,6 +59,10 @@ _OPERAND_START = re.compile(
 _PATH_BEFORE = re.compile(
     r"(?:\b(?:include_str|include_bytes|include)!\s*\(\s*|#!?\[\s*path\s*=\s*)$"
 )
+# ``path = `` as a direct argument of ``cfg_attr(...)``: the platform-module
+# form of ``#[path]``. A ``path`` nested deeper is another attribute's value.
+_CFG_ATTR_PATH = re.compile(r"[(,]\s*path\s*=\s*$")
+_CFG_ATTR_CALL = re.compile(r"\bcfg_attr\s*$")
 
 # Macros that turn their arguments into text. A crate name there is neither an
 # identifier nor a string that Cargo reads, so no spelling is provable.
@@ -191,13 +195,32 @@ _MODULE_DECLARATION = re.compile(
     r"(?<![A-Za-z0-9_])mod\s+(?:r#)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*;"
 )
 _PATH_ATTRIBUTE = re.compile(r"#\s*\[\s*path\s*=")
+_INLINE_MODULE = re.compile(
+    r"(?<![A-Za-z0-9_])mod\s+(?:r#)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\{"
+)
+_PATH_VALUE = re.compile(r"\bpath\s*=\s*(?=\"\")")
 
 
-def module_declarations(text: str) -> tuple[tuple[int, str, bool], ...]:
-    """Each ``mod name;`` in code: its offset, its name, and whether a
-    ``#[path = ...]`` attribute gives its file instead of the name.
+@dataclass(frozen=True)
+class ModuleDeclaration:
+    """One ``mod name;`` in code.
 
-    Comments, doc comments, and string literals are skipped.
+    ``inline`` names the inline ``mod outer { ... }`` blocks around it, from
+    the outermost in. ``attributed`` says whether a ``#[path = ...]`` or
+    ``#[cfg_attr(..., path = ...)]`` attribute gives its file instead.
+    """
+
+    offset: int
+    name: str
+    attributed: bool
+    inline: tuple[str, ...]
+
+
+def module_declarations(text: str) -> tuple[ModuleDeclaration, ...]:
+    """Each ``mod name;`` in code, with its enclosing inline modules.
+
+    Comments, doc comments, string literals, and character literals are
+    skipped, so a brace inside one opens no block.
     """
     pieces: list[str] = []
     index = 0
@@ -208,18 +231,46 @@ def module_declarations(text: str) -> tuple[tuple[int, str, bool], ...]:
         else:
             end, literal = _token(text, index)
             piece = text[index:end]
-            # Keep the quotes, so that a ``#[path = "..."]`` stays visible.
-            pieces.append('""' if literal else piece)
             if literal:
+                # Keep the quotes, so that a ``#[path = "..."]`` stays visible.
+                pieces.append('""')
                 pieces.append(_blank(piece)[2:])
+            elif piece.startswith("'") and len(piece) > 1:
+                pieces.append(_blank(piece))  # a character literal
+            else:
+                pieces.append(piece)
         index = end
     code = "".join(pieces)
-    found: list[tuple[int, str, bool]] = []
-    for match in _MODULE_DECLARATION.finditer(code):
+    openers = {
+        match.end() - 1: match["name"] for match in _INLINE_MODULE.finditer(code)
+    }
+    events = sorted(
+        [(match.start(), match) for match in _MODULE_DECLARATION.finditer(code)]
+        + [(match.start(), None) for match in re.finditer(r"[{}]", code)],
+        key=lambda event: event[0],
+    )
+    found: list[ModuleDeclaration] = []
+    stack: list[str | None] = []
+    for position, match in events:
+        if match is None:
+            if code[position] == "{":
+                stack.append(openers.get(position))
+            elif stack:
+                stack.pop()
+            continue
         item = max(code.rfind(edge, 0, match.start()) for edge in ";{}")
         attributes = code[item + 1 : match.start()]
+        attributed = bool(_PATH_ATTRIBUTE.search(attributes)) or any(
+            _cfg_attr_path(attributes, value.end())
+            for value in _PATH_VALUE.finditer(attributes)
+        )
         found.append(
-            (match.start(), match["name"], bool(_PATH_ATTRIBUTE.search(attributes)))
+            ModuleDeclaration(
+                match.start(),
+                match["name"],
+                attributed,
+                tuple(name for name in stack if name is not None),
+            )
         )
     return tuple(found)
 
@@ -973,6 +1024,7 @@ def string_role(text: str, literal: RustString, name: str) -> StringRole:
     line_start = literal.doc[literal.line][0]
     if text[literal.content_start : literal.content_end] != name and not (
         _PATH_BEFORE.search(text, line_start, literal.start)
+        or _CFG_ATTR_PATH.search(text, line_start, literal.start)
     ):
         return "other"  # no role fits: skip building the code blocks
     first = literal.line - _LINES_BEFORE
@@ -1018,11 +1070,31 @@ def _role(text: str, literal: RustString, name: str) -> StringRole:
     content = text[literal.content_start : literal.content_end]
     if _FEATURE_BEFORE.search(before) and content == name:
         return "feature" if _inside_cfg(text, literal.start) else "other"
-    if _PATH_BEFORE.search(before):
+    if _PATH_BEFORE.search(before) or _cfg_attr_path(text, literal.start):
         return "path"
     if content == name and _compared_with_pkg_name(text, literal):
         return "pkg_name"
     return "other"
+
+
+def _cfg_attr_path(text: str, position: int) -> bool:
+    """Whether the literal at ``position`` is a ``path = `` argument whose
+    innermost unclosed parenthesis is a ``cfg_attr(`` call."""
+    before = text[:position]
+    if not _CFG_ATTR_PATH.search(before):
+        return False
+    depth = 0
+    for index in range(position - 1, max(position - 4000, 0) - 1, -1):
+        char = text[index]
+        if char == ")":
+            depth += 1
+        elif char == "(":
+            if not depth:
+                return bool(_CFG_ATTR_CALL.search(text[max(index - 32, 0) : index]))
+            depth -= 1
+        elif char in ";{}[]" and depth == 0:
+            return False
+    return False
 
 
 def _inside_cfg(text: str, position: int) -> bool:
