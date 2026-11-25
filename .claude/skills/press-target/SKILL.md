@@ -600,8 +600,8 @@ and paths that Rust source declares with a plain string literal in a `.rs`
 file Cargo compiles. Such a file is a crate root or target file that Cargo
 infers or a manifest declares (`src/lib.rs`, `src/main.rs`, `src/bin/`,
 `tests/`, `benches/`, `examples/`, a target `path`, `build.rs`), or a file one
-of those reaches through `mod` (inline modules included) or a Rust path. These
-are not checked:
+of those reaches through `mod` or `#[path]`, but not through Rust's path rule for
+a module nested in an inline `mod name { ... }` block. These are not checked:
 
 - a path built by a macro, such as
   `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`;
@@ -609,7 +609,17 @@ are not checked:
 - a `.rs` file no crate root reaches, such as `tests/fixtures/sample.rs`,
   which Cargo does not compile;
 - a path that code reads at run time, such as
-  `std::fs::read_to_string("data/acmelabs.txt")` in `build.rs`.
+  `std::fs::read_to_string("data/acmelabs.txt")` in `build.rs`;
+- a `#[path]` module inside or on an inline module, such as
+  `mod outer { #[path = "x.rs"] mod x; }` or `#[path = "p"] mod outer { mod inner; }`,
+  so a rename that splits it from its file can still get a receipt;
+- a renamed inline module around an unchanged child, such as
+  `mod acmelabs { mod x; }` becoming `mod zetalabs { mod x; }`, so the crate
+  can fail to build after a receipt.
+
+A `#[path]` attribute on an inline module whose child module is renamed, such
+as `#[path = "p"] mod outer { mod acme_core; }`, is refused with exit 2, even
+when the press would have been correct.
 
 An `owner`, `author`, or `email` row that rewrites such a path without
 renaming its file can give a receipt for a build that then fails.

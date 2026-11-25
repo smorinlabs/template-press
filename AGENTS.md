@@ -165,13 +165,17 @@ a path Rust source declares with a plain string (the file of `mod name;`,
 `include_bytes!`, or `include!` arguments) from its file, and
 a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. Rust
 source is read only in `.rs` files Cargo compiles: crate roots and target
-files, and the files they reach through `mod` or a Rust path. Not checked: a
+files, and the files they reach through `mod` or `#[path]`, but not through Rust's path rule for a module nested in an inline `mod name { ... }` block. Not checked: a
 path a macro builds, such as
 `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`; a `.rs` file
 excluded from rewriting; a `.rs` file no crate root reaches, such as
 `tests/fixtures/sample.rs`; and a path read at run time, such as a string
-`build.rs` passes to `std::fs::read_to_string`. See the `press-target` skill
-for the full rules.
+`build.rs` passes to `std::fs::read_to_string`. Also not checked, so a rewrite
+there can still get a receipt that fails to build: a `#[path]` module inside or
+on an inline `mod name { ... }` block, and a renamed inline module around an
+unchanged child; a `#[path]` on an inline module whose child module is renamed
+is refused with exit 2 even when the rename would be correct. See the
+`press-target` skill for the full rules.
 
 A hyphen-free crate name pressed to a hyphenated one (`acme` to `zeta-gadget`)
 is refused by default. A `[[cargo_split]]` block in `press/press-rules.toml`
