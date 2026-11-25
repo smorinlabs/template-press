@@ -2217,8 +2217,12 @@ def _compiled_rust_files(
             if item.kind == "inline_dir":
                 continue  # directory override; child mods/paths carry it in item.inline
             value = text[item.literal.content_start : item.literal.content_end]
-            if not value.endswith(".rs"):
+            if item.kind == "include" and not value.endswith(".rs"):
                 continue
+            if item.kind == "include" and _DATA_INCLUDE.search(
+                text, max(item.literal.start - 64, 0), item.literal.start
+            ):
+                continue  # include_str!/include_bytes! read data, not Rust
             places = (
                 (base,)
                 if item.kind == "include"
@@ -2434,6 +2438,7 @@ def _identifier_contexts(text: str, name: str) -> list[int]:
 
 
 _INCLUDE_STR = re.compile(r"\binclude_str\s*!\s*[(\[{]\s*$")
+_DATA_INCLUDE = re.compile(r"\binclude_(?:str|bytes)\s*!\s*[(\[{]\s*$")
 
 
 def _doc_included_files(target: Path, paths: Sequence[str]) -> dict[str, str]:

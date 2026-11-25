@@ -390,6 +390,29 @@ SOURCE_PATH_CASES = {
         },
         "crates/acme-core/src/lib.rs:4:",
     ),
+    # Cycle 3 F3 control: include! pastes Rust, so the walk follows it.
+    "include_rs_reached_include_owner": (
+        {
+            "src/lib.rs": LIB + 'include!("frag.rs");\n',
+            "src/frag.rs": (
+                'pub const T: &str = include_str!("../data/acmelabs.txt");\n'
+            ),
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/frag.rs:1:",
+    ),
+    # Cycle 3 F7: a #[path] module file is Rust whatever its suffix.
+    "path_attr_non_rs_bridge_owner": (
+        {
+            "src/lib.rs": LIB + '#[path = "bridge.inc"]\npub mod bridge;\n',
+            "src/bridge.inc": '#[path = "leaf.rs"]\npub mod leaf;\n',
+            "src/leaf.rs": (
+                'pub const T: &str = include_str!("../data/acmelabs.txt");\n'
+            ),
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/leaf.rs:1:",
+    ),
 }
 
 
@@ -672,6 +695,8 @@ def test_inline_path_attr_tableless_presses_and_builds(
         "renamed_inline_mod_unchanged_child_owner",
         "renamed_inline_mod_unchanged_path_attr_owner",
         "unicode_inline_mod_reached_include_owner",
+        "include_rs_reached_include_owner",
+        "path_attr_non_rs_bridge_owner",
     ],
 )
 def test_rust_source_path_refusal_matches_real_cargo(case: str, tmp_path: Path) -> None:
@@ -877,6 +902,11 @@ UNUSED_ROOTS = {
         "crates/acme-core/Cargo.toml": _package("acme-core"),
         "crates/acme-core/src/lib.rs": LIB,
         "src/lib.rs": f"pub const D: &str = {FIXTURE_INCLUDE};\n",
+    },
+    # Cycle 3 F3: include_str! reads a .rs file as data; Cargo never compiles it.
+    "include_str_rs_fixture": {
+        "src/lib.rs": LIB + 'pub const F: &str = include_str!("fixture.rs");\n',
+        "src/fixture.rs": "mod acmelabs;\n",
     },
     # A [lib] path replaces src/lib.rs, so Cargo never compiles it.
     "lib_path_unused_srclib": {
