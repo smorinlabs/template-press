@@ -381,6 +381,15 @@ def declared_cargo_paths(data: Table) -> list[DeclaredPath]:
     return found
 
 
+def named_target_files(data: Table) -> list[str]:
+    """Both files Cargo may read for each named target that declares no path."""
+    return [
+        f"{_INFERRED_DIRS[section]}/{shape.format(name)}"
+        for section, name in _unpathed_targets(data)
+        for shape in ("{}.rs", "{}/main.rs")
+    ]
+
+
 def _unpathed_targets(data: Table) -> list[tuple[str, str]]:
     """``(section, name)`` of each named target that declares no ``path``."""
     found: list[tuple[str, str]] = []

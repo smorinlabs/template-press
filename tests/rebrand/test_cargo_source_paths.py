@@ -490,6 +490,90 @@ def test_rust_source_path_refusal_matches_real_cargo(case: str, tmp_path: Path) 
     assert _cargo(target, "test", "--offline").returncode == 0
 
 
+# --- F7: an ``auto*`` flag that turns off target discovery ----------------------
+
+FIXTURE_INCLUDE = 'include_str!("../data/acmelabs.txt")'
+AUTO_OFF_UNUSED = {
+    "autotests": {"tests/fixture.rs": f"pub const D: &str = {FIXTURE_INCLUDE};\n"},
+    "autoexamples": {
+        "examples/fixture.rs": f"fn main() {{\n    let _ = {FIXTURE_INCLUDE};\n}}\n"
+    },
+    "autobenches": {"benches/fixture.rs": f"pub const D: &str = {FIXTURE_INCLUDE};\n"},
+    "autobins": {
+        "src/bin/fixture.rs": f"fn main() {{\n    let _ = {FIXTURE_INCLUDE};\n}}\n"
+    },
+}
+
+
+def _auto_off_files(flag: str, extra: str = "") -> dict[str, str]:
+    return {
+        "Cargo.toml": _package("acme-core") + f"{flag} = false\n" + extra,
+        "src/lib.rs": LIB,
+        "data/acmelabs.txt": "x\n",
+        **AUTO_OFF_UNUSED[flag],
+    }
+
+
+@pytest.mark.parametrize("table", [True, False], ids=["table", "tableless"])
+@pytest.mark.parametrize("flag", sorted(AUTO_OFF_UNUSED))
+def test_target_file_cargo_does_not_discover_is_not_judged(
+    flag: str, table: bool, tmp_path: Path
+) -> None:
+    """Base presses these targets healthy: Cargo never builds the file."""
+    target = _source_path_target(tmp_path, _auto_off_files(flag), table=table)
+
+    assert _press(target, _source_path_answers(tmp_path, table=table)) == 0
+
+    assert (target / RECEIPT_REL).is_file()
+
+
+NAMED_UNDER_AUTO_OFF = {
+    "file": ("tests/fixture.rs", FIXTURE_INCLUDE),
+    "directory": ("tests/fixture/main.rs", FIXTURE_INCLUDE.replace("../", "../../")),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(NAMED_UNDER_AUTO_OFF))
+def test_named_target_without_a_path_is_judged_under_auto_off(
+    shape: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Cargo still infers the file of a ``[[test]]`` that names no path."""
+    rel, include = NAMED_UNDER_AUTO_OFF[shape]
+    files = {
+        "Cargo.toml": _package("acme-core")
+        + 'autotests = false\n\n[[test]]\nname = "fixture"\n',
+        "src/lib.rs": LIB,
+        "data/acmelabs.txt": "x\n",
+        rel: f"pub const D: &str = {include};\n#[test]\nfn t() {{}}\n",
+    }
+    target = _source_path_target(tmp_path, files, table=True)
+
+    assert _press(target, _source_path_answers(tmp_path, table=True)) == 2
+
+    out = capsys.readouterr()
+    assert f"cargo paths: {rel}:1:" in out.out + out.err
+    assert _status(target) == ""
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("table", [True, False], ids=["table", "tableless"])
+@pytest.mark.parametrize("flag", ["autotests", "autoexamples"])
+def test_target_file_cargo_does_not_discover_presses_and_builds(
+    flag: str, table: bool, tmp_path: Path
+) -> None:
+    """Real Cargo: the tableless form is the one base ``10b4f9b`` presses."""
+    _require_cargo()
+    target = _source_path_target(tmp_path, _auto_off_files(flag), table=table)
+    _assert_cargo(target, "test", "--offline", "--all-targets")
+
+    assert _press(target, _source_path_answers(tmp_path, table=table)) == 0
+
+    assert (target / RECEIPT_REL).is_file()
+    _assert_cargo(target, "test", "--offline", "--all-targets")
+
+
 # --- F2: the legacy underscore dependency tables ----------------------------------
 
 HELPER_MANIFEST = '[package]\nname = "helper"\nversion = "0.1.0"\nedition = "2021"\n'

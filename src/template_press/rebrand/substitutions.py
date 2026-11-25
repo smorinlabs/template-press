@@ -20,6 +20,7 @@ from template_press.rebrand.cargo_manifest import (
     cargo_manifest_files,
     declared_cargo_paths,
     inferred_target_paths,
+    named_target_files,
     read_cargo_facts,
 )
 from template_press.rebrand.identity import (
@@ -2066,8 +2067,14 @@ def cargo_path_splits(
 
 
 _MODULE_SHAPES = ("{}.rs", "{}/mod.rs")
-# Directories whose ``*.rs`` and ``*/main.rs`` files Cargo makes targets.
-_TARGET_DIRS = ("src/bin", "tests", "benches", "examples")
+# Directories whose ``*.rs`` and ``*/main.rs`` files Cargo makes targets, each
+# with the ``[package]`` flag that turns that discovery off.
+_TARGET_DIRS = {
+    "src/bin": "autobins",
+    "tests": "autotests",
+    "benches": "autobenches",
+    "examples": "autoexamples",
+}
 
 
 def _module_places(path: str, inline: Sequence[str]) -> tuple[str, str]:
@@ -2101,7 +2108,14 @@ def _compiled_rust_files(
             for declared in declared_cargo_paths(parsed)
             if declared.kind in {"target", "build"}
         )
-        for sub in _TARGET_DIRS:
+        queue.extend(
+            posixpath.normpath(posixpath.join(directory, file))
+            for file in named_target_files(parsed)
+        )
+        package = parsed.get("package")
+        for sub, auto in _TARGET_DIRS.items():
+            if isinstance(package, dict) and package.get(auto) is False:
+                continue  # Cargo builds only the targets the manifest names
             prefix = posixpath.join(directory, sub) + "/"
             for file in files:
                 rest = file[len(prefix) :] if file.startswith(prefix) else ""
