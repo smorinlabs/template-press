@@ -42,7 +42,7 @@ file by hand — see Conventions.
 | P18 | `[ ]` | [One-press renames to names containing the source](projects/P18-one-press-contained-renames.md) — Allow a new name that contains the old one, for every identity field. |
 
 - [x] **P17** — [Pressed-target verify false receipt](projects/P17-pressed-target-verify-false-receipt.md) — no receipt when `press verify` would exit 1 on the pressed target
-- [~] **P19** — [BAML targets](projects/P19-baml-targets.md) — Press BAML repos: regenerate the client, refuse glued old names before writing
+- [x] **P19** — [BAML targets](projects/P19-baml-targets.md) — Press BAML repos: regenerate the client, refuse glued old names before writing
 
 ## Conventions
 
