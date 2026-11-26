@@ -961,19 +961,6 @@ def main(argv: list[str] | None = None) -> int:
             for problem in baml_problems:
                 print(f"error: {problem}", file=sys.stderr)
             return 2
-        verify_cfg = load_verify_config(target)
-        keep_check = check_target_keep_names(
-            target,
-            source,
-            dest,
-            rules,
-            frozenset(member.current_file for member in removal_plan.members),
-            languages.checked,
-            verify_config=verify_cfg,
-        )
-        if keep_check.undeclared:
-            print(render_undeclared(keep_check.undeclared, source), file=sys.stderr)
-            return 1
         plan = build_plan(target, source, dest, effective_rules)
         validate_removal_conflicts(rules, removal_plan, plan.renames)
         removal_receipt_metadata(
@@ -1077,6 +1064,19 @@ def main(argv: list[str] | None = None) -> int:
             for problem in gate_problems:
                 print(f"  {problem}", file=sys.stderr)
             return 2
+        verify_cfg = load_verify_config(target)
+        keep_check = check_target_keep_names(
+            target,
+            source,
+            dest,
+            rules,
+            frozenset(member.current_file for member in removal_plan.members),
+            languages.checked,
+            verify_config=verify_cfg,
+        )
+        if keep_check.undeclared:
+            print(render_undeclared(keep_check.undeclared, source), file=sys.stderr)
+            return 1
         _preflight_directory_receipt(
             source,
             dest,
