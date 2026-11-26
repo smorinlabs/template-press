@@ -132,15 +132,61 @@ def _git(repo: Path, *args: str) -> None:
 
 _TARGET_TEMPLATE_ROOT: Path | None = None
 _TARGET_TEMPLATES: dict[str, Path] = {}
+_EMPTY_GIT_TEMPLATE: Path | None = None
 
 
-def _store_target_template(repo: Path, layout: str) -> None:
-    """Keep one pristine repo per layout for this pytest process."""
+def _template_root() -> Path:
     global _TARGET_TEMPLATE_ROOT
     if _TARGET_TEMPLATE_ROOT is None:
         _TARGET_TEMPLATE_ROOT = Path(tempfile.mkdtemp(prefix="press-target-templates-"))
         atexit.register(shutil.rmtree, _TARGET_TEMPLATE_ROOT, ignore_errors=True)
-    template = _TARGET_TEMPLATE_ROOT / layout
+    return _TARGET_TEMPLATE_ROOT
+
+
+def init_git_repo(
+    repo: Path,
+    *,
+    origin: str | None = None,
+    commit_message: str | None = "seed",
+    allow_empty: bool = False,
+) -> None:
+    """Initialize ``repo`` from the per-worker empty ``.git`` template.
+
+    Replaces up to four git subprocesses (``init``, ``config`` x2, ``remote add``)
+    with a local ``.git`` copy and optional origin stanza append. The first call
+    per worker runs ``git init`` inside ``repo`` (under ``tmp_path``) and caches
+    a pristine copy of its ``.git`` directory for later tests on that worker.
+    """
+    global _EMPTY_GIT_TEMPLATE
+    git_dir = repo / ".git"
+    if _EMPTY_GIT_TEMPLATE is None:
+        _git(repo, "init", "-q", "-b", "main")
+        _git(repo, "config", "user.email", "test@example.com")
+        _git(repo, "config", "user.name", "Test")
+        _git(repo, "config", "maintenance.auto", "false")
+        template = _template_root() / "_empty_git"
+        shutil.copytree(git_dir, template, symlinks=True)
+        _EMPTY_GIT_TEMPLATE = template
+    else:
+        shutil.copytree(_EMPTY_GIT_TEMPLATE, git_dir, symlinks=True)
+    if origin is not None:
+        with (git_dir / "config").open("a", encoding="utf-8") as fh:
+            fh.write(
+                f'\n[remote "origin"]\n'
+                f"\turl = {origin}\n"
+                f"\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+            )
+    if commit_message is not None:
+        _git(repo, "add", "-A")
+        args = ["commit", "-q", "-m", commit_message]
+        if allow_empty:
+            args.append("--allow-empty")
+        _git(repo, *args)
+
+
+def _store_target_template(repo: Path, layout: str) -> None:
+    """Keep one pristine repo per layout for this pytest process."""
+    template = _template_root() / layout
     shutil.copytree(repo, template, symlinks=True)
     _TARGET_TEMPLATES[layout] = template
 

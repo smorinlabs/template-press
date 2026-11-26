@@ -35,7 +35,7 @@ from template_press.rebrand.rules import load_rules
 from template_press.rebrand.substitutions import check_target_keep_names
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import posix_only
+from .conftest import init_git_repo, posix_only
 from .test_cargo_source_paths import CORE_DEST, CORE_SOURCE
 from .test_cargo_source_paths import _answers as _paths_answers
 from .test_cargo_source_paths import _seed as _paths_seed
@@ -84,10 +84,11 @@ def _repo(
         path = target / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-    _git(target, "init", "-q", "-b", "main")
-    _git(target, "remote", "add", "origin", f"https://github.com/{owner}/{repo_name}")
-    _git(target, "add", "-A")
-    _git(target, "commit", "-q", "-m", "fixture")
+    init_git_repo(
+        target,
+        origin=f"https://github.com/{owner}/{repo_name}",
+        commit_message="fixture",
+    )
     return target
 
 
@@ -1734,7 +1735,6 @@ def test_rename_onto_a_kept_keyword_name_is_still_refused(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_rename_onto_a_kept_keyword_name_refusal_matches_real_cargo(
     tmp_path: Path,
 ) -> None:
@@ -1753,7 +1753,6 @@ def test_rename_onto_a_kept_keyword_name_refusal_matches_real_cargo(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("table", [True, False], ids=["table", "tableless"])
 def test_keyword_destination_refusal_matches_real_cargo(
     table: bool, tmp_path: Path
@@ -1845,7 +1844,6 @@ def test_hyphenated_name_declared_only_by_its_underscore_form(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("case", ["secondary", "secondary_moved_by_repo_row"])
 def test_hyphenated_name_declared_by_its_underscore_form_matches_real_cargo(
     case: str, tmp_path: Path

@@ -16,7 +16,7 @@ from template_press.rebrand.synthesize import synthesize_dest
 from template_press.rebrand.verify_cli import verify_command
 from template_press.rebrand.verify_config import load_verify_config
 
-from .conftest import DEST, SOURCE, make_target, write_answers_file
+from .conftest import DEST, SOURCE, init_git_repo, make_target, write_answers_file
 
 ACME_SOURCE = Identity(
     package_name="acme_widget",
@@ -76,18 +76,11 @@ def _init_repo(
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "config", "user.email", "ci@example.test")
-    _git(repo, "config", "user.name", "CI")
-    _git(
+    init_git_repo(
         repo,
-        "remote",
-        "add",
-        "origin",
-        f"https://github.com/{source.owner}/{source.repo_name}.git",
+        origin=f"https://github.com/{source.owner}/{source.repo_name}.git",
+        commit_message="seed fixture",
     )
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "seed fixture")
     return repo
 
 
