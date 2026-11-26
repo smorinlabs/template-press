@@ -13,6 +13,7 @@ surface text in.
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import unicodedata
@@ -90,6 +91,11 @@ class RewrittenForms:
 RewrittenLookup = Callable[[str, str, str], RewrittenForms]
 
 
+@functools.lru_cache(maxsize=4096)
+def _kept_pattern(name: str) -> re.Pattern[str] | None:
+    return token_pattern("npm_name", name)
+
+
 def kept_spans(text: str, names: Sequence[str]) -> tuple[Span, ...]:
     """Sorted spans of each exact name, using the ``npm_name`` boundaries.
 
@@ -97,9 +103,13 @@ def kept_spans(text: str, names: Sequence[str]) -> tuple[Span, ...]:
     different names are never merged: a match is kept only when one declared
     name wholly contains it.
     """
+    if not names or not text:
+        return ()
     spans: set[Span] = set()
     for name in names:
-        pattern = token_pattern("npm_name", name)
+        if name not in text:
+            continue
+        pattern = _kept_pattern(name)
         if pattern is None:
             continue
         position = 0

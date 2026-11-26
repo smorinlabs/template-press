@@ -22,10 +22,15 @@ import yaml
 
 from template_press import press_cli
 from template_press.rebrand.cli import main
-from template_press.rebrand.config import SOURCE_CONFIG_REL
+from template_press.rebrand.config import SOURCE_CONFIG_REL, toml_string
+from template_press.rebrand.discovery import discover
+from template_press.rebrand.identity import Identity
 from template_press.rebrand.receipt import RECEIPT_REL
+from template_press.rebrand.remove import plan_removals
 from template_press.rebrand.rules import load_selected_rules
+from template_press.rebrand.substitutions import check_target_keep_names
 from template_press.rebrand.verify_cli import verify_command
+from template_press.rebrand.verify_config import load_verify_config
 
 from .conftest import DEST, _git, posix_only, write_answers_file
 
@@ -191,6 +196,61 @@ def test_regenerating_matrix_tests_share_one_worker(test) -> None:
     assert groups == ["shared-tool-caches"]
 
 
+def _keep_r3_app_name_tokens(target: Path, dest: Identity) -> None:
+    """Declare kept ``app_name = "press"`` compounds in the disposable R3 clone.
+
+    This repo is not a project template and legitimately uses ``press`` in its
+    own code, tests, and docs (``press-rules``, ``press-target``,
+    ``PressOutcome``, ``stray_press_dirs``). Declaring those ``app_name``
+    compounds inside the disposable clone keeps checked-in
+    ``press/press-rules.toml`` clean while preserving Decision 1's strict
+    preflight for every other field.
+    """
+    found = discover(target, languages=("python",))
+    assert (
+        found.package_name
+        and found.repo_name
+        and found.app_name
+        and found.author
+        and found.email
+        and found.owner
+    )
+    source = Identity(
+        package_name=found.package_name,
+        repo_name=found.repo_name,
+        app_name=found.app_name,
+        author=found.author,
+        email=found.email,
+        owner=found.owner,
+    )
+    rules = load_selected_rules(target).rules
+    removal_plan = plan_removals(target, rules, source=source)
+    check = check_target_keep_names(
+        target,
+        source,
+        dest,
+        rules,
+        frozenset(member.current_file for member in removal_plan.members),
+        ("python",),
+        verify_config=load_verify_config(target),
+    )
+    tokens = sorted(
+        {item.token for item in check.undeclared if item.field == "app_name"}
+    )
+    if not tokens:
+        return
+    rules_path = target / "press" / "press-rules.toml"
+    text = rules_path.read_text(encoding="utf-8")
+    keep_line = "keep_names = [" + ", ".join(toml_string(t) for t in tokens) + "]\n"
+    table = re.search(r"^\[rules\][ \t]*\r?\n?", text, flags=re.MULTILINE)
+    assert table is not None
+    end = table.end()
+    lead = "" if table.group().endswith("\n") else "\n"
+    rules_path.write_text(
+        f"{text[:end]}{lead}{keep_line}{text[end:]}", encoding="utf-8", newline=""
+    )
+
+
 @pytest.mark.live
 @pytest.mark.xdist_group(name="shared-tool-caches")
 def test_r3_self_press_native(tmp_path: Path) -> None:
@@ -220,6 +280,7 @@ def test_r3_self_press_native(tmp_path: Path) -> None:
         check=True,
         capture_output=True,
     )
+    _keep_r3_app_name_tokens(target, r3_dest)
     answers = write_answers_file(tmp_path, r3_dest)
 
     code = main(
