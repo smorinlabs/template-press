@@ -45,6 +45,7 @@ from template_press.rebrand.identity import (
     CARGO_EXACT_PREFIX,
     Identity,
     cargo_ident,
+    display_forms,
 )
 from template_press.rebrand.inventory import (
     SurfaceSnapshot,
@@ -63,8 +64,10 @@ from template_press.rebrand.keep_names import (
 from template_press.rebrand.matcher import identity_pattern
 from template_press.rebrand.pathing import (
     ROOT_CONTROL,
+    exempt_regenerated_dirs,
     exempt_regenerated_paths,
     is_root_press,
+    regenerate_dir_prefixes,
     reverse_renamed_path,
     rule_scope_hits,
     symlink_target_posix,
@@ -436,6 +439,7 @@ def _rule_scan_specs(
         exclude_files=rules.exclude_files,
         exclude_dirs=rules.exclude_dirs,
         root_control=ROOT_CONTROL,
+        exclude_prefixes=regenerate_dir_prefixes(rules),
     )
     specs: dict[tuple[str, str, frozenset[str], bool, bool], _RuleScanSpec] = {}
     for rule in rules.replace:
@@ -473,7 +477,7 @@ def _rule_scan_specs(
     return tuple(specs.values())
 
 
-def _changed_fields(
+def changed_verify_fields(
     source: Identity,
     dest: Identity,
     fields: Sequence[str],
@@ -494,6 +498,9 @@ def _changed_fields(
     suppress. A substring field is a literal hunt and covers one spelling only.
     """
     src, dst = source.as_dict(), dest.as_dict()
+    if source.display_name is not None and dest.display_name is not None:
+        src["display_name_pascal"] = display_forms(source.display_name)["pascal"]
+        dst["display_name_pascal"] = display_forms(dest.display_name)["pascal"]
     changed = [
         (f, src[f]) for f in fields if f in src and f in dst and src[f] != dst[f]
     ]
@@ -512,6 +519,9 @@ def _changed_fields(
             hunted.add(pattern)
             changed.append((field, name))
     return changed
+
+
+_changed_fields = changed_verify_fields
 
 
 def _cargo_literals(
@@ -916,7 +926,7 @@ def scan(
     stable by selected path and then scan order (path components followed by
     symlink, content, or binary evidence).
     """
-    changed = _changed_fields(source, dest, fields, substring_fields)
+    changed = changed_verify_fields(source, dest, fields, substring_fields)
     cargo_literals = _cargo_literals(source, dest)
     renamed = renamed or []
     findings: list[Finding] = []
@@ -924,6 +934,9 @@ def scan(
     # source-coordinate outputs are exempt at their POST-rename locations.
     exempt_paths = frozenset(
         path for path, _reason in exempt_regenerated_paths(rules, renamed)
+    )
+    exempt_prefixes = frozenset(
+        path for path, _reason in exempt_regenerated_dirs(rules, renamed)
     )
     snapshot = capture_surface_snapshot(target)
     rule_specs = _rule_scan_specs(
@@ -937,6 +950,7 @@ def scan(
         verify_ignore=rules.verify_ignore,
         root_control=ROOT_CONTROL,
         exempt_paths=exempt_paths,
+        exempt_prefixes=exempt_prefixes,
     )
     untracked = frozenset(e.rel.as_posix() for e in selected if not e.tracked)
     core_excludes = core_excludes_from_snapshot(snapshot)

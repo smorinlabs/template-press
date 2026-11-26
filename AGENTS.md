@@ -227,6 +227,19 @@ After the press the block is inert and may be removed.
 A `[[replace]]` pattern may name a Cargo role with `{cargo_exact_<role>}`,
 `{cargo_ident_<role>}`, or `{cargo_ident_<role>_upper}`; this covers a span the
 strict refusals leave to the target author, and no role may end in `_upper`.
+
+BAML targets rewrite only `.baml` sources and handwritten host code; never
+text-rewrite `baml_client/`. Declare `[[regenerate]] dir` (which accepts
+`{package_name}` for in-package clients such as `src/{package_name}/baml_client`
+and supports `verify_exempt = true` with `reason`), opt `"display_name_pascal"`
+into `[rules] substring_rewrite_fields` when `.baml` files contain glued
+PascalCase identifiers, and never list `"baml"` in `[rules] languages` (declare
+only host manifests such as `["python"]` or `["node"]`). Before any write,
+`press rebrand` refuses an undeclared tracked BAML client
+(`baml_client/inlinedbaml.py` or `.ts` at any depth) with exit 2 and a
+suggested `[[regenerate]] dir` block, and refuses undeclared glued old identity
+names across every field `press verify` scans with exit 1.
+
 `provision`/`status` verbs arrive with the M6 Provision phase.
 
 ## Single source of truth

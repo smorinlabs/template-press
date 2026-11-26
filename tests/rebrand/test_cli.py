@@ -967,7 +967,7 @@ def test_failed_lock_regeneration_exits_1_no_receipt(
     )
     assert code == 1
     err = capsys.readouterr().err
-    assert "lockfile regeneration failed" in err
+    assert "regeneration of uv.lock failed" in err
     # The per-file reason must reach the operator on the FAILURE path too
     # (dogfood run 4 PROBLEM-23).
     assert "skipped (review):" in err
@@ -1302,7 +1302,7 @@ def test_failed_forced_repress_removes_stale_receipt(
     answers2 = write_answers_file(second, DEST2)
     code = main(["--target", str(src_target), "--config", str(answers2), "--force"])
     assert code == 1
-    assert "lockfile regeneration failed" in capsys.readouterr().err
+    assert "regeneration of uv.lock failed" in capsys.readouterr().err
     assert not (src_target / RECEIPT_REL).exists()
 
 
@@ -1336,7 +1336,7 @@ def test_failed_command_cannot_plant_a_receipt(
     answers = write_answers(tmp_path)
     code = main(["--target", str(src_target), "--config", str(answers)])
     assert code == 1
-    assert "lockfile regeneration failed" in capsys.readouterr().err
+    assert "regeneration of uv.lock failed" in capsys.readouterr().err
     assert not (src_target / RECEIPT_REL).exists()
 
 

@@ -45,6 +45,7 @@ from template_press.rebrand.identity import (
     replace_token,
     token_pattern,
 )
+from template_press.rebrand.ignores import apply_ignores
 from template_press.rebrand.inventory import (
     SurfaceEntry,
     SurfaceSnapshot,
@@ -59,6 +60,7 @@ from template_press.rebrand.inventory import (
 from template_press.rebrand.keep_names import (
     KeepCheck,
     RewrittenForms,
+    UndeclaredName,
     check_keep_surfaces,
     component_kept_spans,
     disjoint_from_kept,
@@ -71,7 +73,11 @@ from template_press.rebrand.keep_names import (
 )
 from template_press.rebrand.matcher import find_occurrences, identity_pattern
 from template_press.rebrand.node_manifest import read_node_manifest
-from template_press.rebrand.pathing import ROOT_CONTROL, symlink_target_posix
+from template_press.rebrand.pathing import (
+    ROOT_CONTROL,
+    regenerate_dir_prefixes,
+    symlink_target_posix,
+)
 from template_press.rebrand.pipeline import (
     MAX_RENAME_PASSES,
     MatcherSpec,
@@ -104,9 +110,12 @@ from template_press.rebrand.safety import (
     RenameClosureUnauthorized,
     SafetyError,
     assert_ancestors_real,
+    is_regular_lstat,
     read_regular_nofollow,
     readlink_nofollow,
 )
+from template_press.rebrand.verifier import Finding, changed_verify_fields
+from template_press.rebrand.verify_config import VerifyConfig, effective_verify_fields
 
 Surface = Literal["content", "path", "symlink"]
 HuntConsumer = Literal["doctor", "reset_stub", "reset_path", "regeneration"]
@@ -2898,6 +2907,30 @@ def _checked_cargo_dependency_names(
     return read_cargo_facts(target).external_dependencies
 
 
+def _source_line_reader(target: Path) -> Callable[[str, int], str | None]:
+    """Cached ``(src_path, 1-based line) -> str | None`` reader over ``target``."""
+    cache: dict[str, list[str] | None] = {}
+
+    def reader(src_path: str, line: int) -> str | None:
+        if src_path not in cache:
+            path = target / src_path
+            if is_regular_lstat(path):
+                try:
+                    cache[src_path] = (
+                        read_regular_nofollow(path).decode("utf-8").splitlines()
+                    )
+                except (OSError, SafetyError, UnicodeDecodeError):
+                    cache[src_path] = None
+            else:
+                cache[src_path] = None
+        lines = cache[src_path]
+        if lines is None or line < 1 or line > len(lines):
+            return None
+        return lines[line - 1]
+
+    return reader
+
+
 def check_target_keep_names(
     target: Path,
     source: Identity,
@@ -2905,6 +2938,8 @@ def check_target_keep_names(
     rules: Rules,
     removed: frozenset[str],
     languages: Sequence[str],
+    *,
+    verify_config: VerifyConfig | None = None,
 ) -> KeepCheck:
     """Run the keep-name preflight with this press's real rewrite rows."""
 
@@ -2950,13 +2985,24 @@ def check_target_keep_names(
             ),
         )
 
-    return check_keep_surfaces(
+    glued_fields: Sequence[tuple[str, str]] = ()
+    glued_substring: frozenset[str] = frozenset()
+    if verify_config is not None:
+        scan_fields, glued_substring = effective_verify_fields(
+            source, verify_config, rules.substring_rewrite_fields
+        )
+        glued_fields = changed_verify_fields(
+            source, destination, scan_fields, glued_substring
+        )
+
+    raw = check_keep_surfaces(
         rewrite_surface_texts(
             target,
             exclude_files=rules.exclude_files,
             exclude_dirs=rules.exclude_dirs,
             root_control=ROOT_CONTROL,
             skip_paths=removed,
+            exclude_prefixes=regenerate_dir_prefixes(rules),
         ),
         source,
         rules.keep_names,
@@ -2965,7 +3011,50 @@ def check_target_keep_names(
         cargo_dependency_names=_checked_cargo_dependency_names(
             target, source, removed, languages
         ),
+        glued_fields=glued_fields,
+        glued_substring_fields=glued_substring,
+        glued_skip_dir_components=rules.verify_ignore,
     )
+    if verify_config is None:
+        return raw
+    exact_items = [item for item in raw.undeclared if item.kind != "glued"]
+    glued_items = [item for item in raw.undeclared if item.kind == "glued"]
+    if glued_items and verify_config.ignores:
+        findings = [
+            Finding(
+                item.path,
+                item.field,
+                item.value,
+                item.where,
+                item.line,
+                item.col,
+                "",
+            )
+            for item in glued_items
+        ]
+        surviving, _stale = apply_ignores(
+            findings,
+            list(verify_config.ignores),
+            forward_map=lambda p: p,
+            source_line=_source_line_reader(target),
+        )
+        surviving_keys = {
+            (f.path, f.field, f.value, f.where, f.line, f.col) for f in surviving
+        }
+        glued_items = [
+            item
+            for item in glued_items
+            if (item.path, item.field, item.value, item.where, item.line, item.col)
+            in surviving_keys
+        ]
+    exact_keys = {(item.path, item.where, item.token) for item in exact_items}
+    deduped_glued: dict[tuple[str, str, str], UndeclaredName] = {}
+    for item in glued_items:
+        key = (item.path, item.where, item.token)
+        if key in exact_keys:
+            continue
+        deduped_glued.setdefault(key, item)
+    return KeepCheck((*exact_items, *deduped_glued.values()), raw.stale)
 
 
 def compile_substitution_table(
@@ -2991,6 +3080,7 @@ def compile_substitution_table(
             exclude_files=rules.exclude_files,
             exclude_dirs=rules.exclude_dirs,
             root_control=ROOT_CONTROL,
+            exclude_prefixes=regenerate_dir_prefixes(rules),
         ),
         visibility_inputs=snapshot.visibility_inputs,
     )

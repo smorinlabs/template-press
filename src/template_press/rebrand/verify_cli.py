@@ -69,6 +69,7 @@ from template_press.rebrand.identity import (
     ValidationError,
     cargo_ident,
     cargo_identity_problem,
+    display_forms,
 )
 from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_map
 from template_press.rebrand.inventory import (
@@ -87,6 +88,7 @@ from template_press.rebrand.languages import (
     render_ignored_languages,
 )
 from template_press.rebrand.matcher import find_occurrences
+from template_press.rebrand.pathing import exempt_regenerated_dirs
 from template_press.rebrand.receipt import (
     accepted_origin_from_receipt,
     receipt_binding_problem,
@@ -99,7 +101,12 @@ from template_press.rebrand.remove import (
     validate_removal_conflicts,
 )
 from template_press.rebrand.reset import load_stub_content
-from template_press.rebrand.rules import RULES_REL, Rules, load_selected_rules
+from template_press.rebrand.rules import (
+    RULES_REL,
+    Rules,
+    load_selected_rules,
+    render_package_paths,
+)
 from template_press.rebrand.safety import (
     SafetyError,
     git_hardening_args,
@@ -117,6 +124,8 @@ from template_press.rebrand.verifier import Finding, attach_ignore_hints, scan
 from template_press.rebrand.verify_config import (
     KNOWN_FIELDS,
     VerifyConfig,
+    effective_verify_fields,
+    load_verify_config,
     parse_verify_config,
 )
 
@@ -343,13 +352,23 @@ def _preflight(
     if not undiscoverable and not check_display_name:
         return problems, honored
     corpus = _target_text_corpus(target, rules)
-    if check_display_name and not _value_present(
-        "display_name", source.display_name, corpus, substring_fields
-    ):
-        problems.append(
-            f"declared display_name {source.display_name!r} not found in "
-            "target — stale or mistyped?"
+    if check_display_name and source.display_name is not None:
+        display_present = _value_present(
+            "display_name", source.display_name, corpus, substring_fields
+        ) or (
+            "display_name_pascal" in substring_fields
+            and _value_present(
+                "display_name_pascal",
+                display_forms(source.display_name)["pascal"],
+                corpus,
+                substring_fields,
+            )
         )
+        if not display_present:
+            problems.append(
+                f"declared display_name {source.display_name!r} not found in "
+                "target — stale or mistyped?"
+            )
     if not undiscoverable:
         return problems, honored
     absent = [
@@ -526,36 +545,14 @@ def verify_command(argv: list[str] | None = None) -> int:
     # Steps 2-3 — preflight + [verify] config, against the REAL target.
     try:
         selected = load_selected_rules(target)
-        rules = selected.rules
+        rules = render_package_paths(selected.rules, source)
         languages = check_target_languages(
             target, rules.languages, [rule.file for rule in rules.remove]
         )
-        cfg = _load_verify_config(target)
-        scan_fields: tuple[str, ...] = cfg.fields
-        if source.display_name is not None and "display_name" not in scan_fields:
-            # codesign sec-05: a declared display name is scanned as its own
-            # field — the only coverage when its words diverge from the slug.
-            scan_fields = (*scan_fields, "display_name")
-        # Declared exact names are identity the press rewrites, so they are
-        # always scanned: a leftover must never produce a clean verify.
-        for field_name in ("npm_name", "cli_name"):
-            if (
-                getattr(source, field_name) is not None
-                and field_name not in scan_fields
-            ):
-                scan_fields = (*scan_fields, field_name)
-        # A field the SANDBOX PRESS rewrites substring-wide (`[rules]
-        # substring_rewrite_fields`) must be SCANNED at all (Fix F2) — a field
-        # absent from DEFAULT_FIELDS (e.g. app_name_upper) is otherwise never
-        # scanned regardless of substring mode — AND substring-wide (a
-        # containment-skipped symlink target, or any other rewrite the
-        # hermetic apply cannot perform, can leave a glued, boundary-free
-        # occurrence of that field's source value behind; the boundary-only
-        # `[verify] substring_fields` scope alone would never flag it).
-        scan_fields = _effective_scan_fields(
-            scan_fields, rules.substring_rewrite_fields
+        cfg = load_verify_config(target)
+        scan_fields, scan_substring = effective_verify_fields(
+            source, cfg, rules.substring_rewrite_fields
         )
-        scan_substring = cfg.substring_fields | rules.substring_rewrite_fields
         # The target's OWN receipt (not the sandbox copy's): a prior
         # `--accept-origin-mismatch` press records the exact origin values it
         # accepted, and preflight waives precisely those.
@@ -626,6 +623,7 @@ def verify_command(argv: list[str] | None = None) -> int:
     stale: list[Ignore] = []
     unavailable: tuple[str, ...] = ()
     exempt: list[tuple[str, str]] = []
+    exempt_dirs: list[tuple[str, str]] = []
     try:
         synth = synthesize_dest(source)
         validate_keep_names(rules.keep_names, source, synth, synthetic_dest=True)
@@ -649,7 +647,12 @@ def verify_command(argv: list[str] | None = None) -> int:
                             "equal_fields_collision": None,
                             "exempt": [],
                             "undeclared_names": [
-                                dataclasses.asdict(item)
+                                {
+                                    "path": item.path,
+                                    "where": item.where,
+                                    "field": item.field,
+                                    "token": item.token,
+                                }
                                 for item in keep_check.undeclared
                             ],
                         }
@@ -728,11 +731,13 @@ def verify_command(argv: list[str] | None = None) -> int:
             # can certify these files, so they are listed as not-verified
             # rather than silently omitted.
             exempt = exempt_regenerated_paths(rules, report.renamed)
+            exempt_dirs = exempt_regenerated_dirs(rules, report.renamed)
             forward_map = build_forward_map(report.renamed)
             # Exempt paths back to SOURCE coordinates (codex 3654657451),
             # exactly like the findings below — the synthetic sandbox path
             # does not exist in the user's repo.
             exempt = [(forward_map(file), reason) for file, reason in exempt]
+            exempt_dirs = [(forward_map(d), reason) for d, reason in exempt_dirs]
             surviving, stale = apply_ignores(
                 findings,
                 list(cfg.ignores),
@@ -788,13 +793,16 @@ def verify_command(argv: list[str] | None = None) -> int:
                     # why (exit 0 means clean over the SCANNED set).
                     "exempt": [
                         {"file": file, "reason": reason} for file, reason in exempt
-                    ],
+                    ]
+                    + [{"dir": d, "reason": reason} for d, reason in exempt_dirs],
                 }
             )
         )
     else:
         for file, reason in exempt:
             print(f"not verified (exempt): {file} — {reason}")
+        for d, reason in exempt_dirs:
+            print(f"not verified (exempt): {d}/ — {reason}")
     if failed:
         if not args.as_json:
             _report(surviving, stale, unavailable, equal_collision, source)

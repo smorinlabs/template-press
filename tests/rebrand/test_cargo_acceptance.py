@@ -539,12 +539,14 @@ HEALTHY_SHAPES = {
         "Cargo.toml": PACKAGE.format("tool-pkg"),
         "src/lib.rs": "pub fn hi() {}\n",
         "src/bin/acme-cli.rs": "fn main() {}\n",
+        "press/press-rules.toml": '[rules]\nkeep_names = ["acme-cli"]\n',
     },
     "unreferenced_manifest": {
         "Cargo.toml": PACKAGE.format("tool-pkg"),
         "src/lib.rs": "pub fn hi() {}\n",
         "testdata/acme-sample/Cargo.toml": PACKAGE.format("acme-sample"),
         "testdata/acme-sample/src/lib.rs": "pub fn hi() {}\n",
+        "press/press-rules.toml": '[rules]\nkeep_names = ["acme-sample"]\n',
     },
 }
 

@@ -14,7 +14,7 @@ import subprocess  # nosec B404 — reads git origin of the target
 import tomllib
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from template_press.rebrand.cargo_manifest import CargoFacts, read_cargo_facts
@@ -41,7 +41,11 @@ from template_press.rebrand.node_manifest import (
     unscoped,
 )
 from template_press.rebrand.pathing import ROOT_CONTROL
-from template_press.rebrand.rules import regenerate_suggestion
+from template_press.rebrand.rules import (
+    baml_regenerate_suggestion,
+    regenerate_suggestion,
+    render_package_paths,
+)
 from template_press.rebrand.safety import git_hardening_args, scrubbed_git_env
 from template_press.rebrand.substitutions import (
     cargo_path_splits,
@@ -407,6 +411,49 @@ def _undeclared_lock_problem(target: Path, rules: Rules) -> str | None:
         "press/press-rules.toml (press does not run it; review the command "
         "first):\n" + (regenerate_suggestion("Cargo.lock") or "")
     )
+
+
+_BAML_MARKER_NAMES: frozenset[str] = frozenset({"inlinedbaml.py", "inlinedbaml.ts"})
+
+
+def undeclared_baml_client_problems(
+    target: Path,
+    source: Identity,
+    rules: Rules,
+) -> list[str]:
+    """Refuse tracked BAML clients that no ``[[regenerate]]`` or ``[[remove]]`` covers."""
+    rendered = render_package_paths(rules, source)
+    regen_dirs = tuple(f"{rule.dir}/" for rule in rendered.regenerate_dirs)
+    regen_files = frozenset(rule.file for rule in rendered.regenerate)
+    remove_dirs = tuple(f"{rule.dir}/" for rule in rendered.remove_dirs)
+    remove_files = frozenset(rule.file for rule in rendered.remove)
+    problems: list[str] = []
+    for path in sorted(tracked_path_strings(capture_surface_snapshot(target))):
+        posix = PurePosixPath(path)
+        parts = posix.parts
+        if (
+            len(parts) < 2
+            or parts[-2] != "baml_client"
+            or parts[-1] not in _BAML_MARKER_NAMES
+        ):
+            continue
+        if (
+            path.startswith(regen_dirs)
+            or path in regen_files
+            or path.startswith(remove_dirs)
+            or path in remove_files
+        ):
+            continue
+        client_dir = posix.parent.as_posix()
+        suggestion = baml_regenerate_suggestion(client_dir, posix.suffix, source)
+        indented = "\n".join(f"  {line}" for line in suggestion.splitlines())
+        problems.append(
+            f"baml client {client_dir} has no [[regenerate]] declaration, "
+            "so it would be text-rewritten. Add this block to "
+            "press/press-rules.toml (press does not run it; review the "
+            f"command first):\n{indented}"
+        )
+    return problems
 
 
 # Strict, reserved, and 2018+ keywords. A crate so named can only be spelled

@@ -50,7 +50,9 @@ from template_press.rebrand.pathing import (
 )
 from template_press.rebrand.pathing import (
     ROOT_CONTROL,
+    exempt_regenerated_dirs,
     exempt_regenerated_paths,
+    regenerate_dir_prefixes,
     symlink_target_posix,
     translate_path,
 )
@@ -186,9 +188,13 @@ class RenamePreflight:
 
 
 def _is_excluded(rel: Path, rules: Rules) -> bool:
-    if rel.as_posix() in rules.exclude_files:
+    posix = rel.as_posix()
+    if posix in rules.exclude_files:
         return True
-    return any(part in rules.exclude_dirs for part in rel.parts)
+    if any(part in rules.exclude_dirs for part in rel.parts):
+        return True
+    prefixes = regenerate_dir_prefixes(rules)
+    return any(posix == p or posix.startswith(p + "/") for p in prefixes)
 
 
 def _git_listed(target: Path) -> list[Path]:
@@ -246,11 +252,13 @@ def _content_candidate_entries(target: Path, rules: Rules) -> tuple[SurfaceEntry
     """Snapshot-backed regular-file and symlink rewrite candidates."""
 
     snapshot = capture_surface_snapshot(target)
+    regen_prefixes = regenerate_dir_prefixes(rules)
     entries = select_content_rewrite_entries(
         snapshot,
         exclude_files=rules.exclude_files,
         exclude_dirs=rules.exclude_dirs,
         root_control=ROOT_CONTROL,
+        exclude_prefixes=regen_prefixes,
     )
     # Preserve the compatibility adapter's observable symlink skip reporting
     # without recovering membership through ``Path.is_file()``, which would
@@ -263,6 +271,7 @@ def _content_candidate_entries(target: Path, rules: Rules) -> tuple[SurfaceEntry
             exclude_files=rules.exclude_files,
             exclude_dirs=rules.exclude_dirs,
             root_control=ROOT_CONTROL,
+            exclude_prefixes=regen_prefixes,
         )
         if entry.worktree_kind == "symlink"
     )
@@ -337,6 +346,7 @@ def _rename_candidate_entries(target: Path, rules: Rules) -> tuple[SurfaceEntry,
         exclude_files=rules.exclude_files,
         exclude_dirs=rules.exclude_dirs,
         root_control=ROOT_CONTROL,
+        exclude_prefixes=regenerate_dir_prefixes(rules),
     )
     return entries
 
@@ -423,12 +433,14 @@ def scan_paths(
     without the translation (P04 D3).
     """
     exempt_lockfiles = {p for p, _ in exempt_regenerated_paths(rules, renamed)}
+    exempt_dirs = frozenset(p for p, _ in exempt_regenerated_dirs(rules, renamed))
     snapshot = capture_surface_snapshot(target)
     selected = select_verifier_entries(
         snapshot,
         verify_ignore=rules.verify_ignore,
         root_control=ROOT_CONTROL,
         exempt_paths=frozenset(exempt_lockfiles),
+        exempt_prefixes=exempt_dirs,
     )
     out: list[PathEntry] = []
     for entry in selected:
@@ -906,6 +918,7 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
         exclude_files=rules.exclude_files,
         exclude_dirs=rules.exclude_dirs,
         root_control=ROOT_CONTROL,
+        exclude_prefixes=regenerate_dir_prefixes(rules),
     )
     prefix_fields = _prefix_check_fields(table, rules)
     prefix_counts = {
@@ -1301,11 +1314,13 @@ def _apply_replacements(
         table.rename_plan.source_entries,
         table.rename_plan.visibility_inputs,
     )
+    regen_prefixes = regenerate_dir_prefixes(rules)
     entries = select_content_rewrite_entries(
         snapshot,
         exclude_files=rules.exclude_files,
         exclude_dirs=rules.exclude_dirs,
         root_control=ROOT_CONTROL,
+        exclude_prefixes=regen_prefixes,
     )
     symlink_entries = tuple(
         entry
@@ -1314,6 +1329,7 @@ def _apply_replacements(
             exclude_files=rules.exclude_files,
             exclude_dirs=rules.exclude_dirs,
             root_control=ROOT_CONTROL,
+            exclude_prefixes=regen_prefixes,
         )
         if entry.worktree_kind == "symlink"
     )
