@@ -120,6 +120,7 @@ from template_press.rebrand.rules import (
     Rules,
     SelectedRules,
     load_selected_rules,
+    render_package_paths,
 )
 from template_press.rebrand.safety import (
     RenameClosureUnauthorized,
@@ -852,6 +853,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if dest is None:
             return _fail("--config ANSWERS.toml is required")
+        rules = render_package_paths(rules, source)
 
         split_declared = [split.role for split in rules.cargo_split]
         split_roles = cargo_split_roles(source, dest, split_declared)

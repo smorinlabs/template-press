@@ -497,6 +497,24 @@ _EDIT_KEYS = frozenset({"file", "command", "expect", "env", "platforms"})
 _CLEAN_KEYS = frozenset({"paths", "platforms"})
 
 
+_PACKAGE_PLACEHOLDER = "{package_name}"
+
+
+def _validate_package_placeholder(context: str, path: str) -> None:
+    """Allow only ``{package_name}`` in ``path``; reject other/unbalanced braces."""
+    for token in re.findall(r"\{[^{}]*\}", path):
+        if token != _PACKAGE_PLACEHOLDER:
+            raise ValidationError(
+                f"{RULES_REL}: {context} {path!r} only supports "
+                f"{_PACKAGE_PLACEHOLDER} placeholder, got {token!r}"
+            )
+    stripped = re.sub(r"\{[^{}]*\}", "", path)
+    if "{" in stripped or "}" in stripped:
+        raise ValidationError(
+            f"{RULES_REL}: {context} {path!r} has an unbalanced or nested brace"
+        )
+
+
 def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
     value = table.get(key, default)
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
@@ -509,6 +527,16 @@ def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
                 "names matched at any depth, including basenames; "
                 f"multi-component paths are invalid: {nested}"
             )
+    if key == "extra_exclude_dirs":
+        bad = [v for v in value if "{" in v or "}" in v]
+        if bad:
+            raise ValidationError(
+                f"{RULES_REL}: [rules] extra_exclude_dirs does not accept "
+                f"placeholders (entries match single path components): {bad!r}"
+            )
+    if key == "extra_exclude_files":
+        for entry in value:
+            _validate_package_placeholder(f"[rules] {key}", entry)
     return value
 
 
@@ -861,6 +889,7 @@ def _parse_regenerate(entry: object) -> _RegenerateDeclaration:
             f"{RULES_REL}: [[regenerate]] unknown key(s): {', '.join(sorted(unknown))}"
         )
     file = _declared_rel_path("[[regenerate]] file", entry.get("file"))
+    _validate_package_placeholder("[[regenerate]] file", file)
     _reject_reserved("[[regenerate]]", file)
     command = _parse_command(entry, "[[regenerate]]", file)
     env = _parse_env(entry, "[[regenerate]]", file)
@@ -1704,6 +1733,70 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
         remove_dirs=active_remove_dirs,
     )
     return SelectedRules(platform=platform, rules=rules)
+
+
+def render_package_paths(rules: Rules, identity: Identity) -> Rules:
+    """Render ``{package_name}`` in regeneration paths and ``exclude_files``.
+
+    Re-validates containment, reserved control paths, writer overlaps, and
+    exclude membership on the rendered coordinates so a placeholder colliding
+    with a literal declaration is refused before any write.
+    """
+    has_placeholder = any(
+        _PACKAGE_PLACEHOLDER in path for path in rules.exclude_files
+    ) or any(_PACKAGE_PLACEHOLDER in rule.file for rule in rules.regenerate)
+    if not has_placeholder:
+        return rules
+    pkg = identity.package_name
+
+    def _render(context: str, raw: str) -> str:
+        if _PACKAGE_PLACEHOLDER not in raw:
+            return raw
+        rendered = _declared_rel_path(context, raw.replace(_PACKAGE_PLACEHOLDER, pkg))
+        _reject_reserved(context, rendered)
+        return rendered
+
+    rendered_exclude_files = frozenset(
+        _declared_rel_path(
+            "[rules] extra_exclude_files",
+            path.replace(_PACKAGE_PLACEHOLDER, pkg),
+        )
+        if _PACKAGE_PLACEHOLDER in path
+        else path
+        for path in rules.exclude_files
+    )
+    rendered_regenerate = tuple(
+        replace(rule, file=_render("[[regenerate]] file", rule.file))
+        for rule in rules.regenerate
+    )
+    all_platforms = SUPPORTED_PLATFORMS
+    regen_decls = tuple(
+        _RegenerateDeclaration(rule=rule, platforms=all_platforms)
+        for rule in rendered_regenerate
+    )
+    reset_decls = tuple(
+        _ResetDeclaration(rule=rule, platforms=all_platforms) for rule in rules.reset
+    )
+    remove_decls = tuple(
+        _RemoveDeclaration(rule=rule, platforms=all_platforms)
+        for rule in (*rules.remove, *rules.remove_dirs)
+    )
+    edit_decls = tuple(
+        _EditDeclaration(rule=rule, platforms=all_platforms) for rule in rules.edit
+    )
+    _validate_writer_overlaps(regen_decls, reset_decls, remove_decls, edit_decls)
+    _validate_exclude_membership(
+        regen_decls,
+        reset_decls,
+        edit_decls,
+        rendered_exclude_files,
+        rules.exclude_dirs,
+    )
+    return replace(
+        rules,
+        exclude_files=rendered_exclude_files,
+        regenerate=rendered_regenerate,
+    )
 
 
 def load_selected_rules(target: Path, *, platform: str | None = None) -> SelectedRules:

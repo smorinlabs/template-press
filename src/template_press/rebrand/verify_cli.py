@@ -100,7 +100,12 @@ from template_press.rebrand.remove import (
     validate_removal_conflicts,
 )
 from template_press.rebrand.reset import load_stub_content
-from template_press.rebrand.rules import RULES_REL, Rules, load_selected_rules
+from template_press.rebrand.rules import (
+    RULES_REL,
+    Rules,
+    load_selected_rules,
+    render_package_paths,
+)
 from template_press.rebrand.safety import (
     SafetyError,
     git_hardening_args,
@@ -539,7 +544,7 @@ def verify_command(argv: list[str] | None = None) -> int:
     # Steps 2-3 — preflight + [verify] config, against the REAL target.
     try:
         selected = load_selected_rules(target)
-        rules = selected.rules
+        rules = render_package_paths(selected.rules, source)
         languages = check_target_languages(
             target, rules.languages, [rule.file for rule in rules.remove]
         )
