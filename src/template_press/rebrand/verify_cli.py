@@ -731,7 +731,7 @@ def verify_command(argv: list[str] | None = None) -> int:
             # can certify these files, so they are listed as not-verified
             # rather than silently omitted.
             exempt = exempt_regenerated_paths(rules, report.renamed)
-            exempt_dirs = exempt_regenerated_dirs(rules, report.renamed, dest=synth)
+            exempt_dirs = exempt_regenerated_dirs(rules, report.renamed)
             forward_map = build_forward_map(report.renamed)
             # Exempt paths back to SOURCE coordinates (codex 3654657451),
             # exactly like the findings below — the synthetic sandbox path

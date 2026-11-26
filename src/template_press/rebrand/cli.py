@@ -1022,7 +1022,9 @@ def main(argv: list[str] | None = None) -> int:
             target, rules.regenerate, renamed=frozenset(plan.renames)
         )
         gate_problems += plan_problems
-        gate_problems += preflight_regenerate_dirs(target, rules)
+        gate_problems += preflight_regenerate_dirs(
+            target, rules, renames=plan.renames, dest=dest
+        )
         regen_dir_plans, dir_plan_problems = plan_regenerate_dirs(
             target, rules.regenerate_dirs, renamed=frozenset(plan.renames)
         )

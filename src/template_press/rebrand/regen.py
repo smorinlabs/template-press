@@ -682,11 +682,38 @@ def execute_dir_regenerations(
     for plan in plans:
         rule = plan.rule
         out_dir = resolve_regenerate_dir(rule, renames, dest)
+        moved_dir = translate_path(rule.dir, renames)
         out_path = target / out_dir
         try:
             assert_under_root(out_path, target)
+            if (
+                out_dir != rule.dir
+                and out_dir != moved_dir
+                and os.path.lexists(out_path)
+            ):
+                raise SafetyError(
+                    f"resolved destination {out_dir!r} already exists on disk"
+                )
             if os.path.lexists(out_path):
                 _remove_dir_nofollow(target, out_dir)
+            if out_dir != rule.dir:
+                src_path = target / rule.dir
+                assert_under_root(src_path, target)
+                if os.path.lexists(src_path):
+                    _remove_dir_nofollow(target, rule.dir)
+                    src_parts = rule.dir.split("/")
+                    out_parts = out_dir.split("/")
+                    for depth in range(len(src_parts) - 1, 0, -1):
+                        if (
+                            depth - 1 < len(out_parts)
+                            and src_parts[depth - 1] == out_parts[depth - 1]
+                        ):
+                            break
+                        ancestor = target.joinpath(*src_parts[:depth])
+                        try:
+                            ancestor.rmdir()
+                        except OSError:
+                            break
         except (SafetyError, OSError) as exc:
             report.skipped.append(f"regenerate {rule.dir}/ (sink guard: {exc})")
             failed.append(rule.dir)
@@ -917,14 +944,38 @@ def preflight_regenerate_outputs(target: Path, rules: Rules) -> list[str]:
     return problems
 
 
-def preflight_regenerate_dirs(target: Path, rules: Rules) -> list[str]:
+def preflight_regenerate_dirs(
+    target: Path,
+    rules: Rules,
+    *,
+    renames: Mapping[str, str] | None = None,
+    dest: Identity | None = None,
+) -> list[str]:
     """Plan-time safety and cleanliness checks for ``[[regenerate]] dir`` rules."""
     if not rules.regenerate_dirs:
         return []
     problems: list[str] = []
     snapshot = capture_surface_snapshot(target)
+    rename_map = renames or {}
     for rule in rules.regenerate_dirs:
         prefix = f"regenerate dir {rule.dir}: "
+        dest_dir = resolve_regenerate_dir(rule, rename_map, dest)
+        moved_dir = translate_path(rule.dir, rename_map)
+        if dest_dir != rule.dir and dest_dir != moved_dir:
+            dest_path = target / dest_dir
+            try:
+                assert_under_root(dest_path, target)
+                if os.path.lexists(dest_path):
+                    assert_ancestors_real(dest_path, target)
+            except SafetyError as exc:
+                problems.append(prefix + f"destination {dest_dir}: {exc}")
+                continue
+            if os.path.lexists(dest_path):
+                problems.append(
+                    prefix + f"resolved destination {dest_dir!r} already exists "
+                    "on disk — move or remove it before pressing"
+                )
+                continue
         path = target / rule.dir
         try:
             assert_under_root(path, target)

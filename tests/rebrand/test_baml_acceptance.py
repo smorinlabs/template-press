@@ -69,10 +69,9 @@ def _require_baml_cli(monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str]:
         pytest.skip(f"baml-cli binary not found at {baml_bin}")
     current_path = os.environ.get("PATH", "")
     bin_dir = str(baml_bin.parent)
-    if bin_dir not in current_path.split(os.pathsep):
-        monkeypatch.setenv(
-            "PATH", f"{bin_dir}{os.pathsep}{current_path}" if current_path else bin_dir
-        )
+    monkeypatch.setenv(
+        "PATH", f"{bin_dir}{os.pathsep}{current_path}" if current_path else bin_dir
+    )
     result = subprocess.run(  # noqa: S603
         [str(baml_bin), "--version"],
         check=True,

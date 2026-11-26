@@ -936,7 +936,7 @@ def scan(
         path for path, _reason in exempt_regenerated_paths(rules, renamed)
     )
     exempt_prefixes = frozenset(
-        path for path, _reason in exempt_regenerated_dirs(rules, renamed, dest=dest)
+        path for path, _reason in exempt_regenerated_dirs(rules, renamed)
     )
     snapshot = capture_surface_snapshot(target)
     rule_specs = _rule_scan_specs(

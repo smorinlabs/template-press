@@ -422,3 +422,134 @@ def test_gitignored_root_dir_and_clean_in_package_dir_both_work(
     assert (pkg_repo / "src" / "zeta_tool" / "baml_client" / "fresh.py").read_text(
         encoding="utf-8"
     ) == "CLIENT = 'zeta_tool'\n"
+
+
+def test_placeholder_dir_refuses_preexisting_destination_on_disk(
+    tmp_path: Path, capsys
+) -> None:
+    """Regression (codex 4704119216): an unrenamed placeholder dir must not
+    delete an unrelated pre-existing directory at its destination path."""
+    script = (
+        "import pathlib; "
+        "d = pathlib.Path('clients/zeta_tool'); d.mkdir(parents=True, exist_ok=True); "
+        "(d / 'fresh.py').write_text(\"CLIENT = 'zeta_tool'\\n\", encoding='utf-8')"
+    )
+    repo = _init_repo(
+        tmp_path / "dest-collision",
+        ACME_SOURCE,
+        _python_files(ACME_SOURCE),
+        rules_text=(
+            "[[regenerate]]\n"
+            'dir = "clients/{package_name}"\n'
+            f"command = {json.dumps([PY, '-c', script])}\n"
+            "verify_exempt = true\n"
+            'reason = "generated client"\n'
+        ),
+    )
+    local_file = repo / "clients" / "zeta_tool" / "local.txt"
+    local_file.parent.mkdir(parents=True)
+    local_file.write_text("keep me\n", encoding="utf-8")
+    answers = _write_answers(tmp_path / "ans", ZETA_DEST)
+
+    code = main(["--target", str(repo), "--config", str(answers), "--allow-dirty"])
+    assert code == 2
+    assert local_file.read_text(encoding="utf-8") == "keep me\n"
+    assert "already exists" in capsys.readouterr().err
+    assert not (repo / RECEIPT_REL).exists()
+
+
+def test_placeholder_dir_without_parent_rename_exempts_actual_sandbox_path(
+    tmp_path: Path, capsys
+) -> None:
+    """Regression (codex 4704119226): when a placeholder dir has no sibling
+    causing its parent to move, hermetic verify exempts its real sandbox path
+    and a real press removes the stale source dir before rebuilding."""
+    script = (
+        "import pathlib, tomllib; "
+        "pkg = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['name']; "
+        "d = pathlib.Path('clients') / pkg; d.mkdir(parents=True, exist_ok=True); "
+        "(d / 'fresh.py').write_text(f'CLIENT = {pkg!r}\\n', encoding='utf-8')"
+    )
+    repo = _init_repo(
+        tmp_path / "standalone-placeholder-dir",
+        ACME_SOURCE,
+        _python_files(
+            ACME_SOURCE,
+            {"clients/acme_widget/generated.py": "CLIENT = 'acme_widget'\n"},
+        ),
+        rules_text=(
+            "[[regenerate]]\n"
+            'dir = "clients/{package_name}"\n'
+            f"command = {json.dumps([PY, '-c', script])}\n"
+            "verify_exempt = true\n"
+            'reason = "generated client"\n'
+        ),
+    )
+    assert verify_command(["--target", str(repo)]) == 0
+    out = capsys.readouterr().out
+    assert "clients/acme_widget/" in out
+
+    answers = _write_answers(tmp_path / "ans", ZETA_DEST)
+    assert main(["--target", str(repo), "--config", str(answers)]) == 0
+    assert not (repo / "clients" / "acme_widget").exists()
+    assert (repo / "clients" / "zeta_tool" / "fresh.py").read_text(
+        encoding="utf-8"
+    ) == "CLIENT = 'zeta_tool'\n"
+
+
+def test_regenerate_dir_command_conflicting_with_remove_refused_before_apply(
+    tmp_path: Path, capsys
+) -> None:
+    """Regression (codex 4704119232): [[regenerate]] dir commands referencing a
+    [[remove]] file or directory must be refused at plan time (exit 2)."""
+    for remove_block in (
+        '[[remove]]\nfile = "scripts/generate.py"\nreason = "drop script"\n',
+        '[[remove]]\ndir = "scripts"\nreason = "drop scripts"\n',
+    ):
+        sub = tmp_path / ("rm_dir" if "dir =" in remove_block else "rm_file")
+        repo = _init_repo(
+            sub / "repo",
+            ACME_SOURCE,
+            _python_files(
+                ACME_SOURCE,
+                {
+                    "scripts/generate.py": "print('hi')\n",
+                    "baml_client/a.py": "x = 1\n",
+                },
+            ),
+            rules_text=(
+                f"{remove_block}\n"
+                "[[regenerate]]\n"
+                'dir = "baml_client"\n'
+                f"command = {json.dumps([PY, 'scripts/generate.py'])}\n"
+                "verify_exempt = true\n"
+                'reason = "generated client"\n'
+            ),
+        )
+        answers = _write_answers(sub / "ans", ZETA_DEST)
+        assert main(["--target", str(repo), "--config", str(answers), "--dry-run"]) == 2
+        assert "scripts/generate.py" in capsys.readouterr().err
+        assert not (repo / RECEIPT_REL).exists()
+
+
+def test_resolve_regenerate_dir_composes_ancestor_rename_and_placeholder() -> None:
+    """Regression (coderabbit 4704144779): ancestor rename and {package_name}
+    substitution both apply when dest is provided, while dest=None stays in
+    sandbox coordinates."""
+    from template_press.rebrand.pathing import resolve_regenerate_dir
+    from template_press.rebrand.rules import RegenerateDirRule
+
+    rule = RegenerateDirRule(
+        dir="acmelabs/generated/acme_widget/baml_client",
+        command=("baml-cli", "generate"),
+        raw_dir="acmelabs/generated/{package_name}/baml_client",
+    )
+    renames = {"acmelabs": "zetalabs"}
+    assert (
+        resolve_regenerate_dir(rule, renames, ZETA_DEST)
+        == "zetalabs/generated/zeta_tool/baml_client"
+    )
+    assert (
+        resolve_regenerate_dir(rule, renames, None)
+        == "zetalabs/generated/acme_widget/baml_client"
+    )

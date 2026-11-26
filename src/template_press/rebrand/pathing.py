@@ -133,8 +133,22 @@ def resolve_regenerate_dir(
     """Resolve a ``[[regenerate]] dir`` to its post-rename location."""
     translated = translate_path(rule.dir, rename_map)
     raw = rule.raw_dir or rule.dir
-    if translated == rule.dir and dest is not None and "{package_name}" in raw:
-        translated = raw.replace("{package_name}", dest.package_name)
+    if dest is None or "{package_name}" not in raw:
+        return translated
+    raw_parts = raw.split("/")
+    src_parts = rule.dir.split("/")
+    out_parts = translated.split("/")
+    if len(raw_parts) == len(src_parts) == len(out_parts):
+        return "/".join(
+            raw_part.replace("{package_name}", dest.package_name)
+            if "{package_name}" in raw_part and out_part == src_part
+            else out_part
+            for raw_part, src_part, out_part in zip(
+                raw_parts, src_parts, out_parts, strict=True
+            )
+        )
+    if translated == rule.dir:
+        return raw.replace("{package_name}", dest.package_name)
     return translated
 
 

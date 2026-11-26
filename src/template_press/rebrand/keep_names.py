@@ -614,6 +614,7 @@ def _glued_hits_in_text(
     substring: bool,
     kept: Sequence[Span],
     rewritten: RewrittenForms,
+    extra_occupied: Sequence[Span] = (),
 ) -> list[tuple[int, str]]:
     """``(col, expanded_token)`` for paranoid matches that no rewrite row covers."""
     spans = find_outside_kept(text, field, value, substring=substring, kept=kept)
@@ -622,6 +623,7 @@ def _glued_hits_in_text(
     occupied = [
         *_pattern_spans(text, rewritten.patterns),
         *_literal_spans(text, rewritten.literals),
+        *extra_occupied,
     ]
     hits: list[tuple[int, str]] = []
     for m_start, m_end in spans:
@@ -751,7 +753,26 @@ def check_keep_surfaces(
         ):
             continue
         if where == "content":
-            for lineno, line in enumerate(text.splitlines(), start=1):
+            multiline_lits = frozenset(
+                lit for lit in subject.literals if "\n" in lit or "\r" in lit
+            )
+            full_lit_spans = (
+                _literal_spans(text, multiline_lits) if multiline_lits else ()
+            )
+            line_offset = 0
+            for lineno, raw_line in enumerate(text.splitlines(keepends=True), start=1):
+                line = raw_line.rstrip("\r\n")
+                line_end = line_offset + len(line)
+                extra_occupied = (
+                    [
+                        (max(0, lo - line_offset), min(len(line), hi - line_offset))
+                        for lo, hi in full_lit_spans
+                        if lo < line_end and hi > line_offset
+                    ]
+                    if full_lit_spans
+                    else ()
+                )
+                line_offset += len(raw_line)
                 line_kept = kept_spans(line, names)
                 for field, value in core_glued:
                     for col, token in _glued_hits_in_text(
@@ -761,6 +782,7 @@ def check_keep_surfaces(
                         substring=field in glued_substring_fields,
                         kept=line_kept,
                         rewritten=subject,
+                        extra_occupied=extra_occupied,
                     ):
                         glued_findings.append(
                             UndeclaredName(

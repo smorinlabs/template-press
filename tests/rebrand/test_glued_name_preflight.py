@@ -470,3 +470,24 @@ def test_scope_i_property_clean_verify_never_refused_by_glued_preflight(
         assert check.undeclared == (), (
             f"{repo.name} falsely refused: {check.undeclared}"
         )
+
+
+def test_multiline_replace_literal_covers_glued_occurrence(tmp_path: Path) -> None:
+    """Regression (coderabbit 4704144770): a [[replace]] pattern containing a
+    newline must still mark its covered spans as rewritten in glued-name preflight."""
+    repo = _init_repo(
+        tmp_path / "multiline-replace",
+        ACME_SOURCE,
+        _python_files(
+            ACME_SOURCE,
+            {"src/acme_widget/cfg.txt": "fooacme\nbar\n"},
+        ),
+        rules_text=(
+            '[[replace]]\npattern = "foo{app_name}\\n"\nreason = "multiline token"\n'
+        ),
+    )
+    answers = _write_answers(tmp_path / "ans", ZETA_DEST)
+    assert main(["--target", str(repo), "--config", str(answers)]) == 0
+    assert (repo / "src" / "zeta_tool" / "cfg.txt").read_text(
+        encoding="utf-8"
+    ) == "foozeta\nbar\n"
