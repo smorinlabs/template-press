@@ -37,6 +37,7 @@ from template_press.rebrand.discovery import (
     manifest_warnings,
     mismatches,
     node_proposal,
+    undeclared_baml_client_problems,
 )
 from template_press.rebrand.doctor import find_leaks, render_leak_report
 from template_press.rebrand.engine import (
@@ -955,6 +956,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         removal_receipt_metadata(removal_plan, prior_removed)
         effective_rules = removal_rules_view(rules, removal_plan)
+        baml_problems = undeclared_baml_client_problems(target, source, rules)
+        if baml_problems:
+            for problem in baml_problems:
+                print(f"error: {problem}", file=sys.stderr)
+            return 2
         verify_cfg = load_verify_config(target)
         keep_check = check_target_keep_names(
             target,
@@ -1469,11 +1475,12 @@ def _press(
             # reporting; {} when no commands ran.
             restore_problems = restore_control_files(target, control_snapshot)
             print(
-                f"error: lockfile regeneration failed for "
-                f"{', '.join(failed_locks)} — the lockfile still carries the old "
-                f"identity and is exempt from the doctor scan, so this rebrand "
-                f"is INCOMPLETE; no receipt written. Regenerate it, then re-run "
-                f"with --force.",
+                f"error: regeneration of {', '.join(failed_locks)} failed — the "
+                f"regenerated output still carries the old identity or failed its "
+                f"postcondition and is exempt from the doctor scan, so this rebrand "
+                f"is INCOMPLETE; no receipt written. "
+                f"{_partial_rewrite_restore_hint(target)}. Fix the command or the "
+                f"declaration, then re-run with --force.",
                 file=sys.stderr,
             )
             _report_control_restore_problems(restore_problems)
@@ -1489,7 +1496,7 @@ def _press(
                 False,
                 report.renamed,
                 report.regenerated,
-                env_error=f"lockfile regeneration failed for {', '.join(failed_locks)}",
+                env_error=f"regeneration of {', '.join(failed_locks)} failed",
             )
         if any_command:
             # Final validation pass (D3): edits, outputs, reset stubs, and the

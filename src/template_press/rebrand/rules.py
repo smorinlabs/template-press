@@ -446,6 +446,36 @@ _CARGO_LOCK_SUGGESTION = (
     'command = ["cargo", "update", "--workspace", "--offline"]\n'
 )
 
+_BAML_COMMANDS: dict[str, tuple[str, ...]] = {
+    ".py": ("uv", "run", "--offline", "baml-cli", "generate"),
+    ".ts": ("npx", "baml-cli", "generate"),
+}
+
+
+def baml_regenerate_suggestion(
+    client_dir: str,
+    marker_ext: str,
+    source: Identity | None = None,
+) -> str:
+    """A paste-ready ``[[regenerate]]`` dir block for a tracked BAML client."""
+    parts = client_dir.split("/")
+    if source is not None and source.package_name in parts:
+        suggested_dir = "/".join(
+            _PACKAGE_PLACEHOLDER if part == source.package_name else part
+            for part in parts
+        )
+    else:
+        suggested_dir = client_dir
+    command = _BAML_COMMANDS.get(marker_ext, ("baml-cli", "generate"))
+    argv = ", ".join(f'"{part}"' for part in command)
+    return (
+        "[[regenerate]]\n"
+        f'dir = "{suggested_dir}"\n'
+        f"command = [{argv}]\n"
+        "verify_exempt = true\n"
+        'reason = "BAML client, rebuilt from baml_src"\n'
+    )
+
 
 def regenerate_suggestion(file: str) -> str | None:
     """A paste-ready [[regenerate]] block for a known root lockfile, else None.
