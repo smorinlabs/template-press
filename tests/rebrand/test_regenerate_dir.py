@@ -553,3 +553,102 @@ def test_resolve_regenerate_dir_composes_ancestor_rename_and_placeholder() -> No
         resolve_regenerate_dir(rule, renames, None)
         == "zetalabs/generated/acme_widget/baml_client"
     )
+
+
+def test_ancestor_renamed_with_placeholder_removes_translated_source_dir(
+    tmp_path: Path,
+) -> None:
+    """Regression (codex 4707354023): when an ancestor dir renames but the
+    {package_name} component does not, execute_dir_regenerations must remove
+    the translated stale source dir rather than leaving it behind."""
+    script = (
+        "import pathlib, tomllib; "
+        "pkg = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['name']; "
+        "repo_slug = pkg.replace('_', '-'); "
+        "d = pathlib.Path(repo_slug) / 'generated' / pkg / 'baml_client'; "
+        "d.mkdir(parents=True, exist_ok=True); "
+        "(d / 'fresh.py').write_text(f'CLIENT = {pkg!r}\\n', encoding='utf-8')"
+    )
+    repo = _init_repo(
+        tmp_path / "ancestor-plus-placeholder",
+        ACME_SOURCE,
+        _python_files(
+            ACME_SOURCE,
+            {
+                "acme-widget/README.md": "# acme-widget\n",
+                "acme-widget/generated/acme_widget/baml_client/old.py": (
+                    "CLIENT = 'acme_widget'\n"
+                ),
+            },
+        ),
+        rules_text=(
+            "[[regenerate]]\n"
+            'dir = "acme-widget/generated/{package_name}/baml_client"\n'
+            f"command = {json.dumps([PY, '-c', script])}\n"
+            "verify_exempt = true\n"
+            'reason = "generated client"\n'
+        ),
+    )
+    answers = _write_answers(tmp_path / "ans", ZETA_DEST)
+    assert main(["--target", str(repo), "--config", str(answers)]) == 0
+    assert not (repo / "zeta-tool" / "generated" / "acme_widget").exists()
+    assert (
+        repo / "zeta-tool" / "generated" / "zeta_tool" / "baml_client" / "fresh.py"
+    ).read_text(encoding="utf-8") == "CLIENT = 'zeta_tool'\n"
+
+
+def test_regenerate_dir_refuses_active_core_excludes_file_inside_dir(
+    tmp_path: Path, capsys
+) -> None:
+    """Regression (codex 4707354036): an active core.excludesFile inside a
+    [[regenerate]] dir must be refused at preflight (exit 2) before any write."""
+    repo = _init_repo(
+        tmp_path / "active-excludes",
+        ACME_SOURCE,
+        _python_files(
+            ACME_SOURCE,
+            {
+                "baml_client/a.py": "x = 1\n",
+                "baml_client/ignore-rules": "*.tmp\n",
+            },
+        ),
+        rules_text=(
+            "[[regenerate]]\n"
+            'dir = "baml_client"\n'
+            f"command = {json.dumps([PY, '-c', _client_regen_script(False)])}\n"
+            "verify_exempt = true\n"
+            'reason = "generated client"\n'
+        ),
+    )
+    _git(repo, "config", "core.excludesFile", str(repo / "baml_client/ignore-rules"))
+    answers = _write_answers(tmp_path / "ans", ZETA_DEST)
+    assert main(["--target", str(repo), "--config", str(answers), "--dry-run"]) == 2
+    assert "active Git visibility input" in capsys.readouterr().err
+    assert not (repo / RECEIPT_REL).exists()
+
+
+def test_regenerate_dir_refuses_untracked_file_under_show_untracked_no(
+    tmp_path: Path, capsys
+) -> None:
+    """Regression (coderabbit 4707367515): untracked files under a [[regenerate]]
+    dir must still be refused when status.showUntrackedFiles=no."""
+    repo = _init_repo(
+        tmp_path / "show-untracked-no",
+        ACME_SOURCE,
+        _python_files(ACME_SOURCE, {"baml_client/a.py": "x = 1\n"}),
+        rules_text=(
+            "[[regenerate]]\n"
+            'dir = "baml_client"\n'
+            f"command = {json.dumps([PY, '-c', _client_regen_script(False)])}\n"
+            "verify_exempt = true\n"
+            'reason = "generated client"\n'
+        ),
+    )
+    _git(repo, "config", "status.showUntrackedFiles", "no")
+    personal = repo / "baml_client" / "personal.txt"
+    personal.write_text("keep me\n", encoding="utf-8")
+    answers = _write_answers(tmp_path / "ans", ZETA_DEST)
+    assert main(["--target", str(repo), "--config", str(answers), "--allow-dirty"]) == 2
+    assert personal.read_text(encoding="utf-8") == "keep me\n"
+    assert "uncommitted or untracked" in capsys.readouterr().err
+    assert not (repo / RECEIPT_REL).exists()

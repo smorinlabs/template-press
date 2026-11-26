@@ -696,20 +696,20 @@ def execute_dir_regenerations(
                 )
             if os.path.lexists(out_path):
                 _remove_dir_nofollow(target, out_dir)
-            if out_dir != rule.dir:
-                src_path = target / rule.dir
-                assert_under_root(src_path, target)
-                if os.path.lexists(src_path):
-                    _remove_dir_nofollow(target, rule.dir)
-                    src_parts = rule.dir.split("/")
+            if out_dir != moved_dir:
+                stale_path = target / moved_dir
+                assert_under_root(stale_path, target)
+                if os.path.lexists(stale_path):
+                    _remove_dir_nofollow(target, moved_dir)
+                    stale_parts = moved_dir.split("/")
                     out_parts = out_dir.split("/")
-                    for depth in range(len(src_parts) - 1, 0, -1):
+                    for depth in range(len(stale_parts) - 1, 0, -1):
                         if (
                             depth - 1 < len(out_parts)
-                            and src_parts[depth - 1] == out_parts[depth - 1]
+                            and stale_parts[depth - 1] == out_parts[depth - 1]
                         ):
                             break
-                        ancestor = target.joinpath(*src_parts[:depth])
+                        ancestor = target.joinpath(*stale_parts[:depth])
                         try:
                             ancestor.rmdir()
                         except OSError:
@@ -881,7 +881,9 @@ def has_uncommitted_changes(target: Path, rel: str) -> bool:
     assume-unchanged / skip-worktree bits hide from `status --porcelain`
     (lowercase or S first column in `ls-files -v`): the guard's promise is
     refusing to destroy hidden work, which is precisely that case."""
-    if _git_stdout(target, "status", "--porcelain", "--", rel).strip():
+    if _git_stdout(
+        target, "status", "--porcelain", "--untracked-files=all", "--", rel
+    ).strip():
         return True
     flags = _git_stdout(target, "ls-files", "-v", "--", rel)
     return any(line[:1].islower() or line[:1] == "S" for line in flags.splitlines())
@@ -1014,11 +1016,40 @@ def preflight_regenerate_dirs(
                     "restore or commit deletions before pressing"
                 )
             continue
-        tree_problems, _files = _validate_real_dir_tree(
+        tree_problems, tree_files = _validate_real_dir_tree(
             target, rule.dir, prefix, check_hardlinks=True
         )
         if tree_problems:
             problems.extend(tree_problems)
+            continue
+        dir_abs = os.path.normcase(os.path.abspath(path))
+        dir_abs_prefix = dir_abs + os.sep
+        tree_nodes: set[tuple[int, int]] = set()
+        for file_path in tree_files:
+            file_st = os.lstat(file_path)
+            if file_st.st_ino:
+                tree_nodes.add((file_st.st_dev, file_st.st_ino))
+        active_input_hit: str | None = None
+        for item in snapshot.visibility_inputs:
+            if item.kind != "file":
+                continue
+            item_abs = os.path.normcase(os.path.abspath(item.path))
+            if item_abs == dir_abs or item_abs.startswith(dir_abs_prefix):
+                active_input_hit = item.origin
+                break
+            try:
+                item_st = os.lstat(item.path)
+            except OSError:
+                continue
+            if item_st.st_ino and (item_st.st_dev, item_st.st_ino) in tree_nodes:
+                active_input_hit = item.origin
+                break
+        if active_input_hit is not None:
+            problems.append(
+                prefix + f"contains active Git visibility input ({active_input_hit}) — "
+                "regenerating this directory would delete an active ignore or "
+                "Git config file"
+            )
             continue
         if has_uncommitted_changes(target, rule.dir):
             problems.append(
