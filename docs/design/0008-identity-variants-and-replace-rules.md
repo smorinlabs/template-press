@@ -63,7 +63,10 @@ retained decision record does not require those files to remain present.
    cover glued UPPERCASE forms (e.g. `PLBPOwned`); a target with those
    needs the derived field opted in too, so the recommended pair when
    uppercase glued forms exist is
-   `substring_rewrite_fields = ["app_name", "app_name_upper"]`.
+   `substring_rewrite_fields = ["app_name", "app_name_upper"]`. Derived
+   `display_name` forms (`display_name_pascal`, `display_name_camel`,
+   `display_name_spaced`) are also valid here (for glued PascalCase names such
+   as `AcmeWidgetClient`); raw `display_name` remains invalid.
 4. **Paths ride the shared matcher** (sec-03 ch-03-a). Rules with
    `paths = true` and substring-mode fields flow into the existing
    `_renamed_rel` rename pass — no second matching surface (the dotnet
@@ -347,6 +350,23 @@ retained decision record does not require those files to remain present.
    hyphen, the press prints a warning instead of refusing. The receipt and the
    rewritten `press-source.toml` record the hyphenated name, so later presses
    use the normal two-spelling rows. `press verify` ignores the block.
+
+8. **Glued-name preflight, whole-directory regeneration, and BAML targets
+   (P19, approved 2026-11-25).** Before any write, `press rebrand` extends the
+   keep-name preflight to glued occurrences of every identity field that
+   `press verify` scans (scope (i): a target that passes pre-press
+   `press verify` is not newly refused), exiting 1 with rewrite
+   (`substring_rewrite_fields`, `[[replace]]`) and keep (`keep_names`,
+   `[[verify.ignore]]`) guidance. `substring_rewrite_fields` accepts derived
+   display forms (`display_name_pascal`, `display_name_camel`,
+   `display_name_spaced`). `[[regenerate]]` accepts either `file` or `dir`
+   (mutually exclusive), with `{package_name}` placeholder rendering in
+   `[[regenerate]] file`, `[[regenerate]] dir`, and `[rules]
+   extra_exclude_files`. Before any write, a tracked BAML client
+   (`baml_client/inlinedbaml.py` or `.ts` at any depth) without a covering
+   `[[regenerate]]` or `[[remove]]` exits 2 with a suggested `[[regenerate]]
+   dir` block. Spec: [BAML
+   targets](../superpowers/specs/2026-11-25-baml-targets-design.md).
 
 ## Independence guardrail (P06 D2)
 

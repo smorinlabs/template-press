@@ -201,12 +201,16 @@ wholly inside it. A match that only overlaps a kept span is still a leak.
 - An entry that occurs nowhere on the rewrite surface prints a stale-entry
   warning on stderr. The dry-run plan and the receipt list the kept names.
 
-### Sibling preflight
+### Sibling and glued-name preflight
 
 Before any rewrite, `press rebrand` and `press verify` scan the target for a
 token that joins a source `npm_name` or `cli_name` to another name part and is
-not declared in `keep_names`. A finding exits 1 with nothing written and no
-receipt, and prints each token with the `keep_names` line that would keep it.
+not declared in `keep_names`. In addition, `press rebrand` scans every identity
+field that `press verify` checks (including derived `display_name` forms) for
+glued occurrences across all target languages. A finding exits 1 with nothing
+written and no receipt, and prints each token with the rewrite rule
+(`substring_rewrite_fields` / `[[replace]]`) or keep rule (`keep_names` /
+`[[verify.ignore]]`) that resolves it.
 
 - Multi-part values (`acme-cli`, `@acme/widget`): any name character touching
   either side is a sibling (`acme-cli2`, `xacme-cli`, `acme-cli-helper`).
@@ -626,6 +630,44 @@ paths are read from every dependency table, including the pre-2024
 An `owner`, `author`, or `email` row that rewrites such a path without
 renaming its file can give a receipt for a build that then fails.
 
+## BAML targets
+
+BAML repositories keep their generated `baml_client/` out of text rewriting and
+rebuild it with `[[regenerate]] dir` after `.baml` sources and host code have
+been pressed.
+
+1. Run `press verify --target <TARGET>` before the first press to find any
+   glued names in `.baml` or host files (for example `AcmeWidgetClient` when
+   `display_name = "Acme Widget"`).
+2. Add `[rules]` and `[[regenerate]] dir` to `press/press-rules.toml`:
+
+```toml
+[rules]
+languages = ["python"]
+substring_rewrite_fields = ["display_name_pascal"]
+
+[[regenerate]]
+dir = "src/{package_name}/baml_client"
+command = ["uv", "run", "--offline", "baml-cli", "generate"]
+verify_exempt = true
+reason = "BAML client, rebuilt from baml_src"
+```
+
+- For a TypeScript host, use `languages = ["node"]` (only if multi-manifest),
+  `dir = "baml_client"` (or `"src/baml_client"`), and
+  `command = ["npx", "baml-cli", "generate"]`. Never list `"baml"` in
+  `[rules] languages`.
+- `{package_name}` in `[[regenerate]] dir` renders against the source identity
+  before the press and the destination identity after renames, so repeat
+  presses work without editing `press/press-rules.toml`.
+- A tracked `baml_client/inlinedbaml.py` or `baml_client/inlinedbaml.ts` at any
+  depth with no covering `[[regenerate]]` or `[[remove]]` exits 2 before any
+  write and prints a paste-ready `[[regenerate]] dir` block.
+- For a gitignored client inside the package, add
+  `[[clean]] paths = ["src/{package_name}/baml_client"]` and run `press clean`
+  before `press rebrand`; `[[regenerate]] dir` rebuilds the client at the new
+  package path.
+
 ## Rules authoring (`press/press-rules.toml`)
 
 ### `[[replace]]` — exact glued-token rules
@@ -690,9 +732,10 @@ a path anyway, declare an explicit `[[replace]]` rule with `paths = true`.
 Gated on the target author declaring the token word-disjoint — never a
 default. Fields are independent: opting in `app_name` alone does not cover
 glued UPPERCASE forms (`PLBPOwned`); pair it with `app_name_upper` when
-those exist. `display_name` itself may not appear here (it fails
-validation as a no-op) — narrow which of its three forms rewrite via
-`[rules] display_forms` instead.
+those exist. `display_name` itself may not appear here (it fails validation as a no-op) —
+opt in a specific derived form (`display_name_pascal`, `display_name_camel`, or
+`display_name_spaced`) when glued occurrences like `AcmeWidgetClient` must
+rewrite, or narrow which forms rewrite via `[rules] display_forms`.
 
 ### `languages` — declare multi-language targets
 

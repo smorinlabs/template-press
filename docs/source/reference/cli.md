@@ -378,12 +378,19 @@ sets are disjoint. An active `[[edit]]` may not share its target with an active
 the same file on the same platform, configuration loading fails with exit code
 `2`.
 
-A `[[regenerate]]` declaration names one output: the declared `file`, which
-must already be excluded from the identity rewrite. The engine enforces that
-much — and post-checks only that one file for leaked identity — but it does
-not police what the declared command writes elsewhere; nothing stops a
-command from touching other files. `[[regenerate]]` is still not a hook for
-repo-wide tools: a declared command MUST NOT edit files other than its
+A `[[regenerate]]` declaration names one output — either `file` (one excluded
+file) or `dir` (one whole generated directory, mutually exclusive with `file`).
+Both `file` and `dir` (as well as `[rules] extra_exclude_files`) accept the
+`{package_name}` placeholder, rendered with the source identity before the
+press and the destination identity for the pressed output location so repeat
+presses work without editing `press/press-rules.toml`. A `[[regenerate]] dir`
+skips text rewriting, renaming, and the doctor scan under the declared tree;
+after renames, press deletes the directory at its destination path without
+following symlinks, runs the declared command, and scans every UTF-8 file under
+the rebuilt directory (refusing symlinks, junctions, `.git`, and Git visibility
+files). The engine post-checks only the declared output and does not police
+what the declared command writes elsewhere. `[[regenerate]]` is still not a
+hook for repo-wide tools: a declared command MUST NOT edit files other than its
 declared output, and a whole-tree formatter cannot be declared this way. Run
 the target's own formatter in the target after the press, before the first
 commit.
@@ -650,14 +657,16 @@ verify_exempt = true
 reason = "rendered from source at build time; press cannot rewrite it"
 ```
 
-`verify_exempt = true` requires a non-empty `reason` (control characters
-rejected — the reason is rendered in reports); a `reason` without
-`verify_exempt` — even an empty one — is rejected as dead config. The
-reason is carried verbatim in the receipt's `[[press.exempt]]` record and
-included in verify's not-verified listing and `--json` output, so the
-coverage gap stays visible and reviewed rather than silently purchased.
-The real press's post-command scan still certifies the output at press
-time.
+`verify_exempt = true` works on both `[[regenerate]] file` and `[[regenerate]]
+dir` and requires a non-empty `reason` (control characters rejected — the
+reason is rendered in reports); a `reason` without `verify_exempt` — even an
+empty one — is rejected as dead config. The reason is carried verbatim in the
+receipt's `[[press.exempt]]` record (with `file` or `dir`) and included in
+verify's not-verified listing (`not verified (exempt): <dir>/ — ...`) and
+`--json` output, so the coverage gap stays visible and reviewed rather than
+silently purchased. Successful directory regenerations are recorded as
+`[[press.regenerate_dir]]`. The real press's post-command scan still certifies
+every file in the output at press time.
 
 Configuration loading has two phases:
 
@@ -708,13 +717,13 @@ or when a root manifest is malformed, not UTF-8, or not a regular file.
 If the pressed tree fails the check, the command exits `1`, writes no receipt,
 leaves `press/press-source.toml` unchanged, and prints how to restore the target.
 
-This press version supports `python` and `node`. `rust` is a reserved name, so
-listing it exits `2` with `not supported by this press version`. Language
-detection always reads the root `pyproject.toml`, `package.json`, and
-`Cargo.toml`, whatever the declaration says, and a malformed root manifest exits
-`2`. The declaration then selects which detected languages are checked:
-identity discovery and cross-checks in `press rebrand` and `press verify` use
-only the declared languages.
+This press version supports `python`, `node`, and `rust`. There is no `"baml"`
+language value; a BAML repository declares only its host manifest language when
+multi-language detection requires one. Language detection always reads the root
+`pyproject.toml`, `package.json`, and `Cargo.toml`, whatever the declaration
+says, and a malformed root manifest exits `2`. The declaration then selects
+which detected languages are checked: identity discovery and cross-checks in
+`press rebrand` and `press verify` use only the declared languages.
 
 This is a breaking change for multi-language targets that pressed cleanly
 before. To fix the refusal, add the supported languages under `[rules]`:
@@ -770,9 +779,14 @@ exits `2` before any write.
 keep_names = ["@acme/widget-extra"]
 ```
 
-**Sibling preflight.** Before any rewrite, `press rebrand` and `press verify`
-look for an undeclared name that joins a source `npm_name` or `cli_name` to
-another name part. A finding exits `1`, writes nothing, and writes no receipt.
+**Sibling and glued-name preflight.** Before any rewrite, `press rebrand` and
+`press verify` look for an undeclared name that joins a source `npm_name` or
+`cli_name` to another name part. `press rebrand` also checks every identity
+field that `press verify` scans (including derived `display_name` forms) for
+glued occurrences across all target languages (for example `AcmeWidgetClient`
+when `display_name = "Acme Widget"`). A finding exits `1`, writes nothing, and
+writes no receipt, printing how to rewrite it (`substring_rewrite_fields` or
+`[[replace]]`) or keep it (`keep_names` or `[[verify.ignore]]`).
 For a multi-part value (`acme-cli`, `@acme/widget`), any name character touching
 either side is a sibling. For a single-token value (`tsc`, `serve`), an
 alphanumeric character glued to either side means an unrelated word:
@@ -783,7 +797,8 @@ that is the basename of another scoped package (`@vendor/tsc`) is also a sibling
 on content and path surfaces. A root `package.json` dependency key that extends
 a declared name with `.` or `~` (`acme-cli.extra`) is a sibling too; without such
 a key, `acme-cli.js` stays rewritable. Tokens rewritten by an applicable row or
-`[[replace]]` rule are exempt, and planned `[[remove]]` files are skipped.
+`[[replace]]` rule, kept via `keep_names`, or covered by `[[verify.ignore]]` are
+exempt, and planned `[[remove]]` files are skipped.
 
 **Lockfiles.** `package-lock.json`, `bun.lock`, `uv.lock`, and `pnpm-lock.yaml`
 are exempt from hermetic `press verify` when a `[[regenerate]]` declares them.
@@ -816,6 +831,44 @@ A scope-preserving press with a changed `owner` can
 exit `2` at press time while `press verify` exits `0`. Non-UTF-8 files are
 outside the preflight and the inline doctor and are scanned only by
 `press verify`.
+
+### BAML targets
+
+A BAML repository rewrites only its `.baml` sources and handwritten host code;
+its generated `baml_client/` directory is always rebuilt via `[[regenerate]]
+dir` and never text-rewritten.
+
+Run `press verify --target <target>` before the first press to surface any
+glued identifiers in `.baml` or host files (such as `AcmeWidgetClient` when
+`display_name = "Acme Widget"`). To rewrite glued PascalCase names, opt
+`"display_name_pascal"` into `[rules] substring_rewrite_fields` (the derived
+forms `display_name_camel` and `display_name_spaced` are also valid).
+
+```toml
+[rules]
+languages = ["python"]
+substring_rewrite_fields = ["display_name_pascal"]
+
+[[regenerate]]
+dir = "src/{package_name}/baml_client"
+command = ["uv", "run", "--offline", "baml-cli", "generate"]
+verify_exempt = true
+reason = "BAML client, rebuilt from baml_src"
+```
+
+- **No `"baml"` language value.** Declare `[rules] languages` only when the
+  target has multiple root manifests, and list only host languages (for example
+  `["python"]` or `["node"]`).
+- **Undeclared tracked clients exit `2`.** Before any write, `press rebrand`
+  refuses a tracked `baml_client/inlinedbaml.py` or
+  `baml_client/inlinedbaml.ts` at any depth that no `[[regenerate]]` or
+  `[[remove]]` covers, and prints a paste-ready `[[regenerate]] dir` block.
+- **Gitignored client directories.** When `baml_client/` is gitignored rather
+  than committed, declare a `[[clean]]` rule (for example
+  `paths = ["src/{package_name}/baml_client"]`) and run `press clean` before
+  `press rebrand` so an old ignored directory does not block renaming the
+  parent package directory; `[[regenerate]] dir` then rebuilds it at the
+  pressed path.
 
 ### After a successful press
 
