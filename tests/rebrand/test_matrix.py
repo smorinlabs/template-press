@@ -162,6 +162,22 @@ def test_ci_provisions_bun_for_native_r3(workflow_name: str, job_name: str) -> N
     assert arguments[arguments.index("-n") + 1] == "auto"
     assert "--cov=template_press" in arguments
     assert "--cov-report=xml" in arguments
+    if workflow_name == "ci.yml":
+        assert full.get("if") == "matrix.upload-coverage"
+        no_cov = next(step for step in steps if step.get("name") == "Run tests")
+        assert no_cov.get("if") == "${{ !matrix.upload-coverage }}"
+        no_cov_cmd = shlex.split(no_cov["run"])
+        assert no_cov_cmd[:5] == [
+            "uv",
+            "run",
+            "--no-sync",
+            "python",
+            "scripts/ci_run_pytest.py",
+        ]
+        no_cov_args = no_cov_cmd[no_cov_cmd.index("--") + 1 :]
+        assert no_cov_args[no_cov_args.index("-m") + 1] == ""
+        assert no_cov_args[no_cov_args.index("-n") + 1] == "auto"
+        assert "--cov=template_press" not in no_cov_args
     bun = next(step for step in steps if step.get("uses") == "oven-sh/setup-bun@v2.2.0")
     assert bun["with"]["bun-version"] == "1.3.14"
 
