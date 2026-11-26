@@ -67,3 +67,17 @@ be resolved in the implementation plan:
   checks, and guidance wording beyond the spec example.
 
 ### Tests & Tasks
+
+- [ ] [P19-TS01] Failing tests for glued-name preflight across Python, TypeScript, Rust, and BAML fixtures, negative cases (`substring_rewrite_fields`, `keep_names`, `[[verify.ignore]]`, unrelated words), fixture-corpus scope-(i) property test, and verifier/keep-name module independence
+- [ ] [P19-T01] Share the paranoid verify field set neutrally (`verify_config.py`) and extend `check_keep_surfaces` / `check_target_keep_names` + refusal guidance for glued old names (Decision 1, scope (i))
+- [ ] [P19-TS02] Failing tests for `display_name_pascal` in `substring_rewrite_fields` across validation, rewrite, doctor, regeneration scan, and verify
+- [ ] [P19-T02] Accept `display_name_pascal` in `substring_rewrite_fields` across rules, substitutions/pipeline, doctor, regen, and verify (Decision 2)
+- [ ] [P19-TS03] Failing tests for `{package_name}` in `[[regenerate]]` `file`/`dir` and `extra_exclude_files`, including preflight rendering and repeat press
+- [ ] [P19-T03] Render `{package_name}` in `[[regenerate]]` paths and `extra_exclude_files` (source and destination coordinates), rejecting unknown placeholders and `extra_exclude_dirs` (Decision 4)
+- [ ] [P19-TS04] Failing tests for `[[regenerate]] dir`: schema/overlap/symlink/gitlink refusals, no text rewrite/preflight/doctor scan, delete-before-run, full-directory post-scan, absent/gitignored vs `[[clean]]` paths, `verify_exempt` + `reason`, receipt fields, and `check-tools`
+- [ ] [P19-T04] Implement `[[regenerate]] dir` across rules, inventory/engine/doctor/verifier, `regen.py`, `receipt.py`, `check_tools.py`, `cli.py`, and `verify_cli.py` (Decision 3)
+- [ ] [P19-TS05] Failing tests for undeclared tracked BAML client refusal (Python and TypeScript at root and nested depth; covered by `[[regenerate]] dir`/`file` or `[[remove]]`; gitignored not refused) and regeneration failure message wording
+- [ ] [P19-T05] Refuse undeclared tracked BAML clients with exit 2 and suggested `[[regenerate]] dir` block (Decision 8), and update the regeneration failure message from "lockfile" to `"regeneration of <path> failed"` (Decision 6)
+- [ ] [P19-TS06] Gated live `baml-cli` acceptance tests: Python and TypeScript clients, root and in-package, press, regenerate, target's own test, `press verify`, and repeat press
+- [ ] [P19-T06] Document the BAML recipe in `docs/` and `.claude/skills/press-target/SKILL.md`, and update `docs/design/0006-external-target-model.md`, `docs/design/0008-identity-variants-and-replace-rules.md`, and `AGENTS.md` (Decisions 5 & 7)
+- [ ] [P19-T07] Verify `uv run ruff format --check .`, `just check`, and `just matrix` pass, then open the PR for owner review
