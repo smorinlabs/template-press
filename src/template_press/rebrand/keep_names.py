@@ -34,6 +34,7 @@ from template_press.rebrand.matcher import (
     classify_occurrence,
     find_occurrences,
     identity_pattern,
+    substring_pattern,
 )
 
 Span = tuple[int, int]
@@ -134,6 +135,23 @@ def disjoint_from_kept(span: Span, kept: Sequence[Span]) -> bool:
     return all(end <= low or start >= high for low, high in kept)
 
 
+def clip_kept_spans(
+    parts: Sequence[str], index: int, full_kept: Sequence[Span]
+) -> tuple[Span, ...]:
+    """Clip precomputed full-path ``full_kept`` spans to ``parts[index]``."""
+    if not full_kept:
+        return ()
+    offset = sum(len(part) + 1 for part in parts[:index])
+    length = len(parts[index])
+    end_limit = offset + length
+    clipped = {
+        (max(start - offset, 0), min(end - offset, length))
+        for start, end in full_kept
+        if start < end_limit and end > offset
+    }
+    return tuple(sorted(clipped))
+
+
 def component_kept_spans(
     parts: Sequence[str], index: int, names: Sequence[str]
 ) -> tuple[Span, ...]:
@@ -142,14 +160,9 @@ def component_kept_spans(
     Names are matched over the joined path, so a scoped name that spans two
     components is found and each component's boundaries see true neighbors.
     """
-    offset = sum(len(part) + 1 for part in parts[:index])
-    length = len(parts[index])
-    clipped = {
-        (max(start - offset, 0), min(end - offset, length))
-        for start, end in kept_spans("/".join(parts), names)
-        if start < offset + length and end > offset
-    }
-    return tuple(sorted(clipped))
+    if not names:
+        return ()
+    return clip_kept_spans(parts, index, kept_spans("/".join(parts), names))
 
 
 def matches_outside_kept(
@@ -160,14 +173,29 @@ def matches_outside_kept(
     A dropped match advances one character, so it cannot shadow an overlapping
     occurrence that is a real leak.
     """
+    if not kept:
+        return [match.span() for match in pattern.finditer(text)]
+    ordered = kept if len(kept) <= 1 else sorted(kept)
+    n_kept = len(ordered)
+    ki = 0
     spans: list[Span] = []
     position = 0
     while (match := pattern.search(text, position)) is not None:
-        if outside_kept((match.span(),), kept):
-            spans.append(match.span())
-            position = max(match.end(), match.start() + 1)
+        start, end = match.span()
+        while ki < n_kept and ordered[ki][1] <= start:
+            ki += 1
+        inside = False
+        j = ki
+        while j < n_kept and ordered[j][0] <= start:
+            if end <= ordered[j][1]:
+                inside = True
+                break
+            j += 1
+        if not inside:
+            spans.append((start, end))
+            position = max(end, start + 1)
         else:
-            position = match.start() + 1
+            position = start + 1
     return spans
 
 
@@ -185,7 +213,7 @@ def find_outside_kept(
     if substring:
         if not value:
             return []
-        pattern = re.compile(re.escape(value), re.IGNORECASE)
+        pattern = substring_pattern(value)
     else:
         pattern = identity_pattern(field, value)
     return matches_outside_kept(pattern, text, kept)
@@ -193,9 +221,20 @@ def find_outside_kept(
 
 def literal_occurs(text: str, needle: str, kept: Sequence[Span]) -> bool:
     """Whether the exact ``needle`` occurs outside every kept span."""
+    if needle not in text:
+        return False
     if not kept:
-        return needle in text
-    return bool(matches_outside_kept(re.compile(re.escape(needle)), text, kept))
+        return True
+    length = len(needle)
+    if length == 0:
+        return bool(matches_outside_kept(re.compile(""), text, kept))
+    position = text.find(needle)
+    while position != -1:
+        end = position + length
+        if not any(low <= position and end <= high for low, high in kept):
+            return True
+        position = text.find(needle, position + 1)
+    return False
 
 
 def disjoint_matches(
@@ -206,14 +245,29 @@ def disjoint_matches(
     A suppressed match advances one character, so it cannot shadow a disjoint
     occurrence that overlaps it.
     """
+    if not kept:
+        return [match.span() for match in pattern.finditer(text)]
+    ordered = kept if len(kept) <= 1 else sorted(kept)
+    n_kept = len(ordered)
+    ki = 0
     spans: list[Span] = []
     position = 0
     while (match := pattern.search(text, position)) is not None:
-        if disjoint_from_kept(match.span(), kept):
-            spans.append(match.span())
-            position = match.end()
+        start, end = match.span()
+        while ki < n_kept and ordered[ki][1] <= start:
+            ki += 1
+        overlaps = False
+        j = ki
+        while j < n_kept and ordered[j][0] < end:
+            if ordered[j][1] > start:
+                overlaps = True
+                break
+            j += 1
+        if not overlaps:
+            spans.append((start, end))
+            position = end
         else:
-            position = match.start() + 1
+            position = start + 1
     return spans
 
 
@@ -232,20 +286,34 @@ def splice_outside_kept(
     kept: Sequence[Span],
 ) -> tuple[str, tuple[Span, ...]]:
     """Replace sorted disjoint ``spans``; return text and shifted kept spans."""
+    if not spans:
+        return text, tuple(kept)
     pieces: list[str] = []
     copied = 0
     for start, end in spans:
-        pieces += [text[copied:start], replacement]
+        pieces.append(text[copied:start])
+        pieces.append(replacement)
         copied = end
     pieces.append(text[copied:])
-    shifted = tuple(
-        (low + delta, high + delta)
-        for low, high in kept
-        for delta in (
-            sum(len(replacement) - (end - start) for start, end in spans if end <= low),
-        )
-    )
-    return "".join(pieces), shifted
+    if not kept:
+        return "".join(pieces), ()
+    rep_len = len(replacement)
+    n_spans = len(spans)
+    shifted: list[Span] = []
+    delta = 0
+    span_idx = 0
+    prev_low = -1
+    for low, high in kept:
+        if low < prev_low:
+            delta = 0
+            span_idx = 0
+        while span_idx < n_spans and spans[span_idx][1] <= low:
+            s_start, s_end = spans[span_idx]
+            delta += rep_len - (s_end - s_start)
+            span_idx += 1
+        prev_low = low
+        shifted.append((low + delta, high + delta))
+    return "".join(pieces), tuple(shifted)
 
 
 def _identity_forms(identity: Identity) -> frozenset[str]:
@@ -615,16 +683,20 @@ def _glued_hits_in_text(
     kept: Sequence[Span],
     rewritten: RewrittenForms,
     extra_occupied: Sequence[Span] = (),
+    occupied_cache: list[Span] | None = None,
 ) -> list[tuple[int, str]]:
     """``(col, expanded_token)`` for paranoid matches that no rewrite row covers."""
     spans = find_outside_kept(text, field, value, substring=substring, kept=kept)
     if not spans:
         return []
-    occupied = [
-        *_pattern_spans(text, rewritten.patterns),
-        *_literal_spans(text, rewritten.literals),
-        *extra_occupied,
-    ]
+    if occupied_cache is not None:
+        occupied = occupied_cache
+    else:
+        occupied = [
+            *_pattern_spans(text, rewritten.patterns),
+            *_literal_spans(text, rewritten.literals),
+            *extra_occupied,
+        ]
     hits: list[tuple[int, str]] = []
     for m_start, m_end in spans:
         if any(low <= m_start and m_end <= high for low, high in occupied):
@@ -726,11 +798,41 @@ def check_keep_surfaces(
     glued_findings: list[UndeclaredName] = []
     unseen = dict.fromkeys(names)
     skip_dirs = frozenset(glued_skip_dir_components)
+    glued_sub_set = frozenset(glued_substring_fields)
+    core_glued_compiled = tuple(
+        (
+            field,
+            value,
+            field in glued_sub_set,
+            substring_pattern(value)
+            if field in glued_sub_set
+            else identity_pattern(field, value),
+        )
+        for field, value in core_glued
+        if not (field in glued_sub_set and not value)
+    )
     for path, where, text in surfaces:
-        kept = kept_spans(text, names)
-        for name in tuple(unseen):
-            if kept_spans(text, (name,)):
-                del unseen[name]
+        file_names: list[str] = []
+        if names and text:
+            spans_set: set[Span] = set()
+            for name in names:
+                if name not in text:
+                    continue
+                pattern = _kept_pattern(name)
+                if pattern is None:
+                    continue
+                matched_name = False
+                position = 0
+                while (match := pattern.search(text, position)) is not None:
+                    spans_set.add(match.span())
+                    matched_name = True
+                    position = match.start() + 1
+                if matched_name:
+                    file_names.append(name)
+                    unseen.pop(name, None)
+            kept: tuple[Span, ...] = tuple(sorted(spans_set))
+        else:
+            kept = ()
         subject = (
             rewritten(path, where, text) if rewritten is not None else RewrittenForms()
         )
@@ -748,11 +850,16 @@ def check_keep_surfaces(
                 undeclared.setdefault(
                     (path, where, token), UndeclaredName(path, where, field, token)
                 )
-        if not core_glued or (
+        if not core_glued_compiled or (
             skip_dirs and any(p in skip_dirs for p in path.split("/"))
         ):
             continue
         if where == "content":
+            active_glued = tuple(
+                item for item in core_glued_compiled if item[3].search(text) is not None
+            )
+            if not active_glued:
+                continue
             multiline_lits = frozenset(
                 lit for lit in subject.literals if "\n" in lit or "\r" in lit
             )
@@ -760,29 +867,54 @@ def check_keep_surfaces(
                 _literal_spans(text, multiline_lits) if multiline_lits else ()
             )
             line_offset = 0
+            kept_idx = 0
+            n_kept = len(kept)
             for lineno, raw_line in enumerate(text.splitlines(keepends=True), start=1):
                 line = raw_line.rstrip("\r\n")
                 line_end = line_offset + len(line)
+                cur_offset = line_offset
+                line_offset += len(raw_line)
+                line_matches = [
+                    item for item in active_glued if item[3].search(line) is not None
+                ]
+                if not line_matches:
+                    continue
                 extra_occupied = (
                     [
-                        (max(0, lo - line_offset), min(len(line), hi - line_offset))
+                        (max(0, lo - cur_offset), min(len(line), hi - cur_offset))
                         for lo, hi in full_lit_spans
-                        if lo < line_end and hi > line_offset
+                        if lo < line_end and hi > cur_offset
                     ]
                     if full_lit_spans
                     else ()
                 )
-                line_offset += len(raw_line)
-                line_kept = kept_spans(line, names)
-                for field, value in core_glued:
+                while kept_idx < n_kept and kept[kept_idx][1] <= cur_offset:
+                    kept_idx += 1
+                line_kept_list: list[Span] = []
+                kj = kept_idx
+                while kj < n_kept and kept[kj][0] < line_end:
+                    lo, hi = kept[kj]
+                    if lo >= cur_offset and hi <= line_end:
+                        line_kept_list.append((lo - cur_offset, hi - cur_offset))
+                    kj += 1
+                line_kept: Sequence[Span] = line_kept_list
+                line_occupied: list[Span] | None = None
+                for field, value, is_sub, _pat in line_matches:
+                    if line_occupied is None:
+                        line_occupied = [
+                            *_pattern_spans(line, subject.patterns),
+                            *_literal_spans(line, subject.literals),
+                            *extra_occupied,
+                        ]
                     for col, token in _glued_hits_in_text(
                         line,
                         field,
                         value,
-                        substring=field in glued_substring_fields,
+                        substring=is_sub,
                         kept=line_kept,
                         rewritten=subject,
                         extra_occupied=extra_occupied,
+                        occupied_cache=line_occupied,
                     ):
                         glued_findings.append(
                             UndeclaredName(
@@ -797,19 +929,26 @@ def check_keep_surfaces(
                             )
                         )
         elif where == "path":
+            active_glued = tuple(
+                item for item in core_glued_compiled if item[3].search(path) is not None
+            )
+            if not active_glued:
+                continue
             parts = path.split("/")
             last_index = len(parts) - 1
             for index, comp in enumerate(parts):
                 if index == 0 and comp == "press":
                     continue
                 comp_where = "filename" if index == last_index else "dirname"
-                comp_kept = component_kept_spans(parts, index, names)
-                for field, value in core_glued:
+                comp_kept = (
+                    component_kept_spans(parts, index, file_names) if file_names else ()
+                )
+                for field, value, is_sub, _pat in active_glued:
                     for _col, token in _glued_hits_in_text(
                         comp,
                         field,
                         value,
-                        substring=field in glued_substring_fields,
+                        substring=is_sub,
                         kept=comp_kept,
                         rewritten=subject,
                     ):
@@ -826,12 +965,12 @@ def check_keep_surfaces(
                             )
                         )
         elif where == "symlink":
-            for field, value in core_glued:
+            for field, value, is_sub, _pat in core_glued_compiled:
                 for _col, token in _glued_hits_in_text(
                     text,
                     field,
                     value,
-                    substring=field in glued_substring_fields,
+                    substring=is_sub,
                     kept=kept,
                     rewritten=subject,
                 ):

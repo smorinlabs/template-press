@@ -8,6 +8,7 @@ to per-run values so any target's identity can be pressed (ARCH-03).
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -281,6 +282,7 @@ class Identity:
         return cls(**fields, cargo_names=tuple((cargo_names or {}).items()))
 
 
+@functools.lru_cache(maxsize=4096)
 def token_pattern(field: str, value: str) -> re.Pattern[str] | None:
     """Boundary matcher — boundary-safe replacement is the default (OQ12).
 
@@ -358,6 +360,8 @@ def pair_renames_paths(field: str, current: str, replacement: str) -> bool:
 
 
 def token_occurs(text: str, field: str, value: str) -> bool:
+    if value and value not in text:
+        return False
     pattern = token_pattern(field, value)
     if pattern is not None:
         return pattern.search(text) is not None
@@ -383,6 +387,8 @@ def occurs(
 
 
 def replace_token(text: str, field: str, current: str, replacement: str) -> str:
+    if current and current not in text:
+        return text
     pattern = token_pattern(field, current)
     if pattern is not None:
         # Function replacement: the destination value is LITERAL text, never

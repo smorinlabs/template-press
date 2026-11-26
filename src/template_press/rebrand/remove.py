@@ -264,6 +264,7 @@ def _freeze_directory(
     *,
     current_dir: str,
     prior: DirectoryRemoval | None = None,
+    snapshot: SurfaceSnapshot | None = None,
 ) -> DirectoryRemoval:
     """Freeze tracked regular members and reject all directory dirtiness."""
     root = target / current_dir
@@ -349,7 +350,8 @@ def _freeze_directory(
                         f"remove directory {current_dir!r}: Git visibility input {relative!r}"
                     )
 
-    snapshot = capture_surface_snapshot(target)
+    if snapshot is None:
+        snapshot = capture_surface_snapshot(target)
     prefix = current_dir + "/"
     root_parts = PurePosixPath(current_dir).parts
     for entry in snapshot.entries:
@@ -570,6 +572,7 @@ def plan_removals(
     receipt_text: str | None = None,
     mode: Literal["press", "verify"] = "press",
     legacy_removed: Mapping[str, str] | None = None,
+    snapshot: SurfaceSnapshot | None = None,
 ) -> RemovalPlan:
     """Freeze active deletions and carry validated inactive directory history."""
     history = selected_directory_history(
@@ -601,7 +604,7 @@ def plan_removals(
                 target,
                 prior.current_dir,
                 tuple(member.current_file for member in prior.members),
-                capture_surface_snapshot(target),
+                snapshot if snapshot is not None else capture_surface_snapshot(target),
             )
             directories.append(prior)
             continue
@@ -616,7 +619,13 @@ def plan_removals(
                 )
             current_dir = prior.current_dir
         directories.append(
-            _freeze_directory(target, declaration, current_dir=current_dir, prior=prior)
+            _freeze_directory(
+                target,
+                declaration,
+                current_dir=current_dir,
+                prior=prior,
+                snapshot=snapshot,
+            )
         )
     legacy = (
         removed_files_from_receipt(receipt_text)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import functools
 import os
 import posixpath
 import re
@@ -71,7 +72,11 @@ from template_press.rebrand.keep_names import (
     matches_outside_kept,
     splice_outside_kept,
 )
-from template_press.rebrand.matcher import find_occurrences, identity_pattern
+from template_press.rebrand.matcher import (
+    find_occurrences,
+    identity_pattern,
+    substring_pattern,
+)
 from template_press.rebrand.node_manifest import read_node_manifest
 from template_press.rebrand.pathing import (
     ROOT_CONTROL,
@@ -292,6 +297,28 @@ def _rewrite_project_name(text: str, from_value: str, to_value: str) -> str:
     return text[: span[0]] + to_value + text[span[1] :]
 
 
+@functools.lru_cache(maxsize=4096)
+def _literal_pattern(value: str) -> re.Pattern[str]:
+    return re.compile(re.escape(value))
+
+
+def _validate_rewrite_row(row: RenderedSubstitution) -> None:
+    if (
+        row.provenance[0].kind == "manifest_name"
+        or row.package_value is not None
+        or row.matcher.algorithm == "literal"
+        or row.matcher.substring
+    ):
+        return
+    if row.matcher.algorithm != "conservative":
+        raise ValidationError(
+            f"rewrite row {row.row_id} uses non-rewrite matcher "
+            f"{row.matcher.algorithm!r}"
+        )
+    if row.matcher.identity_field is None:
+        raise ValidationError(f"rewrite row {row.row_id} has no identity field")
+
+
 def _rewrite_outside_kept(
     row: RenderedSubstitution, text: str, kept: Sequence[tuple[int, int]]
 ) -> tuple[str, tuple[tuple[int, int], ...]]:
@@ -301,6 +328,9 @@ def _rewrite_outside_kept(
     neighbors.
     """
 
+    _validate_rewrite_row(row)
+    if row.from_value and row.from_value not in text:
+        return text, tuple(kept)
     if row.package_value is not None:
         return _rewrite_rust_split(row, text, kept)
     replaced: list[tuple[int, int]] = []
@@ -310,18 +340,14 @@ def _rewrite_outside_kept(
             replaced.append(span)
     else:
         if row.matcher.algorithm == "literal" or row.matcher.substring:
-            pattern = re.compile(re.escape(row.from_value))
-        elif row.matcher.algorithm != "conservative":
-            raise ValidationError(
-                f"rewrite row {row.row_id} uses non-rewrite matcher "
-                f"{row.matcher.algorithm!r}"
-            )
-        elif row.matcher.identity_field is None:
-            raise ValidationError(f"rewrite row {row.row_id} has no identity field")
+            pattern = _literal_pattern(row.from_value)
         else:
-            pattern = token_pattern(
-                row.matcher.identity_field, row.from_value
-            ) or re.compile(re.escape(row.from_value))
+            field = row.matcher.identity_field
+            if field is None:
+                raise ValidationError(f"rewrite row {row.row_id} has no identity field")
+            pattern = token_pattern(field, row.from_value) or _literal_pattern(
+                row.from_value
+            )
         replaced = disjoint_matches(pattern, text, kept)
     return splice_outside_kept(text, replaced, row.to_value, kept)
 
@@ -334,11 +360,13 @@ def _rewrite_rust_split(
     A string occurrence with no provable spelling stays as it is, so the split
     preflight reports it before any write.
     """
+    if row.from_value and row.from_value not in text:
+        return text, tuple(kept)
     field = row.matcher.identity_field or ""
-    pattern = token_pattern(field, row.from_value) or re.compile(
-        re.escape(row.from_value)
-    )
+    pattern = token_pattern(field, row.from_value) or _literal_pattern(row.from_value)
     spans = disjoint_matches(pattern, text, kept)
+    if not spans:
+        return text, tuple(kept)
     choices = split_rust_replacements(
         text, spans, row.from_value, row.to_value, row.package_value or ""
     )
@@ -348,22 +376,38 @@ def _rewrite_rust_split(
     for (start, end), choice in zip(spans, choices, strict=True):
         if choice is None:
             continue
-        pieces += [text[copied:start], choice]
+        pieces.append(text[copied:start])
+        pieces.append(choice)
         copied = end
         shifts.append((end, len(choice) - (end - start)))
+    if not shifts:
+        return text, tuple(kept)
     pieces.append(text[copied:])
-    shifted = tuple(
-        (low + delta, high + delta)
-        for low, high in kept
-        for delta in (sum(d for end, d in shifts if end <= low),)
-    )
-    return "".join(pieces), shifted
+    if not kept:
+        return "".join(pieces), ()
+    n_shifts = len(shifts)
+    shifted: list[tuple[int, int]] = []
+    delta = 0
+    shift_idx = 0
+    prev_low = -1
+    for low, high in kept:
+        if low < prev_low:
+            delta = 0
+            shift_idx = 0
+        while shift_idx < n_shifts and shifts[shift_idx][0] <= low:
+            delta += shifts[shift_idx][1]
+            shift_idx += 1
+        prev_low = low
+        shifted.append((low + delta, high + delta))
+    return "".join(pieces), tuple(shifted)
 
 
 def rewrite_file(
     rows: Iterable[RenderedSubstitution],
     text: str,
     keep_names: Sequence[str] = (),
+    *,
+    kept: Sequence[tuple[int, int]] | None = None,
 ) -> tuple[str, tuple[RenderedSubstitution, ...]]:
     """Apply ``rows`` in order; return the text and the rows that changed it.
 
@@ -372,12 +416,19 @@ def rewrite_file(
     changing its neighbor nor create a new kept name.
     """
 
-    kept = kept_spans(text, keep_names) if keep_names else ()
+    active_kept: tuple[tuple[int, int], ...] | None = (
+        tuple(kept) if kept is not None else (None if keep_names else ())
+    )
     current = text
     changed: list[RenderedSubstitution] = []
     for row in rows:
-        if kept:
-            updated, kept = _rewrite_outside_kept(row, current, kept)
+        _validate_rewrite_row(row)
+        if row.from_value and row.from_value not in current:
+            continue
+        if active_kept is None:
+            active_kept = kept_spans(text, keep_names)
+        if active_kept:
+            updated, active_kept = _rewrite_outside_kept(row, current, active_kept)
         else:
             updated = rewrite_with_row(row, current)
         if updated != current:
@@ -389,17 +440,15 @@ def rewrite_file(
 def rewrite_with_row(row: RenderedSubstitution, text: str) -> str:
     """Apply one row's matcher without consulting source configuration."""
 
+    _validate_rewrite_row(row)
+    if row.from_value and row.from_value not in text:
+        return text
     if row.provenance[0].kind == "manifest_name":
         return _rewrite_project_name(text, row.from_value, row.to_value)
     if row.package_value is not None:
         return _rewrite_rust_split(row, text, ())[0]
     if row.matcher.algorithm == "literal" or row.matcher.substring:
         return text.replace(row.from_value, row.to_value)
-    if row.matcher.algorithm != "conservative":
-        raise ValidationError(
-            f"rewrite row {row.row_id} uses non-rewrite matcher "
-            f"{row.matcher.algorithm!r}"
-        )
     field = row.matcher.identity_field
     if field is None:
         raise ValidationError(f"rewrite row {row.row_id} has no identity field")
@@ -410,17 +459,17 @@ def _hunt_pattern(row: RenderedSubstitution, matcher: MatcherSpec) -> re.Pattern
     """The regular expression equivalent of one compiled hunt matcher."""
 
     if matcher.algorithm == "literal":
-        return re.compile(re.escape(row.from_value))
+        return _literal_pattern(row.from_value)
     field = matcher.identity_field
     if field is None:
         raise ValidationError(f"hunt for row {row.row_id} has no identity field")
     if matcher.algorithm == "paranoid":
         if matcher.substring:
-            return re.compile(re.escape(row.from_value), re.IGNORECASE)
+            return substring_pattern(row.from_value)
         return identity_pattern(field, row.from_value)
     if matcher.substring:
-        return re.compile(re.escape(row.from_value))
-    return token_pattern(field, row.from_value) or re.compile(re.escape(row.from_value))
+        return _literal_pattern(row.from_value)
+    return token_pattern(field, row.from_value) or _literal_pattern(row.from_value)
 
 
 def hunt_occurs(
@@ -432,13 +481,23 @@ def hunt_occurs(
     """Apply one compiled consumer hunt to text, outside ``kept`` spans."""
 
     matcher = policy.matcher
-    if kept:
-        return bool(matches_outside_kept(_hunt_pattern(row, matcher), text, kept))
     if matcher.algorithm == "literal":
-        return row.from_value in text
+        if row.from_value and row.from_value not in text:
+            return False
+        if not kept:
+            return row.from_value in text
+        return bool(matches_outside_kept(_hunt_pattern(row, matcher), text, kept))
     field = matcher.identity_field
     if field is None:
         raise ValidationError(f"hunt for row {row.row_id} has no identity field")
+    if (
+        matcher.algorithm != "paranoid"
+        and row.from_value
+        and row.from_value not in text
+    ):
+        return False
+    if kept:
+        return bool(matches_outside_kept(_hunt_pattern(row, matcher), text, kept))
     if matcher.algorithm == "paranoid":
         return bool(
             find_occurrences(
@@ -2940,6 +2999,7 @@ def check_target_keep_names(
     languages: Sequence[str],
     *,
     verify_config: VerifyConfig | None = None,
+    snapshot: SurfaceSnapshot | None = None,
 ) -> KeepCheck:
     """Run the keep-name preflight with this press's real rewrite rows."""
 
@@ -3003,6 +3063,7 @@ def check_target_keep_names(
             root_control=ROOT_CONTROL,
             skip_paths=removed,
             exclude_prefixes=regenerate_dir_prefixes(rules),
+            snapshot=snapshot,
         ),
         source,
         rules.keep_names,

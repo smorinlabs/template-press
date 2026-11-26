@@ -43,7 +43,7 @@ from template_press.rebrand.inventory import (
     select_verifier_entries,
     tracked_path_strings,
 )
-from template_press.rebrand.keep_names import kept_spans, outside_kept
+from template_press.rebrand.keep_names import kept_spans
 from template_press.rebrand.matcher import classify_occurrence
 from template_press.rebrand.pathing import (
     REGENERATE_EXEMPTIBLE as REGENERATE_EXEMPTIBLE,
@@ -357,7 +357,9 @@ def _rename_candidates(target: Path, rules: Rules) -> list[Path]:
     return [target / entry.rel for entry in _rename_candidate_entries(target, rules)]
 
 
-def copy_paths(target: Path) -> list[PathEntry]:
+def copy_paths(
+    target: Path, *, snapshot: SurfaceSnapshot | None = None
+) -> list[PathEntry]:
     """Present Git-listed nodes plus opaque gitlink placeholders.
 
     RETAINS symlinks and gitlinks — never filters on ``is_file()``, which
@@ -369,7 +371,8 @@ def copy_paths(target: Path) -> list[PathEntry]:
     silently certifying an incomplete copy.
     """
     entries: list[PathEntry] = []
-    snapshot = capture_surface_snapshot(target)
+    if snapshot is None:
+        snapshot = capture_surface_snapshot(target)
     for entry in select_copy_entries(snapshot):
         rel = entry.rel
         if ".git" in rel.parts:
@@ -895,11 +898,19 @@ def _rename_prefix_map(
     return rename_map
 
 
-def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> Plan:
+def build_plan(
+    target: Path,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    *,
+    snapshot: SurfaceSnapshot | None = None,
+) -> Plan:
     """Resolve what apply() would do; executes nothing."""
     source.validate()
     dest.validate()
-    snapshot = capture_surface_snapshot(target)
+    if snapshot is None:
+        snapshot = capture_surface_snapshot(target)
     _validate_rewrite_snapshot(target, snapshot, rules)
     table = compile_substitution_table(
         source,
@@ -925,25 +936,24 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
         field_name: _PrefixCounts(value=value)
         for field_name, value in prefix_fields.items()
     }
+    content_rows = tuple(row for row in table.rows if "content" in row.rewrite_surfaces)
     for entry in content_entries:
         path = target / entry.rel
         rel = entry.rel
+        rel_posix = rel.as_posix()
         assert_ancestors_real(path, target)
         text = _read_text(path, expected_kind=entry.worktree_kind)
         if text is not None:
+            computed_kept: tuple[tuple[int, int], ...] | None = None
             if entry.tracked:
-                _tally_prefix_occurrences(
+                computed_kept = _tally_prefix_occurrences(
                     text, prefix_fields, prefix_counts, table.keep_names
                 )
             _, changed_rows = rewrite_file(
-                (
-                    row
-                    for row in table.rows
-                    if "content" in row.rewrite_surfaces
-                    and row_matches_scope(row, rel.as_posix())
-                ),
+                (row for row in content_rows if row_matches_scope(row, rel_posix)),
                 text,
                 table.keep_names,
+                kept=computed_kept,
             )
             for row in changed_rows:
                 provenance = row.provenance[0]
@@ -952,7 +962,7 @@ def build_plan(target: Path, source: Identity, dest: Identity, rules: Rules) -> 
                     if provenance.kind == "replace_rule"
                     else f"fields={[provenance.name]}"
                 )
-                plan.items.append(PlanItem("replace", rel.as_posix(), detail))
+                plan.items.append(PlanItem("replace", rel_posix, detail))
     plan.prefix_warnings = prefix_only_warnings(prefix_counts)
     for step in table.rename_plan.steps:
         plan.items.append(PlanItem("rename", step.old_prefix, f"→ {step.new_prefix}"))
@@ -1160,7 +1170,7 @@ def _tally_prefix_occurrences(
     fields: Mapping[str, str],
     counts: Mapping[str, _PrefixCounts],
     keep_names: Sequence[str] = (),
-) -> None:
+) -> tuple[tuple[int, int], ...] | None:
     """Classify every occurrence of every checked field's value in `text`.
 
     Candidate positions come from `identity.token_pattern` — the same
@@ -1177,20 +1187,39 @@ def _tally_prefix_occurrences(
     which is the E9(b) signal. A declared kept name is not a stale prefix.
     """
 
-    kept = kept_spans(text, keep_names)
+    kept: tuple[tuple[int, int], ...] | None = () if not keep_names else None
     for field_name, value in fields.items():
+        if value and value not in text:
+            continue
         tally = counts[field_name]
         pattern = token_pattern(field_name, value)
         if pattern is None:  # every field currently returns a pattern
             continue
+        ki = 0
+        n_kept = 0 if kept is None else len(kept)
         for match in pattern.finditer(text):
-            if kept and not outside_kept((match.span(),), kept):
-                continue
+            if kept is None:
+                kept = kept_spans(text, keep_names)
+                n_kept = len(kept)
+            if n_kept:
+                start, end = match.span()
+                while ki < n_kept and kept[ki][1] <= start:
+                    ki += 1
+                inside = False
+                j = ki
+                while j < n_kept and kept[j][0] <= start:
+                    if end <= kept[j][1]:
+                        inside = True
+                        break
+                    j += 1
+                if inside:
+                    continue
             kind, token = classify_occurrence(text, match.span())
             if kind == "prefix":
                 tally.prefix_tokens[token] += 1
             else:
                 tally.whole += 1
+    return kept
 
 
 def prefix_only_warnings(counts: Mapping[str, _PrefixCounts]) -> list[str]:
@@ -1333,6 +1362,7 @@ def _apply_replacements(
         )
         if entry.worktree_kind == "symlink"
     )
+    content_rows = tuple(row for row in table.rows if "content" in row.rewrite_surfaces)
     for entry in sorted(
         (*entries, *symlink_entries),
         key=lambda item: item.rel.as_posix(),
@@ -1346,11 +1376,7 @@ def _apply_replacements(
             report.skipped.append(f"replace {rel} ({kind})")
             continue
         new_text, _ = rewrite_file(
-            (
-                row
-                for row in table.rows
-                if "content" in row.rewrite_surfaces and row_matches_scope(row, rel)
-            ),
+            (row for row in content_rows if row_matches_scope(row, rel)),
             text,
             table.keep_names,
         )
@@ -1661,6 +1687,7 @@ def apply(
     allow_unsafe_rename: bool = False,
     rename_preflight: RenamePreflight | None = None,
     table: SubstitutionTable | None = None,
+    _skip_revalidation: bool = False,
 ) -> ApplyReport:
     """Execute content rows, the compiled rename plan, then link retargets."""
     source.validate()
@@ -1685,7 +1712,8 @@ def apply(
             ),
             rules,
         )
-    revalidate_substitution_table(target, table)
+    if not _skip_revalidation:
+        revalidate_substitution_table(target, table)
     # Direct callers bypass the CLI preflight, so probe each source filesystem
     # before replacements can partially rewrite the target.
     if rename_preflight is None:
