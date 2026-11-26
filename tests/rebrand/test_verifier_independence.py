@@ -89,6 +89,16 @@ def test_verifier_import_closure_excludes_table_consumers() -> None:
     assert closure.isdisjoint(FORBIDDEN), sorted(closure & FORBIDDEN)
 
 
+def test_keep_names_import_closure_excludes_forbidden_modules() -> None:
+    closure = _transitive_imports(f"{PACKAGE}.keep_names")
+    forbidden = FORBIDDEN | {
+        f"{PACKAGE}.verifier",
+        f"{PACKAGE}.verify_config",
+    }
+
+    assert closure.isdisjoint(forbidden), sorted(closure & forbidden)
+
+
 def test_local_imports_resolves_relative_modules(tmp_path: Path, monkeypatch) -> None:
     package_root = tmp_path / "rebrand"
     package_root.mkdir()

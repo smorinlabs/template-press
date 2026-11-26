@@ -473,7 +473,7 @@ def _rule_scan_specs(
     return tuple(specs.values())
 
 
-def _changed_fields(
+def changed_verify_fields(
     source: Identity,
     dest: Identity,
     fields: Sequence[str],
@@ -512,6 +512,9 @@ def _changed_fields(
             hunted.add(pattern)
             changed.append((field, name))
     return changed
+
+
+_changed_fields = changed_verify_fields
 
 
 def _cargo_literals(
@@ -916,7 +919,7 @@ def scan(
     stable by selected path and then scan order (path components followed by
     symlink, content, or binary evidence).
     """
-    changed = _changed_fields(source, dest, fields, substring_fields)
+    changed = changed_verify_fields(source, dest, fields, substring_fields)
     cargo_literals = _cargo_literals(source, dest)
     renamed = renamed or []
     findings: list[Finding] = []

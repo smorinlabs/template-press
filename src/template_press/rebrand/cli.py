@@ -139,6 +139,7 @@ from template_press.rebrand.substitutions import (
     validate_reset_visibility,
 )
 from template_press.rebrand.verify_cli import verify_command
+from template_press.rebrand.verify_config import load_verify_config
 
 _EXISTING_RECEIPT_PROBLEM = (
     "target already has a press receipt (press/press-receipt.toml); "
@@ -914,6 +915,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         removal_receipt_metadata(removal_plan, prior_removed)
         effective_rules = removal_rules_view(rules, removal_plan)
+        verify_cfg = load_verify_config(target)
         keep_check = check_target_keep_names(
             target,
             source,
@@ -921,6 +923,7 @@ def main(argv: list[str] | None = None) -> int:
             rules,
             frozenset(member.current_file for member in removal_plan.members),
             languages.checked,
+            verify_config=verify_cfg,
         )
         if keep_check.undeclared:
             print(render_undeclared(keep_check.undeclared, source), file=sys.stderr)

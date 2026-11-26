@@ -117,6 +117,8 @@ from template_press.rebrand.verifier import Finding, attach_ignore_hints, scan
 from template_press.rebrand.verify_config import (
     KNOWN_FIELDS,
     VerifyConfig,
+    effective_verify_fields,
+    load_verify_config,
     parse_verify_config,
 )
 
@@ -530,32 +532,10 @@ def verify_command(argv: list[str] | None = None) -> int:
         languages = check_target_languages(
             target, rules.languages, [rule.file for rule in rules.remove]
         )
-        cfg = _load_verify_config(target)
-        scan_fields: tuple[str, ...] = cfg.fields
-        if source.display_name is not None and "display_name" not in scan_fields:
-            # codesign sec-05: a declared display name is scanned as its own
-            # field — the only coverage when its words diverge from the slug.
-            scan_fields = (*scan_fields, "display_name")
-        # Declared exact names are identity the press rewrites, so they are
-        # always scanned: a leftover must never produce a clean verify.
-        for field_name in ("npm_name", "cli_name"):
-            if (
-                getattr(source, field_name) is not None
-                and field_name not in scan_fields
-            ):
-                scan_fields = (*scan_fields, field_name)
-        # A field the SANDBOX PRESS rewrites substring-wide (`[rules]
-        # substring_rewrite_fields`) must be SCANNED at all (Fix F2) — a field
-        # absent from DEFAULT_FIELDS (e.g. app_name_upper) is otherwise never
-        # scanned regardless of substring mode — AND substring-wide (a
-        # containment-skipped symlink target, or any other rewrite the
-        # hermetic apply cannot perform, can leave a glued, boundary-free
-        # occurrence of that field's source value behind; the boundary-only
-        # `[verify] substring_fields` scope alone would never flag it).
-        scan_fields = _effective_scan_fields(
-            scan_fields, rules.substring_rewrite_fields
+        cfg = load_verify_config(target)
+        scan_fields, scan_substring = effective_verify_fields(
+            source, cfg, rules.substring_rewrite_fields
         )
-        scan_substring = cfg.substring_fields | rules.substring_rewrite_fields
         # The target's OWN receipt (not the sandbox copy's): a prior
         # `--accept-origin-mismatch` press records the exact origin values it
         # accepted, and preflight waives precisely those.
@@ -649,7 +629,12 @@ def verify_command(argv: list[str] | None = None) -> int:
                             "equal_fields_collision": None,
                             "exempt": [],
                             "undeclared_names": [
-                                dataclasses.asdict(item)
+                                {
+                                    "path": item.path,
+                                    "where": item.where,
+                                    "field": item.field,
+                                    "token": item.token,
+                                }
                                 for item in keep_check.undeclared
                             ],
                         }
