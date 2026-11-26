@@ -2458,3 +2458,25 @@ def test_commented_doc_include_refusal_matches_real_cargo(tmp_path: Path) -> Non
 
     assert _status(target) == ""
     _assert_cargo(target, "test", "--offline", "--doc")
+
+
+def test_crlf_doc_comments_and_markdown_preserve_proven_structure() -> None:
+    """Windows CRLF line endings must not invalidate proven doc-comment prose
+    or Markdown fence closures."""
+    from template_press.rebrand.rust_text import (
+        quoted_spans,
+        rust_strings,
+        split_rust_replacements,
+    )
+
+    for case in ("prose", "text_fence", "ignore_fence"):
+        crlf = _doc_lib(SKIPPED_LAYOUTS[case], UNPROVEN).replace("\n", "\r\n")
+        assert rust_strings(crlf) == ()
+        assert quoted_spans(crlf) == ()
+        start = crlf.index("acme")
+        assert split_rust_replacements(
+            crlf, [(start, start + 4)], "acme", "zeta_gadget", "zeta-gadget"
+        ) == ["zeta_gadget"]
+
+    md = "```text\r\nnot rust\r\n```\r\n\r\n```\r\nlet acme = 1;\r\n```\r\n"
+    assert compiled_markdown_lines(md) == frozenset({6})
