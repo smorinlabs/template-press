@@ -5,6 +5,7 @@
 - **Design:** [BAML targets design](../docs/superpowers/specs/2026-11-25-baml-targets-design.md)
 - **Design:** [external target model](../docs/design/0006-external-target-model.md)
 - **Design:** [identity variants and replace rules](../docs/design/0008-identity-variants-and-replace-rules.md)
+- **Plan:** [BAML targets implementation plan](../docs/superpowers/plans/2026-11-25-baml-targets.md)
 - **Depends on:** P13, P14, P15, P16, P17
 - **Prior art:** [P11 directory removals](P11-directory-removals.md) (`[[remove]] dir` symlink/gitlink refusal rules)
 - **Prior art:** [P18 one-press contained renames](P18-one-press-contained-renames.md) (explicitly out of scope here)
@@ -55,8 +56,8 @@
 
 ### Open questions
 
-All eight design decisions are approved; these four builder-level details will
-be resolved in the implementation plan:
+All eight design decisions are approved, and the four builder-level details
+below are settled in the [implementation plan](../docs/superpowers/plans/2026-11-25-baml-targets.md#builder-decisions):
 
 - How the paranoid field set is shared between `verifier.py` and
   `keep_names.py` without breaking design-0008 module independence.
