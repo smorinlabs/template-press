@@ -65,6 +65,7 @@ from template_press.rebrand.languages import (
     render_ignored_languages,
 )
 from template_press.rebrand.node_manifest import NodeManifest
+from template_press.rebrand.pathing import resolve_regenerate_dir
 from template_press.rebrand.receipt import (
     RECEIPT_REL,
     OriginDecision,
@@ -76,14 +77,18 @@ from template_press.rebrand.receipt import (
 )
 from template_press.rebrand.regen import (
     EditPlan,
+    RegenerationDirPlan,
     RegenerationPlan,
+    execute_dir_regenerations,
     execute_edits,
     execute_regenerations,
     final_validation_pass,
     plan_edits,
     plan_regenerate_commands,
+    plan_regenerate_dirs,
     preflight_edit_targets,
     preflight_excluded_files,
+    preflight_regenerate_dirs,
     preflight_regenerate_outputs,
     render_edit_plan,
     render_regenerate_plan,
@@ -670,8 +675,10 @@ def _load_rules_and_removal_receipt(target: Path) -> tuple[SelectedRules, str | 
 class _ReceiptPhases:
     edits: tuple[tuple[str, Sequence[str], str], ...]
     regenerations: tuple[tuple[str, Sequence[str]], ...]
+    regenerate_dirs: tuple[tuple[str, str, Sequence[str], str], ...]
     resets: tuple[str, ...]
     exempt: tuple[tuple[str, str], ...]
+    exempt_dirs: tuple[tuple[str, str], ...]
 
 
 def _receipt_phases(
@@ -679,8 +686,26 @@ def _receipt_phases(
     regen_plans: Sequence[RegenerationPlan],
     resets: Sequence[str],
     regenerated: Sequence[str],
+    *,
+    regen_dir_plans: Sequence[RegenerationDirPlan] = (),
+    renames: Mapping[str, str] | None = None,
+    dest: Identity | None = None,
 ) -> _ReceiptPhases:
     """Build identical planned/final rows from source-coordinate phase records."""
+    file_regen_names = {plan.rule.file for plan in regen_plans}
+    rename_map = renames or {}
+    regen_dir_rows: list[tuple[str, str, Sequence[str], str]] = []
+    exempt_dir_rows: list[tuple[str, str]] = []
+    for plan in regen_dir_plans:
+        if plan.rule.dir not in regenerated:
+            continue
+        dest_dir = resolve_regenerate_dir(plan.rule, rename_map, dest)
+        reason = plan.rule.reason if plan.rule.verify_exempt else ""
+        regen_dir_rows.append(
+            (dest_dir, plan.rule.dir, (plan.executable, *plan.rule.command[1:]), reason)
+        )
+        if plan.rule.verify_exempt:
+            exempt_dir_rows.append((dest_dir, plan.rule.reason))
     return _ReceiptPhases(
         # A failed edit withholds the receipt, so every planned edit is included.
         edits=tuple(
@@ -696,6 +721,7 @@ def _receipt_phases(
             for plan in regen_plans
             if plan.rule.file in regenerated
         ),
+        regenerate_dirs=tuple(regen_dir_rows),
         resets=tuple(resets),
         exempt=(
             # Keep declared verify_exempt reasons verbatim (issue #81).
@@ -713,12 +739,14 @@ def _receipt_phases(
                     ),
                 )
                 for rel in regenerated
+                if rel in file_regen_names
             ),
             *(
                 (rel, "reset to the declared stub (scanned at plan time)")
                 for rel in resets
             ),
         ),
+        exempt_dirs=tuple(exempt_dir_rows),
     )
 
 
@@ -734,13 +762,21 @@ def _preflight_directory_receipt(
     resets: Sequence[str],
     platform: str | None,
     origin: OriginDecision | None,
+    regen_dir_plans: Sequence[RegenerationDirPlan] = (),
 ) -> None:
     """Budget every potential successful row before the first target write."""
     if not (removal_plan.directories or removal_plan.retained_history):
         return
     removals, directories = removal_receipt_metadata(removal_plan, previously_removed)
     phases = _receipt_phases(
-        edit_plans, regen_plans, resets, [plan.rule.file for plan in regen_plans]
+        edit_plans,
+        regen_plans,
+        resets,
+        [plan.rule.file for plan in regen_plans]
+        + [plan.rule.dir for plan in regen_dir_plans],
+        regen_dir_plans=regen_dir_plans,
+        renames=renames,
+        dest=dest,
     )
     preflight_receipt(
         source,
@@ -756,6 +792,8 @@ def _preflight_directory_receipt(
         remove_dirs=directories,
         renames=renames,
         keep_names=rules.keep_names,
+        regenerate_dirs=phases.regenerate_dirs,
+        exempt_dirs=phases.exempt_dirs,
     )
 
 
@@ -991,6 +1029,11 @@ def main(argv: list[str] | None = None) -> int:
             target, rules.regenerate, renamed=frozenset(plan.renames)
         )
         gate_problems += plan_problems
+        gate_problems += preflight_regenerate_dirs(target, rules)
+        regen_dir_plans, dir_plan_problems = plan_regenerate_dirs(
+            target, rules.regenerate_dirs, renamed=frozenset(plan.renames)
+        )
+        gate_problems += dir_plan_problems
         reset_previews, reset_problems = preflight_reset_targets(
             target,
             rules,
@@ -1040,6 +1083,7 @@ def main(argv: list[str] | None = None) -> int:
             [preview.rule.file for preview in reset_previews],
             selected.platform,
             origin,
+            regen_dir_plans=regen_dir_plans,
         )
         # Announced only now: every plan-time gate (including the closure
         # refusal that owns stdout under --diagnostics-json) is behind us,
@@ -1063,8 +1107,8 @@ def main(argv: list[str] | None = None) -> int:
         # plan the operator approves reads in the order execution will take.
         if edit_plans:
             print(render_edit_plan(edit_plans))
-        if regen_plans:
-            print(render_regenerate_plan(regen_plans))
+        if regen_plans or regen_dir_plans:
+            print(render_regenerate_plan(regen_plans, regen_dir_plans))
         if reset_previews:
             print(render_reset_plan(reset_previews, verbose=args.verbose))
         if removal_plan.members or removal_plan.directories:
@@ -1127,6 +1171,7 @@ def main(argv: list[str] | None = None) -> int:
         regen_plans,
         [(preview.rule, preview.stub_text) for preview in reset_previews],
         edit_plans=edit_plans,
+        regen_dir_plans=regen_dir_plans,
         previously_removed=prior_removed,
         removal_plan=removal_plan,
         platform=selected.platform,
@@ -1213,6 +1258,7 @@ def _press(
     resets: list[tuple[ResetRule, str]],
     *,
     edit_plans: list[EditPlan] | None = None,
+    regen_dir_plans: list[RegenerationDirPlan] | None = None,
     previously_removed: dict[str, str] | None = None,
     removal_plan: RemovalPlan | None = None,
     platform: str | None = None,
@@ -1227,6 +1273,8 @@ def _press(
         previously_removed = {}
     if edit_plans is None:
         edit_plans = []
+    if regen_dir_plans is None:
+        regen_dir_plans = []
     try:
         if removal_plan is None and rules.remove_dirs:
             receipt_text = removal_receipt_text(target, rules)
@@ -1278,6 +1326,7 @@ def _press(
                 [rule.file for rule, _stub in resets],
                 platform,
                 origin,
+                regen_dir_plans=regen_dir_plans,
             )
     except (
         ValidationError,
@@ -1339,7 +1388,7 @@ def _press(
         # one that rewrites press-rules.toml or changes Git's ignore policy
         # mid-press is exactly as unsafe whether or not a [[regenerate]]
         # happens to be declared beside it.
-        any_command = bool(edit_plans) or bool(regen_plans)
+        any_command = bool(edit_plans) or bool(regen_plans) or bool(regen_dir_plans)
         control_snapshot = snapshot_control_files(target) if any_command else {}
         visibility_snapshot = snapshot_visibility_state(target) if any_command else None
         # A pinned executable can disappear between planning and launch (for
@@ -1403,6 +1452,17 @@ def _press(
             rendered_rules=rendered_rules,
             table=table,
         )
+        failed_locks += execute_dir_regenerations(
+            target,
+            regen_dir_plans,
+            dict(report.renamed),
+            report,
+            source=source,
+            dest=dest,
+            rules=rules,
+            rendered_rules=rendered_rules,
+            table=table,
+        )
         if failed_locks:
             # A failed command must not leave a tampered/planted control
             # file behind (codex 3654736777) — restore the snapshot before
@@ -1448,6 +1508,7 @@ def _press(
                 rendered_rules=rendered_rules,
                 table=table,
                 edits=edit_plans,
+                dir_plans=regen_dir_plans,
             )
             post_problems += validate_control_files(target, control_snapshot)
             if visibility_snapshot is not None:
@@ -1484,6 +1545,7 @@ def _press(
             regenerate=rules.regenerate,
             verify_ignore=rules.verify_ignore,
             keep_names=rules.keep_names,
+            regenerate_dirs=rules.regenerate_dirs,
         )
         leaks = find_leaks(
             target,
@@ -1533,7 +1595,13 @@ def _press(
                 translated, previously_removed, removed=report.removed
             )
         phases = _receipt_phases(
-            edit_plans, regen_plans, report.reset, report.regenerated
+            edit_plans,
+            regen_plans,
+            report.reset,
+            report.regenerated,
+            regen_dir_plans=regen_dir_plans,
+            renames=dict(report.renamed),
+            dest=dest,
         )
 
         def write_press_receipt(root: Path) -> Path:
@@ -1552,6 +1620,8 @@ def _press(
                 remove_dirs=all_directories,
                 exempt=phases.exempt,
                 keep_names=rules.keep_names,
+                regenerate_dirs=phases.regenerate_dirs,
+                exempt_dirs=phases.exempt_dirs,
             )
 
         if _pressed_tree_fails_verify(target, dest, write_press_receipt):

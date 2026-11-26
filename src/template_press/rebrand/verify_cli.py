@@ -88,6 +88,7 @@ from template_press.rebrand.languages import (
     render_ignored_languages,
 )
 from template_press.rebrand.matcher import find_occurrences
+from template_press.rebrand.pathing import exempt_regenerated_dirs
 from template_press.rebrand.receipt import (
     accepted_origin_from_receipt,
     receipt_binding_problem,
@@ -622,6 +623,7 @@ def verify_command(argv: list[str] | None = None) -> int:
     stale: list[Ignore] = []
     unavailable: tuple[str, ...] = ()
     exempt: list[tuple[str, str]] = []
+    exempt_dirs: list[tuple[str, str]] = []
     try:
         synth = synthesize_dest(source)
         validate_keep_names(rules.keep_names, source, synth, synthetic_dest=True)
@@ -729,11 +731,13 @@ def verify_command(argv: list[str] | None = None) -> int:
             # can certify these files, so they are listed as not-verified
             # rather than silently omitted.
             exempt = exempt_regenerated_paths(rules, report.renamed)
+            exempt_dirs = exempt_regenerated_dirs(rules, report.renamed, dest=synth)
             forward_map = build_forward_map(report.renamed)
             # Exempt paths back to SOURCE coordinates (codex 3654657451),
             # exactly like the findings below — the synthetic sandbox path
             # does not exist in the user's repo.
             exempt = [(forward_map(file), reason) for file, reason in exempt]
+            exempt_dirs = [(forward_map(d), reason) for d, reason in exempt_dirs]
             surviving, stale = apply_ignores(
                 findings,
                 list(cfg.ignores),
@@ -789,13 +793,16 @@ def verify_command(argv: list[str] | None = None) -> int:
                     # why (exit 0 means clean over the SCANNED set).
                     "exempt": [
                         {"file": file, "reason": reason} for file, reason in exempt
-                    ],
+                    ]
+                    + [{"dir": d, "reason": reason} for d, reason in exempt_dirs],
                 }
             )
         )
     else:
         for file, reason in exempt:
             print(f"not verified (exempt): {file} — {reason}")
+        for d, reason in exempt_dirs:
+            print(f"not verified (exempt): {d}/ — {reason}")
     if failed:
         if not args.as_json:
             _report(surviving, stale, unavailable, equal_collision, source)

@@ -40,6 +40,7 @@ from template_press.rebrand.keep_names import (
     literal_occurs,
     matches_outside_kept,
 )
+from template_press.rebrand.pathing import regenerate_dir_prefixes
 from template_press.rebrand.rules import (
     DEFAULT_RULES,
     ReplaceRule,
@@ -225,6 +226,7 @@ def _find_table_leaks(
     rules: Rules,
     table: SubstitutionTable,
     renamed: list[tuple[str, str]],
+    dest: Identity | None = None,
 ) -> list[Leak]:
     """Scan inline-doctor surfaces from compiled doctor hunt policies."""
 
@@ -242,6 +244,7 @@ def _find_table_leaks(
         built_in_exclude_dirs=DEFAULT_RULES.exclude_dirs,
         verify_ignore=rules.verify_ignore,
         root_control=ROOT_CONTROL,
+        exclude_prefixes=regenerate_dir_prefixes(rules, renamed, dest=dest),
     )
     untracked = frozenset(e.rel.as_posix() for e in entries if not e.tracked)
     core_excludes = core_excludes_from_snapshot(snapshot)
@@ -395,7 +398,7 @@ def find_leaks(
     """
     renamed = renamed or []
     if table is not None:
-        return _find_table_leaks(target, rules, table, renamed)
+        return _find_table_leaks(target, rules, table, renamed, dest=dest)
     rendered_rules = rendered_rules or []
     leaks: list[Leak] = []
     fields = source.as_dict()
@@ -431,6 +434,7 @@ def find_leaks(
         built_in_exclude_dirs=DEFAULT_RULES.exclude_dirs,
         verify_ignore=rules.verify_ignore,
         root_control=ROOT_CONTROL,
+        exclude_prefixes=regenerate_dir_prefixes(rules, renamed, dest=dest),
     )
     untracked = frozenset(e.rel.as_posix() for e in entries if not e.tracked)
     core_excludes = core_excludes_from_snapshot(snapshot)

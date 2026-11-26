@@ -73,7 +73,11 @@ from template_press.rebrand.keep_names import (
 )
 from template_press.rebrand.matcher import find_occurrences, identity_pattern
 from template_press.rebrand.node_manifest import read_node_manifest
-from template_press.rebrand.pathing import ROOT_CONTROL, symlink_target_posix
+from template_press.rebrand.pathing import (
+    ROOT_CONTROL,
+    regenerate_dir_prefixes,
+    symlink_target_posix,
+)
 from template_press.rebrand.pipeline import (
     MAX_RENAME_PASSES,
     MatcherSpec,
@@ -2998,6 +3002,7 @@ def check_target_keep_names(
             exclude_dirs=rules.exclude_dirs,
             root_control=ROOT_CONTROL,
             skip_paths=removed,
+            exclude_prefixes=regenerate_dir_prefixes(rules),
         ),
         source,
         rules.keep_names,
@@ -3075,6 +3080,7 @@ def compile_substitution_table(
             exclude_files=rules.exclude_files,
             exclude_dirs=rules.exclude_dirs,
             root_control=ROOT_CONTROL,
+            exclude_prefixes=regenerate_dir_prefixes(rules),
         ),
         visibility_inputs=snapshot.visibility_inputs,
     )

@@ -6,8 +6,13 @@ import os
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 
-from template_press.rebrand.identity import ValidationError
-from template_press.rebrand.rules import ReplaceRule, Rules, rule_matches_path
+from template_press.rebrand.identity import Identity, ValidationError
+from template_press.rebrand.rules import (
+    RegenerateDirRule,
+    ReplaceRule,
+    Rules,
+    rule_matches_path,
+)
 
 ROOT_CONTROL: frozenset[str] = frozenset(
     {
@@ -117,4 +122,57 @@ def exempt_regenerated_paths(
                     "runs commands, so verify cannot certify it",
                 )
             )
+    return outputs
+
+
+def resolve_regenerate_dir(
+    rule: RegenerateDirRule,
+    rename_map: Mapping[str, str],
+    dest: Identity | None = None,
+) -> str:
+    """Resolve a ``[[regenerate]] dir`` to its post-rename location."""
+    translated = translate_path(rule.dir, rename_map)
+    raw = rule.raw_dir or rule.dir
+    if translated == rule.dir and dest is not None and "{package_name}" in raw:
+        translated = raw.replace("{package_name}", dest.package_name)
+    return translated
+
+
+def regenerate_dir_prefixes(
+    rules: Rules,
+    renamed: Mapping[str, str] | Collection[tuple[str, str]] = (),
+    *,
+    dest: Identity | None = None,
+) -> frozenset[str]:
+    """Every active ``[[regenerate]] dir`` path in pre- or post-rename coordinates."""
+    if not rules.regenerate_dirs:
+        return frozenset()
+    rename_map = dict(renamed)
+    return frozenset(
+        resolve_regenerate_dir(rule, rename_map, dest) for rule in rules.regenerate_dirs
+    )
+
+
+def exempt_regenerated_dirs(
+    rules: Rules,
+    renamed: Mapping[str, str] | Collection[tuple[str, str]] = (),
+    *,
+    dest: Identity | None = None,
+) -> list[tuple[str, str]]:
+    """Translated ``[[regenerate]] dir`` paths exempted from hermetic verify."""
+    rename_map = dict(renamed)
+    outputs: list[tuple[str, str]] = []
+    for rule in rules.regenerate_dirs:
+        if not rule.verify_exempt:
+            continue
+        translated = resolve_regenerate_dir(rule, rename_map, dest)
+        outputs.append(
+            (
+                translated,
+                f"declared regeneration exempted by the target — "
+                f"{rule.reason} (rebuilt and scanned by the real press's "
+                f"post-command check; the hermetic sandbox never runs "
+                f"commands)",
+            )
+        )
     return outputs

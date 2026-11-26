@@ -1085,18 +1085,24 @@ def core_excludes_from_snapshot(snapshot: SurfaceSnapshot) -> Path | None:
     return None
 
 
+def _under_prefixes(posix: str, prefixes: frozenset[str]) -> bool:
+    return any(posix == prefix or posix.startswith(prefix + "/") for prefix in prefixes)
+
+
 def _excluded(
     entry: SurfaceEntry,
     *,
     exclude_files: frozenset[str],
     exclude_dirs: frozenset[str],
     root_control: frozenset[str],
+    exclude_prefixes: frozenset[str] = frozenset(),
 ) -> bool:
     posix = entry.rel.as_posix()
     return (
         posix in root_control
         or posix in exclude_files
         or any(part in exclude_dirs for part in entry.rel.parts)
+        or (bool(exclude_prefixes) and _under_prefixes(posix, exclude_prefixes))
     )
 
 
@@ -1116,6 +1122,7 @@ def select_content_rewrite_entries(
     exclude_files: frozenset[str],
     exclude_dirs: frozenset[str],
     root_control: frozenset[str],
+    exclude_prefixes: frozenset[str] = frozenset(),
 ) -> tuple[SurfaceEntry, ...]:
     """No-follow regular files eligible for conservative content rewriting."""
 
@@ -1128,6 +1135,7 @@ def select_content_rewrite_entries(
             exclude_files=exclude_files,
             exclude_dirs=exclude_dirs,
             root_control=root_control,
+            exclude_prefixes=exclude_prefixes,
         )
     )
 
@@ -1138,6 +1146,7 @@ def select_rename_entries(
     exclude_files: frozenset[str],
     exclude_dirs: frozenset[str],
     root_control: frozenset[str],
+    exclude_prefixes: frozenset[str] = frozenset(),
 ) -> tuple[SurfaceEntry, ...]:
     """Rewrite-eligible regular files and symlink leaves, never gitlinks."""
 
@@ -1151,6 +1160,7 @@ def select_rename_entries(
             exclude_files=exclude_files,
             exclude_dirs=exclude_dirs,
             root_control=root_control,
+            exclude_prefixes=exclude_prefixes,
         )
     )
 
@@ -1162,6 +1172,7 @@ def select_inline_doctor_entries(
     built_in_exclude_dirs: frozenset[str],
     verify_ignore: frozenset[str],
     root_control: frozenset[str],
+    exclude_prefixes: frozenset[str] = frozenset(),
 ) -> tuple[SurfaceEntry, ...]:
     """Doctor coverage: built-in exclusions plus committed verify ignores."""
 
@@ -1174,6 +1185,7 @@ def select_inline_doctor_entries(
             exclude_files=built_in_exclude_files,
             exclude_dirs=excluded_dirs,
             root_control=root_control,
+            exclude_prefixes=exclude_prefixes,
         )
     )
 
@@ -1184,6 +1196,7 @@ def select_verifier_entries(
     verify_ignore: frozenset[str],
     root_control: frozenset[str],
     exempt_paths: frozenset[str],
+    exempt_prefixes: frozenset[str] = frozenset(),
 ) -> tuple[SurfaceEntry, ...]:
     """Standalone verifier coverage over all kinds that are not exempt."""
 
@@ -1192,6 +1205,10 @@ def select_verifier_entries(
         for entry in snapshot.entries
         if entry.rel.as_posix() not in root_control
         and entry.rel.as_posix() not in exempt_paths
+        and not (
+            bool(exempt_prefixes)
+            and _under_prefixes(entry.rel.as_posix(), exempt_prefixes)
+        )
         and not any(part in verify_ignore for part in entry.rel.parts)
     )
 
@@ -1203,6 +1220,7 @@ def rewrite_surface_texts(
     exclude_dirs: frozenset[str],
     root_control: frozenset[str],
     skip_paths: frozenset[str] = frozenset(),
+    exclude_prefixes: frozenset[str] = frozenset(),
 ) -> Iterator[tuple[str, str, str]]:
     """``(path, where, text)`` for the content, path, and symlink rewrite surface.
 
@@ -1214,6 +1232,7 @@ def rewrite_surface_texts(
         "exclude_files": exclude_files,
         "exclude_dirs": exclude_dirs,
         "root_control": root_control,
+        "exclude_prefixes": exclude_prefixes,
     }
     for entry in select_rename_entries(snapshot, **selection):
         posix = entry.rel.as_posix()

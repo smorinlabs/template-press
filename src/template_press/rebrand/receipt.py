@@ -167,6 +167,8 @@ def write_receipt(
     clean: Sequence[Sequence[str]] = (),
     remove_dirs: Sequence[DirectoryRemoval] = (),
     keep_names: Sequence[str] = (),
+    regenerate_dirs: Sequence[tuple[str, str, Sequence[str], str]] = (),
+    exempt_dirs: Sequence[tuple[str, str]] = (),
 ) -> Path:
     text = _render_receipt(
         source,
@@ -183,6 +185,8 @@ def write_receipt(
         clean=clean,
         remove_dirs=remove_dirs,
         keep_names=keep_names,
+        regenerate_dirs=regenerate_dirs,
+        exempt_dirs=exempt_dirs,
     )
     return write_control(target, RECEIPT_REL, text)
 
@@ -207,6 +211,8 @@ def preflight_receipt(
     remove_dirs: Sequence[DirectoryRemoval] = (),
     keep_names: Sequence[str] = (),
     renames: Mapping[str, str] | None = None,
+    regenerate_dirs: Sequence[tuple[str, str, Sequence[str], str]] = (),
+    exempt_dirs: Sequence[tuple[str, str]] = (),
 ) -> int | None:
     """Bound complete output before writes; file-only receipts remain uncapped.
 
@@ -239,6 +245,8 @@ def preflight_receipt(
         clean=clean,
         remove_dirs=remove_dirs,
         keep_names=keep_names,
+        regenerate_dirs=regenerate_dirs,
+        exempt_dirs=exempt_dirs,
     )
     rename_map = renames or {}
     _validate_current_path_text_limits(remove_dirs, rename_map)
@@ -393,6 +401,8 @@ def _render_receipt(
     clean: Sequence[Sequence[str]] = (),
     remove_dirs: Sequence[DirectoryRemoval] = (),
     keep_names: Sequence[str] = (),
+    regenerate_dirs: Sequence[tuple[str, str, Sequence[str], str]] = (),
+    exempt_dirs: Sequence[tuple[str, str]] = (),
 ) -> str:
     """Render once for preflight and output; report=None budgets list widths."""
     if remove_dirs:
@@ -481,6 +491,17 @@ def _render_receipt(
             f"file = {toml_string(file)}",
             "argv = [" + ", ".join(toml_string(a) for a in argv) + "]",
         ]
+    for dest_dir, source_dir, argv, reason in regenerate_dirs:
+        entry_lines = [
+            "",
+            "[[press.regenerate_dir]]",
+            f"dir = {toml_string(dest_dir)}",
+            f"source_dir = {toml_string(source_dir)}",
+            "argv = [" + ", ".join(toml_string(a) for a in argv) + "]",
+        ]
+        if reason:
+            entry_lines.append(f"reason = {toml_string(reason)}")
+        lines += entry_lines
     for file in resets:
         lines += [
             "",
@@ -515,6 +536,13 @@ def _render_receipt(
             "",
             "[[press.exempt]]",
             f"file = {toml_string(file)}",
+            f"reason = {toml_string(reason)}",
+        ]
+    for dest_dir, reason in exempt_dirs:
+        lines += [
+            "",
+            "[[press.exempt]]",
+            f"dir = {toml_string(dest_dir)}",
             f"reason = {toml_string(reason)}",
         ]
     text = "\n".join(lines) + "\n"
