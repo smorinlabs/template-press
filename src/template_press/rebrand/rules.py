@@ -53,6 +53,13 @@ ALLOWED_PLACEHOLDERS: frozenset[str] = frozenset(REQUIRED_FIELDS) | {
     "cli_name",
 }
 
+# Allowed values for [rules] substring_rewrite_fields. Bare "display_name" stays
+# rejected (no-op at runtime); "display_name_pascal" is the one display form
+# allowed in substring mode (Decision 2).
+ALLOWED_SUBSTRING_REWRITE_FIELDS: frozenset[str] = (
+    ALLOWED_PLACEHOLDERS - {"display_name"}
+) | {"display_name_pascal"}
+
 _REPLACE_KEYS = frozenset({"pattern", "files", "paths", "content", "reason"})
 _CARGO_SPLIT_KEYS = frozenset({"role", "package_files", "identifier_files"})
 
@@ -1554,25 +1561,24 @@ def _parse_rules(target: Path) -> _ParsedRules:
     ):
         raise ValidationError(f"{RULES_REL}: [[clean]] must be an array of tables")
     substring_fields = frozenset(_str_list(table, "substring_rewrite_fields", []))
-    bad_substring = substring_fields - ALLOWED_PLACEHOLDERS
-    if bad_substring:
-        raise ValidationError(
-            f"{RULES_REL}: [rules] substring_rewrite_fields unknown field(s): "
-            f"{', '.join(sorted(bad_substring))}"
-        )
     if "display_name" in substring_fields:
         # A no-op disguised as a valid config: "display_name" IS in
         # ALLOWED_PLACEHOLDERS (render_replace_pattern can reference it), but
         # the runtime pair tags substring_rewrite_fields actually dispatches
         # on are display_name_spaced/pascal/camel, never bare "display_name"
-        # — so this entry would never match anything. Display forms are
-        # exact-by-design (codesign sec-04); use [rules] display_forms to
-        # narrow which forms rewrite instead.
+        # — so this entry would never match anything. Use display_name_pascal
+        # for PascalCase substring rewrites or [rules] display_forms to narrow
+        # which forms rewrite.
         raise ValidationError(
             f"{RULES_REL}: [rules] substring_rewrite_fields must not include "
-            f"'display_name' — it is a no-op (runtime pair tags are "
-            f"display_name_spaced/pascal/camel, never bare 'display_name'); "
-            f"use [rules] display_forms instead"
+            f"'display_name' — it is a no-op (use 'display_name_pascal' for "
+            f"glued PascalCase forms, or [rules] display_forms to narrow forms)"
+        )
+    bad_substring = substring_fields - ALLOWED_SUBSTRING_REWRITE_FIELDS
+    if bad_substring:
+        raise ValidationError(
+            f"{RULES_REL}: [rules] substring_rewrite_fields unknown field(s): "
+            f"{', '.join(sorted(bad_substring))}"
         )
     display_forms_list = _str_list(table, "display_forms", list(DISPLAY_FORM_NAMES))
     bad_forms = set(display_forms_list) - set(DISPLAY_FORM_NAMES)
@@ -1580,6 +1586,11 @@ def _parse_rules(target: Path) -> _ParsedRules:
         raise ValidationError(
             f"{RULES_REL}: [rules] display_forms must be a non-empty subset of "
             f"{list(DISPLAY_FORM_NAMES)}: {display_forms_list!r}"
+        )
+    if "display_name_pascal" in substring_fields and "pascal" not in display_forms_list:
+        raise ValidationError(
+            f"{RULES_REL}: [rules] substring_rewrite_fields includes "
+            "'display_name_pascal' but [rules] display_forms disables 'pascal'"
         )
     exclude_files = DEFAULT_RULES.exclude_files | frozenset(
         _str_list(table, "extra_exclude_files", [])

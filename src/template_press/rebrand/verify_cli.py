@@ -69,6 +69,7 @@ from template_press.rebrand.identity import (
     ValidationError,
     cargo_ident,
     cargo_identity_problem,
+    display_forms,
 )
 from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_map
 from template_press.rebrand.inventory import (
@@ -345,13 +346,23 @@ def _preflight(
     if not undiscoverable and not check_display_name:
         return problems, honored
     corpus = _target_text_corpus(target, rules)
-    if check_display_name and not _value_present(
-        "display_name", source.display_name, corpus, substring_fields
-    ):
-        problems.append(
-            f"declared display_name {source.display_name!r} not found in "
-            "target — stale or mistyped?"
+    if check_display_name and source.display_name is not None:
+        display_present = _value_present(
+            "display_name", source.display_name, corpus, substring_fields
+        ) or (
+            "display_name_pascal" in substring_fields
+            and _value_present(
+                "display_name_pascal",
+                display_forms(source.display_name)["pascal"],
+                corpus,
+                substring_fields,
+            )
         )
+        if not display_present:
+            problems.append(
+                f"declared display_name {source.display_name!r} not found in "
+                "target — stale or mistyped?"
+            )
     if not undiscoverable:
         return problems, honored
     absent = [

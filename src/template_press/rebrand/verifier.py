@@ -45,6 +45,7 @@ from template_press.rebrand.identity import (
     CARGO_EXACT_PREFIX,
     Identity,
     cargo_ident,
+    display_forms,
 )
 from template_press.rebrand.inventory import (
     SurfaceSnapshot,
@@ -494,6 +495,9 @@ def changed_verify_fields(
     suppress. A substring field is a literal hunt and covers one spelling only.
     """
     src, dst = source.as_dict(), dest.as_dict()
+    if source.display_name is not None and dest.display_name is not None:
+        src["display_name_pascal"] = display_forms(source.display_name)["pascal"]
+        dst["display_name_pascal"] = display_forms(dest.display_name)["pascal"]
     changed = [
         (f, src[f]) for f in fields if f in src and f in dst and src[f] != dst[f]
     ]

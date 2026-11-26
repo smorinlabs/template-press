@@ -29,6 +29,7 @@ from template_press.rebrand.ignores import Ignore
 KNOWN_FIELDS: frozenset[str] = frozenset(REQUIRED_FIELDS) | {
     "app_name_upper",
     "display_name",
+    "display_name_pascal",
     "npm_name",
     "cli_name",
 }
