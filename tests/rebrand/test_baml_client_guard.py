@@ -10,7 +10,7 @@ from pathlib import Path
 from template_press.rebrand.cli import main
 from template_press.rebrand.config import SOURCE_CONFIG_REL, render_source_config
 
-from .conftest import DEST, SOURCE, _git, make_target, write_answers_file
+from .conftest import DEST, SOURCE, _git, init_git_repo, make_target, write_answers_file
 
 
 def _write_source(repo: Path) -> None:
@@ -64,15 +64,10 @@ def _make_ts_baml_target(
 ) -> Path:
     repo = tmp_path / "ts_target"
     repo.mkdir()
-    _git(repo, "init", "-b", "main")
-    _git(repo, "config", "user.email", "demo@example.com")
-    _git(repo, "config", "user.name", "Demo Author")
-    _git(
+    init_git_repo(
         repo,
-        "remote",
-        "add",
-        "origin",
-        "https://github.com/demolabs/demo-widget.git",
+        origin="https://github.com/demolabs/demo-widget.git",
+        commit_message=None,
     )
     (repo / "package.json").write_text(
         '{\n  "name": "demo-widget",\n  "version": "0.1.0",\n'

@@ -21,7 +21,7 @@ from template_press.rebrand.discovery import (
 )
 from template_press.rebrand.node_manifest import NodeManifest, read_node_manifest
 
-from .conftest import SOURCE, requires_symlink
+from .conftest import SOURCE, init_git_repo, requires_symlink
 
 SOURCE_NODE = replace(
     SOURCE,
@@ -198,19 +198,11 @@ def _node_press_target(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     _node(target, author="Bob <bob@example.test>")
-    for args in (
-        ["init", "-q"],
-        ["config", "user.email", "t@example.test"],
-        ["config", "user.name", "t"],
-        ["remote", "add", "origin", "https://github.com/example-org/acme-widget.git"],
-        ["add", "-A"],
-        ["commit", "-q", "-m", "seed"],
-    ):
-        subprocess.run(  # noqa: S603
-            ["git", "-C", str(target), *args],  # noqa: S607
-            check=True,
-            capture_output=True,
-        )
+    init_git_repo(
+        target,
+        origin="https://github.com/example-org/acme-widget.git",
+        commit_message="seed",
+    )
     return target
 
 
@@ -301,27 +293,11 @@ def _node_cli(
     target = tmp_path / "t"
     target.mkdir()
     _write(target, manifest)
-    subprocess.run(["git", "init", "-q"], cwd=target, check=True)  # noqa: S607
-    for args in (
-        ("config", "user.email", "t@example.com"),
-        ("config", "user.name", "t"),
-    ):
-        subprocess.run(["git", "-C", str(target), *args], check=True)  # noqa: S603,S607
-    if origin:
-        subprocess.run(  # noqa: S603
-            [  # noqa: S607
-                "git",
-                "-C",
-                str(target),
-                "remote",
-                "add",
-                "origin",
-                "https://github.com/example-org/acme-widget.git",
-            ],
-            check=True,
-        )
-    subprocess.run(["git", "-C", str(target), "add", "-A"], check=True)  # noqa: S603,S607
-    subprocess.run(["git", "-C", str(target), "commit", "-qm", "seed"], check=True)  # noqa: S603,S607
+    init_git_repo(
+        target,
+        origin="https://github.com/example-org/acme-widget.git" if origin else None,
+        commit_message="seed",
+    )
     answers = tmp_path / "answers.toml"
     answers.write_text(
         "[answers]\n"

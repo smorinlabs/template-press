@@ -27,7 +27,7 @@ from template_press.rebrand.config import SOURCE_CONFIG_REL, render_source_confi
 from template_press.rebrand.identity import Identity
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import _git, write_answers_file
+from .conftest import _git, init_git_repo, write_answers_file
 
 ACME = Identity(
     package_name="acme_widget",
@@ -281,12 +281,11 @@ def _init_python_baml_repo(
         version=version,
     )
     _baml_generate(baml_bin, repo)
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "config", "user.email", "acme@example.test")
-    _git(repo, "config", "user.name", "Acme Author")
-    _git(repo, "remote", "add", "origin", "https://github.com/acmelabs/acme-widget.git")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "init python baml fixture")
+    init_git_repo(
+        repo,
+        origin="https://github.com/acmelabs/acme-widget.git",
+        commit_message="init python baml fixture",
+    )
     return repo
 
 
@@ -338,12 +337,11 @@ def _init_ts_baml_repo(
         version=version,
     )
     _baml_generate(baml_bin, repo)
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "config", "user.email", "acme@example.test")
-    _git(repo, "config", "user.name", "Acme Author")
-    _git(repo, "remote", "add", "origin", "https://github.com/acmelabs/acme-widget.git")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "init ts baml fixture")
+    init_git_repo(
+        repo,
+        origin="https://github.com/acmelabs/acme-widget.git",
+        commit_message="init ts baml fixture",
+    )
     return repo
 
 

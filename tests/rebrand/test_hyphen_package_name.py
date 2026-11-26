@@ -11,7 +11,7 @@ from template_press.rebrand.identity import Identity
 from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import _git, write_answers_file
+from .conftest import _git, init_git_repo, write_answers_file
 
 SOURCE = Identity(
     package_name="acme_widget",
@@ -79,18 +79,11 @@ def _target(
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "config", "user.email", "test@example.test")
-    _git(repo, "config", "user.name", "Test")
-    _git(
+    init_git_repo(
         repo,
-        "remote",
-        "add",
-        "origin",
-        f"https://github.com/{source.owner}/{source.repo_name}.git",
+        origin=f"https://github.com/{source.owner}/{source.repo_name}.git",
+        commit_message="init",
     )
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "init")
     return repo
 
 
