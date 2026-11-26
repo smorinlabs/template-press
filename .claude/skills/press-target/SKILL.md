@@ -732,10 +732,10 @@ a path anyway, declare an explicit `[[replace]]` rule with `paths = true`.
 Gated on the target author declaring the token word-disjoint — never a
 default. Fields are independent: opting in `app_name` alone does not cover
 glued UPPERCASE forms (`PLBPOwned`); pair it with `app_name_upper` when
-those exist. `display_name` itself may not appear here (it fails validation as a no-op) —
-opt in a specific derived form (`display_name_pascal`, `display_name_camel`, or
-`display_name_spaced`) when glued occurrences like `AcmeWidgetClient` must
-rewrite, or narrow which forms rewrite via `[rules] display_forms`.
+those exist. `display_name` itself (and `display_name_camel`/`display_name_spaced`) may not
+appear here — opt in `"display_name_pascal"` when glued PascalCase occurrences
+like `AcmeWidgetClient` must rewrite, or narrow which forms rewrite via
+`[rules] display_forms`.
 
 ### `languages` — declare multi-language targets
 

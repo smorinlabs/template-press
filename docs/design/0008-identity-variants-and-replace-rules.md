@@ -63,10 +63,10 @@ retained decision record does not require those files to remain present.
    cover glued UPPERCASE forms (e.g. `PLBPOwned`); a target with those
    needs the derived field opted in too, so the recommended pair when
    uppercase glued forms exist is
-   `substring_rewrite_fields = ["app_name", "app_name_upper"]`. Derived
-   `display_name` forms (`display_name_pascal`, `display_name_camel`,
-   `display_name_spaced`) are also valid here (for glued PascalCase names such
-   as `AcmeWidgetClient`); raw `display_name` remains invalid.
+   `substring_rewrite_fields = ["app_name", "app_name_upper"]`.
+   `display_name_pascal` is also valid here (for glued PascalCase names such
+   as `AcmeWidgetClient`); raw `display_name` and other derived display forms
+   remain invalid.
 4. **Paths ride the shared matcher** (sec-03 ch-03-a). Rules with
    `paths = true` and substring-mode fields flow into the existing
    `_renamed_rel` rename pass — no second matching surface (the dotnet
@@ -357,9 +357,9 @@ retained decision record does not require those files to remain present.
    `press verify` scans (scope (i): a target that passes pre-press
    `press verify` is not newly refused), exiting 1 with rewrite
    (`substring_rewrite_fields`, `[[replace]]`) and keep (`keep_names`,
-   `[[verify.ignore]]`) guidance. `substring_rewrite_fields` accepts derived
-   display forms (`display_name_pascal`, `display_name_camel`,
-   `display_name_spaced`). `[[regenerate]]` accepts either `file` or `dir`
+   `[[verify.ignore]]`) guidance. `substring_rewrite_fields` accepts
+   `display_name_pascal` (not raw `display_name` or `display_name_camel`).
+   `[[regenerate]]` accepts either `file` or `dir`
    (mutually exclusive), with `{package_name}` placeholder rendering in
    `[[regenerate]] file`, `[[regenerate]] dir`, and `[rules]
    extra_exclude_files`. Before any write, a tracked BAML client

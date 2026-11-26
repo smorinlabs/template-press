@@ -841,8 +841,8 @@ dir` and never text-rewritten.
 Run `press verify --target <target>` before the first press to surface any
 glued identifiers in `.baml` or host files (such as `AcmeWidgetClient` when
 `display_name = "Acme Widget"`). To rewrite glued PascalCase names, opt
-`"display_name_pascal"` into `[rules] substring_rewrite_fields` (the derived
-forms `display_name_camel` and `display_name_spaced` are also valid).
+`"display_name_pascal"` into `[rules] substring_rewrite_fields` (raw
+`display_name` and other derived display forms are rejected).
 
 ```toml
 [rules]

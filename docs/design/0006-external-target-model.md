@@ -38,8 +38,8 @@ project template and ships no application. First target:
    `display_name` (humanized product name), `npm_name` (exact root
    `package.json` name, scope allowed), `cli_name` (exact `bin` key), and
    `cargo_names` (role-to-exact Cargo name table).
-   `substring_rewrite_fields` also accepts derived display forms
-   (`display_name_pascal`, `display_name_camel`, `display_name_spaced`).
+   `substring_rewrite_fields` also accepts `display_name_pascal` (for glued
+   PascalCase names such as `AcmeWidgetClient`).
    A target-authored `[rules] keep_names` list declares names independent of
    the identity, which every rewrite and scan honors; a pre-write sibling and
    glued-name preflight refuses undeclared glued or same-prefix names (across
