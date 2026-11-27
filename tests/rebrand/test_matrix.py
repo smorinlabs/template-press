@@ -180,6 +180,17 @@ def test_ci_provisions_bun_for_native_r3(workflow_name: str, job_name: str) -> N
         assert arguments[arguments.index("-n") + 1] == "auto"
         assert "--cov=template_press" in arguments
         assert "--cov-report=xml" in arguments
+    else:
+        assert no_cov_args[no_cov_args.index("--dist") + 1] == "worksteal"
+        sync = next(step for step in steps if step.get("name") == "Sync test env")
+        assert shlex.split(sync["run"]) == [
+            "uv",
+            "sync",
+            "--locked",
+            "--no-default-groups",
+            "--group",
+            "test",
+        ]
     bun = next(step for step in steps if step.get("uses") == "oven-sh/setup-bun@v2.2.0")
     assert bun["with"]["bun-version"] == "1.3.14"
 
