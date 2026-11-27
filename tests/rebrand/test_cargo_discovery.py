@@ -35,7 +35,7 @@ from template_press.rebrand.rules import load_rules
 from template_press.rebrand.substitutions import check_target_keep_names
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import init_git_repo, posix_only
+from .conftest import posix_only, seed_cached_git_repo
 from .test_cargo_source_paths import CORE_DEST, CORE_SOURCE
 from .test_cargo_source_paths import _answers as _paths_answers
 from .test_cargo_source_paths import _seed as _paths_seed
@@ -79,17 +79,12 @@ def _repo(
     owner: str = OWNER,
 ) -> Path:
     target = (tmp_path / "target").resolve()
-    target.mkdir()
-    for rel, text in files.items():
-        path = target / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-    init_git_repo(
+    return seed_cached_git_repo(
         target,
+        files,
         origin=f"https://github.com/{owner}/{repo_name}",
         commit_message="fixture",
     )
-    return target
 
 
 def _toml_table(header: str, values: dict[str, str]) -> str:

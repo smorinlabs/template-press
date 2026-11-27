@@ -35,7 +35,7 @@ from template_press.rebrand.substitutions import (
 from template_press.rebrand.synthesize import synthesize_dest
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import init_git_repo
+from .conftest import seed_cached_git_repo
 
 KEPT = "@acme/widget-extra"
 LANGUAGES = '[rules]\nlanguages = ["python", "node"]\n'
@@ -82,44 +82,35 @@ def _make_target(
     tmp_path: Path, rules_text: str, files: dict[str, str] | None = None
 ) -> Path:
     target = tmp_path / SOURCE.repo_name
-    (target / "press").mkdir(parents=True)
-    (target / "press" / "press-source.toml").write_text(
-        _toml_identity(SOURCE, "identity"), encoding="utf-8"
-    )
-    (target / "press" / "press-rules.toml").write_text(rules_text, encoding="utf-8")
-    (target / "pyproject.toml").write_text(
-        "[project]\n"
-        f'name = "{SOURCE.package_name}"\n'
-        'version = "0.1.0"\n'
-        f'authors = [{{name = "{SOURCE.author}", email = "{SOURCE.email}"}}]\n'
-        "[project.scripts]\n"
-        f'{SOURCE.app_name} = "{SOURCE.package_name}.cli:main"\n',
-        encoding="utf-8",
-    )
-    (target / "package.json").write_text(
-        json.dumps(
+    all_files: dict[str, str] = {
+        "press/press-source.toml": _toml_identity(SOURCE, "identity"),
+        "press/press-rules.toml": rules_text,
+        "pyproject.toml": (
+            "[project]\n"
+            f'name = "{SOURCE.package_name}"\n'
+            'version = "0.1.0"\n'
+            f'authors = [{{name = "{SOURCE.author}", email = "{SOURCE.email}"}}]\n'
+            "[project.scripts]\n"
+            f'{SOURCE.app_name} = "{SOURCE.package_name}.cli:main"\n'
+        ),
+        "package.json": json.dumps(
             {
                 "name": SOURCE.npm_name,
                 "version": "0.1.0",
                 "bin": {SOURCE.cli_name: f"./bin/{SOURCE.cli_name}.js"},
             }
         ),
-        encoding="utf-8",
-    )
-    (target / "README.md").write_text(f"# {SOURCE.display_name}\n", encoding="utf-8")
-    package = target / "src" / SOURCE.package_name
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text('"""Package."""\n', encoding="utf-8")
-    for rel, text in (files or {}).items():
-        path = target / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-    init_git_repo(
+        "README.md": f"# {SOURCE.display_name}\n",
+        f"src/{SOURCE.package_name}/__init__.py": '"""Package."""\n',
+    }
+    if files:
+        all_files.update(files)
+    return seed_cached_git_repo(
         target,
+        all_files,
         origin=f"https://github.com/{SOURCE.owner}/{SOURCE.repo_name}.git",
         commit_message="seed",
     )
-    return target
 
 
 def _keep_rules(names: list[str], extra: str = "") -> str:

@@ -16,7 +16,13 @@ from template_press.rebrand.synthesize import synthesize_dest
 from template_press.rebrand.verify_cli import verify_command
 from template_press.rebrand.verify_config import load_verify_config
 
-from .conftest import DEST, SOURCE, init_git_repo, make_target, write_answers_file
+from .conftest import (
+    DEST,
+    SOURCE,
+    make_target,
+    seed_cached_git_repo,
+    write_answers_file,
+)
 
 ACME_SOURCE = Identity(
     package_name="acme_widget",
@@ -66,22 +72,19 @@ def _init_repo(
     files: dict[str, str],
     rules_text: str | None = None,
 ) -> Path:
-    (repo / "press").mkdir(parents=True, exist_ok=True)
-    (repo / "press" / "press-source.toml").write_text(
-        _toml_identity(source, "identity"), encoding="utf-8"
-    )
+    all_files: dict[str, str] = {
+        "press/press-source.toml": _toml_identity(source, "identity"),
+    }
     if rules_text is not None:
-        (repo / "press" / "press-rules.toml").write_text(rules_text, encoding="utf-8")
-    for rel, content in files.items():
-        path = repo / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8", newline="\n")
-    init_git_repo(
+        all_files["press/press-rules.toml"] = rules_text
+    all_files.update(files)
+    return seed_cached_git_repo(
         repo,
+        all_files,
         origin=f"https://github.com/{source.owner}/{source.repo_name}.git",
         commit_message="seed fixture",
+        newline="\n",
     )
-    return repo
 
 
 def _python_files(
