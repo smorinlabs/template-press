@@ -172,6 +172,8 @@ def init_git_repo(
         _git(repo, "config", "maintenance.auto", "false")
         template = _template_root() / "_empty_git"
         shutil.copytree(git_dir, template, symlinks=True)
+        for sample in (template / "hooks").glob("*.sample"):
+            sample.unlink()
         _EMPTY_GIT_TEMPLATE = template
     else:
         shutil.copytree(_EMPTY_GIT_TEMPLATE, git_dir, symlinks=True)
@@ -190,10 +192,17 @@ def init_git_repo(
         _git(repo, *args)
 
 
+def _strip_sample_hooks(git_dir: Path) -> None:
+    """Remove unused git-init ``*.sample`` hook files from cached templates."""
+    for sample in (git_dir / "hooks").glob("*.sample"):
+        sample.unlink()
+
+
 def _store_target_template(repo: Path, layout: str) -> None:
     """Keep one pristine repo per layout for this pytest process."""
     template = _template_root() / layout
     shutil.copytree(repo, template, symlinks=True)
+    _strip_sample_hooks(template / ".git")
     _TARGET_TEMPLATES[layout] = template
 
 
@@ -217,6 +226,7 @@ def copy_cached_repo(
     digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:16]
     template = _template_root() / f"repo-{digest}-{len(_TARGET_TEMPLATES)}"
     shutil.copytree(repo, template, symlinks=True)
+    _strip_sample_hooks(template / ".git")
     _TARGET_TEMPLATES[cache_key] = template
     return repo
 
@@ -265,6 +275,7 @@ def seed_cached_git_repo(
     digest = hashlib.sha256(repr(shape_key).encode("utf-8")).hexdigest()[:16]
     template = _template_root() / f"seeded-{digest}-{len(_SEEDED_TEMPLATES)}"
     shutil.copytree(repo, template, symlinks=True)
+    _strip_sample_hooks(template / ".git")
     _SEEDED_TEMPLATES[shape_key] = (template, file_map)
     return repo
 
@@ -289,20 +300,11 @@ def make_target(base: Path, layout: str = "src") -> Path:
     (pkg / "__init__.py").write_text('"""demo_widget package."""\n', encoding="utf-8")
     (pkg / "cli.py").write_text(CLI_PY, encoding="utf-8")
     (repo / ".gitignore").write_text(".venv/\n__pycache__/\n", encoding="utf-8")
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "config", "user.email", "test@example.com")
-    _git(repo, "config", "user.name", "Test")
-    # Background maintenance can change .git while the template is copied.
-    _git(repo, "config", "maintenance.auto", "false")
-    _git(
+    init_git_repo(
         repo,
-        "remote",
-        "add",
-        "origin",
-        "https://github.com/demolabs/demo-widget.git",
+        origin="https://github.com/demolabs/demo-widget.git",
+        commit_message="init fixture",
     )
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "init fixture")
     _store_target_template(repo, layout)
     return repo
 

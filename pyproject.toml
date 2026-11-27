@@ -49,13 +49,13 @@ dependencies = []
 [dependency-groups]
 test = [
   "pytest>=9.1.1",
+  "pytest-cov>=7.1.0", # asserted in test_ci_diagnostics.py plugin metadata
   "pytest-xdist>=3.6", # parallel tests (`-n auto` in ci.yml and `just check`)
   "syrupy>=5.4.0",     # WL-023 — CLI --help snapshot tests
   "pyyaml>=6.0.3",     # YAML workflow assertions in test_ci_gates.py and test_matrix.py
 ]
 dev = [
   { include-group = "test" },
-  "pytest-cov>=7.1.0",
   "ty>=0.0.56",        # per ADR-03 (pre-1.0; bump as needed)
   "ruff>=0.15.20",
   "cogapp",
