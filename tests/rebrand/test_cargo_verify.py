@@ -27,6 +27,8 @@ from template_press.rebrand.synthesize import (
 from template_press.rebrand.verifier import scan
 from template_press.rebrand.verify_cli import verify_command
 
+from .conftest import init_git_repo
+
 SOURCE = Identity(
     package_name="acme_core",
     repo_name="acme-repo",
@@ -121,9 +123,7 @@ def _repo(tmp_path: Path, files: dict[str, str | bytes]) -> Path:
             path.write_bytes(body)
         else:
             path.write_text(body, encoding="utf-8")
-    _git(target, "init", "-q", "-b", "main")
-    _git(target, "add", "-A")
-    _git(target, "commit", "-qm", "fixture")
+    init_git_repo(target, commit_message="fixture")
     return target
 
 

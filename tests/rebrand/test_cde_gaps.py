@@ -26,7 +26,7 @@ from pathlib import Path
 from template_press.rebrand.cli import main
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import requires_symlink
+from .conftest import init_git_repo, requires_symlink
 
 
 def _git(target: Path, *args: str) -> None:
@@ -114,18 +114,11 @@ def _build_target(tmp_path: Path, mode: str, extra_rules: str = "") -> Path:
     (target / "src" / "py_launch_blueprint" / "__init__.py").write_text(
         '"""Py Launch Blueprint."""\n', encoding="utf-8"
     )
-    subprocess.run(["git", "init", "-q"], cwd=target, check=True)  # noqa: S607
-    _git(target, "config", "user.email", "t@example.com")
-    _git(target, "config", "user.name", "t")
-    _git(
+    init_git_repo(
         target,
-        "remote",
-        "add",
-        "origin",
-        "https://github.com/smorinlabs/py-launch-blueprint.git",
+        origin="https://github.com/smorinlabs/py-launch-blueprint.git",
+        commit_message="seed",
     )
-    _git(target, "add", "-A")
-    _git(target, "commit", "-q", "-m", "seed")
     return target
 
 

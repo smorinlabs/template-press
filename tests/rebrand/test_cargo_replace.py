@@ -222,7 +222,6 @@ def test_second_press_rerenders_the_rule_from_the_rewritten_source(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_f3_shape_passes_real_cargo(tmp_path: Path) -> None:
     split._require_cargo()
     target = _f3_target(tmp_path, REPLACE_RULES, lock=True)
@@ -295,7 +294,6 @@ def test_exact_placeholder_scoped_to_a_readme_still_presses(tmp_path: Path) -> N
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_exact_placeholder_into_rs_file_never_breaks_real_cargo(
     tmp_path: Path,
 ) -> None:

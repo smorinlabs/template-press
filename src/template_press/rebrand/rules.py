@@ -754,6 +754,10 @@ def _legacy_regenerate_error(value: object) -> ValidationError:
     )
 
 
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+_RESERVED_ALIAS_KEYS: frozenset[str] | None = None
+
+
 def _declared_rel_path(context: str, value: object) -> str:
     """Validate a declared path as a contained relative path; return POSIX."""
     if not isinstance(value, str) or not value:
@@ -762,7 +766,7 @@ def _declared_rel_path(context: str, value: object) -> str:
         )
     if "\x00" in value:
         raise ValidationError(f"{RULES_REL}: {context} must not contain NUL")
-    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+    if _CONTROL_CHAR_RE.search(value) is not None:
         # Plan visibility is the approval guard (wave-3 3654059282); a
         # declared path is interpolated into the rendered plan exactly like
         # argv elements, so terminal controls are rejected the same way.
@@ -778,6 +782,8 @@ def _declared_rel_path(context: str, value: object) -> str:
 
 def _control_alias_key(file: str) -> str:
     """Collapse a POSIX relative path to its filesystem-alias identity."""
+    if "/" not in file:
+        return _alias_component(file)
     return "/".join(_alias_component(part) for part in file.split("/"))
 
 
@@ -816,16 +822,25 @@ def _alias_component(part: str) -> str:
     cannot expose a component the strip would have taken.
     """
     stripped = part.rstrip(" .")
+    if stripped.isascii():
+        return stripped.lower()
     return unicodedata.normalize(
         "NFD", unicodedata.normalize("NFD", stripped).casefold()
     )
 
 
-def _reject_reserved(kind: str, file: str) -> None:
-    # Deferred import avoids a module-load cycle: pathing imports Rules for
-    # neutral scope helpers, while this validator needs the control paths.
-    from template_press.rebrand.pathing import ROOT_CONTROL
+def _reserved_alias_keys() -> frozenset[str]:
+    global _RESERVED_ALIAS_KEYS
+    if _RESERVED_ALIAS_KEYS is None:
+        # Deferred import avoids a module-load cycle: pathing imports Rules for
+        # neutral scope helpers, while this validator needs the control paths.
+        from template_press.rebrand.pathing import ROOT_CONTROL
 
+        _RESERVED_ALIAS_KEYS = frozenset(_control_alias_key(e) for e in ROOT_CONTROL)
+    return _RESERVED_ALIAS_KEYS
+
+
+def _reject_reserved(kind: str, file: str) -> None:
     # A SUPERSET of the same-file test used elsewhere for filesystem path
     # comparisons (safety.py's `_is_dotgit`, which case-folds only — `.git`
     # is ASCII, so the rest is moot there). _alias_component adds a
@@ -839,7 +854,7 @@ def _reject_reserved(kind: str, file: str) -> None:
     # the composed and decomposed spellings of one grapheme. Rules are
     # validated identically on every platform, so the check rejects the union
     # of aliases rather than the host's own set.
-    if _control_alias_key(file) in {_control_alias_key(e) for e in ROOT_CONTROL}:
+    if _control_alias_key(file) in _reserved_alias_keys():
         raise ValidationError(
             f"{RULES_REL}: {kind} may not target press-owned control file "
             f"{file!r} — press itself writes it after validation (reserved)"

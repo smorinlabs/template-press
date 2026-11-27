@@ -135,7 +135,7 @@ def test_native_r3_workflows_cover_posix_and_manual_windows() -> None:
         Loader=yaml.BaseLoader,  # noqa: S506 - only strings/containers, no constructors.
     )
     assert set(manual["on"]) == {"workflow_dispatch"}
-    assert manual["jobs"]["test-windows"]["runs-on"] == "blacksmith-4vcpu-windows-2025"
+    assert manual["jobs"]["test-windows"]["runs-on"] == "blacksmith-8vcpu-windows-2025"
 
 
 @pytest.mark.parametrize(
@@ -148,20 +148,38 @@ def test_ci_provisions_bun_for_native_r3(workflow_name: str, job_name: str) -> N
         Loader=yaml.BaseLoader,  # noqa: S506 - only strings/containers, no constructors.
     )
     steps = workflow["jobs"][job_name]["steps"]
-    full = next(step for step in steps if step.get("name") == "Run tests with coverage")
-    command = shlex.split(full["run"])
-    assert command[:5] == [
+    no_cov = next(step for step in steps if step.get("name") == "Run tests")
+    no_cov_cmd = shlex.split(no_cov["run"])
+    assert no_cov_cmd[:5] == [
         "uv",
         "run",
         "--no-sync",
         "python",
         "scripts/ci_run_pytest.py",
     ]
-    arguments = command[command.index("--") + 1 :]
-    assert arguments[arguments.index("-m") + 1] == ""
-    assert arguments[arguments.index("-n") + 1] == "auto"
-    assert "--cov=template_press" in arguments
-    assert "--cov-report=xml" in arguments
+    no_cov_args = no_cov_cmd[no_cov_cmd.index("--") + 1 :]
+    assert no_cov_args[no_cov_args.index("-m") + 1] == ""
+    assert no_cov_args[no_cov_args.index("-n") + 1] == "auto"
+    assert "--cov=template_press" not in no_cov_args
+    if workflow_name == "ci.yml":
+        assert no_cov.get("if") == "${{ !matrix.upload-coverage }}"
+        full = next(
+            step for step in steps if step.get("name") == "Run tests with coverage"
+        )
+        assert full.get("if") == "matrix.upload-coverage"
+        command = shlex.split(full["run"])
+        assert command[:5] == [
+            "uv",
+            "run",
+            "--no-sync",
+            "python",
+            "scripts/ci_run_pytest.py",
+        ]
+        arguments = command[command.index("--") + 1 :]
+        assert arguments[arguments.index("-m") + 1] == ""
+        assert arguments[arguments.index("-n") + 1] == "auto"
+        assert "--cov=template_press" in arguments
+        assert "--cov-report=xml" in arguments
     bun = next(step for step in steps if step.get("uses") == "oven-sh/setup-bun@v2.2.0")
     assert bun["with"]["bun-version"] == "1.3.14"
 

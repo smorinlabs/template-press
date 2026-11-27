@@ -203,6 +203,10 @@ reportUnusedClass = true
 exclude_dirs = ["tests", ".venv", "build", "dist"]
 skips = []                                                       # No global skips; add with rationale only.
 
+[tool.coverage.run]
+# Python 3.13+ PEP 669 low-overhead monitoring core (faster than CTrace).
+core = "sysmon"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

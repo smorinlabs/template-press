@@ -39,6 +39,7 @@ press could not complete, so verify cannot claim clean.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import os
@@ -117,7 +118,7 @@ from template_press.rebrand.safety import (
     safe_write,
     scrubbed_git_env,
 )
-from template_press.rebrand.sandbox import make_sandbox
+from template_press.rebrand.sandbox import Sandbox, make_sandbox
 from template_press.rebrand.substitutions import check_target_keep_names
 from template_press.rebrand.synthesize import synthesize_dest
 from template_press.rebrand.verifier import Finding, attach_ignore_hints, scan
@@ -528,7 +529,27 @@ def verify_command(argv: list[str] | None = None) -> int:
     parser.add_argument("--target", type=Path, default=Path("."))
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
-    target = args.target.resolve()
+    return _run_verify(args.target.resolve(), as_json=args.as_json)
+
+
+def verify_owned_sandbox(sandbox: Sandbox, source_target: Path) -> int:
+    """Run verify directly inside an owned sandbox already built from ``source_target``."""
+    return _run_verify(
+        sandbox.path.resolve(),
+        as_json=False,
+        owned_sandbox_copy=sandbox,
+        source_target=source_target,
+    )
+
+
+def _run_verify(
+    target: Path,
+    *,
+    as_json: bool,
+    owned_sandbox_copy: Sandbox | None = None,
+    source_target: Path | None = None,
+) -> int:
+    line_target = source_target if source_target is not None else target
 
     # Step 1 — source-config (control-symlink / missing / malformed -> 2; the
     # real target is never mutated on any exit-2 path).
@@ -602,7 +623,7 @@ def verify_command(argv: list[str] | None = None) -> int:
     # contract is that the JSON object is the whole of stdout): a "note:
     # accepted" line printed alongside a refusal would read as a contradiction,
     # exactly as on the press side.
-    if not args.as_json:
+    if not as_json:
         for field_name, value in honored_origin.items():
             print(
                 f"note: {field_name}: origin {value!r} accepted by the press "
@@ -627,6 +648,7 @@ def verify_command(argv: list[str] | None = None) -> int:
     try:
         synth = synthesize_dest(source)
         validate_keep_names(rules.keep_names, source, synth, synthetic_dest=True)
+        target_snapshot = capture_surface_snapshot(target)
         keep_check = check_target_keep_names(
             target,
             source,
@@ -634,9 +656,10 @@ def verify_command(argv: list[str] | None = None) -> int:
             rules,
             frozenset(member.current_file for member in removal_plan.members),
             languages.checked,
+            snapshot=target_snapshot,
         )
         if keep_check.undeclared:
-            if args.as_json:
+            if as_json:
                 print(
                     json.dumps(
                         {
@@ -662,8 +685,20 @@ def verify_command(argv: list[str] | None = None) -> int:
             return 1
         for line in render_stale(keep_check.stale):
             print(line, file=sys.stderr)
-        with owned_sandbox(target) as dest_root:
-            sandbox = make_sandbox(target, dest_root)
+        sandbox_cm = (
+            contextlib.nullcontext(None)
+            if owned_sandbox_copy is not None
+            else owned_sandbox(target)
+        )
+        with sandbox_cm as dest_root:
+            if owned_sandbox_copy is not None:
+                sandbox = owned_sandbox_copy
+                source_snapshot = target_snapshot
+            else:
+                if dest_root is None:
+                    raise RuntimeError("owned_sandbox did not yield a path")
+                sandbox = make_sandbox(target, dest_root, snapshot=target_snapshot)
+                source_snapshot = capture_surface_snapshot(sandbox.path)
             try:
                 # Model declared resets (codex 3654657444, P1): the real
                 # press writes the validated stub at position zero, so the
@@ -676,11 +711,21 @@ def verify_command(argv: list[str] | None = None) -> int:
                     (rule, load_stub_content(sandbox.path, rule))
                     for rule in rules.reset
                 ]
-                source_snapshot = capture_surface_snapshot(sandbox.path)
-                sandbox_plan = build_plan(sandbox.path, source, synth, effective_rules)
+                sandbox_plan = build_plan(
+                    sandbox.path,
+                    source,
+                    synth,
+                    effective_rules,
+                    snapshot=source_snapshot,
+                )
                 validate_removal_conflicts(rules, removal_plan, sandbox_plan.renames)
                 report = apply(
-                    sandbox.path, source, synth, rules, table=sandbox_plan.table
+                    sandbox.path,
+                    source,
+                    synth,
+                    rules,
+                    table=sandbox_plan.table,
+                    _skip_revalidation=True,
                 )
                 for reset_rule, stub in reset_stubs:
                     rel = translate_path(reset_rule.file, dict(report.renamed))
@@ -742,7 +787,7 @@ def verify_command(argv: list[str] | None = None) -> int:
                 findings,
                 list(cfg.ignores),
                 forward_map=forward_map,
-                source_line=_make_source_line(target),
+                source_line=_make_source_line(line_target),
             )
             # Report/JSON in SOURCE coordinates (Design §3): the sandbox path is
             # a synthetic press artifact that does not exist in the user's repo.
@@ -762,7 +807,7 @@ def verify_command(argv: list[str] | None = None) -> int:
             # like `ignore_near_miss`'s own "no note, no error" contract.
             if surviving:
                 try:
-                    real_snapshot = capture_surface_snapshot(target)
+                    real_snapshot = capture_surface_snapshot(line_target)
                 except _CONFIG_ERRORS:
                     real_snapshot = None
                 if real_snapshot is not None:
@@ -771,14 +816,14 @@ def verify_command(argv: list[str] | None = None) -> int:
                     )
                     real_core_excludes = core_excludes_from_snapshot(real_snapshot)
                     surviving = attach_ignore_hints(
-                        target, surviving, real_untracked, real_core_excludes
+                        line_target, surviving, real_untracked, real_core_excludes
                     )
             unavailable = sandbox.unavailable_submodules
     except _CONFIG_ERRORS as exc:
         return _fail(f"sandbox verify failed: {exc}")
 
     failed = bool(surviving or stale or unavailable or equal_collision)
-    if args.as_json:
+    if as_json:
         print(
             json.dumps(
                 {
@@ -804,10 +849,10 @@ def verify_command(argv: list[str] | None = None) -> int:
         for d, reason in exempt_dirs:
             print(f"not verified (exempt): {d}/ — {reason}")
     if failed:
-        if not args.as_json:
+        if not as_json:
             _report(surviving, stale, unavailable, equal_collision, source)
         return 1
-    if not args.as_json:
+    if not as_json:
         print(
             "verified: no identity leftovers survived the hermetic "
             "self-press (clean over the scanned set"

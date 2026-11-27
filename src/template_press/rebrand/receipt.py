@@ -668,18 +668,23 @@ def _history_text(value: object, context: str) -> str:
     """Check one bounded printable schema string before path/error processing."""
     if not isinstance(value, str) or not value or not value.strip():
         raise ValidationError(f"directory {context} must be a nonempty string")
-    try:
-        size = len(value.encode("utf-8"))
-    except UnicodeEncodeError as exc:
-        raise ValidationError(f"directory {context} is not valid UTF-8") from exc
+    if value.isascii():
+        size = len(value)
+    else:
+        try:
+            size = len(value.encode("utf-8"))
+        except UnicodeEncodeError as exc:
+            raise ValidationError(f"directory {context} is not valid UTF-8") from exc
     if size > REMOVE_HISTORY_MAX_TEXT_BYTES:
         raise ValidationError("directory text byte limit 4096 exceeded")
-    if any(not char.isprintable() for char in value):
+    if not value.isprintable():
         raise ValidationError(f"directory {context} must be printable")
     return value
 
 
-def _history_path(value: object, context: str, *, directory: bool = False) -> str:
+def _history_path_with_alias(
+    value: object, context: str, *, directory: bool = False
+) -> tuple[str, str]:
     text = _history_text(value, context)
     try:
         canonical = _declared_rel_path(f"directory {context}", text)
@@ -694,7 +699,7 @@ def _history_path(value: object, context: str, *, directory: bool = False) -> st
     if any(part in {"", ".git"} for part in alias.split("/")):
         raise ValidationError(f"directory {context} contains an unsafe alias")
     if directory:
-        if any(char in text for char in "*?["):
+        if "*" in text or "?" in text or "[" in text:
             raise ValidationError(
                 f"directory {context} must not contain glob characters"
             )
@@ -705,6 +710,11 @@ def _history_path(value: object, context: str, *, directory: bool = False) -> st
             raise ValidationError(f"directory {context} contains a press control path")
     elif alias.rsplit("/", 1)[-1] in {".gitignore", ".gitattributes", ".gitmodules"}:
         raise ValidationError(f"directory {context} names a Git visibility input")
+    return text, alias
+
+
+def _history_path(value: object, context: str, *, directory: bool = False) -> str:
+    text, _alias = _history_path_with_alias(value, context, directory=directory)
     return text
 
 
@@ -765,6 +775,8 @@ def _reject_root_overlaps(roots: Sequence[str]) -> None:
 def validate_directory_history(
     directories: Sequence[DirectoryRemoval],
     removals: Sequence[tuple[str, str]],
+    *,
+    _paths_validated: bool = False,
 ) -> None:
     """Validate frozen/output history and its raw flat rows before mutation.
 
@@ -778,10 +790,15 @@ def validate_directory_history(
         raise ValidationError("directory member limit 100000 exceeded")
     flat: dict[str, str] = {}
     flat_aliases: set[str] = set()
+    validated_reasons: set[str] = set()
     for file, reason in removals:
-        file = _history_path(file, "flat file")
-        reason = _history_text(reason, "flat reason")
-        alias = _control_alias_key(file)
+        if _paths_validated:
+            alias = _control_alias_key(file)
+        else:
+            file, alias = _history_path_with_alias(file, "flat file")
+            if reason not in validated_reasons:
+                reason = _history_text(reason, "flat reason")
+                validated_reasons.add(reason)
         if alias in flat_aliases:
             raise ValidationError(
                 "directory receipt has duplicate or alias flat removal rows"
@@ -790,24 +807,50 @@ def validate_directory_history(
         flat[file] = reason
     audit_aliases: set[str] = set()
     current_aliases: set[str] = set()
+    validated_source_dirs: set[str] = set()
     for row in directories:
-        _history_path(row.dir, "dir", directory=True)
-        root = _history_path(row.current_dir, "current_dir", directory=True)
-        reason = _history_text(row.reason, "reason")
+        if _paths_validated:
+            row_dir = row.dir
+            root = row.current_dir
+            reason = row.reason
+        else:
+            row_dir = _history_path(row.dir, "dir", directory=True)
+            root = _history_path(row.current_dir, "current_dir", directory=True)
+            reason = _history_text(row.reason, "reason")
+        validated_source_dirs.add(row_dir)
+        root_prefix = root + "/"
         for member in row.members:
-            file = _history_path(member.file, "member file")
-            current = _history_path(member.current_file, "member current_file")
-            source_dir = _history_path(
-                member.source_dir, "member source_dir", directory=True
-            )
+            if _paths_validated:
+                file = member.file
+                current = member.current_file
+                source_dir = member.source_dir
+                if source_dir is None:
+                    raise ValidationError("directory member requires source_dir")
+                audit_alias = _control_alias_key(file)
+                current_alias = (
+                    audit_alias if current == file else _control_alias_key(current)
+                )
+            else:
+                file, audit_alias = _history_path_with_alias(member.file, "member file")
+                if member.current_file == file:
+                    current, current_alias = file, audit_alias
+                else:
+                    current, current_alias = _history_path_with_alias(
+                        member.current_file, "member current_file"
+                    )
+                if member.source_dir in validated_source_dirs:
+                    source_dir = member.source_dir
+                else:
+                    source_dir = _history_path(
+                        member.source_dir, "member source_dir", directory=True
+                    )
+                    validated_source_dirs.add(source_dir)
             if not file.startswith(source_dir + "/"):
                 raise ValidationError("directory member file is outside source_dir")
-            if not current.startswith(root + "/"):
+            if not current.startswith(root_prefix):
                 raise ValidationError(
                     "directory member current_file is outside current_dir"
                 )
-            audit_alias = _control_alias_key(file)
-            current_alias = _control_alias_key(current)
             if audit_alias in audit_aliases or current_alias in current_aliases:
                 raise ValidationError("directory members have duplicate or alias paths")
             audit_aliases.add(audit_alias)
@@ -891,6 +934,8 @@ def directory_history_from_receipt(
         raise ValidationError("directory row limit 1024 exceeded")
     rows: list[DirectoryRemoval] = []
     member_count = 0
+    validated_source_dirs: set[str] = set()
+    validated_files: set[str] = set()
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) != {
             "dir",
@@ -908,6 +953,9 @@ def directory_history_from_receipt(
         member_count += len(members)
         if member_count > REMOVE_HISTORY_MAX_MEMBERS:
             raise ValidationError("directory member limit 100000 exceeded")
+        row_dir = _history_path(entry["dir"], "dir", directory=True)
+        validated_source_dirs.add(row_dir)
+        current_dir = _history_path(entry["current_dir"], "current_dir", directory=True)
         reason = _history_text(entry["reason"], "reason")
         parsed_members: list[RemovalMember] = []
         for member in members:
@@ -919,25 +967,35 @@ def directory_history_from_receipt(
                 raise ValidationError(
                     "directory receipt member has missing or unknown keys"
                 )
+            raw_file = member["file"]
+            file_path = _history_path(raw_file, "member file")
+            validated_files.add(file_path)
+            raw_current = member["current_file"]
+            if type(raw_current) is str and raw_current == file_path:
+                current_path = file_path
+            else:
+                current_path = _history_path(raw_current, "member current_file")
+            raw_source = member["source_dir"]
+            if type(raw_source) is str and raw_source in validated_source_dirs:
+                source_dir = raw_source
+            else:
+                source_dir = _history_path(
+                    raw_source, "member source_dir", directory=True
+                )
+                validated_source_dirs.add(source_dir)
             parsed_members.append(
                 RemovalMember(
-                    file=_history_path(member["file"], "member file"),
-                    current_file=_history_path(
-                        member["current_file"], "member current_file"
-                    ),
-                    source_dir=_history_path(
-                        member["source_dir"], "member source_dir", directory=True
-                    ),
+                    file=file_path,
+                    current_file=current_path,
+                    source_dir=source_dir,
                     reason=reason,
                     missing_ok=True,
                 )
             )
         rows.append(
             DirectoryRemoval(
-                dir=_history_path(entry["dir"], "dir", directory=True),
-                current_dir=_history_path(
-                    entry["current_dir"], "current_dir", directory=True
-                ),
+                dir=row_dir,
+                current_dir=current_dir,
                 reason=reason,
                 members=tuple(parsed_members),
             )
@@ -946,18 +1004,25 @@ def directory_history_from_receipt(
     if not isinstance(flat_entries, list):
         raise ValidationError("directory receipt flat remove must be an array")
     flat: list[tuple[str, str]] = []
+    validated_reasons: set[str] = set()
     for entry in flat_entries:
         if not isinstance(entry, dict) or set(entry) != {"file", "reason"}:
             raise ValidationError(
                 "directory receipt flat row has missing or unknown keys"
             )
-        flat.append(
-            (
-                _history_path(entry["file"], "flat file"),
-                _history_text(entry["reason"], "flat reason"),
-            )
-        )
-    validate_directory_history(rows, flat)
+        raw_flat_file = entry["file"]
+        if type(raw_flat_file) is str and raw_flat_file in validated_files:
+            flat_file = raw_flat_file
+        else:
+            flat_file = _history_path(raw_flat_file, "flat file")
+        raw_flat_reason = entry["reason"]
+        if type(raw_flat_reason) is str and raw_flat_reason in validated_reasons:
+            flat_reason = raw_flat_reason
+        else:
+            flat_reason = _history_text(raw_flat_reason, "flat reason")
+            validated_reasons.add(flat_reason)
+        flat.append((flat_file, flat_reason))
+    validate_directory_history(rows, flat, _paths_validated=True)
     return tuple(rows)
 
 

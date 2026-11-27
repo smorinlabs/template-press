@@ -114,8 +114,10 @@ def test_detect_ignores_non_identity_manifests(tmp_path: Path) -> None:
         ("package.json", "[]"),
         ("package.json", '{"name": 1}'),
         ("package.json", '{"name": ""}'),
-        ("package.json", "[" * 100000),
-        ("pyproject.toml", "a = " + "[" * 100000),
+        pytest.param("package.json", "[" * 100000, id="json-deep-nesting"),
+        pytest.param(
+            "pyproject.toml", "a = " + "[" * 100000, id="pyproject-deep-nesting"
+        ),
         pytest.param(
             "package.json", '{"version": ' + "1" * 5000 + "}", id="json-huge-int"
         ),

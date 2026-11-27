@@ -37,6 +37,7 @@ from template_press.rebrand.identity import (
 from template_press.rebrand.inventory import (
     GitConfigInput,
     IndexKind,
+    SurfaceSnapshot,
     VisibilityInput,
     capture_surface_snapshot,
     tracked_path_strings,
@@ -889,7 +890,9 @@ def has_uncommitted_changes(target: Path, rel: str) -> bool:
     return any(line[:1].islower() or line[:1] == "S" for line in flags.splitlines())
 
 
-def preflight_regenerate_outputs(target: Path, rules: Rules) -> list[str]:
+def preflight_regenerate_outputs(
+    target: Path, rules: Rules, *, snapshot: SurfaceSnapshot | None = None
+) -> list[str]:
     """Problems that make a declared regeneration output unpressable.
 
     Empty list = every declared output is contained, a regular file
@@ -900,7 +903,11 @@ def preflight_regenerate_outputs(target: Path, rules: Rules) -> list[str]:
     if not rules.regenerate:
         return []
     problems: list[str] = []
-    tracked = tracked_paths(target)
+    tracked = (
+        tracked_path_strings(snapshot)
+        if snapshot is not None
+        else tracked_paths(target)
+    )
     for rule in rules.regenerate:
         prefix = f"regenerate output {rule.file}: "
         path = target / rule.file
@@ -952,12 +959,14 @@ def preflight_regenerate_dirs(
     *,
     renames: Mapping[str, str] | None = None,
     dest: Identity | None = None,
+    snapshot: SurfaceSnapshot | None = None,
 ) -> list[str]:
     """Plan-time safety and cleanliness checks for ``[[regenerate]] dir`` rules."""
     if not rules.regenerate_dirs:
         return []
     problems: list[str] = []
-    snapshot = capture_surface_snapshot(target)
+    if snapshot is None:
+        snapshot = capture_surface_snapshot(target)
     rename_map = renames or {}
     for rule in rules.regenerate_dirs:
         prefix = f"regenerate dir {rule.dir}: "
@@ -1059,7 +1068,9 @@ def preflight_regenerate_dirs(
     return problems
 
 
-def preflight_edit_targets(target: Path, rules: Rules) -> list[str]:
+def preflight_edit_targets(
+    target: Path, rules: Rules, *, snapshot: SurfaceSnapshot | None = None
+) -> list[str]:
     """Problems that make a declared [[edit]] target unpressable (E4).
 
     The regeneration preflight's state gate, applied to edit targets:
@@ -1086,7 +1097,8 @@ def preflight_edit_targets(target: Path, rules: Rules) -> list[str]:
     if not rules.edit:
         return []
     problems: list[str] = []
-    snapshot = capture_surface_snapshot(target)
+    if snapshot is None:
+        snapshot = capture_surface_snapshot(target)
     tracked = tracked_path_strings(snapshot)
     visibility_nodes: dict[tuple[int, int], VisibilityInput] = {}
     visibility_paths: dict[str, VisibilityInput] = {}
@@ -1144,7 +1156,9 @@ def preflight_edit_targets(target: Path, rules: Rules) -> list[str]:
     return problems
 
 
-def preflight_excluded_files(target: Path, rules: Rules) -> list[str]:
+def preflight_excluded_files(
+    target: Path, rules: Rules, *, snapshot: SurfaceSnapshot | None = None
+) -> list[str]:
     """The §6 excluded-file contract preflight (P04 D5, shared with P05).
 
     An excluded file is never rewritten; with the hidden regeneration
@@ -1162,7 +1176,12 @@ def preflight_excluded_files(target: Path, rules: Rules) -> list[str]:
     # This gate never expands directory declarations or changes the inventory.
     removed_files = {r.file for r in rules.remove}
     problems: list[str] = []
-    for rel in sorted(tracked_paths(target)):
+    tracked = (
+        tracked_path_strings(snapshot)
+        if snapshot is not None
+        else tracked_paths(target)
+    )
+    for rel in sorted(tracked):
         if rel not in rules.exclude_files:
             continue
         if (

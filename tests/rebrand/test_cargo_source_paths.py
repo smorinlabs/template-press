@@ -18,7 +18,7 @@ import pytest
 
 from template_press.rebrand.receipt import RECEIPT_REL
 
-from .conftest import _git, posix_only
+from .conftest import init_git_repo, posix_only
 from .test_cargo_split import (
     ACME,
     ZETA,
@@ -57,13 +57,8 @@ def _seed(
     )
     for link, points_at in (links or {}).items():
         os.symlink(points_at, target / link)
-    _git(target, "init", "-q", "-b", "main")
-    _git(target, "config", "user.email", "t@example.test")
-    _git(target, "config", "user.name", "t")
     origin = f"https://github.com/{identity['owner']}/{identity['repo_name']}.git"
-    _git(target, "remote", "add", "origin", origin)
-    _git(target, "add", "-A")
-    _git(target, "commit", "-q", "-m", "seed")
+    init_git_repo(target, origin=origin, commit_message="seed")
 
 
 def _answers(
@@ -111,7 +106,6 @@ def test_symlinked_path_dependency_presses_without_a_table(tmp_path: Path) -> No
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_symlinked_path_dependency_still_builds(tmp_path: Path) -> None:
     _require_cargo()
     target = tmp_path / "target-repo"
@@ -167,7 +161,6 @@ def test_symlinked_path_dependency_manifest_is_still_cross_checked(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_symlinked_path_dependency_refusal_matches_real_cargo(tmp_path: Path) -> None:
     """Real Cargo: base and the I6 skip wrote a receipt here, then ``cargo
     check`` failed on ``vendor/helper/src/zetalabs.rs``."""
@@ -625,7 +618,6 @@ def test_rust_source_paths_that_follow_their_files_press(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize(
     "case",
     [
@@ -657,7 +649,6 @@ def test_rust_source_paths_that_follow_their_files_build(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize(
     "case",
     [
@@ -681,7 +672,6 @@ def test_inline_path_attr_tableless_presses_and_builds(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize(
     "case",
     [
@@ -778,7 +768,6 @@ def test_bracketed_and_braced_include_paths_are_checked(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("case", sorted(BRACKETED_INCLUDES))
 def test_bracketed_include_refusal_matches_real_cargo(
     case: str, tmp_path: Path
@@ -863,7 +852,6 @@ def test_named_target_without_a_path_is_judged_under_auto_off(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("table", [True, False], ids=["table", "tableless"])
 @pytest.mark.parametrize("flag", ["autotests", "autoexamples"])
 def test_target_file_cargo_does_not_discover_presses_and_builds(
@@ -1037,7 +1025,6 @@ def test_default_root_cargo_selects_is_still_judged(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("case", sorted(UNUSED_ROOTS))
 def test_default_root_cargo_does_not_select_presses_and_builds(
     case: str, tmp_path: Path
@@ -1056,7 +1043,6 @@ def test_default_root_cargo_does_not_select_presses_and_builds(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("case", sorted(USED_ROOTS))
 def test_default_root_cargo_selects_refusal_matches_real_cargo(
     case: str, tmp_path: Path
@@ -1115,7 +1101,6 @@ def test_owner_row_in_a_legacy_dependency_table_path_is_refused(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("section", ["dev_dependencies", "build_dependencies"])
 def test_legacy_dependency_table_refusal_matches_real_cargo(
     section: str, tmp_path: Path

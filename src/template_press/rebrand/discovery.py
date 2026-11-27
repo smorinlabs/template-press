@@ -30,6 +30,7 @@ from template_press.rebrand.identity import (
     token_occurs,
 )
 from template_press.rebrand.inventory import (
+    SurfaceSnapshot,
     capture_surface_snapshot,
     rewrite_surface_texts,
     tracked_path_strings,
@@ -420,6 +421,8 @@ def undeclared_baml_client_problems(
     target: Path,
     source: Identity,
     rules: Rules,
+    *,
+    snapshot: SurfaceSnapshot | None = None,
 ) -> list[str]:
     """Refuse tracked BAML clients that no ``[[regenerate]]`` or ``[[remove]]`` covers."""
     rendered = render_package_paths(rules, source)
@@ -428,7 +431,9 @@ def undeclared_baml_client_problems(
     remove_dirs = tuple(f"{rule.dir}/" for rule in rendered.remove_dirs)
     remove_files = frozenset(rule.file for rule in rendered.remove)
     problems: list[str] = []
-    for path in sorted(tracked_path_strings(capture_surface_snapshot(target))):
+    if snapshot is None:
+        snapshot = capture_surface_snapshot(target)
+    for path in sorted(tracked_path_strings(snapshot)):
         posix = PurePosixPath(path)
         parts = posix.parts
         if (

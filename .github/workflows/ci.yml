@@ -171,6 +171,7 @@ jobs:
           --durations=25 --durations-min=1 -o faulthandler_timeout=120
           --junitxml=ci-results/preflight.xml
       - name: Run tests with coverage
+        if: matrix.upload-coverage
         # Default skips slow/live markers (ITM-046 addopts); CI runs everything.
         # -n auto: pytest-xdist workers, as in `just check`. `just test` stays
         # serial, and syrupy `--snapshot-update` must run WITHOUT -n.
@@ -178,6 +179,16 @@ jobs:
         run: >-
           uv run --no-sync python scripts/ci_run_pytest.py ci-results/full --
           -m "" -n auto --cov=template_press --cov-report=xml
+          --durations=25 --durations-min=1 -o faulthandler_timeout=120
+          --junitxml=ci-results/full.xml
+      - name: Run tests
+        if: ${{ !matrix.upload-coverage }}
+        # Same full suite without unconsumed coverage instrumentation on
+        # non-uploading platforms (coverage is measured and uploaded on Linux).
+        timeout-minutes: 15
+        run: >-
+          uv run --no-sync python scripts/ci_run_pytest.py ci-results/full --
+          -m "" -n auto
           --durations=25 --durations-min=1 -o faulthandler_timeout=120
           --junitxml=ci-results/full.xml
       - name: Upload test diagnostics

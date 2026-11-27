@@ -55,6 +55,10 @@ from template_press.rebrand.identity import (
     cargo_split_problems,
     cargo_split_roles,
 )
+from template_press.rebrand.inventory import (
+    SurfaceSnapshot,
+    capture_surface_snapshot,
+)
 from template_press.rebrand.keep_names import (
     render_stale,
     render_undeclared,
@@ -145,7 +149,7 @@ from template_press.rebrand.substitutions import (
     revalidate_substitution_table,
     validate_reset_visibility,
 )
-from template_press.rebrand.verify_cli import verify_command
+from template_press.rebrand.verify_cli import verify_owned_sandbox
 from template_press.rebrand.verify_config import load_verify_config
 
 _EXISTING_RECEIPT_PROBLEM = (
@@ -947,21 +951,27 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {problem}", file=sys.stderr)
             return 2
         prior_removed = removed_files_from_receipt(receipt_text)
+        preflight_snapshot = capture_surface_snapshot(target)
         removal_plan = plan_removals(
             target,
             rules,
             source=source,
             receipt_text=receipt_text,
             legacy_removed=prior_removed,
+            snapshot=preflight_snapshot,
         )
         removal_receipt_metadata(removal_plan, prior_removed)
         effective_rules = removal_rules_view(rules, removal_plan)
-        baml_problems = undeclared_baml_client_problems(target, source, rules)
+        baml_problems = undeclared_baml_client_problems(
+            target, source, rules, snapshot=preflight_snapshot
+        )
         if baml_problems:
             for problem in baml_problems:
                 print(f"error: {problem}", file=sys.stderr)
             return 2
-        plan = build_plan(target, source, dest, effective_rules)
+        plan = build_plan(
+            target, source, dest, effective_rules, snapshot=preflight_snapshot
+        )
         validate_removal_conflicts(rules, removal_plan, plan.renames)
         removal_receipt_metadata(
             translate_removal_plan(removal_plan, plan.renames), prior_removed
@@ -1005,25 +1015,35 @@ def main(argv: list[str] | None = None) -> int:
         # env, stub scans, and the translated reset-path identity scan — all
         # before any write, under the exit-2-nothing-written contract
         # (dry-run included).
-        gate_problems = preflight_excluded_files(target, effective_rules)
+        gate_problems = preflight_excluded_files(
+            target, effective_rules, snapshot=preflight_snapshot
+        )
         # Edit problems are collected BEFORE regeneration problems so a
         # refusal listing both reads in the order the phases actually run
         # (E4): every edit precedes every regeneration. Edits are planned
         # with the SAME machinery and feed the SAME gate — a missing edit
         # tool or an unpressable edit target refuses at exit 2 with nothing
         # written, before the rewrite pass the edit would have amended.
-        gate_problems += preflight_edit_targets(target, rules)
+        gate_problems += preflight_edit_targets(
+            target, rules, snapshot=preflight_snapshot
+        )
         edit_plans, edit_problems = plan_edits(
             target, rules.edit, renamed=frozenset(plan.renames)
         )
         gate_problems += edit_problems
-        gate_problems += preflight_regenerate_outputs(target, rules)
+        gate_problems += preflight_regenerate_outputs(
+            target, rules, snapshot=preflight_snapshot
+        )
         regen_plans, plan_problems = plan_regenerate_commands(
             target, rules.regenerate, renamed=frozenset(plan.renames)
         )
         gate_problems += plan_problems
         gate_problems += preflight_regenerate_dirs(
-            target, rules, renames=plan.renames, dest=dest
+            target,
+            rules,
+            renames=plan.renames,
+            dest=dest,
+            snapshot=preflight_snapshot,
         )
         regen_dir_plans, dir_plan_problems = plan_regenerate_dirs(
             target, rules.regenerate_dirs, renamed=frozenset(plan.renames)
@@ -1075,6 +1095,7 @@ def main(argv: list[str] | None = None) -> int:
             frozenset(member.current_file for member in removal_plan.members),
             languages.checked,
             verify_config=verify_cfg,
+            snapshot=preflight_snapshot,
         )
         if keep_check.undeclared:
             print(render_undeclared(keep_check.undeclared, source), file=sys.stderr)
@@ -1207,7 +1228,11 @@ class PressOutcome:
 
 
 def _pressed_tree_fails_verify(
-    target: Path, dest: Identity, write_press_receipt: Callable[[Path], Path]
+    target: Path,
+    dest: Identity,
+    write_press_receipt: Callable[[Path], Path],
+    *,
+    snapshot: SurfaceSnapshot | None = None,
 ) -> bool:
     """True when `press verify` would exit 1 once this press completes.
 
@@ -1223,7 +1248,7 @@ def _pressed_tree_fails_verify(
     code: int | None = None
     try:
         with owned_sandbox(target) as root:
-            sandbox = make_sandbox(target, root)
+            sandbox = make_sandbox(target, root, snapshot=snapshot)
             write_control(sandbox.path, SOURCE_CONFIG_REL, render_source_config(dest))
             write_press_receipt(sandbox.path)
             subprocess.run(  # noqa: S603 # nosec B603 B607
@@ -1245,7 +1270,7 @@ def _pressed_tree_fails_verify(
                 contextlib.redirect_stdout(output),
                 contextlib.redirect_stderr(output),
             ):
-                code = verify_command(["--target", str(sandbox.path)])
+                code = verify_owned_sandbox(sandbox, target)
     except (SafetyError, ValidationError, OSError, subprocess.CalledProcessError):
         if code != 1:
             return False
@@ -1370,6 +1395,7 @@ def _press(
             allow_unsafe_rename=allow_unsafe_rename,
             rename_preflight=rename_preflight,
             table=table,
+            _skip_revalidation=not reset_done,
         )
         report.reset.extend(reset_done)
         # Declared removals run right after the rewrite/rename passes, at
@@ -1556,6 +1582,7 @@ def _press(
             keep_names=rules.keep_names,
             regenerate_dirs=rules.regenerate_dirs,
         )
+        post_snapshot = capture_surface_snapshot(target)
         leaks = find_leaks(
             target,
             source,
@@ -1566,6 +1593,7 @@ def _press(
             rendered_rules=rendered_rules,
             renamed=report.renamed,
             table=table,
+            snapshot=post_snapshot,
         )
         if leaks:
             print(render_leak_report(leaks), file=sys.stderr)
@@ -1633,7 +1661,9 @@ def _press(
                 exempt_dirs=phases.exempt_dirs,
             )
 
-        if _pressed_tree_fails_verify(target, dest, write_press_receipt):
+        if _pressed_tree_fails_verify(
+            target, dest, write_press_receipt, snapshot=post_snapshot
+        ):
             print(report.render(), file=sys.stderr)
             return PressOutcome(
                 True, report.renamed, report.regenerated, env_error=None

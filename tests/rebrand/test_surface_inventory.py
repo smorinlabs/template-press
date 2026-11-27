@@ -1841,3 +1841,28 @@ def test_capture_preserves_newline_in_target_path(tmp_path: Path) -> None:
         "pyproject.toml",
         "README.md",
     }
+
+
+def test_ignore_cache_refuses_gitignore_change_during_check_ignore(
+    src_target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A .gitignore mutation during a cache-miss check-ignore must not be cached."""
+    (src_target / "data").mkdir()
+    (src_target / "data" / "keep.txt").write_text("ok\n", encoding="utf-8")
+    gitignore = src_target / ".gitignore"
+    original = gitignore.read_text(encoding="utf-8")
+    real_run_git = inventory._run_git
+    mutated = False
+
+    def mutate_during_check_ignore(target: Path, *args: str, **kwargs):
+        nonlocal mutated
+        if not mutated and "check-ignore" in args:
+            mutated = True
+            gitignore.write_text(original + "data/\n", encoding="utf-8")
+        return real_run_git(target, *args, **kwargs)
+
+    monkeypatch.setattr(inventory, "_run_git", mutate_during_check_ignore)
+
+    with pytest.raises(SafetyError, match="Git ignore file changed during inventory"):
+        capture_surface_snapshot(src_target)
+    assert mutated

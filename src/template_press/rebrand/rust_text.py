@@ -36,7 +36,9 @@ _CODE: _State = ("code", 0)
 
 _IDENT_CHARS = re.compile(r"[A-Za-z0-9_]")
 _STRING_PREFIXES = frozenset({"r", "b", "br", "c", "cr"})
-_CHAR_LITERAL = re.compile(r"'(?:\\u\{[0-9A-Fa-f_]+\}|\\x[0-9A-Fa-f]{2}|\\.|[^\\'\n])'")
+_CHAR_LITERAL = re.compile(
+    r"'(?:\\u\{[0-9A-Fa-f_]+\}|\\x[0-9A-Fa-f]{2}|\\.|[^\\'\r\n])'"
+)
 # Text right before a literal that makes it a Cargo feature name or a path the
 # compiler resolves against the source file's directory.
 _FEATURE_BEFORE = re.compile(r"\bfeature\s*=\s*$")
@@ -717,8 +719,16 @@ def _doc_lines(text: str, start: int, end: int) -> list[Segment]:
     while True:
         newline = text.find("\n", start, end)
         if newline == -1:
-            return [*lines, (start, end)]
-        lines.append((start, newline))
+            line_end = (
+                end - 1
+                if end > start and text[end - 1] == "\r" and text[end : end + 1] == "\n"
+                else end
+            )
+            return [*lines, (start, line_end)]
+        line_end = (
+            newline - 1 if newline > start and text[newline - 1] == "\r" else newline
+        )
+        lines.append((start, line_end))
         start = newline + 1
 
 
@@ -959,7 +969,8 @@ def compiled_markdown_lines(text: str) -> frozenset[int]:
     # fence that is not at the left margin (in a block quote or a list), the
     # structure is unproven: every line after any later fence line counts.
     loose = unproven = False
-    for number, line in enumerate(text.split("\n"), start=1):
+    for number, raw_line in enumerate(text.split("\n"), start=1):
+        line = raw_line.removesuffix("\r")
         body = line.lstrip(" ")
         if unproven:
             found.add(number)

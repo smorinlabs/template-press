@@ -20,7 +20,7 @@ from template_press.rebrand.rules import DEFAULT_RULES
 from template_press.rebrand.substitutions import compile_substitution_table
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import DEST, SOURCE, _git, write_answers_file
+from .conftest import DEST, SOURCE, _git, init_git_repo, write_answers_file
 from .test_cli import write_source_config
 
 PACKAGE_JSON = '{"name": "web-tools", "version": "1.0.0"}\n'
@@ -443,14 +443,11 @@ def _nameless_node_target(base: Path) -> Path:
     (target / "README.md").write_text(
         "demo_widget demo-widget press demolabs acme-cli\n", encoding="utf-8"
     )
-    _git(target, "init", "-q", "-b", "main")
-    _git(target, "config", "user.email", "t@example.test")
-    _git(target, "config", "user.name", "t")
-    _git(
-        target, "remote", "add", "origin", "https://github.com/demolabs/demo-widget.git"
+    init_git_repo(
+        target,
+        origin="https://github.com/demolabs/demo-widget.git",
+        commit_message="seed",
     )
-    _git(target, "add", "-A")
-    _git(target, "commit", "-q", "-m", "seed")
     return target
 
 
