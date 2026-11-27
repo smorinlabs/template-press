@@ -522,38 +522,49 @@ def _active_gitignore_paths(
         if not children:
             ignored: set[str] = set()
         elif use_ignore_fastpath and ignore_cache is not None:
+            skip_query = False
             if not found and core_excludes is None and info_exclude is not None:
                 if info_has_rules is None:
                     info_has_rules = _info_exclude_has_rules(info_exclude)
                 if not info_has_rules:
                     ignored = set()
-                else:
-                    cache_key = (
-                        config_sha256,
-                        info_exclude_fp,
-                        core_excludes_fp,
-                        (),
-                        tuple(child.as_posix() for child in children),
-                    )
-                    cached = ignore_cache.get(cache_key)
-                    if cached is None:
-                        cached = _ignored_directories(target, children, core_excludes)
-                        ignore_cache[cache_key] = cached
-                    ignored = cached
-            else:
+                    skip_query = True
+            if not skip_query:
+                found_sorted = sorted(found, key=lambda p: p.as_posix())
                 cache_key = (
                     config_sha256,
                     info_exclude_fp,
                     core_excludes_fp,
-                    tuple(
-                        (path.as_posix(), level_fps[path])
-                        for path in sorted(found, key=lambda p: p.as_posix())
-                    ),
+                    tuple((path.as_posix(), level_fps[path]) for path in found_sorted),
                     tuple(child.as_posix() for child in children),
                 )
                 cached = ignore_cache.get(cache_key)
                 if cached is None:
                     cached = _ignored_directories(target, children, core_excludes)
+                    for path in found_sorted:
+                        if (
+                            _fingerprint_visibility("gitignore", path)
+                            != level_fps[path]
+                        ):
+                            raise SafetyError(
+                                f"Git ignore file changed during inventory: {path}"
+                            )
+                    if (
+                        info_exclude is not None
+                        and _fingerprint_visibility("info_exclude", info_exclude)
+                        != info_exclude_fp
+                    ):
+                        raise SafetyError(
+                            f"Git ignore file changed during inventory: {info_exclude}"
+                        )
+                    if (
+                        core_excludes is not None
+                        and _fingerprint_visibility("core_excludes_file", core_excludes)
+                        != core_excludes_fp
+                    ):
+                        raise SafetyError(
+                            f"Git ignore file changed during inventory: {core_excludes}"
+                        )
                     ignore_cache[cache_key] = cached
                 ignored = cached
         else:
