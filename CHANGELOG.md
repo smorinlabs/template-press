@@ -1,5 +1,30 @@
 # Changelog
 
+## [5.0.1](https://github.com/smorinlabs/template-press/compare/v5.0.0...v5.0.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **rebrand:** clean translated source dir and guard git visibility and untracked files ([ab9c2f2](https://github.com/smorinlabs/template-press/commit/ab9c2f21dc7408a8c8c804110b9ef7e25e63fd02))
+* **rebrand:** handle crlf line endings and windows paths cleanly ([b2110b3](https://github.com/smorinlabs/template-press/commit/b2110b37409daccb05c8b2e55a9b73c442d3f63f))
+* **rebrand:** harden regenerate dir preflight, exemptions, and multiline replace ([38d200e](https://github.com/smorinlabs/template-press/commit/38d200e4bdf0168f350d8b264cd4603d3b4e21d6))
+* **rebrand:** recheck ignore fingerprints before caching directory ignores ([df0ad0e](https://github.com/smorinlabs/template-press/commit/df0ad0e7e324493361b6cabd4a7c97885283e94b))
+* **rebrand:** refuse cargo target renames leaving multiple candidate files ([6950ede](https://github.com/smorinlabs/template-press/commit/6950ede36e18ecd7d0d5efe645bc017ff54ed527))
+* **rebrand:** run exit-2 plan gates before exit-1 keep-name preflight ([2e677c6](https://github.com/smorinlabs/template-press/commit/2e677c6273103c97742a08ee60ed13577cc24ef5))
+
+
+### Performance Improvements
+
+* **ci:** benchmark worksteal on windows and strip sample hooks ([c93ec8f](https://github.com/smorinlabs/template-press/commit/c93ec8f69b4e90ef05e3a08f6a15fd993b23b65f))
+* **ci:** speed up Windows CI via cached fixture repos, lean test group, and worksteal ([66450a8](https://github.com/smorinlabs/template-press/commit/66450a8cb785152ddfb1afe504a38f53275b7413))
+* **rebrand:** cut git spawns, double sandboxing, and scan overhead ([f91ea00](https://github.com/smorinlabs/template-press/commit/f91ea005138f69b161c2710fa57bf4eb46f73be9))
+* **rebrand:** fast-path kept_spans and update matrix fixtures for decision 1 ([e296327](https://github.com/smorinlabs/template-press/commit/e2963272eb351e9b6069f1588bec17dd84b290c5))
+* **rebrand:** speed up directory history validation ([2b86237](https://github.com/smorinlabs/template-press/commit/2b8623776ca03b0bf2e4e894871bbb7f6e090631))
+* speed up rebrand engine, test matrix, and CI checks ([987495d](https://github.com/smorinlabs/template-press/commit/987495d63aa7bd971e6113bacf4fce2ec3dd008f))
+* **tests:** cache pre-committed fixture repos and add lean test group ([3cbbc55](https://github.com/smorinlabs/template-press/commit/3cbbc550bf0596c9db28f87d2f61c7a9346583b1))
+* **tests:** parallelize cargo matrix and reuse empty git templates ([c81388d](https://github.com/smorinlabs/template-press/commit/c81388d63bd75c2d00a6ef05791ff7240d6f3594))
+* **tests:** reuse empty git template in remaining rebrand tests ([aee81a6](https://github.com/smorinlabs/template-press/commit/aee81a69b7b2d291313ac708e5d4161aa8a56d7b))
+
 ## [5.0.0](https://github.com/smorinlabs/template-press/compare/v4.1.0...v5.0.0) (2026-11-25)
 
 
