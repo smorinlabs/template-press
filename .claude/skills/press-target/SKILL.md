@@ -591,6 +591,7 @@ These stop the press before any write:
 | A hyphen-free source name takes a hyphenated destination, without `[[cargo_split]]` | `acme_core` to `zeta-core` | 2 |
 | A source or destination name equals a non-local dependency | crate pressed to `padkit` beside `padkit = "1"` | 2 |
 | A rewrite would separate a declared or name-inferred Cargo path from its file (`cargo paths:`) | `owner = "acme"` rewrites `[lib] path = "lib/acme-x.rs"`, but no row renames the file | 2 |
+| An inferred or auto-discovered target rename would leave multiple candidate files for the same target name (`cargo paths:`) | `acme-cli` renames to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists (or `src/main.rs` collides with `src/bin/<pkg>`, or the same two-file shape under `tests/`, `examples/`, or `benches/`, even with `autobins = false` or another `auto* = false` flag) | 2 |
 | A rewrite would separate a path that Rust source declares from its file (`cargo paths:`): the file of `mod name;`, a `#[path = "..."]` or `#[cfg_attr(<cond>, path = "...")]` value, or an `include_str!`/`include_bytes!`/`include!` argument | `owner = "acmelabs"` rewrites `pub mod acmelabs;` or `include_str!("../data/acmelabs.txt")`, but no row renames the file | 2 |
 | A `#[cfg(...)]`-disabled `mod name;` with no file on disk, inside a renamed inline module or as the renamed module itself | `mod acmelabs { #[cfg(any())] mod x; }` or `#[cfg(any())] mod acmelabs;` with `owner = "acmelabs"` | 2 |
 | A `CARGO_BIN_EXE_<name>` token would not match its auto-discovered binary (`cargo paths:`) | `src/bin/acme.rs` renames to `zeta.rs`, but the token in an excluded file stays | 2 |
@@ -599,7 +600,9 @@ These stop the press before any write:
 For the first two, press in two steps through an intermediate identity. For a
 versioned string, edit the text or add the exact token to `keep_names`. For a
 `cargo paths:` refusal, rename the path so a path row moves it, or add the shared
-name to `keep_names`. For a binary token, declare a `cargo_names` table that
+name to `keep_names`; when it reports multiple candidate target files, declare
+an explicit `path` on the target table, remove the extra file, or choose another
+name. For a binary token, declare a `cargo_names` table that
 names the binary; when the token sits in an excluded file, remove the
 exclusion or edit the token by hand.
 
@@ -623,8 +626,6 @@ paths are read from every dependency table, including the pre-2024
   which Cargo does not compile;
 - a path that code reads at run time, such as
   `std::fs::read_to_string("data/acmelabs.txt")` in `build.rs`;
-- with `autobins = false`, a file already named for the destination binary:
-  renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt.
 - a `#[path]` value that uses `..`, inside an inline module that a rename changes, such as `pub mod acmelabs { #[path = "../shared.rs"] pub mod x; }` when `acmelabs` is renamed to `zetalabs`: Rust then looks for `src/zetalabs/../shared.rs`, which needs a `src/zetalabs/` directory, so `cargo check` can fail after a receipt. `main` behaves the same way.
 
 An `owner`, `author`, or `email` row that rewrites such a path without

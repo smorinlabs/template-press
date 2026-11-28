@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
 
-from template_press.rebrand.cargo_manifest import read_cargo_facts
+from template_press.rebrand.cargo_manifest import (
+    auto_target_sections,
+    declared_target_names,
+    inferred_target_candidates,
+    read_cargo_facts,
+)
 from template_press.rebrand.identity import ValidationError
 
 
@@ -347,3 +353,82 @@ def test_file_claimed_by_a_bin_is_not_auto_discovered(
     facts = read_cargo_facts(tmp_path)
     assert facts.bins == ("acme",)
     assert facts.names == ("acme", "pkg")
+
+
+def test_inferred_target_candidates_covers_all_sections_and_pkg_main() -> None:
+    manifest = tomllib.loads(
+        _pkg("acme-core")
+        + '[[bin]]\nname = "acme-core"\n'
+        + '[[bin]]\nname = "acme-cli"\n'
+        + '[[bin]]\nname = "pathed"\npath = "src/p.rs"\n'
+        + '[[test]]\nname = "acme-it"\n'
+        + '[[example]]\nname = "acme-ex"\n'
+        + '[[bench]]\nname = "acme-bench"\n'
+    )
+    assert inferred_target_candidates(manifest) == [
+        (
+            "bin",
+            "acme-core",
+            ("src/main.rs", "src/bin/acme-core.rs", "src/bin/acme-core/main.rs"),
+        ),
+        (
+            "bin",
+            "acme-cli",
+            ("src/bin/acme-cli.rs", "src/bin/acme-cli/main.rs"),
+        ),
+        (
+            "test",
+            "acme-it",
+            ("tests/acme-it.rs", "tests/acme-it/main.rs"),
+        ),
+        (
+            "example",
+            "acme-ex",
+            ("examples/acme-ex.rs", "examples/acme-ex/main.rs"),
+        ),
+        (
+            "bench",
+            "acme-bench",
+            ("benches/acme-bench.rs", "benches/acme-bench/main.rs"),
+        ),
+    ]
+
+
+def test_auto_target_sections_honors_flags_and_claimed_paths() -> None:
+    manifest = tomllib.loads(
+        _pkg("acme-core", "autobins = false\nautotests = true\n")
+        + '[[test]]\nname = "other"\npath = "./tests/other.rs"\n'
+        + '[[example]]\nname = "ex"\npath = "examples\\\\custom.rs"\n'
+    )
+    sections = auto_target_sections(manifest)
+    assert sections == [
+        ("test", "tests", "autotests", frozenset({"tests/other.rs"}), "acme-core"),
+        (
+            "example",
+            "examples",
+            "autoexamples",
+            frozenset({"examples/custom.rs"}),
+            "acme-core",
+        ),
+        ("bench", "benches", "autobenches", frozenset(), "acme-core"),
+    ]
+    virtual = tomllib.loads('[workspace]\nmembers = ["crates/*"]\n')
+    assert auto_target_sections(virtual) == []
+
+
+def test_declared_target_names_collects_pathed_and_pathless() -> None:
+    manifest = tomllib.loads(
+        _pkg("acme-core")
+        + '[[bin]]\nname = "acme-cli"\n'
+        + '[[test]]\nname = "acme-it"\npath = "tests/custom.rs"\n'
+        + '[[example]]\nname = "acme-ex"\npath = "examples/custom.rs"\n'
+        + '[[bench]]\nname = "acme-b"\n'
+    )
+    assert declared_target_names(manifest) == frozenset(
+        {
+            ("bin", "acme-cli"),
+            ("test", "acme-it"),
+            ("example", "acme-ex"),
+            ("bench", "acme-b"),
+        }
+    )

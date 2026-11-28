@@ -12,11 +12,13 @@ uv run pytest -m "" tests/rebrand/test_cargo_source_paths.py
 from __future__ import annotations
 
 import os
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from template_press.rebrand.receipt import RECEIPT_REL
+from template_press.rebrand.substitutions import RenamePlan, RenameStep
 
 from .conftest import init_git_repo, posix_only, seed_cached_git_repo
 from .test_cargo_split import (
@@ -1143,6 +1145,515 @@ def test_binary_token_in_an_excluded_file_names_the_exclusion(
     assert "excluded from rewriting; remove the exclusion" in message
     assert "Declare a cargo_names table" not in message
     assert _status(target) == ""
+
+
+# --- P15-T13: inferred/auto target renames leaving two candidate files -----------
+
+CLI_NAMES = {"core": "acme-core", "cli": "acme-cli"}
+CLI_DEST_NAMES = {"core": "zeta-core", "cli": "zeta-cli"}
+MAIN_RS = "fn main() {}\n"
+TEST_RS = "#[test]\nfn t() {}\n"
+
+TWO_CANDIDATE_EXPLICIT_CASES: dict[
+    str,
+    tuple[dict[str, str], dict[str, str], dict[str, str], tuple[str, str]],
+] = {
+    "bin_file_onto_dir": (
+        {
+            "Cargo.toml": _package("acme-core")
+            + 'autobins = false\n\n[[bin]]\nname = "acme-cli"\n',
+            "src/lib.rs": LIB,
+            "src/bin/acme-cli.rs": MAIN_RS,
+            "src/bin/zeta-cli/main.rs": MAIN_RS,
+        },
+        CLI_NAMES,
+        CLI_DEST_NAMES,
+        ("src/bin/zeta-cli.rs", "src/bin/zeta-cli/main.rs"),
+    ),
+    "bin_dir_onto_file": (
+        {
+            "Cargo.toml": _package("acme-core")
+            + 'autobins = false\n\n[[bin]]\nname = "acme-cli"\n',
+            "src/lib.rs": LIB,
+            "src/bin/acme-cli/main.rs": MAIN_RS,
+            "src/bin/zeta-cli.rs": MAIN_RS,
+        },
+        CLI_NAMES,
+        CLI_DEST_NAMES,
+        ("src/bin/zeta-cli.rs", "src/bin/zeta-cli/main.rs"),
+    ),
+    "bin_main_onto_dir": (
+        {
+            "Cargo.toml": _package("acme-core")
+            + 'autobins = false\n\n[[bin]]\nname = "acme-core"\n',
+            "src/lib.rs": LIB,
+            "src/main.rs": MAIN_RS,
+            "src/bin/zeta-core/main.rs": MAIN_RS,
+        },
+        CORE_NAMES,
+        {"core": "zeta-core"},
+        ("src/main.rs", "src/bin/zeta-core/main.rs"),
+    ),
+    "bin_main_onto_file": (
+        {
+            "Cargo.toml": _package("acme-core")
+            + 'autobins = false\n\n[[bin]]\nname = "acme-core"\n',
+            "src/lib.rs": LIB,
+            "src/main.rs": MAIN_RS,
+            "src/bin/zeta-core.rs": MAIN_RS,
+        },
+        CORE_NAMES,
+        {"core": "zeta-core"},
+        ("src/main.rs", "src/bin/zeta-core.rs"),
+    ),
+    "test_auto_off": (
+        {
+            "Cargo.toml": _package("acme-core")
+            + 'autotests = false\n\n[[test]]\nname = "acme-core"\n',
+            "src/lib.rs": LIB,
+            "tests/acme-core.rs": TEST_RS,
+            "tests/zeta-core/main.rs": TEST_RS,
+        },
+        CORE_NAMES,
+        {"core": "zeta-core"},
+        ("tests/zeta-core.rs", "tests/zeta-core/main.rs"),
+    ),
+    "example_auto_off": (
+        {
+            "Cargo.toml": _package("acme-core")
+            + 'autoexamples = false\n\n[[example]]\nname = "acme-core"\n',
+            "src/lib.rs": LIB,
+            "examples/acme-core.rs": MAIN_RS,
+            "examples/zeta-core/main.rs": MAIN_RS,
+        },
+        CORE_NAMES,
+        {"core": "zeta-core"},
+        ("examples/zeta-core.rs", "examples/zeta-core/main.rs"),
+    ),
+    "bench_auto_off": (
+        {
+            "Cargo.toml": _package("acme-core")
+            + 'autobenches = false\n\n[[bench]]\nname = "acme-core"\n',
+            "src/lib.rs": LIB,
+            "benches/acme-core.rs": MAIN_RS,
+            "benches/zeta-core/main.rs": MAIN_RS,
+        },
+        CORE_NAMES,
+        {"core": "zeta-core"},
+        ("benches/zeta-core.rs", "benches/zeta-core/main.rs"),
+    ),
+    "test_auto_on_explicit": (
+        {
+            "Cargo.toml": _package("acme-core") + '\n[[test]]\nname = "acme-core"\n',
+            "src/lib.rs": LIB,
+            "tests/acme-core.rs": TEST_RS,
+            "tests/zeta-core/main.rs": TEST_RS,
+        },
+        CORE_NAMES,
+        {"core": "zeta-core"},
+        ("tests/zeta-core.rs", "tests/zeta-core/main.rs"),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", TWO_CANDIDATE_EXPLICIT_CASES)
+def test_inferred_target_two_candidate_collision_is_refused(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files, src_names, dst_names, expected_paths = TWO_CANDIDATE_EXPLICIT_CASES[case]
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(target, files, names=src_names)
+    answers = _answers(tmp_path, CORE_DEST, dst_names)
+
+    assert _press(target, answers) == 2
+
+    out = capsys.readouterr()
+    message = out.out + out.err
+    assert "cargo paths:" in message
+    for path in expected_paths:
+        assert path in message
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
+AUTO_DISCOVERED_COLLISION_CASES: dict[str, tuple[str, str, bool, tuple[str, str]]] = {
+    "tests_file_onto_dir": (
+        "tests/acme-core.rs",
+        "tests/zeta-core/main.rs",
+        True,
+        ("tests/zeta-core.rs", "tests/zeta-core/main.rs"),
+    ),
+    "tests_dir_onto_file": (
+        "tests/acme-core/main.rs",
+        "tests/zeta-core.rs",
+        True,
+        ("tests/zeta-core.rs", "tests/zeta-core/main.rs"),
+    ),
+    "examples_file_onto_dir": (
+        "examples/acme-core.rs",
+        "examples/zeta-core/main.rs",
+        True,
+        ("examples/zeta-core.rs", "examples/zeta-core/main.rs"),
+    ),
+    "examples_dir_onto_file": (
+        "examples/acme-core/main.rs",
+        "examples/zeta-core.rs",
+        True,
+        ("examples/zeta-core.rs", "examples/zeta-core/main.rs"),
+    ),
+    "benches_file_onto_dir": (
+        "benches/acme-core.rs",
+        "benches/zeta-core/main.rs",
+        True,
+        ("benches/zeta-core.rs", "benches/zeta-core/main.rs"),
+    ),
+    "benches_dir_onto_file": (
+        "benches/acme-core/main.rs",
+        "benches/zeta-core.rs",
+        True,
+        ("benches/zeta-core.rs", "benches/zeta-core/main.rs"),
+    ),
+    "bin_tableless_file_onto_dir": (
+        "src/bin/acme-core.rs",
+        "src/bin/zeta-core/main.rs",
+        False,
+        ("src/bin/zeta-core.rs", "src/bin/zeta-core/main.rs"),
+    ),
+    "bin_tableless_dir_onto_file": (
+        "src/bin/acme-core/main.rs",
+        "src/bin/zeta-core.rs",
+        False,
+        ("src/bin/zeta-core.rs", "src/bin/zeta-core/main.rs"),
+    ),
+    "bin_tableless_main_onto_file": (
+        "src/main.rs",
+        "src/bin/zeta-core.rs",
+        False,
+        ("src/main.rs", "src/bin/zeta-core.rs"),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", AUTO_DISCOVERED_COLLISION_CASES)
+def test_auto_discovered_two_candidate_collision_is_refused(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    first, second, table, expected_paths = AUTO_DISCOVERED_COLLISION_CASES[case]
+    body = TEST_RS if first.startswith("tests/") else MAIN_RS
+    files = {"src/lib.rs": LIB, first: body, second: body}
+    target = _source_path_target(tmp_path, files, table=table)
+
+    assert _press(target, _source_path_answers(tmp_path, table=table)) == 2
+
+    out = capsys.readouterr()
+    message = out.out + out.err
+    assert "cargo paths:" in message
+    for path in expected_paths:
+        assert path in message
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
+def test_inferred_target_collision_in_renamed_workspace_member_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(
+        target,
+        {
+            "Cargo.toml": '[workspace]\nresolver = "2"\nmembers = ["crates/*"]\n',
+            "crates/acme-core/Cargo.toml": _package("acme-core")
+            + 'autobins = false\n\n[[bin]]\nname = "acme-cli"\n',
+            "crates/acme-core/src/lib.rs": LIB,
+            "crates/acme-core/src/bin/acme-cli.rs": MAIN_RS,
+            "crates/acme-core/src/bin/zeta-cli/main.rs": MAIN_RS,
+        },
+        names=CLI_NAMES,
+    )
+    answers = _answers(tmp_path, CORE_DEST, CLI_DEST_NAMES)
+
+    assert _press(target, answers) == 2
+
+    out = capsys.readouterr()
+    message = out.out + out.err
+    assert "crates/acme-core/Cargo.toml:" in message
+    assert "crates/zeta-core/src/bin/zeta-cli.rs" in message
+    assert "crates/zeta-core/src/bin/zeta-cli/main.rs" in message
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
+@pytest.mark.parametrize(
+    ("files", "src_names", "dst_names"),
+    [
+        pytest.param(
+            {
+                "Cargo.toml": _package("acme-core")
+                + 'autobins = false\n\n[[bin]]\nname = "acme-cli"\n',
+                "src/lib.rs": LIB,
+                "src/bin/acme-cli.rs": MAIN_RS,
+                "src/bin/zeta-cli/main.rs": MAIN_RS,
+                "press/press-rules.toml": (
+                    '[[remove]]\nfile = "src/bin/zeta-cli/main.rs"\n'
+                    'reason = "drop unused binary stub"\n'
+                ),
+            },
+            CLI_NAMES,
+            CLI_DEST_NAMES,
+            id="removed_orphan_file",
+        ),
+        pytest.param(
+            {
+                "Cargo.toml": _package("acme-core")
+                + 'autobins = false\n\n[[bin]]\nname = "acme-cli"\n',
+                "src/lib.rs": LIB,
+                "src/bin/acme-cli.rs": MAIN_RS,
+                "src/bin/zeta-cli/main.rs": MAIN_RS,
+                "press/press-rules.toml": (
+                    '[[remove]]\ndir = "src/bin/zeta-cli"\n'
+                    'reason = "drop unused binary directory"\n'
+                ),
+            },
+            CLI_NAMES,
+            CLI_DEST_NAMES,
+            id="removed_orphan_dir",
+        ),
+        pytest.param(
+            {
+                "Cargo.toml": _package("acme-core") + "autotests = false\n",
+                "src/lib.rs": LIB,
+                "tests/acme-core.rs": TEST_RS,
+                "tests/zeta-core/main.rs": TEST_RS,
+            },
+            CORE_NAMES,
+            {"core": "zeta-core"},
+            id="unlisted_under_auto_off",
+        ),
+        pytest.param(
+            {
+                "Cargo.toml": _package("acme-core")
+                + '\n[[test]]\nname = "other"\npath = "tests/zeta-core/main.rs"\n',
+                "src/lib.rs": LIB,
+                "tests/acme-core.rs": TEST_RS,
+                "tests/zeta-core/main.rs": TEST_RS,
+            },
+            CORE_NAMES,
+            {"core": "zeta-core"},
+            id="claimed_other_shape_under_auto_on",
+        ),
+        pytest.param(
+            {
+                "Cargo.toml": _package("acme-core")
+                + '\n[[test]]\nname = "acme-core"\npath = "tests/custom.rs"\n',
+                "src/lib.rs": LIB,
+                "tests/custom.rs": TEST_RS,
+                "tests/acme-core.rs": TEST_RS,
+                "tests/zeta-core/main.rs": TEST_RS,
+            },
+            CORE_NAMES,
+            {"core": "zeta-core"},
+            id="explicit_pathed_overrides_auto_name",
+        ),
+        pytest.param(
+            {
+                "Cargo.toml": _package("acme-core"),
+                "src/lib.rs": LIB,
+                "tests/.acme-core.rs": TEST_RS,
+                "tests/.zeta-core/main.rs": TEST_RS,
+            },
+            CORE_NAMES,
+            {"core": "zeta-core"},
+            id="hidden_dot_entries_ignored_by_auto_discovery",
+        ),
+    ],
+)
+def test_inferred_target_collision_respects_remove_auto_off_and_claimed(
+    files: dict[str, str],
+    src_names: dict[str, str],
+    dst_names: dict[str, str],
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(target, files, names=src_names)
+    answers = _answers(tmp_path, CORE_DEST, dst_names)
+
+    assert _press(target, answers) == 0
+    assert (target / RECEIPT_REL).is_file()
+
+
+def test_inferred_target_gitignored_orphan_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(
+        target,
+        {
+            ".gitignore": "target/\nCargo.lock\nsrc/bin/zeta-cli/\n",
+            "Cargo.toml": _package("acme-core")
+            + 'autobins = false\n\n[[bin]]\nname = "acme-cli"\n',
+            "src/lib.rs": LIB,
+            "src/bin/acme-cli.rs": MAIN_RS,
+        },
+        names=CLI_NAMES,
+    )
+    orphan = target / "src" / "bin" / "zeta-cli" / "main.rs"
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_text(MAIN_RS, encoding="utf-8")
+    answers = _answers(tmp_path, CORE_DEST, CLI_DEST_NAMES)
+
+    assert _press(target, answers) == 2
+
+    out = capsys.readouterr()
+    message = out.out + out.err
+    assert "src/bin/zeta-cli.rs" in message
+    assert "src/bin/zeta-cli/main.rs" in message
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
+def test_inferred_target_collision_ignores_orphan_moved_away_by_rename_plan(
+    tmp_path: Path,
+) -> None:
+    from template_press.rebrand.substitutions import _inferred_target_collisions
+
+    target = tmp_path / "target-repo"
+    _write(
+        target,
+        {
+            "src/bin/acme-cli.rs": MAIN_RS,
+            "src/bin/zeta-cli/main.rs": MAIN_RS,
+        },
+    )
+    before = tomllib.loads(
+        _package("acme-core") + 'autobins = false\n\n[[bin]]\nname = "acme-cli"\n'
+    )
+    after = tomllib.loads(
+        _package("zeta-core") + 'autobins = false\n\n[[bin]]\nname = "zeta-cli"\n'
+    )
+    plan = RenamePlan(
+        steps=(
+            RenameStep(
+                step_id="move-orphan",
+                old_prefix="src/bin/zeta-cli",
+                new_prefix="src/bin/other-cli",
+                pass_number=1,
+                row_ids=("r1",),
+                source_entries=("src/bin/zeta-cli/main.rs",),
+                expected_kind="directory",
+            ),
+            RenameStep(
+                step_id="move-bin",
+                old_prefix="src/bin/acme-cli.rs",
+                new_prefix="src/bin/zeta-cli.rs",
+                pass_number=1,
+                row_ids=("r2",),
+                source_entries=("src/bin/acme-cli.rs",),
+                expected_kind="file",
+            ),
+        )
+    )
+    post_files = {
+        "Cargo.toml": frozenset({"Cargo.toml"}),
+        "src/bin/other-cli/main.rs": frozenset({"src/bin/zeta-cli/main.rs"}),
+        "src/bin/zeta-cli.rs": frozenset({"src/bin/acme-cli.rs"}),
+    }
+    snapshot_paths = frozenset(
+        {"Cargo.toml", "src/bin/acme-cli.rs", "src/bin/zeta-cli/main.rs"}
+    )
+
+    assert (
+        _inferred_target_collisions(
+            target,
+            "Cargo.toml",
+            before,
+            after,
+            plan,
+            post_files,
+            snapshot_paths,
+            frozenset(),
+            (),
+        )
+        == []
+    )
+
+
+SLOW_TWO_CANDIDATE_CASES: dict[
+    str, tuple[dict[str, str], dict[str, str], dict[str, str]]
+] = {
+    "bin_autobins_false": TWO_CANDIDATE_EXPLICIT_CASES["bin_file_onto_dir"][:3],
+    "bin_main_autobins_false": TWO_CANDIDATE_EXPLICIT_CASES["bin_main_onto_dir"][:3],
+    "test_autotests_false": TWO_CANDIDATE_EXPLICIT_CASES["test_auto_off"][:3],
+    "example_autoexamples_false": TWO_CANDIDATE_EXPLICIT_CASES["example_auto_off"][:3],
+    "bench_autobenches_false": TWO_CANDIDATE_EXPLICIT_CASES["bench_auto_off"][:3],
+    "test_auto_on_unlisted": (
+        {
+            "Cargo.toml": _package("acme-core"),
+            "src/lib.rs": LIB,
+            "tests/acme-core.rs": TEST_RS,
+            "tests/zeta-core/main.rs": TEST_RS,
+        },
+        CORE_NAMES,
+        {"core": "zeta-core"},
+    ),
+}
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize("case", SLOW_TWO_CANDIDATE_CASES)
+def test_inferred_target_two_candidate_refusal_matches_real_cargo(
+    case: str, tmp_path: Path
+) -> None:
+    _require_cargo()
+    files, src_names, dst_names = SLOW_TWO_CANDIDATE_CASES[case]
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(target, files, names=src_names)
+    _assert_cargo(target, "check", "--offline", "--all-targets")
+    answers = _answers(tmp_path, CORE_DEST, dst_names)
+
+    assert _press(target, answers) == 2
+
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
+    assert _cargo(target, "check", "--offline", "--all-targets").returncode == 0
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_inferred_target_collision_cleared_by_remove_builds_with_real_cargo(
+    tmp_path: Path,
+) -> None:
+    _require_cargo()
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(
+        target,
+        {
+            "Cargo.toml": _package("acme-core")
+            + 'autobins = false\n\n[[bin]]\nname = "acme-cli"\n',
+            "src/lib.rs": LIB,
+            "src/bin/acme-cli.rs": MAIN_RS,
+            "src/bin/zeta-cli/main.rs": MAIN_RS,
+            "press/press-rules.toml": (
+                '[[remove]]\nfile = "src/bin/zeta-cli/main.rs"\n'
+                'reason = "drop unused binary stub"\n'
+            ),
+        },
+        names=CLI_NAMES,
+    )
+    _assert_cargo(target, "check", "--offline", "--all-targets")
+    answers = _answers(tmp_path, CORE_DEST, CLI_DEST_NAMES)
+
+    assert _press(target, answers) == 0
+    assert (target / RECEIPT_REL).is_file()
+    _assert_cargo(target, "check", "--offline", "--all-targets")
 
 
 def test_rust_source_structure_tracks_inline_paths_and_unicode() -> None:

@@ -9,7 +9,7 @@ import posixpath
 import re
 import stat
 import tomllib
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -18,8 +18,11 @@ from template_press.rebrand.cargo_manifest import (
     DeclaredPath,
     Table,
     auto_discovered_bins,
+    auto_target_sections,
     cargo_manifest_files,
     declared_cargo_paths,
+    declared_target_names,
+    inferred_target_candidates,
     inferred_target_paths,
     named_target_files,
     read_cargo_facts,
@@ -113,6 +116,7 @@ from template_press.rebrand.rust_text import (
 )
 from template_press.rebrand.safety import (
     RenameClosureUnauthorized,
+    SafeRelPath,
     SafetyError,
     assert_ancestors_real,
     is_regular_lstat,
@@ -1941,6 +1945,178 @@ def _declared_path_follows(
     return matched == {path for path in moved if PurePosixPath(path).full_match(new)}
 
 
+def _package_name(data: Table) -> str | None:
+    package = data.get("package")
+    if not isinstance(package, dict):
+        return None
+    name = package.get("name")
+    return name.strip() or None if isinstance(name, str) else None
+
+
+def _join_posix(directory: str, rel: str) -> str:
+    return posixpath.normpath(posixpath.join(directory, rel))
+
+
+def _post_press_file_exists(
+    target: Path,
+    posix_path: str,
+    post_files: Mapping[str, frozenset[str]],
+    snapshot_paths: frozenset[str],
+    removed_files: frozenset[str],
+    removed_dirs: tuple[str, ...],
+) -> bool:
+    """Whether a regular file will sit at ``posix_path`` after the press."""
+    if posix_path in post_files:
+        return True
+    if posix_path in snapshot_paths:
+        # Was in the Git inventory and either moved elsewhere or removed.
+        return False
+    if posix_path in removed_files or posix_path.startswith(removed_dirs):
+        return False
+    # Fallback for Git-ignored regular files on disk (Cargo ignores .gitignore).
+    # Validate containment strictly because target names come from untrusted TOML.
+    try:
+        safe = SafeRelPath(posix_path)
+        candidate = target / safe.as_posix()
+        assert_ancestors_real(candidate, target)
+    except SafetyError:
+        return False
+    return is_regular_lstat(candidate)
+
+
+def _inferred_target_collisions(
+    target: Path,
+    manifest: str,
+    before: Table,
+    after: Table,
+    plan: RenamePlan,
+    post_files: Mapping[str, frozenset[str]],
+    snapshot_paths: frozenset[str],
+    removed_files: frozenset[str],
+    removed_dirs: tuple[str, ...],
+) -> list[str]:
+    """Target names that would have multiple candidate files after the press."""
+    old_dir = posixpath.dirname(manifest)
+    new_dir = posixpath.dirname(plan.translate(manifest))
+    old_pkg = _package_name(before)
+    new_pkg = _package_name(after)
+    problems: list[str] = []
+
+    # --- Pass 1: Explicit pathless [[bin]], [[test]], [[example]], [[bench]] ---
+    # Cargo resolves these even when auto* = false.
+    old_targets = inferred_target_candidates(before)
+    new_targets = inferred_target_candidates(after)
+
+    for (_sec, old_name, _old_cands), (section, new_name, new_cands) in zip(
+        old_targets, new_targets, strict=True
+    ):
+        present: list[str] = []
+        touched = old_name != new_name
+        for crate_rel in new_cands:
+            dest_posix = _join_posix(new_dir, crate_rel)
+            if not _post_press_file_exists(
+                target,
+                dest_posix,
+                post_files,
+                snapshot_paths,
+                removed_files,
+                removed_dirs,
+            ):
+                continue
+            present.append(dest_posix)
+            expected_old = _join_posix(old_dir, crate_rel)
+            sources = post_files.get(dest_posix)
+            if sources is not None and any(src != expected_old for src in sources):
+                touched = True
+            if section == "bin" and crate_rel == "src/main.rs" and old_pkg != new_pkg:
+                touched = True
+        if len(present) > 1 and touched:
+            joined = ", ".join(repr(p) for p in present)
+            problems.append(
+                f"{manifest}: [[{section}]] {new_name!r} would have multiple "
+                f"candidate target files after the press ({joined}), so Cargo "
+                f"could not infer its path. Declare an explicit path on "
+                f"[[{section}]], remove the extra file, or choose another name"
+            )
+
+    # --- Pass 2: Auto-discovered targets when auto* is not False ---
+    # Catches tests/, examples/, benches/, and table-less src/bin/ collisions
+    # where Cargo rejects duplicate auto-discovered target names.
+    # Cargo suppresses auto-discovered targets whose name is declared by any
+    # explicit target table (pathed or pathless) and ignores leading-dot names.
+    explicit_targets = declared_target_names(after)
+    for section, base, auto_flag, claimed, pkg_name in auto_target_sections(after):
+        prefix = f"{new_dir}/{base}/" if new_dir else f"{base}/"
+        by_stem: dict[str, dict[str, bool]] = {}
+
+        for dest_posix, sources in post_files.items():
+            if not dest_posix.startswith(prefix):
+                continue
+            rest = dest_posix[len(prefix) :]
+            parts = rest.split("/")
+            if len(parts) == 1 and rest.endswith(".rs"):
+                stem = rest[:-3]
+            elif len(parts) == 2 and parts[1] == "main.rs":
+                stem = parts[0]
+            else:
+                continue
+            if not stem or stem.startswith("."):
+                continue
+            crate_rel = f"{base}/{rest}"
+            if crate_rel in claimed:
+                continue
+            moved = any(src != _join_posix(old_dir, crate_rel) for src in sources)
+            by_stem.setdefault(stem, {})[crate_rel] = moved
+
+        if section == "bin" and pkg_name is not None and "src/main.rs" not in claimed:
+            main_dest = _join_posix(new_dir, "src/main.rs")
+            if _post_press_file_exists(
+                target,
+                main_dest,
+                post_files,
+                snapshot_paths,
+                removed_files,
+                removed_dirs,
+            ):
+                main_moved = (old_pkg != new_pkg) or any(
+                    src != _join_posix(old_dir, "src/main.rs")
+                    for src in post_files.get(main_dest, ())
+                )
+                by_stem.setdefault(pkg_name, {})["src/main.rs"] = main_moved
+
+        for stem, entries in sorted(by_stem.items()):
+            if (section, stem) in explicit_targets:
+                continue  # pathless checked in Pass 1; pathed overrides auto name
+            if not any(entries.values()):
+                continue  # untouched pre-existing files; do not blame the press
+            # Also probe opposite shape(s) on disk for Git-ignored orphans.
+            for shape in ("{}.rs", "{}/main.rs"):
+                other_rel = f"{base}/{shape.format(stem)}"
+                if other_rel in entries or other_rel in claimed:
+                    continue
+                if _post_press_file_exists(
+                    target,
+                    _join_posix(new_dir, other_rel),
+                    post_files,
+                    snapshot_paths,
+                    removed_files,
+                    removed_dirs,
+                ):
+                    entries[other_rel] = False
+            if len(entries) > 1:
+                present = sorted(_join_posix(new_dir, rel) for rel in entries)
+                joined = ", ".join(repr(p) for p in present)
+                problems.append(
+                    f"{manifest}: auto-discovered {section} target {stem!r} "
+                    f"would have multiple candidate files after the press "
+                    f"({joined}), which Cargo rejects as duplicate targets. "
+                    f"Remove or rename the extra file, declare an explicit path, "
+                    f"or set {auto_flag} = false"
+                )
+
+    return problems
+
+
 def _rewritten_texts_with_bin_env(
     target: Path,
     rows: Sequence[RenderedSubstitution],
@@ -2056,6 +2232,19 @@ def cargo_path_splits(
     new_texts = _rewritten_texts_with_bin_env(
         target, content_rows, snapshot, rewritten, removed, rules
     )
+    files = frozenset(
+        entry.rel.as_posix()
+        for entry in snapshot.entries
+        if entry.worktree_kind == "file"
+    )
+    snapshot_paths = frozenset(entry.rel.as_posix() for entry in snapshot.entries)
+    removed_files_set = frozenset(removed_files)
+    post_by_dest: dict[str, set[str]] = {}
+    for rel in files:
+        if rel in removed_files_set or rel.startswith(removed_dirs):
+            continue
+        post_by_dest.setdefault(plan.translate(rel), set()).add(rel)
+    post_files = {dest: frozenset(srcs) for dest, srcs in post_by_dest.items()}
     problems: list[str] = []
     crates: list[tuple[str, Table]] = []
     for manifest in cargo_manifest_files(target):
@@ -2098,12 +2287,20 @@ def cargo_path_splits(
             )
             if not _declared_path_follows(before, after, manifest, plan, directories)
         )
+        problems.extend(
+            _inferred_target_collisions(
+                target,
+                manifest,
+                parsed,
+                new_parsed,
+                plan,
+                post_files,
+                snapshot_paths,
+                removed_files_set,
+                removed_dirs,
+            )
+        )
     split_tokens = _split_tokens(source, destination, rules)
-    files = frozenset(
-        entry.rel.as_posix()
-        for entry in snapshot.entries
-        if entry.worktree_kind == "file"
-    )
     source_problems: dict[str, list[str]] = {}
     for path in sorted(rewritten):
         if (

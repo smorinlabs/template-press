@@ -10,6 +10,7 @@ Names are kept exactly as authored; hyphens are never normalized.
 from __future__ import annotations
 
 import os
+import posixpath
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePath
@@ -38,6 +39,13 @@ _INFERRED_DIRS = {
     "test": "tests",
     "example": "examples",
     "bench": "benches",
+}
+_TARGET_SHAPES = ("{}.rs", "{}/main.rs")
+TARGET_AUTO_FLAGS: dict[str, str] = {
+    "bin": "autobins",
+    "test": "autotests",
+    "example": "autoexamples",
+    "bench": "autobenches",
 }
 _GLOB_CHARS = frozenset("*?[")
 # A longer author entry is undiscoverable, never truncated into a guess.
@@ -388,7 +396,7 @@ def named_target_files(data: Table) -> list[str]:
     return [
         f"{_INFERRED_DIRS[section]}/{shape.format(name)}"
         for section, name in _unpathed_targets(data)
-        for shape in ("{}.rs", "{}/main.rs")
+        for shape in _TARGET_SHAPES
     ]
 
 
@@ -419,7 +427,7 @@ def inferred_target_paths(
     pairs: list[tuple[DeclaredPath, DeclaredPath]] = []
     for (section, name), (_section, new_name) in zip(old, new, strict=True):
         base = _INFERRED_DIRS[section]
-        for shape in ("{}.rs", "{}/main.rs"):
+        for shape in _TARGET_SHAPES:
             path = directory / base / shape.format(name)
             if path.is_file() and not path.is_symlink():
                 key = f"[[{section}]] {name!r} inferred path"
@@ -431,6 +439,79 @@ def inferred_target_paths(
                 )
                 break
     return pairs
+
+
+def inferred_target_candidates(
+    data: Table,
+) -> list[tuple[str, str, tuple[str, ...]]]:
+    """``(section, name, candidate_rel_paths)`` for each pathless target.
+
+    Cargo checks ``<dir>/<name>.rs`` and ``<dir>/<name>/main.rs`` for every
+    pathless ``[[bin]]``, ``[[test]]``, ``[[example]]``, and ``[[bench]]``
+    regardless of ``auto*`` flags. For ``[[bin]]`` matching ``[package].name``,
+    ``src/main.rs`` is also an inferred candidate.
+    """
+    pkg_name = _text(_table(data.get("package")).get("name"))
+    found: list[tuple[str, str, tuple[str, ...]]] = []
+    for section, name in _unpathed_targets(data):
+        base = _INFERRED_DIRS[section]
+        paths = [f"{base}/{shape.format(name)}" for shape in _TARGET_SHAPES]
+        if section == "bin" and pkg_name is not None and name == pkg_name:
+            paths.insert(0, "src/main.rs")
+        found.append((section, name, tuple(paths)))
+    return found
+
+
+def _claimed_section_paths(data: Table, section: str) -> frozenset[str]:
+    """POSIX-normalized ``path`` strings declared on ``[[<section>]]`` tables."""
+    entries = data.get(section)
+    return frozenset(
+        posixpath.normpath(path.replace("\\", "/"))
+        for entry in (entries if isinstance(entries, list) else [])
+        if isinstance(path := _table(entry).get("path"), str)
+    )
+
+
+def declared_target_names(data: Table) -> frozenset[tuple[str, str]]:
+    """``(section, name)`` of every explicit target table, pathed or pathless."""
+    found: set[tuple[str, str]] = set()
+    for section in _TARGET_SECTIONS:
+        entries = data.get(section)
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(name := _table(entry).get("name"), str):
+                found.add((section, name))
+    return frozenset(found)
+
+
+def auto_target_sections(
+    data: Table,
+) -> list[tuple[str, str, str, frozenset[str], str | None]]:
+    """``(section, base_dir, auto_flag, claimed_posix, package_name)`` for each
+    target section whose auto-discovery flag is not explicitly ``False``.
+
+    Returns an empty list for virtual manifests (no ``[package]`` table).
+    ``claimed_posix`` holds POSIX-normalized explicit ``path`` values declared
+    by ``[[<section>]]`` tables in ``data``.
+    """
+    package = _table(data.get("package"))
+    if not package:
+        return []
+    pkg_name = _text(package.get("name"))
+    sections: list[tuple[str, str, str, frozenset[str], str | None]] = []
+    for section in _TARGET_SECTIONS:
+        auto_flag = TARGET_AUTO_FLAGS[section]
+        if package.get(auto_flag) is False:
+            continue
+        sections.append(
+            (
+                section,
+                _INFERRED_DIRS[section],
+                auto_flag,
+                _claimed_section_paths(data, section),
+                pkg_name,
+            )
+        )
+    return sections
 
 
 def cargo_manifest_files(target: Path) -> tuple[str, ...]:

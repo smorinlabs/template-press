@@ -51,8 +51,8 @@ This branch rebases on each before its dependent task starts.
 - [x] [P15-T11] Follow Rust's path rules for inline modules in the source-path check (final re-review 3 F1-F3)
       Also: Unicode inline module names (bot thread 4689117701).
       Also: `#[path]` values inside inline modules (bot thread 4689117747).
-- [ ] [P15-T12] Apply Cargo's edition-2015 auto-discovery default (resolving an inherited workspace edition) in bin discovery and the compiled-file walk, including the legacy fallback for a pathless `[[bin]]`: `src/<name>.rs` in a package without a lib, then `src/main.rs`, then `src/bin/main.rs` (bot threads 4689117656, 4690594456)
-- [ ] [P15-T13] Refuse an inferred-target rename whose destination name has both src/bin/<name>.rs and src/bin/<name>/main.rs after the press (bot thread 4689117676)
+- [ ] [P15-T12] Apply Cargo's edition-2015 auto-discovery default (resolving an inherited workspace edition) in bin discovery, the compiled-file walk, and auto_target_sections, including the legacy fallback for a pathless `[[bin]]`: `src/<name>.rs` in a package without a lib, then `src/main.rs`, then `src/bin/main.rs` (bot threads 4689117656, 4690594456, 4690959568)
+- [x] [P15-T13] Refuse an inferred-target rename whose destination name has both src/bin/<name>.rs and src/bin/<name>/main.rs after the press (bot thread 4689117676)
 - [ ] [P15-T14] Make doc-comment scanning linear in block length: keep closure information apart from per-line starts (bot thread 4689117709)
 - [ ] [P15-T15] Check Rust-declared paths whose file a path-only rule moves while the argument text stays the same (bot thread 4689117731)
 - [ ] [P15-T16] Apply the rustdoc rules only to include_str! files that are doc text, without missing concat!/cfg_attr doc forms (final review N6, bot thread 4689117753)
@@ -68,3 +68,5 @@ This branch rebases on each before its dependent task starts.
 - [ ] [P15-T27] Follow a plain-string include!("x.inc") to a file that does not end in .rs, so the modules and paths it declares are judged; keep skipping include_str!/include_bytes! (bot thread 4697837258; same false receipt on main; sibling of P15-T23)
 - [ ] [P15-T28] Exclude auto-discovered target files that a named [[bin]], [[test]], [[example]] or [[bench]] with another path overrides, so an uncompiled file such as tests/foo.rs cannot refuse a healthy press (bot thread 4700788542)
 - [ ] [P15-T29] Refuse a [[cargo_split]] source crate name that is a Rust keyword (such as `type`), or refuse its unprovable keyword occurrences, so language syntax is never rewritten as a crate name (bot thread 4700788560)
+- [ ] [P15-T30] Count a tracked symlink that resolves to a regular file after the press (and not a dangling one) as a candidate in the P15-T13 two-candidate check, so a pathless [[test]] renamed onto a symlinked tests/<name>/main.rs is refused before any write (bot thread 4701369390; same false receipt on main)
+- [ ] [P15-T31] Refuse a rename of an explicit target (pathed or pathless) that stops suppressing two unmoved auto-discovered files with its old name, such as [[test]] acme-core with path checks/custom.rs over excluded tests/acme-core.rs and tests/acme-core/main.rs, which Cargo then rejects as duplicate targets (bot thread 4701369399; same false receipt on main)

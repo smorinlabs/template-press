@@ -176,7 +176,12 @@ retained decision record does not require those files to remain present.
    manifest declares or Cargo infers, and paths Rust source declares with a
    plain string literal: the file of `mod name;`, a `#[path = "..."]` or
    `#[cfg_attr(<cond>, path = "...")]` value, and an `include_str!`,
-   `include_bytes!`, or `include!` argument. Rust source is read only in a
+   `include_bytes!`, or `include!` argument. It also refuses (exit 2 before any
+   write, naming all colliding files) an inferred-target or auto-discovered
+   rename that would leave multiple candidate files (`<dir>/<name>.rs` and
+   `<dir>/<name>/main.rs`, or `src/main.rs` for a `[[bin]]` matching
+   `[package].name`) for the same target name after the press, including under
+   `autobins = false` or another `auto* = false` flag. Rust source is read only in a
    `.rs` file Cargo compiles: a crate root or target file that Cargo infers or
    a manifest declares, or a file one of those reaches through `mod` (including
    inline `mod name { ... }` blocks and their `#[path]` attributes), `#[path]`,
@@ -193,8 +198,6 @@ retained decision record does not require those files to remain present.
    - a `.rs` file no crate root reaches, such as `tests/fixtures/sample.rs`;
    - a path that code reads at run time, such as a string `build.rs` passes
      to `std::fs::read_to_string`;
-   - with `autobins = false`, a file already named for the destination binary:
-     renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt.
    - a `#[path]` value that uses `..`, inside an inline module that a rename changes, such as `pub mod acmelabs { #[path = "../shared.rs"] pub mod x; }` when `acmelabs` is renamed to `zetalabs`: Rust then looks for `src/zetalabs/../shared.rs`, which needs a `src/zetalabs/` directory, so `cargo check` can fail after a receipt. `main` behaves the same way.
 
    A module that a `#[cfg(...)]` attribute turns off, with no file on disk, is refused with exit 2 before any write when it sits inside a renamed inline module or is the renamed module itself, even where the rename would be correct: `mod acmelabs { #[cfg(any())] mod x; }` and `#[cfg(any())] mod acmelabs;`.

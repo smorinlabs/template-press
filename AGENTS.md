@@ -166,7 +166,11 @@ table, including the pre-2024 `[dev_dependencies]` and `[build_dependencies]`
 spellings, target `path` or name, `build`, `package.workspace`) from the file or directory it names, or
 a path Rust source declares with a plain string (the file of `mod name;`,
 `#[path = "..."]` or `#[cfg_attr(<cond>, path = "...")]`, and `include_str!`,
-`include_bytes!`, or `include!` arguments) from its file, and
+`include_bytes!`, or `include!` arguments) from its file, an inferred or
+auto-discovered target rename that would leave multiple candidate files
+(`<dir>/<name>.rs` and `<dir>/<name>/main.rs`, or `src/main.rs` with
+`src/bin/<pkg>`) for the same target name after the press (even under
+`autobins = false` or another `auto* = false` flag), and
 a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. Rust
 source is read only in `.rs` files Cargo compiles: crate roots and target
 files (under `autotests = false` or another `auto*` flag set to false, only the
@@ -178,9 +182,7 @@ path a macro builds, such as
 `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`; a `.rs` file
 excluded from rewriting; a `.rs` file no crate root reaches, such as
 `tests/fixtures/sample.rs`; and a path read at run time, such as a string
-`build.rs` passes to `std::fs::read_to_string`. With
-`autobins = false`, a file already named for the destination binary is not
-detected: renaming `acme-cli` to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists leaves both `src/bin/zeta-cli.rs` and `src/bin/zeta-cli/main.rs`, so `cargo check` fails after a receipt. See the
+`build.rs` passes to `std::fs::read_to_string`. See the
 `press-target` skill for the full rules. Two inline-module shapes remain open: a `#[path]` value that uses `..` inside a renamed inline module is not checked, so a receipt can precede a failed `cargo check` (`main` behaves the same way), and a `#[cfg(...)]`-disabled `mod` with no file on disk, inside a renamed inline module or as the renamed module itself, is refused with exit 2 before any write even when the rename would be correct.
 
 A hyphen-free crate name pressed to a hyphenated one (`acme` to `zeta-gadget`)
