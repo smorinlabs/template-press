@@ -1,6 +1,7 @@
 # P14 — TypeScript and Bun targets
 
-- **Status:** `[~]` in progress on branch `feat/typescript-targets`
+- **Status:** `[x]` complete — PR #157 merged at `28165f0`; follow-up
+  `[P14-T09]` stays open
 
 Make npm and Bun TypeScript repositories first-class `press` targets without
 changing any existing target's outcome.
@@ -10,6 +11,7 @@ changing any existing target's outcome.
 - **Trunk:** [PROJECTS.md](../PROJECTS.md)
 - **Design:** [TypeScript and Bun targets design](../docs/superpowers/specs/2026-11-22-typescript-bun-targets-design.md)
 - **Plan:** [TypeScript and Bun targets plan](../docs/superpowers/plans/2026-11-22-typescript-bun-targets.md)
+- **Rulings ledger:** [P14 execution rulings](../docs/superpowers/reviews/2026-11-22-p14-typescript-bun-rulings-ledger.md)
 
 ### Scope
 
@@ -42,7 +44,7 @@ Prerequisites landed before this work: PR #152 and PR #156.
 - [x] [P14-T06] Honor `keep_names` in every scan and report
 - [x] [P14-T07] Handle npm, Bun, and pnpm lockfiles
 - [x] [P14-TS01] Prove npm, Bun, and pnpm targets end to end
-- [ ] [P14-T08] Update documentation and open the PR
+- [x] [P14-T08] Update documentation and open the PR (PR #157, merged)
 - [ ] [P14-T09] Remove the false refusal when a kept name directly abuts a
       rewritten name: `@acme/widget-extra@acme/widget` with
       `keep_names = ["@acme/widget-extra"]` exits 1 from `press verify` and
