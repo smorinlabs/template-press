@@ -8,11 +8,13 @@ DEST mirrors the potato identity used by the EMPIRICAL_BUGS.md live matrix.
 from __future__ import annotations
 
 import atexit
+import hashlib
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pytest
@@ -133,6 +135,10 @@ def _git(repo: Path, *args: str) -> None:
 _TARGET_TEMPLATE_ROOT: Path | None = None
 _TARGET_TEMPLATES: dict[str, Path] = {}
 _EMPTY_GIT_TEMPLATE: Path | None = None
+_SEEDED_TEMPLATES: dict[
+    tuple[str | None, str, str | None, tuple[str, ...]],
+    tuple[Path, dict[str, str]],
+] = {}
 
 
 def _template_root() -> Path:
@@ -166,6 +172,8 @@ def init_git_repo(
         _git(repo, "config", "maintenance.auto", "false")
         template = _template_root() / "_empty_git"
         shutil.copytree(git_dir, template, symlinks=True)
+        for sample in (template / "hooks").glob("*.sample"):
+            sample.unlink()
         _EMPTY_GIT_TEMPLATE = template
     else:
         shutil.copytree(_EMPTY_GIT_TEMPLATE, git_dir, symlinks=True)
@@ -184,11 +192,92 @@ def init_git_repo(
         _git(repo, *args)
 
 
+def _strip_sample_hooks(git_dir: Path) -> None:
+    """Remove unused git-init ``*.sample`` hook files from cached templates."""
+    for sample in (git_dir / "hooks").glob("*.sample"):
+        sample.unlink()
+
+
 def _store_target_template(repo: Path, layout: str) -> None:
     """Keep one pristine repo per layout for this pytest process."""
     template = _template_root() / layout
     shutil.copytree(repo, template, symlinks=True)
+    _strip_sample_hooks(template / ".git")
     _TARGET_TEMPLATES[layout] = template
+
+
+def copy_cached_repo(
+    repo: Path,
+    cache_key: str,
+    populate: Callable[[Path], None],
+) -> Path:
+    """Copy a per-worker cached committed repo, building it in ``repo`` on miss.
+
+    ``populate(repo)`` must create and commit ``repo`` inside the caller's
+    ``tmp_path`` sandbox (satisfying ``UncontainedGitError``). Later calls with
+    the same ``cache_key`` copy the cached repo and refresh its index.
+    """
+    template = _TARGET_TEMPLATES.get(cache_key)
+    if template is not None:
+        shutil.copytree(template, repo, symlinks=True, dirs_exist_ok=True)
+        _git(repo, "update-index", "-q", "--refresh")
+        return repo
+    populate(repo)
+    digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:16]
+    template = _template_root() / f"repo-{digest}-{len(_TARGET_TEMPLATES)}"
+    shutil.copytree(repo, template, symlinks=True)
+    _strip_sample_hooks(template / ".git")
+    _TARGET_TEMPLATES[cache_key] = template
+    return repo
+
+
+def seed_cached_git_repo(
+    repo: Path,
+    files: Mapping[str, str],
+    *,
+    origin: str | None = None,
+    commit_message: str = "seed",
+    newline: str | None = None,
+) -> Path:
+    """Populate and commit ``repo`` using a per-worker pre-committed template.
+
+    Caches one committed repo per ``(origin, commit_message, newline, paths)``
+    shape per pytest worker. Exact repeats copy the cached repo and refresh its
+    index (1 git spawn); same-shape variants overwrite only modified tracked
+    files and run ``git commit -q -a --amend --no-edit`` (1 git spawn) instead
+    of ``git add`` + ``git commit``.
+    """
+    file_map = dict(files)
+    shape_key = (origin, commit_message, newline, tuple(sorted(file_map)))
+    cached = _SEEDED_TEMPLATES.get(shape_key)
+    if cached is not None:
+        template, template_files = cached
+        shutil.copytree(template, repo, symlinks=True, dirs_exist_ok=True)
+        changed = [
+            rel for rel, content in file_map.items() if template_files[rel] != content
+        ]
+        if changed:
+            for rel in changed:
+                (repo / rel).write_text(
+                    file_map[rel], encoding="utf-8", newline=newline
+                )
+            _git(repo, "commit", "-q", "-a", "--amend", "--no-edit")
+        else:
+            _git(repo, "update-index", "-q", "--refresh")
+        return repo
+
+    repo.mkdir(parents=True, exist_ok=True)
+    for rel, content in file_map.items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8", newline=newline)
+    init_git_repo(repo, origin=origin, commit_message=commit_message)
+    digest = hashlib.sha256(repr(shape_key).encode("utf-8")).hexdigest()[:16]
+    template = _template_root() / f"seeded-{digest}-{len(_SEEDED_TEMPLATES)}"
+    shutil.copytree(repo, template, symlinks=True)
+    _strip_sample_hooks(template / ".git")
+    _SEEDED_TEMPLATES[shape_key] = (template, file_map)
+    return repo
 
 
 def make_target(base: Path, layout: str = "src") -> Path:
@@ -211,20 +300,11 @@ def make_target(base: Path, layout: str = "src") -> Path:
     (pkg / "__init__.py").write_text('"""demo_widget package."""\n', encoding="utf-8")
     (pkg / "cli.py").write_text(CLI_PY, encoding="utf-8")
     (repo / ".gitignore").write_text(".venv/\n__pycache__/\n", encoding="utf-8")
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "config", "user.email", "test@example.com")
-    _git(repo, "config", "user.name", "Test")
-    # Background maintenance can change .git while the template is copied.
-    _git(repo, "config", "maintenance.auto", "false")
-    _git(
+    init_git_repo(
         repo,
-        "remote",
-        "add",
-        "origin",
-        "https://github.com/demolabs/demo-widget.git",
+        origin="https://github.com/demolabs/demo-widget.git",
+        commit_message="init fixture",
     )
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "init fixture")
     _store_target_template(repo, layout)
     return repo
 

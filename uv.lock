@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.13"
 
 [[package]]
@@ -1310,6 +1310,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-xdist" },
+    { name = "pyyaml" },
     { name = "ruff" },
     { name = "syrupy" },
     { name = "twine" },
@@ -1327,6 +1328,13 @@ docs = [
     { name = "sphinx-rtd-theme" },
     { name = "sphinxext-opengraph" },
 ]
+test = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-xdist" },
+    { name = "pyyaml" },
+    { name = "syrupy" },
+]
 
 [package.metadata]
 
@@ -1340,6 +1348,7 @@ dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-xdist", specifier = ">=3.6" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "ruff", specifier = ">=0.15.20" },
     { name = "syrupy", specifier = ">=5.4.0" },
     { name = "twine", specifier = ">=6.2.0" },
@@ -1356,6 +1365,13 @@ docs = [
     { name = "sphinx-copybutton" },
     { name = "sphinx-rtd-theme" },
     { name = "sphinxext-opengraph" },
+]
+test = [
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "pytest-xdist", specifier = ">=3.6" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "syrupy", specifier = ">=5.4.0" },
 ]
 
 [[package]]

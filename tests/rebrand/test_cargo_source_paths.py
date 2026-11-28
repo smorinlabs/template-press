@@ -18,7 +18,7 @@ import pytest
 
 from template_press.rebrand.receipt import RECEIPT_REL
 
-from .conftest import init_git_repo, posix_only
+from .conftest import init_git_repo, posix_only, seed_cached_git_repo
 from .test_cargo_split import (
     ACME,
     ZETA,
@@ -47,18 +47,19 @@ def _seed(
     links: dict[str, str] | None = None,
 ) -> None:
     table = "" if names is None else _table("identity.cargo_names", names)
-    _write(
-        target,
-        {
-            ".gitignore": "target/\nCargo.lock\n",
-            "press/press-source.toml": _table("identity", identity) + table,
-            **files,
-        },
-    )
-    for link, points_at in (links or {}).items():
-        os.symlink(points_at, target / link)
+    all_files = {
+        ".gitignore": "target/\nCargo.lock\n",
+        "press/press-source.toml": _table("identity", identity) + table,
+        **files,
+    }
     origin = f"https://github.com/{identity['owner']}/{identity['repo_name']}.git"
-    init_git_repo(target, origin=origin, commit_message="seed")
+    if links:
+        _write(target, all_files)
+        for link, points_at in links.items():
+            os.symlink(points_at, target / link)
+        init_git_repo(target, origin=origin, commit_message="seed")
+        return
+    seed_cached_git_repo(target, all_files, origin=origin, commit_message="seed")
 
 
 def _answers(

@@ -34,6 +34,7 @@ from .conftest import (
     DEST,
     SOURCE,
     _git,
+    copy_cached_repo,
     posix_only,
     requires_symlink,
     write_answers_file,
@@ -49,15 +50,21 @@ def write_dir_rules(repo: Path, body: str = DIR_RULE) -> None:
 
 
 def directory_repo(tmp_path: Path, body: str = DIR_RULE) -> Path:
-    repo = make_pressable(tmp_path)
-    write_dir_rules(repo, body)
-    (repo / "research/sub").mkdir(parents=True)
-    (repo / "research/one.md").write_text("first member\n", encoding="utf-8")
-    (repo / "research/sub/two.md").write_text("second member\n", encoding="utf-8")
-    (repo / "incoming").mkdir()
-    (repo / "incoming/late.md").write_text("outside member\n", encoding="utf-8")
-    _commit(repo)
-    return repo
+    def _build(_repo: Path) -> None:
+        repo = make_pressable(tmp_path)
+        write_dir_rules(repo, body)
+        (repo / "research/sub").mkdir(parents=True)
+        (repo / "research/one.md").write_text("first member\n", encoding="utf-8")
+        (repo / "research/sub/two.md").write_text("second member\n", encoding="utf-8")
+        (repo / "incoming").mkdir()
+        (repo / "incoming/late.md").write_text("outside member\n", encoding="utf-8")
+        _commit(repo)
+
+    return copy_cached_repo(
+        tmp_path / "target",
+        f"test_remove_dirs.directory_repo:{body}",
+        _build,
+    )
 
 
 def test_directory_schema(tmp_path: Path):
@@ -816,19 +823,27 @@ def test_executor_refuses_junction_ancestor_before_unlink(tmp_path, monkeypatch)
 def rename_directory_repo(tmp_path):
     source = dataclasses.replace(SOURCE, author="research")
     destination = dataclasses.replace(DEST, author="archive")
-    repo = make_pressable(tmp_path, identity=source.as_dict_prompted())
-    write_dir_rules(
-        repo,
-        '[[replace]]\npattern="{author}"\npaths=true\ncontent=false\n'
-        'files=["research/**", "archive/**"]\nreason="rename research directory"\n'
-        + DIR_RULE,
+
+    def _build(_repo: Path) -> None:
+        repo = make_pressable(tmp_path, identity=source.as_dict_prompted())
+        write_dir_rules(
+            repo,
+            '[[replace]]\npattern="{author}"\npaths=true\ncontent=false\n'
+            'files=["research/**", "archive/**"]\nreason="rename research directory"\n'
+            + DIR_RULE,
+        )
+        (repo / "research").mkdir()
+        (repo / "research/one.md").write_text("first member\n", encoding="utf-8")
+        (repo / "research/two.md").write_text("second member\n", encoding="utf-8")
+        (repo / "incoming").mkdir()
+        (repo / "incoming/late.md").write_text("outside member\n", encoding="utf-8")
+        _commit(repo)
+
+    repo = copy_cached_repo(
+        tmp_path / "target",
+        "test_remove_dirs.rename_directory_repo",
+        _build,
     )
-    (repo / "research").mkdir()
-    (repo / "research/one.md").write_text("first member\n", encoding="utf-8")
-    (repo / "research/two.md").write_text("second member\n", encoding="utf-8")
-    (repo / "incoming").mkdir()
-    (repo / "incoming/late.md").write_text("outside member\n", encoding="utf-8")
-    _commit(repo)
     return repo, source, destination
 
 
@@ -1560,20 +1575,27 @@ def test_verify_file_only_regular_members_keep_legacy_policy(tmp_path, state):
 def carried_legacy_repo(
     tmp_path, *, file="RESEARCH/one.md", reason="legacy removal", directories=True
 ):
-    repo = directory_repo(tmp_path)
-    removal = (
-        DIR_RULE
-        if directories
-        else '[[remove]]\nfile="research/one.md"\nreason="one file"\n'
+    def _build(_repo: Path) -> None:
+        repo = directory_repo(tmp_path)
+        removal = (
+            DIR_RULE
+            if directories
+            else '[[remove]]\nfile="research/one.md"\nreason="one file"\n'
+        )
+        write_dir_rules(
+            repo,
+            '[rules]\nextra_exclude_files=["state.txt"]\n'
+            + removal
+            + '[[reset]]\nfile="state.txt"\nstub="reset state\\n"\n',
+        )
+        (repo / "state.txt").write_text("original state\n", encoding="utf-8")
+        _commit(repo)
+
+    repo = copy_cached_repo(
+        tmp_path / "target",
+        f"test_remove_dirs.carried_legacy_repo:{directories}",
+        _build,
     )
-    write_dir_rules(
-        repo,
-        '[rules]\nextra_exclude_files=["state.txt"]\n'
-        + removal
-        + '[[reset]]\nfile="state.txt"\nstub="reset state\\n"\n',
-    )
-    (repo / "state.txt").write_text("original state\n", encoding="utf-8")
-    _commit(repo)
     # This is deliberately the permissive historical file-only schema.
     import json
 

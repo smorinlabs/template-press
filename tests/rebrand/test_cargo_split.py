@@ -34,7 +34,7 @@ from template_press.rebrand.rules import CargoSplit, load_rules
 from template_press.rebrand.rust_text import compiled_markdown_lines
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import _git, init_git_repo, posix_only
+from .conftest import _git, init_git_repo, posix_only, seed_cached_git_repo
 
 ACME = {
     "package_name": "acme",
@@ -175,19 +175,21 @@ def _seed(
     *,
     lock: bool,
 ) -> None:
-    _write(
-        target,
-        {
-            **files,
-            ".gitignore": "target/\n" if lock else "target/\nCargo.lock\n",
-            "press/press-source.toml": _table("identity", identity)
-            + _table("identity.cargo_names", names),
-            "press/press-rules.toml": rules,
-        },
-    )
+    all_files = {
+        **files,
+        ".gitignore": "target/\n" if lock else "target/\nCargo.lock\n",
+        "press/press-source.toml": _table("identity", identity)
+        + _table("identity.cargo_names", names),
+        "press/press-rules.toml": rules,
+    }
     if lock:
+        _write(target, all_files)
         _assert_cargo(target, "generate-lockfile", "--offline")
-    init_git_repo(target, origin=f"{REPOSITORY}.git", commit_message="seed")
+        init_git_repo(target, origin=f"{REPOSITORY}.git", commit_message="seed")
+        return
+    seed_cached_git_repo(
+        target, all_files, origin=f"{REPOSITORY}.git", commit_message="seed"
+    )
 
 
 def _answers(
