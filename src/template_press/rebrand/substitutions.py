@@ -2016,6 +2016,13 @@ def _post_press_target_files(
     if not post_symlinks:
         return dict(post_files)
 
+    resolved_root = target.resolve()
+    root_candidates = (
+        (resolved_root,)
+        if resolved_root == target.absolute()
+        else (resolved_root, target.absolute())
+    )
+
     def resolves_to_regular_file(start_dest: str) -> bool:
         current = start_dest
         seen: set[str] = set()
@@ -2035,7 +2042,27 @@ def _post_press_target_files(
                 )
             old_rel, raw_target = link_info
             if os.path.isabs(raw_target):
-                return (target / old_rel).is_file()
+                norm_abs = os.path.normpath(raw_target)
+                in_root: str | None = None
+                for candidate_root in root_candidates:
+                    try:
+                        rel_in_root = os.path.relpath(norm_abs, str(candidate_root))
+                    except ValueError:
+                        continue
+                    if (
+                        rel_in_root != "."
+                        and rel_in_root != os.pardir
+                        and not rel_in_root.startswith(f"{os.pardir}{os.sep}")
+                        and not os.path.isabs(rel_in_root)
+                    ):
+                        in_root = PurePosixPath(*Path(rel_in_root).parts).as_posix()
+                        break
+                if in_root is None:
+                    return (target / old_rel).is_file()
+                # Absolute symlinks are not retargeted by the press, so evaluate
+                # the unchanged in-tree target against the post-press tree.
+                current = in_root
+                continue
             resolved_old = symlink_target_posix(Path(old_rel), raw_target)
             if resolved_old == ".." or resolved_old.startswith("../"):
                 return (target / old_rel).is_file()
@@ -2318,6 +2345,16 @@ def _conventional_root_splits(
     return problems
 
 
+def _owning_package_dir(path: str, package_dirs: Collection[str]) -> str | None:
+    """Deepest Cargo package directory containing ``path``, or ``None``."""
+    owner: str | None = None
+    for pkg_dir in package_dirs:
+        if pkg_dir == "" or path.startswith(f"{pkg_dir}/"):
+            if owner is None or len(pkg_dir) > len(owner):
+                owner = pkg_dir
+    return owner
+
+
 def _bin_env_splits(
     target: Path,
     manifest: str,
@@ -2329,6 +2366,7 @@ def _bin_env_splits(
     *,
     pkg_meta: CargoPackageMetadata | None = None,
     workspace_package: Table | None = None,
+    package_dirs: Collection[str] = (),
 ) -> list[str]:
     """``env!`` tokens the rewrite moves away from any Cargo binary target.
 
@@ -2413,6 +2451,10 @@ def _bin_env_splits(
             else f"which Cargo would name {new_name!r}"
         )
         for path, old_text, new_text in new_texts:
+            if package_dirs:
+                owner = _owning_package_dir(path, package_dirs)
+                if owner is not None and owner != base:
+                    continue
             old_count = len(old_token.findall(old_text))
             if old_count == 0:
                 continue
@@ -2580,6 +2622,11 @@ def cargo_path_splits(
 
     crates = [(manifest, parsed) for manifest, parsed, _ in manifest_entries]
     manifests_by_path = dict(crates)
+    package_dirs = frozenset(
+        posixpath.dirname(manifest)
+        for manifest, parsed in crates
+        if package_table(parsed)
+    )
     pkg_metadata = read_all_cargo_metadata(target, [manifest for manifest, _ in crates])
 
     problems: list[str] = []
@@ -2617,6 +2664,7 @@ def cargo_path_splits(
                     rewritten,
                     pkg_meta=pkg_meta,
                     workspace_package=pkg_ws_package,
+                    package_dirs=package_dirs,
                 )
             )
             problems.append(f"{manifest}: the rewrite breaks its TOML: {exc}")
@@ -2632,6 +2680,7 @@ def cargo_path_splits(
                 rewritten,
                 pkg_meta=pkg_meta,
                 workspace_package=pkg_ws_package,
+                package_dirs=package_dirs,
             )
         )
         rewritten_paths = declared_cargo_paths(new_parsed)

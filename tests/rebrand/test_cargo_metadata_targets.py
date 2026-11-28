@@ -1286,3 +1286,83 @@ def test_auto_discovered_src_bin_main_rs_rename_builds_with_real_cargo(
     assert _press(target, answers) == 0
     assert (target / RECEIPT_REL).is_file()
     _assert_cargo(target, "test", "--offline", "--no-run")
+
+
+# --- PR #169 Cycle 3 Codex findings ---------------------------------------------
+
+
+def test_bin_env_token_checks_scope_to_owning_workspace_package(
+    tmp_path: Path,
+) -> None:
+    """PR #169 thread 4725681729: two workspace packages sharing a binary name
+    where one is excluded must each validate only their own package's tokens."""
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(
+        target,
+        {
+            "Cargo.toml": (
+                '[workspace]\nresolver = "2"\n'
+                'members = ["crates/core", "crates/helper"]\n'
+            ),
+            "crates/core/Cargo.toml": _package("acme-core")
+            + '\n[[bin]]\nname = "acmelabs"\npath = "src/main.rs"\n',
+            "crates/core/src/main.rs": MAIN_RS,
+            "crates/core/tests/cli.rs": (
+                '#[test]\nfn t() {\n    let _ = env!("CARGO_BIN_EXE_acmelabs");\n}\n'
+            ),
+            "crates/helper/Cargo.toml": (
+                '[package]\nname = "helper"\nversion = "0.1.0"\nedition = "2021"\n'
+                '\n[[bin]]\nname = "acmelabs"\npath = "src/main.rs"\n'
+            ),
+            "crates/helper/src/main.rs": MAIN_RS,
+            "crates/helper/tests/cli.rs": (
+                '#[test]\nfn t() {\n    let _ = env!("CARGO_BIN_EXE_acmelabs");\n}\n'
+            ),
+            "press/press-rules.toml": (
+                '[rules]\nextra_exclude_dirs = ["helper"]\nverify_ignore = ["helper"]\n'
+            ),
+        },
+        identity={**ACME, "package_name": "acme_core", "repo_name": "acme-core"},
+    )
+    answers = _answers(tmp_path, {**CORE_DEST, "repo_name": "zeta-core"}, None)
+
+    assert _press(target, answers) == 0
+    assert (target / RECEIPT_REL).is_file()
+    assert "CARGO_BIN_EXE_zetalabs" in (target / "crates/core/tests/cli.rs").read_text(
+        encoding="utf-8"
+    )
+    assert "CARGO_BIN_EXE_acmelabs" in (
+        target / "crates/helper/tests/cli.rs"
+    ).read_text(encoding="utf-8")
+
+
+@posix_only
+def test_absolute_symlink_to_removed_in_tree_file_becomes_dangling(
+    tmp_path: Path,
+) -> None:
+    """PR #169 thread 4725681733: an absolute symlink pointing at an in-tree
+    file scheduled for [[remove]] becomes dangling and is not a collision."""
+    target = tmp_path / "target-repo"
+    (target / "tests/zeta-core").mkdir(parents=True)
+    abs_target = str(target.resolve() / "shared/real_test.rs")
+    _seed(
+        target,
+        {
+            "Cargo.toml": _package("acme-core")
+            + 'autotests = false\n\n[[test]]\nname = "acme-core"\n',
+            "src/lib.rs": LIB,
+            "tests/acme-core.rs": TEST_RS,
+            "shared/real_test.rs": TEST_RS,
+            "press/press-rules.toml": (
+                '[[remove]]\nfile = "shared/real_test.rs"\n'
+                'reason = "drop unused test stub"\n'
+            ),
+        },
+        names=CORE_NAMES,
+        links={"tests/zeta-core/main.rs": abs_target},
+    )
+    answers = _answers(tmp_path, CORE_DEST, {"core": "zeta-core"})
+
+    assert _press(target, answers) == 0
+    assert (target / RECEIPT_REL).is_file()
