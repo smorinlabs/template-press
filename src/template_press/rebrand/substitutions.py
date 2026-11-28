@@ -2834,9 +2834,19 @@ def _fallback_target_roots(
         for declared in declared_cargo_paths(parsed)
         if declared.kind in {"target", "build"}
     )
+    crate_prefix = f"{directory}/" if directory else ""
+    crate_files = frozenset(
+        file[len(crate_prefix) :]
+        for file in files
+        if not crate_prefix or file.startswith(crate_prefix)
+    )
     seeded.extend(
         posixpath.normpath(posixpath.join(directory, file))
-        for file in named_target_files(parsed, workspace_package=workspace_package)
+        for file in named_target_files(
+            parsed,
+            workspace_package=workspace_package,
+            existing_files=crate_files,
+        )
     )
     declared_names = declared_target_names(parsed)
     for sub, section in _TARGET_DIRS.items():

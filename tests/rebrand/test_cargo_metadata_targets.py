@@ -11,6 +11,7 @@ CARGO_BUILD_WARNINGS=deny uv run pytest -m "" tests/rebrand/test_cargo_metadata_
 
 from __future__ import annotations
 
+import json
 import shutil
 import tomllib
 from pathlib import Path
@@ -118,7 +119,7 @@ def test_read_cargo_metadata_returns_none_when_cargo_missing(
 def test_read_cargo_metadata_rejects_outer_workspace(tmp_path: Path) -> None:
     _require_cargo()
     (tmp_path / "Cargo.toml").write_text(
-        '[workspace]\nmembers = ["other"]\n', encoding="utf-8"
+        '[workspace]\nmembers = ["other", "target-repo"]\n', encoding="utf-8"
     )
     (tmp_path / "other/src").mkdir(parents=True)
     (tmp_path / "other/Cargo.toml").write_text(_package("other"), encoding="utf-8")
@@ -129,7 +130,28 @@ def test_read_cargo_metadata_rejects_outer_workspace(tmp_path: Path) -> None:
     (inner / "Cargo.toml").write_text(_package("acme-core"), encoding="utf-8")
     (inner / "src/lib.rs").write_text(LIB, encoding="utf-8")
 
+    raw = _cargo(
+        inner.resolve(),
+        "metadata",
+        "--format-version",
+        "1",
+        "--no-deps",
+        "--offline",
+        "--manifest-path",
+        str(inner.resolve() / "Cargo.toml"),
+    )
+    assert raw.returncode == 0
+    assert (
+        Path(json.loads(raw.stdout)["workspace_root"]).resolve() == tmp_path.resolve()
+    )
     assert cargo_manifest.read_cargo_metadata(inner) is None
+
+
+def test_cargo_metadata_env_disables_rustup_auto_install() -> None:
+    """PR #169 thread 4725610782: rustup must never auto-install a toolchain."""
+    env = cargo_manifest._cargo_metadata_env()
+    assert env["RUSTUP_AUTO_INSTALL"] == "0"
+    assert env["CARGO_NET_OFFLINE"] == "true"
 
 
 def test_read_cargo_metadata_is_offline_and_read_only(tmp_path: Path) -> None:
@@ -1103,3 +1125,89 @@ def test_renamed_explicit_target_activating_dormant_auto_file_is_judged(
     assert "cargo paths: tests/acmelabs.rs:1:" in out.out + out.err
     assert _status(target) == ""
     assert not (target / RECEIPT_REL).exists()
+
+
+# --- PR #169 Wave 2 CodeRabbit findings -----------------------------------------
+
+
+@pytest.mark.parametrize("fallback", [False, True], ids=["cargo", "fallback"])
+def test_edition_2015_empty_bin_list_suppresses_auto_bins(
+    fallback: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #169 thread 4725610783: top-level `bin = []` in edition 2015
+    disables autobins unless `autobins = true`."""
+    if fallback:
+        _disable_cargo(monkeypatch)
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(
+        target,
+        {
+            "Cargo.toml": "bin = []\n\n" + _ed2015_pkg("acme-core"),
+            "src/lib.rs": LIB,
+            "src/bin/extra.rs": f"fn main() {{\n    let _ = {FIXTURE_INCLUDE};\n}}\n",
+            "data/acmelabs.txt": "x\n",
+        },
+        names=CORE_NAMES,
+    )
+    facts = read_cargo_facts(target)
+    assert facts.bins == ()
+    assert facts.names == ("acme-core",)
+
+    answers = _answers(tmp_path, CORE_DEST, {"core": "zeta-core"})
+    assert _press(target, answers) == 0
+    assert (target / RECEIPT_REL).is_file()
+
+
+@pytest.mark.parametrize("fallback", [False, True], ids=["cargo", "fallback"])
+def test_edition_2015_ordinary_bin_wins_over_unused_legacy_src_file(
+    fallback: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #169 thread 4725610789: when src/bin/<name>.rs exists, fallback
+    does not queue unused legacy src/<name>.rs."""
+    if fallback:
+        _disable_cargo(monkeypatch)
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(
+        target,
+        {
+            "Cargo.toml": _ed2015_pkg("acme-core") + '\n[[bin]]\nname = "acme-cli"\n',
+            "src/bin/acme-cli.rs": MAIN_RS,
+            "src/acme-cli.rs": f"fn main() {{\n    let _ = {FIXTURE_INCLUDE};\n}}\n",
+            "data/acmelabs.txt": "x\n",
+        },
+        names=CLI_NAMES,
+    )
+    answers = _answers(tmp_path, CORE_DEST, CLI_DEST_NAMES)
+    assert _press(target, answers) == 0
+    assert (target / RECEIPT_REL).is_file()
+
+
+@pytest.mark.parametrize("fallback", [False, True], ids=["cargo", "fallback"])
+def test_edition_2015_pkg_main_rs_wins_over_unused_legacy_src_pkg_file(
+    fallback: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #169 thread 4725610797: when [[bin]] name matches [package].name and
+    src/main.rs exists, fallback does not emit an inferred pair for an excluded
+    unused src/<name>.rs."""
+    if fallback:
+        _disable_cargo(monkeypatch)
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(
+        target,
+        {
+            "Cargo.toml": _ed2015_pkg("acme-core") + '\n[[bin]]\nname = "acme-core"\n',
+            "src/main.rs": MAIN_RS,
+            "src/acme-core.rs": "fn unused() {}\n",
+            "press/press-rules.toml": (
+                '[rules]\nextra_exclude_files = ["src/acme-core.rs"]\n'
+                'verify_ignore = ["acme-core.rs"]\n'
+            ),
+        },
+        names=CORE_NAMES,
+    )
+    answers = _answers(tmp_path, CORE_DEST, {"core": "zeta-core"})
+    assert _press(target, answers) == 0
+    assert (target / RECEIPT_REL).is_file()

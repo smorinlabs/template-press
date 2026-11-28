@@ -243,7 +243,7 @@ def auto_discovery_enabled(
         == "2015"
     ):
         entries = data.get(section)
-        if isinstance(entries, list) and any(isinstance(e, dict) for e in entries):
+        if isinstance(entries, list):
             return False
     return True
 
@@ -256,6 +256,7 @@ def _cargo_metadata_env() -> dict[str, str]:
             env[name] = os.environ[name]
     env["CARGO_NET_OFFLINE"] = "true"
     env["CARGO_TERM_COLOR"] = "never"
+    env["RUSTUP_AUTO_INSTALL"] = "0"
     return env
 
 
@@ -748,19 +749,65 @@ def declared_cargo_paths(data: Table) -> list[DeclaredPath]:
     return found
 
 
+def _has_lib_in_files(data: Table, existing_files: frozenset[str]) -> bool:
+    """Whether ``data`` defines or auto-discovers a library among ``existing_files``."""
+    lib = data.get("lib")
+    if isinstance(lib, dict):
+        if isinstance(path := lib.get("path"), str):
+            return posixpath.normpath(path.replace("\\", "/")) in existing_files
+        return "src/lib.rs" in existing_files
+    package = package_table(data)
+    if package.get("autolib") is False:
+        return False
+    return "src/lib.rs" in existing_files
+
+
 def named_target_files(
     data: Table,
     *,
     workspace_package: Table | None = None,
+    existing_files: frozenset[str] | None = None,
 ) -> list[str]:
-    """Files Cargo may read for each named target that declares no path."""
+    """Files Cargo may read for each named target that declares no path.
+
+    When ``existing_files`` (crate-relative POSIX paths) is provided, selects
+    the active candidate according to Cargo's precedence so an unused edition-
+    2015 legacy file (such as ``src/<name>.rs`` beside ``src/bin/<name>.rs``)
+    is not queued for path checks.
+    """
     ed2015 = effective_edition(data, workspace_package) == "2015"
+    pkg_name = _text(package_table(data).get("name"))
+    has_lib = (
+        _has_lib_in_files(data, existing_files)
+        if existing_files is not None and ed2015
+        else False
+    )
     found: list[str] = []
     for section, name in _unpathed_targets(data):
-        for shape in _TARGET_SHAPES:
-            found.append(f"{_INFERRED_DIRS[section]}/{shape.format(name)}")
+        ordinary = [
+            f"{_INFERRED_DIRS[section]}/{shape.format(name)}"
+            for shape in _TARGET_SHAPES
+        ]
+        if section == "bin" and pkg_name is not None and name == pkg_name:
+            ordinary.append("src/main.rs")
+        if existing_files is None:
+            found.extend(ordinary)
+            if section == "bin" and ed2015:
+                found.extend((f"src/{name}.rs", "src/main.rs", "src/bin/main.rs"))
+            continue
+        present_ordinary = [cand for cand in ordinary if cand in existing_files]
+        if present_ordinary:
+            found.extend(present_ordinary)
+            continue
         if section == "bin" and ed2015:
-            found.extend((f"src/{name}.rs", "src/main.rs", "src/bin/main.rs"))
+            legacy_order: list[str] = []
+            if not has_lib:
+                legacy_order.append(f"src/{name}.rs")
+            legacy_order.extend(("src/main.rs", "src/bin/main.rs"))
+            for cand in legacy_order:
+                if cand in existing_files:
+                    found.append(cand)
+                    break
     return found
 
 
@@ -823,6 +870,7 @@ def inferred_target_paths(
                     meta_by_key.setdefault((kind, target.name), crate_rel)
     ed2015 = effective_edition(before, workspace_package) == "2015"
     has_lib = _has_lib(directory, before) if ed2015 else True
+    package_name = _text(package_table(before).get("name"))
     pairs: list[tuple[DeclaredPath, DeclaredPath]] = []
     for (section, name), (_section, new_name) in zip(old, new, strict=True):
         base = _INFERRED_DIRS[section]
@@ -866,6 +914,8 @@ def inferred_target_paths(
                 matched = True
                 break
         if not matched and section == "bin" and ed2015 and not has_lib:
+            if name == package_name and (directory / "src" / "main.rs").is_file():
+                continue  # Cargo infers src/main.rs before legacy src/<name>.rs
             legacy = directory / "src" / f"{name}.rs"
             if legacy.is_file() and not legacy.is_symlink():
                 pairs.append(

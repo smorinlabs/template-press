@@ -168,13 +168,15 @@ name, `build`, `package.workspace`) or an implicit conventional root
 (`src/lib.rs`, `src/main.rs`, `build.rs`) from the file or directory it names, or
 a path Rust source declares with a plain string (the file of `mod name;`,
 `#[path = "..."]` or `#[cfg_attr(<cond>, path = "...")]`, and `include_str!`,
-`include_bytes!`, or `include!` arguments) from its file, an inferred or
-auto-discovered target rename that would leave multiple candidate files
-(`<dir>/<name>.rs` and `<dir>/<name>/main.rs`, including tracked symlinks
-resolving to regular files, or `src/main.rs` with `src/bin/<pkg>`, or renaming
-an explicit target that stops suppressing two unmoved auto-discovered files)
-for the same target name after the press (even under `autobins = false` or
-another `auto* = false` flag), and
+`include_bytes!`, or `include!` arguments) from its file, an inferred pathless
+target rename that would leave multiple candidate files (`<dir>/<name>.rs` and
+`<dir>/<name>/main.rs`, including tracked symlinks resolving to regular files,
+or `src/main.rs` with `src/bin/<pkg>`) for the same target name after the press
+(even under `autobins = false` or another `auto* = false` flag, because those
+flags do not disable path inference for an explicit target that omits `path`),
+an auto-discovered target collision when auto-discovery is enabled (including
+renaming an explicit target so it stops suppressing two unmoved auto-discovered
+files with its old name), and
 a `CARGO_BIN_EXE_<name>` token that would no longer match its binary (covering
 auto-discovered `src/bin/*`, conventional `src/main.rs`, and declared `[[bin]]`
 targets). Target roots are read from Cargo itself via read-only offline
