@@ -396,7 +396,7 @@ def test_inferred_target_candidates_covers_all_sections_and_pkg_main() -> None:
 
 def test_auto_target_sections_honors_flags_and_claimed_paths() -> None:
     manifest = tomllib.loads(
-        _pkg("acme-core", "autobins = false\nautotests = true\n")
+        _pkg("acme-core", 'edition = "2021"\nautobins = false\nautotests = true\n')
         + '[[test]]\nname = "other"\npath = "./tests/other.rs"\n'
         + '[[example]]\nname = "ex"\npath = "examples\\\\custom.rs"\n'
     )

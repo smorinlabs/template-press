@@ -15,9 +15,11 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from template_press.rebrand.cargo_manifest import (
+    CargoPackageMetadata,
     DeclaredPath,
     Table,
     auto_discovered_bins,
+    auto_discovery_enabled,
     auto_target_sections,
     cargo_manifest_files,
     declared_cargo_paths,
@@ -25,7 +27,10 @@ from template_press.rebrand.cargo_manifest import (
     inferred_target_candidates,
     inferred_target_paths,
     named_target_files,
+    package_table,
+    read_all_cargo_metadata,
     read_cargo_facts,
+    workspace_package_for_manifest,
 )
 from template_press.rebrand.identity import (
     CARGO_BIN_ENV_TAG,
@@ -1946,9 +1951,7 @@ def _declared_path_follows(
 
 
 def _package_name(data: Table) -> str | None:
-    package = data.get("package")
-    if not isinstance(package, dict):
-        return None
+    package = package_table(data)
     name = package.get("name")
     return name.strip() or None if isinstance(name, str) else None
 
@@ -1984,6 +1987,97 @@ def _post_press_file_exists(
     return is_regular_lstat(candidate)
 
 
+def _post_press_target_files(
+    target: Path,
+    snapshot: SurfaceSnapshot,
+    plan: RenamePlan,
+    post_files: Mapping[str, frozenset[str]],
+    snapshot_paths: frozenset[str],
+    removed_files: frozenset[str],
+    removed_dirs: tuple[str, ...],
+) -> dict[str, frozenset[str]]:
+    """Post-press regular files plus tracked symlinks resolving to regular files.
+
+    Cargo counts a symlink as a target candidate when it resolves to a regular
+    file and ignores dangling symlinks.
+    """
+    post_symlinks: dict[str, tuple[str, str]] = {}
+    for entry in snapshot.entries:
+        if entry.worktree_kind != "symlink":
+            continue
+        rel = entry.rel.as_posix()
+        if rel in removed_files or rel.startswith(removed_dirs):
+            continue
+        try:
+            raw_target = os.readlink(target / rel)
+        except OSError:
+            continue
+        post_symlinks[plan.translate(rel)] = (rel, raw_target)
+    if not post_symlinks:
+        return dict(post_files)
+
+    resolved_root = target.resolve()
+    root_candidates = (
+        (resolved_root,)
+        if resolved_root == target.absolute()
+        else (resolved_root, target.absolute())
+    )
+
+    def resolves_to_regular_file(start_dest: str) -> bool:
+        current = start_dest
+        seen: set[str] = set()
+        for _ in range(16):
+            if current in seen:
+                return False
+            seen.add(current)
+            link_info = post_symlinks.get(current)
+            if link_info is None:
+                return _post_press_file_exists(
+                    target,
+                    current,
+                    post_files,
+                    snapshot_paths,
+                    removed_files,
+                    removed_dirs,
+                )
+            old_rel, raw_target = link_info
+            if os.path.isabs(raw_target):
+                norm_abs = os.path.normpath(raw_target)
+                in_root: str | None = None
+                for candidate_root in root_candidates:
+                    try:
+                        rel_in_root = os.path.relpath(norm_abs, str(candidate_root))
+                    except ValueError:
+                        continue
+                    if (
+                        rel_in_root != "."
+                        and rel_in_root != os.pardir
+                        and not rel_in_root.startswith(f"{os.pardir}{os.sep}")
+                        and not os.path.isabs(rel_in_root)
+                    ):
+                        in_root = PurePosixPath(*Path(rel_in_root).parts).as_posix()
+                        break
+                if in_root is None:
+                    return (target / old_rel).is_file()
+                # Absolute symlinks are not retargeted by the press, so evaluate
+                # the unchanged in-tree target against the post-press tree.
+                current = in_root
+                continue
+            resolved_old = symlink_target_posix(Path(old_rel), raw_target)
+            if resolved_old == ".." or resolved_old.startswith("../"):
+                return (target / old_rel).is_file()
+            current = plan.translate(resolved_old)
+        return False
+
+    combined: dict[str, set[str]] = {
+        dest: set(srcs) for dest, srcs in post_files.items()
+    }
+    for dest_link, (old_rel, _raw) in post_symlinks.items():
+        if resolves_to_regular_file(dest_link):
+            combined.setdefault(dest_link, set()).add(old_rel)
+    return {dest: frozenset(srcs) for dest, srcs in combined.items()}
+
+
 def _inferred_target_collisions(
     target: Path,
     manifest: str,
@@ -1994,6 +2088,9 @@ def _inferred_target_collisions(
     snapshot_paths: frozenset[str],
     removed_files: frozenset[str],
     removed_dirs: tuple[str, ...],
+    *,
+    workspace_package: Table | None = None,
+    edition_override: str | None = None,
 ) -> list[str]:
     """Target names that would have multiple candidate files after the press."""
     old_dir = posixpath.dirname(manifest)
@@ -2039,13 +2136,19 @@ def _inferred_target_collisions(
                 f"[[{section}]], remove the extra file, or choose another name"
             )
 
-    # --- Pass 2: Auto-discovered targets when auto* is not False ---
+    # --- Pass 2: Auto-discovered targets when auto* is enabled ---
     # Catches tests/, examples/, benches/, and table-less src/bin/ collisions
     # where Cargo rejects duplicate auto-discovered target names.
     # Cargo suppresses auto-discovered targets whose name is declared by any
     # explicit target table (pathed or pathless) and ignores leading-dot names.
+    before_explicit = declared_target_names(before)
     explicit_targets = declared_target_names(after)
-    for section, base, auto_flag, claimed, pkg_name in auto_target_sections(after):
+    unsuppressed_targets = before_explicit - explicit_targets
+    for section, base, auto_flag, claimed, pkg_name in auto_target_sections(
+        after,
+        workspace_package=workspace_package,
+        edition_override=edition_override,
+    ):
         prefix = f"{new_dir}/{base}/" if new_dir else f"{base}/"
         by_stem: dict[str, dict[str, bool]] = {}
 
@@ -2084,10 +2187,17 @@ def _inferred_target_collisions(
                 )
                 by_stem.setdefault(pkg_name, {})["src/main.rs"] = main_moved
 
+        # An explicit target renamed away stops suppressing auto-discovered
+        # files with its old name, even if those files themselves do not move.
+        for unsup_sec, unsup_stem in sorted(unsuppressed_targets):
+            if unsup_sec == section and unsup_stem and not unsup_stem.startswith("."):
+                by_stem.setdefault(unsup_stem, {})
+
         for stem, entries in sorted(by_stem.items()):
             if (section, stem) in explicit_targets:
                 continue  # pathless checked in Pass 1; pathed overrides auto name
-            if not any(entries.values()):
+            unsuppressed = (section, stem) in unsuppressed_targets
+            if not any(entries.values()) and not unsuppressed:
                 continue  # untouched pre-existing files; do not blame the press
             # Also probe opposite shape(s) on disk for Git-ignored orphans.
             for shape in ("{}.rs", "{}/main.rs"):
@@ -2153,39 +2263,281 @@ def _rewritten_texts_with_bin_env(
     return tuple(found)
 
 
+def _conventional_root_splits(
+    manifest: str,
+    before: Table,
+    plan: RenamePlan,
+    files: frozenset[str],
+    removed_files: frozenset[str],
+    removed_dirs: tuple[str, ...],
+    *,
+    pkg_meta: CargoPackageMetadata | None = None,
+    workspace_package: Table | None = None,
+) -> list[str]:
+    """Refuse a rename that moves an implicit conventional Cargo root file.
+
+    Cargo fixes the filenames of implicit ``src/lib.rs``, ``src/main.rs``,
+    ``build.rs``, and edition-2015 ``src/bin/main.rs`` relative to the crate
+    directory. A crate named ``main``, ``lib``, or ``build`` would move its
+    conventional root to ``src/<new>.rs`` or ``<new>.rs``, leaving Cargo
+    without that target.
+    """
+    package = package_table(before)
+    if not package:
+        return []
+    old_dir = posixpath.dirname(manifest)
+    new_dir = posixpath.dirname(plan.translate(manifest))
+    explicit_paths = {
+        posixpath.normpath(d.value.replace("\\", "/"))
+        for d in declared_cargo_paths(before)
+        if d.kind in {"target", "build"}
+    }
+    conventional = frozenset({"src/lib.rs", "src/main.rs", "build.rs"})
+    active: list[str] = []
+    if pkg_meta is not None:
+        for t in pkg_meta.targets:
+            crate_rel = (
+                posixpath.relpath(t.src_path, old_dir) if old_dir else t.src_path
+            )
+            if crate_rel in explicit_paths:
+                continue
+            if crate_rel in conventional or (
+                crate_rel == "src/bin/main.rs" and "bin" in t.kinds and t.name != "main"
+            ):
+                active.append(crate_rel)
+    else:
+        build = package.get("build")
+        if build is not False and not isinstance(build, str):
+            active.append("build.rs")
+        lib = before.get("lib")
+        if not (isinstance(lib, dict) and isinstance(lib.get("path"), str)) and (
+            isinstance(lib, dict) or package.get("autolib") is not False
+        ):
+            active.append("src/lib.rs")
+        raw_bins = before.get("bin")
+        if "src/main.rs" not in explicit_paths and (
+            auto_discovery_enabled(before, "bin", workspace_package)
+            or (
+                isinstance(raw_bins, list)
+                and any(isinstance(b, dict) and "path" not in b for b in raw_bins)
+            )
+        ):
+            active.append("src/main.rs")
+
+    problems: list[str] = []
+    for crate_rel in dict.fromkeys(active):
+        old_posix = _join_posix(old_dir, crate_rel)
+        if (
+            old_posix not in files
+            or old_posix in removed_files
+            or old_posix.startswith(removed_dirs)
+        ):
+            continue
+        expected_posix = _join_posix(new_dir, crate_rel)
+        moved_posix = plan.translate(old_posix)
+        if moved_posix != expected_posix:
+            problems.append(
+                f"{manifest}: conventional Cargo root {old_posix!r} would move "
+                f"to {moved_posix!r}, leaving {expected_posix!r} missing. "
+                "Declare an explicit path in Cargo.toml, add the name to "
+                "keep_names, or choose another name"
+            )
+    return problems
+
+
+def _owning_package_dir(path: str, package_dirs: Collection[str]) -> str | None:
+    """Deepest Cargo package directory containing ``path``, or ``None``."""
+    owner: str | None = None
+    for pkg_dir in package_dirs:
+        if pkg_dir == "" or path.startswith(f"{pkg_dir}/"):
+            if owner is None or len(pkg_dir) > len(owner):
+                owner = pkg_dir
+    return owner
+
+
 def _bin_env_splits(
     target: Path,
     manifest: str,
-    data: dict[str, object],
+    before: Table,
+    after: Table | None,
     plan: RenamePlan,
     new_texts: Sequence[tuple[str, str, str]],
     rewritten: frozenset[str] | set[str],
+    *,
+    pkg_meta: CargoPackageMetadata | None = None,
+    workspace_package: Table | None = None,
+    package_dirs: Collection[str] = (),
 ) -> list[str]:
-    """``env!`` tokens the rewrite moves away from an auto-discovered binary.
+    """``env!`` tokens the rewrite moves away from any Cargo binary target.
 
-    The binary's name is its file stem, so it changes only if the file renames.
+    Covers auto-discovered ``src/bin/`` binaries (whose name follows the file
+    stem), conventional ``src/main.rs`` (whose name follows ``[package].name``),
+    and explicit ``[[bin]]`` targets (whose name follows ``[[bin]].name``).
     """
     base = posixpath.dirname(manifest)
+    pairs: list[tuple[str, str, bool]] = []  # (old_name, new_name, from_file)
+    raw_before_bins = before.get("bin")
+    explicit_before = [
+        e
+        for e in (raw_before_bins if isinstance(raw_before_bins, list) else [])
+        if isinstance(e, dict) and isinstance(e.get("name"), str)
+    ]
+    explicit_names = {str(e["name"]) for e in explicit_before}
+    if after is not None:
+        raw_after_bins = after.get("bin")
+        explicit_after = [
+            e
+            for e in (raw_after_bins if isinstance(raw_after_bins, list) else [])
+            if isinstance(e, dict) and isinstance(e.get("name"), str)
+        ]
+        if len(explicit_before) == len(explicit_after):
+            for old_entry, new_entry in zip(
+                explicit_before, explicit_after, strict=True
+            ):
+                pairs.append((str(old_entry["name"]), str(new_entry["name"]), False))
+
+    old_pkg = _package_name(before)
+    new_pkg = _package_name(after) if after is not None else old_pkg
+    if pkg_meta is not None:
+        for t in pkg_meta.targets:
+            if "bin" not in t.kinds or t.name in explicit_names:
+                continue
+            crate_rel = posixpath.relpath(t.src_path, base) if base else t.src_path
+            if crate_rel == "src/main.rs":
+                if old_pkg is not None and new_pkg is not None:
+                    pairs.append((t.name, new_pkg, False))
+            else:
+                crate_parts = PurePosixPath(crate_rel).parts
+                is_dir_bin = (
+                    len(crate_parts) == 4
+                    and crate_parts[:2] == ("src", "bin")
+                    and crate_parts[3] == "main.rs"
+                )
+                moved = PurePosixPath(plan.translate(t.src_path))
+                new_name = moved.parent.name if is_dir_bin else moved.stem
+                pairs.append((t.name, new_name, True))
+    else:
+        claimed_bins = {
+            posixpath.normpath(str(e["path"]).replace("\\", "/"))
+            for e in explicit_before
+            if isinstance(e.get("path"), str)
+        }
+        if (
+            old_pkg is not None
+            and new_pkg is not None
+            and auto_discovery_enabled(before, "bin", workspace_package)
+            and "src/main.rs" not in claimed_bins
+            and (target / base / "src" / "main.rs").is_file()
+        ):
+            pairs.append((old_pkg, new_pkg, False))
+        for name, rel in auto_discovered_bins(
+            target / base, before, workspace_package=workspace_package
+        ):
+            moved = PurePosixPath(plan.translate(posixpath.join(base, rel)))
+            new_name = moved.stem if rel.endswith(".rs") else moved.name
+            pairs.append((name, new_name, True))
+
     problems: list[str] = []
-    for name, rel in auto_discovered_bins(target / base, data):
-        moved = PurePosixPath(plan.translate(posixpath.join(base, rel)))
-        new_name = moved.stem if rel.endswith(".rs") else moved.name
+    seen_pairs: set[tuple[str, str]] = set()
+    for name, new_name, from_file in pairs:
+        if (name, new_name) in seen_pairs:
+            continue
+        seen_pairs.add((name, new_name))
         old_token = re.compile(rf"CARGO_BIN_EXE_{re.escape(name)}(?![\w-])")
         new_token = re.compile(rf"CARGO_BIN_EXE_{re.escape(new_name)}(?![\w-])")
-        problems.extend(
-            f"{path}: CARGO_BIN_EXE_{name} tokens would not match the "
-            f"binary, which its file would name {new_name!r}. "
-            + (
-                "Declare a cargo_names table that names this binary, so the "
-                "press rewrites the binary and its tokens together"
-                if path in rewritten
-                else "The file is excluded from rewriting; remove the exclusion "
-                "or edit the token by hand"
-            )
-            for path, old_text, new_text in new_texts
-            if len(old_token.findall(old_text)) != len(new_token.findall(new_text))
+        where_desc = (
+            f"which its file would name {new_name!r}"
+            if from_file
+            else f"which Cargo would name {new_name!r}"
         )
+        for path, old_text, new_text in new_texts:
+            if package_dirs:
+                owner = _owning_package_dir(path, package_dirs)
+                if owner is not None and owner != base:
+                    continue
+            old_count = len(old_token.findall(old_text))
+            if old_count == 0:
+                continue
+            if name == new_name:
+                matched = len(old_token.findall(new_text)) == old_count
+            else:
+                matched = (
+                    len(old_token.findall(new_text)) == 0
+                    and len(new_token.findall(new_text))
+                    - len(new_token.findall(old_text))
+                    == old_count
+                )
+            if matched:
+                continue
+            problems.append(
+                f"{path}: CARGO_BIN_EXE_{name} tokens would not match the "
+                f"binary, {where_desc}. "
+                + (
+                    "Declare a cargo_names table that names this binary, so the "
+                    "press rewrites the binary and its tokens together"
+                    if path in rewritten
+                    else "The file is excluded from rewriting; remove the exclusion "
+                    "or edit the token by hand"
+                )
+            )
     return problems
+
+
+def _post_activated_auto_roots(
+    manifest: str,
+    after: Table,
+    plan: RenamePlan,
+    files: frozenset[str],
+    removed_files: frozenset[str],
+    removed_dirs: tuple[str, ...],
+    *,
+    workspace_package: Table | None = None,
+    edition_override: str | None = None,
+) -> list[str]:
+    """Auto-discovered target files that are dormant before the press (e.g.
+    suppressed by an explicit target with the same name) and become compiled
+    after the press because that declaration or file renames."""
+    old_dir = posixpath.dirname(manifest)
+    new_dir = posixpath.dirname(plan.translate(manifest))
+    after_explicit = declared_target_names(after)
+    activated: list[str] = []
+    for section, base, _flag, after_claimed, new_pkg in auto_target_sections(
+        after,
+        workspace_package=workspace_package,
+        edition_override=edition_override,
+    ):
+        prefix = f"{new_dir}/{base}/" if new_dir else f"{base}/"
+        for old_rel in files:
+            if old_rel in removed_files or old_rel.startswith(removed_dirs):
+                continue
+            dest = plan.translate(old_rel)
+            if not dest.startswith(prefix):
+                continue
+            rest = dest[len(prefix) :]
+            parts = rest.split("/")
+            if len(parts) == 1 and rest.endswith(".rs"):
+                stem = rest[:-3]
+            elif len(parts) == 2 and parts[1] == "main.rs":
+                stem = parts[0]
+            else:
+                continue
+            if not stem or stem.startswith("."):
+                continue
+            post_crate_rel = f"{base}/{rest}"
+            if post_crate_rel in after_claimed or (section, stem) in after_explicit:
+                continue
+            activated.append(old_rel)
+        if section == "bin" and "src/main.rs" not in after_claimed:
+            if new_pkg is None or ("bin", new_pkg) not in after_explicit:
+                old_main = _join_posix(old_dir, "src/main.rs")
+                if (
+                    old_main in files
+                    and old_main not in removed_files
+                    and not old_main.startswith(removed_dirs)
+                    and plan.translate(old_main) == _join_posix(new_dir, "src/main.rs")
+                ):
+                    activated.append(old_main)
+    return activated
 
 
 def cargo_path_splits(
@@ -2245,8 +2597,16 @@ def cargo_path_splits(
             continue
         post_by_dest.setdefault(plan.translate(rel), set()).add(rel)
     post_files = {dest: frozenset(srcs) for dest, srcs in post_by_dest.items()}
-    problems: list[str] = []
-    crates: list[tuple[str, Table]] = []
+    post_target_files = _post_press_target_files(
+        target,
+        snapshot,
+        plan,
+        post_files,
+        snapshot_paths,
+        removed_files_set,
+        removed_dirs,
+    )
+    manifest_entries: list[tuple[str, Table, str]] = []
     for manifest in cargo_manifest_files(target):
         if manifest in removed_files or manifest.startswith(removed_dirs):
             continue
@@ -2258,20 +2618,78 @@ def cargo_path_splits(
                 text,
                 rules.keep_names,
             )
-        parsed = tomllib.loads(text)
-        crates.append((manifest, parsed))
+        manifest_entries.append((manifest, tomllib.loads(text), new_text))
+
+    crates = [(manifest, parsed) for manifest, parsed, _ in manifest_entries]
+    manifests_by_path = dict(crates)
+    package_dirs = frozenset(
+        posixpath.dirname(manifest)
+        for manifest, parsed in crates
+        if package_table(parsed)
+    )
+    pkg_metadata = read_all_cargo_metadata(target, [manifest for manifest, _ in crates])
+
+    problems: list[str] = []
+    post_activated_roots: list[str] = []
+    for manifest, parsed, new_text in manifest_entries:
+        pkg_meta = pkg_metadata.get(manifest)
+        pkg_ws_package = workspace_package_for_manifest(
+            target, manifest, parsed, manifests_by_path
+        )
+        edition_override = pkg_meta.edition if pkg_meta is not None else None
         problems.extend(
-            _bin_env_splits(target, manifest, parsed, plan, new_texts, rewritten)
+            _conventional_root_splits(
+                manifest,
+                parsed,
+                plan,
+                files,
+                removed_files_set,
+                removed_dirs,
+                pkg_meta=pkg_meta,
+                workspace_package=pkg_ws_package,
+            )
         )
         declared = declared_cargo_paths(parsed)
         try:
             new_parsed = tomllib.loads(new_text)
         except tomllib.TOMLDecodeError as exc:
+            problems.extend(
+                _bin_env_splits(
+                    target,
+                    manifest,
+                    parsed,
+                    None,
+                    plan,
+                    new_texts,
+                    rewritten,
+                    pkg_meta=pkg_meta,
+                    workspace_package=pkg_ws_package,
+                    package_dirs=package_dirs,
+                )
+            )
             problems.append(f"{manifest}: the rewrite breaks its TOML: {exc}")
             continue
+        problems.extend(
+            _bin_env_splits(
+                target,
+                manifest,
+                parsed,
+                new_parsed,
+                plan,
+                new_texts,
+                rewritten,
+                pkg_meta=pkg_meta,
+                workspace_package=pkg_ws_package,
+                package_dirs=package_dirs,
+            )
+        )
         rewritten_paths = declared_cargo_paths(new_parsed)
         inferred = inferred_target_paths(
-            parsed, new_parsed, target / posixpath.dirname(manifest)
+            parsed,
+            new_parsed,
+            target / posixpath.dirname(manifest),
+            pkg_meta=pkg_meta,
+            workspace_package=pkg_ws_package,
         )
         if len(rewritten_paths) != len(declared) or inferred is None:
             problems.append(f"{manifest}: the rewrite changes its declared paths")
@@ -2294,20 +2712,40 @@ def cargo_path_splits(
                 parsed,
                 new_parsed,
                 plan,
-                post_files,
+                post_target_files,
                 snapshot_paths,
                 removed_files_set,
                 removed_dirs,
+                workspace_package=pkg_ws_package,
+                edition_override=edition_override,
+            )
+        )
+        post_activated_roots.extend(
+            _post_activated_auto_roots(
+                manifest,
+                new_parsed,
+                plan,
+                files,
+                removed_files_set,
+                removed_dirs,
+                workspace_package=pkg_ws_package,
+                edition_override=edition_override,
             )
         )
     split_tokens = _split_tokens(source, destination, rules)
-    source_problems: dict[str, list[str]] = {}
-    for path in sorted(rewritten):
-        if (
-            not path.endswith(".rs")
-            or path in removed_files
-            or path.startswith(removed_dirs)
-        ):
+    # Only files Cargo compiles can break the build; a fixture can't. Checking
+    # the compiled set also covers non-.rs Rust files reached via #[path] or
+    # include! (such as bridge.inc / frag.inc), plus any auto-discovered target
+    # activated by the planned manifest rewrites.
+    compiled = _compiled_rust_files(
+        target,
+        crates,
+        files,
+        metadata=pkg_metadata,
+        extra_roots=post_activated_roots,
+    )
+    for path in sorted(rewritten & compiled):
+        if path in removed_files or path.startswith(removed_dirs):
             continue
         try:
             text = read_regular_nofollow(target / path).decode("utf-8")
@@ -2318,18 +2756,12 @@ def cargo_path_splits(
             text,
             rules.keep_names,
         )
-        if new_text != text and (
-            found := _rust_source_path_splits(
-                path, text, new_text, plan, files, directories, split_tokens
+        if new_text != text:
+            problems.extend(
+                _rust_source_path_splits(
+                    path, text, new_text, plan, files, directories, split_tokens
+                )
             )
-        ):
-            source_problems[path] = found
-    if source_problems:
-        # Only a file Cargo compiles can break the build; a fixture can't.
-        compiled = _compiled_rust_files(target, crates, files)
-        for path, found in source_problems.items():
-            if path in compiled:
-                problems.extend(found)
     return problems
 
 
@@ -2337,10 +2769,10 @@ _MODULE_SHAPES = ("{}.rs", "{}/mod.rs")
 # Directories whose ``*.rs`` and ``*/main.rs`` files Cargo makes targets, each
 # with the ``[package]`` flag that turns that discovery off.
 _TARGET_DIRS = {
-    "src/bin": "autobins",
-    "tests": "autotests",
-    "benches": "autobenches",
-    "examples": "autoexamples",
+    "src/bin": "bin",
+    "tests": "test",
+    "benches": "bench",
+    "examples": "example",
 }
 
 
@@ -2415,65 +2847,111 @@ def _effective_inline(
     )
 
 
+def _fallback_target_roots(
+    manifest: str,
+    parsed: Table,
+    files: frozenset[str],
+    workspace_package: Table | None,
+) -> list[str]:
+    """Hand-written target-root seeding used only when ``cargo metadata`` is
+    unavailable or fails for ``manifest``."""
+    package = package_table(parsed)
+    if not package:
+        return []  # a virtual manifest has no targets of its own
+    directory = posixpath.dirname(manifest)
+    lib, bins = parsed.get("lib"), parsed.get("bin")
+    build = package.get("build")
+    roots = [] if build is False or isinstance(build, str) else ["build.rs"]
+    if not (isinstance(lib, dict) and isinstance(lib.get("path"), str)) and (
+        isinstance(lib, dict) or package.get("autolib") is not False
+    ):
+        roots.append("src/lib.rs")
+    claimed = (
+        isinstance(bins, list)
+        and "name" in package
+        and any(
+            isinstance(b, dict) and b.get("name") == package.get("name") and "path" in b
+            for b in bins
+        )
+    )
+    if (auto_discovery_enabled(parsed, "bin", workspace_package) and not claimed) or (
+        isinstance(bins, list)
+        and any(isinstance(b, dict) and "path" not in b for b in bins)
+    ):
+        roots.append("src/main.rs")
+    seeded = [posixpath.normpath(posixpath.join(directory, root)) for root in roots]
+    seeded.extend(
+        posixpath.normpath(posixpath.join(directory, declared.value))
+        for declared in declared_cargo_paths(parsed)
+        if declared.kind in {"target", "build"}
+    )
+    crate_prefix = f"{directory}/" if directory else ""
+    crate_files = frozenset(
+        file[len(crate_prefix) :]
+        for file in files
+        if not crate_prefix or file.startswith(crate_prefix)
+    )
+    seeded.extend(
+        posixpath.normpath(posixpath.join(directory, file))
+        for file in named_target_files(
+            parsed,
+            workspace_package=workspace_package,
+            existing_files=crate_files,
+        )
+    )
+    declared_names = declared_target_names(parsed)
+    for sub, section in _TARGET_DIRS.items():
+        if not auto_discovery_enabled(parsed, section, workspace_package):
+            continue
+        prefix = posixpath.join(directory, sub) + "/"
+        for file in files:
+            rest = file[len(prefix) :] if file.startswith(prefix) else ""
+            parts = rest.split("/")
+            if len(parts) == 1 and rest.endswith(".rs"):
+                stem = rest[:-3]
+            elif len(parts) == 2 and parts[1] == "main.rs":
+                stem = parts[0]
+            else:
+                continue
+            if not stem or stem.startswith(".") or (section, stem) in declared_names:
+                continue
+            seeded.append(file)
+    return seeded
+
+
 def _compiled_rust_files(
-    target: Path, crates: Sequence[tuple[str, Table]], files: frozenset[str]
+    target: Path,
+    crates: Sequence[tuple[str, Table]],
+    files: frozenset[str],
+    *,
+    metadata: Mapping[str, CargoPackageMetadata] | None = None,
+    workspace_package: Table | None = None,
+    extra_roots: Sequence[str] = (),
 ) -> frozenset[str]:
-    """The ``.rs`` files Cargo compiles: each crate root it infers or a manifest
-    declares, and every file those reach through ``mod`` or a Rust path."""
-    queue: list[str] = []
+    """Files Cargo compiles: target roots from ``cargo metadata`` (falling back
+    to manifest rules when Cargo is unavailable), and every file those reach
+    through ``mod``, ``#[path]``, ``#[cfg_attr(..., path)]``, or ``include!``."""
+    resolved_meta = (
+        read_all_cargo_metadata(target, [manifest for manifest, _ in crates])
+        if metadata is None
+        else metadata
+    )
+    manifests_by_path = dict(crates)
+
+    queue: list[str] = list(extra_roots)
     for manifest, parsed in crates:
-        directory = posixpath.dirname(manifest)
-        package = parsed.get("package")
-        if not isinstance(package, dict) and "project" not in parsed:
-            continue  # a virtual manifest has no targets of its own
-        lib, bins = parsed.get("lib"), parsed.get("bin")
-        build = package.get("build") if isinstance(package, dict) else None
-        # ``build = false`` turns the script off; a string is declared below.
-        roots = [] if build is False or isinstance(build, str) else ["build.rs"]
-        auto = package if isinstance(package, dict) else {}
-        if not (isinstance(lib, dict) and isinstance(lib.get("path"), str)) and (
-            isinstance(lib, dict) or auto.get("autolib") is not False
-        ):
-            roots.append("src/lib.rs")  # a [lib] path replaces Cargo's default
-        # A [[bin]] with the package's name and a path replaces src/main.rs.
-        claimed = (
-            isinstance(bins, list)
-            and "name" in auto
-            and any(
-                isinstance(b, dict)
-                and b.get("name") == auto.get("name")
-                and "path" in b
-                for b in bins
+        pkg_meta = resolved_meta.get(manifest)
+        if pkg_meta is not None:
+            queue.extend(t.src_path for t in pkg_meta.targets)
+        else:
+            pkg_ws = (
+                workspace_package_for_manifest(
+                    target, manifest, parsed, manifests_by_path
+                )
+                if workspace_package is None
+                else workspace_package
             )
-        )
-        if (auto.get("autobins") is not False and not claimed) or (
-            isinstance(bins, list)
-            and any(not (isinstance(b, dict) and "path" in b) for b in bins)
-        ):
-            roots.append("src/main.rs")  # a pathless [[bin]] may still infer it
-        queue.extend(
-            posixpath.normpath(posixpath.join(directory, root)) for root in roots
-        )
-        queue.extend(
-            posixpath.normpath(posixpath.join(directory, declared.value))
-            for declared in declared_cargo_paths(parsed)
-            if declared.kind in {"target", "build"}
-        )
-        queue.extend(
-            posixpath.normpath(posixpath.join(directory, file))
-            for file in named_target_files(parsed)
-        )
-        for sub, auto in _TARGET_DIRS.items():
-            if isinstance(package, dict) and package.get(auto) is False:
-                continue  # Cargo builds only the targets the manifest names
-            prefix = posixpath.join(directory, sub) + "/"
-            for file in files:
-                rest = file[len(prefix) :] if file.startswith(prefix) else ""
-                parts = rest.split("/")
-                if (len(parts) == 1 and rest.endswith(".rs")) or (
-                    len(parts) == 2 and parts[1] == "main.rs"
-                ):
-                    queue.append(file)
+            queue.extend(_fallback_target_roots(manifest, parsed, files, pkg_ws))
     reached: set[str] = set()
     while queue:
         path = queue.pop()
@@ -2498,8 +2976,6 @@ def _compiled_rust_files(
             if item.kind == "inline_dir":
                 continue  # directory override; child mods/paths carry it in item.inline
             value = text[item.literal.content_start : item.literal.content_end]
-            if item.kind == "include" and not value.endswith(".rs"):
-                continue
             if item.kind == "include" and _opens_with(
                 _DATA_INCLUDE, code, item.literal.start
             ):

@@ -53,7 +53,7 @@ def _declares_identity(language: str, manifest: str, data: Any) -> bool:
         if not isinstance(name, str) or not name:
             raise ValidationError(f"{manifest}: 'name' must be a non-empty string")
         return True
-    keys = ("project",) if language == "python" else ("package", "workspace")
+    keys = ("project",) if language == "python" else ("package", "project", "workspace")
     found = False
     for key in keys:
         if key in data:

@@ -173,28 +173,59 @@ retained decision record does not require those files to remain present.
 
    A rewrite that would separate a path from its file also exits 2, with
    `file:line`, on every Rust press (`cargo paths:`). This covers paths a
-   manifest declares or Cargo infers, and paths Rust source declares with a
-   plain string literal: the file of `mod name;`, a `#[path = "..."]` or
+   manifest declares (under `[package]` or Cargo's legacy `[project]` table) or
+   Cargo infers, implicit conventional roots (`src/lib.rs`, `src/main.rs`,
+   `build.rs`, and edition-2015 `src/bin/main.rs` when no explicit `path` or
+   `build` key covers them), and paths Rust source declares with a plain string
+   literal: the file of `mod name;`, a `#[path = "..."]` or
    `#[cfg_attr(<cond>, path = "...")]` value, and an `include_str!`,
    `include_bytes!`, or `include!` argument. It also refuses (exit 2 before any
    write, naming all colliding files) an inferred-target or auto-discovered
    rename that would leave multiple candidate files (`<dir>/<name>.rs` and
    `<dir>/<name>/main.rs`, or `src/main.rs` for a `[[bin]]` matching
-   `[package].name`) for the same target name after the press, including under
-   `autobins = false` or another `auto* = false` flag. Rust source is read only in a
-   `.rs` file Cargo compiles: a crate root or target file that Cargo infers or
-   a manifest declares, or a file one of those reaches through `mod` (including
-   inline `mod name { ... }` blocks and their `#[path]` attributes), `#[path]`,
-   `#[cfg_attr(<cond>, path = "...")]`, or `include!`. Under `autotests = false` or another `auto*` flag
-   set to false, only the targets the manifest names in that directory are
-   read. Dependency paths are read from every dependency table, including the
+   `[package].name`, including tracked symlinks that resolve to regular files
+   after the press but ignoring dangling symlinks) for the same target name
+   after the press, including under `autobins = false` or another `auto* = false`
+   flag, or when renaming an explicit target stops suppressing two unmoved
+   auto-discovered files with its old name. `CARGO_BIN_EXE_<name>` tokens are
+   preflighted across every binary target: auto-discovered `src/bin/*`,
+   conventional `src/main.rs`, and declared `[[bin]]` targets.
+
+   **Target-root discovery via `cargo metadata` and fallback (P20).** Rather
+   than re-implementing Cargo's target discovery rules in Python, the press
+   asks Cargo itself via `cargo metadata --format-version 1 --no-deps --offline`
+   (read-only, zero writes, never runs `build.rs` or `rustc`; non-member path
+   dependencies inside the target are queried with `--manifest-path`). That
+   supplies exact target roots, kinds, names, edition-2015 auto-discovery
+   defaults, legacy `[project]` tables, `autolib = false`, `build = false`, and
+   overridden explicit targets (such as `[[test]] name = "foo" path = "..."`
+   suppressing `tests/foo.rs`). `cargo check --emit=dep-info` is deliberately
+   not used during preflight because it executes build scripts and proc-macros,
+   writes to `target/`, and requires external crates to be cached. From each
+   target root, the press's own Rust parser walks every file reached through
+   `mod` (including inline `mod name { ... }` blocks and their `#[path]`
+   attributes), `#[path]`, `#[cfg_attr(<cond>, path = "...")]`, or `include!`,
+   including non-`.rs` files such as `bridge.inc` or `frag.inc` (while skipping
+   `include_str!`/`include_bytes!`, which read data).
+
+   Because the shipped engine has zero runtime dependencies and `cargo` is an
+   external tool, when `cargo` is missing from `PATH` or `cargo metadata` fails
+   (for example on a manifest-only fixture with no targets, or when an outer
+   parent directory workspace conflicts), the press falls back to its
+   hand-written manifest/target walk — which also honors `[project]`,
+   edition-2015 defaults (including inherited `edition.workspace = true` and
+   legacy pathless `[[bin]]` fallbacks), overridden auto-discovered targets,
+   conventional root checks, and all-binary `CARGO_BIN_EXE_` checks — and
+   refuses before any write whenever a safety check fails.
+
+   Dependency paths are read from every dependency table, including the
    pre-2024 `[dev_dependencies]` and `[build_dependencies]` spellings. The usual cause is a content-only row,
    such as `owner = "acmelabs"`, that rewrites `pub mod acmelabs;` while no row
    renames `src/acmelabs.rs`. Limits: these are not checked, so such a rewrite
    there can still get a receipt for a build that then fails:
    - a path a macro builds, such as
      `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`;
-   - a `.rs` file excluded from rewriting;
+   - a source file excluded from rewriting;
    - a `.rs` file no crate root reaches, such as `tests/fixtures/sample.rs`;
    - a path that code reads at run time, such as a string `build.rs` passes
      to `std::fs::read_to_string`;

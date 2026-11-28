@@ -161,25 +161,33 @@ keyword such as `type`, a crate whose Rust identifier would be left behind
 `acme_widget` for `acme-widget`), and a versioned string such as
 `acme-core-0.1.0`. It also refuses,
 with exit 2 before any write, a rewrite that would separate a path a manifest
-declares or Cargo infers (`members`, `exclude`, dependency `path` in any dependency
-table, including the pre-2024 `[dev_dependencies]` and `[build_dependencies]`
-spellings, target `path` or name, `build`, `package.workspace`) from the file or directory it names, or
+declares (under `[package]` or legacy `[project]`) or Cargo infers (`members`,
+`exclude`, dependency `path` in any dependency table, including the pre-2024
+`[dev_dependencies]` and `[build_dependencies]` spellings, target `path` or
+name, `build`, `package.workspace`) or an implicit conventional root
+(`src/lib.rs`, `src/main.rs`, `build.rs`) from the file or directory it names, or
 a path Rust source declares with a plain string (the file of `mod name;`,
 `#[path = "..."]` or `#[cfg_attr(<cond>, path = "...")]`, and `include_str!`,
-`include_bytes!`, or `include!` arguments) from its file, an inferred or
-auto-discovered target rename that would leave multiple candidate files
-(`<dir>/<name>.rs` and `<dir>/<name>/main.rs`, or `src/main.rs` with
-`src/bin/<pkg>`) for the same target name after the press (even under
-`autobins = false` or another `auto* = false` flag), and
-a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. Rust
-source is read only in `.rs` files Cargo compiles: crate roots and target
-files (under `autotests = false` or another `auto*` flag set to false, only the
-targets the manifest names in that directory), and the files they reach through
-`mod` (including inline `mod name { ... }` blocks and their `#[path]`
-attributes), `#[path]`, `#[cfg_attr(<cond>, path = "...")]`, or `include!`. Not
-checked: a
+`include_bytes!`, or `include!` arguments) from its file, an inferred pathless
+target rename that would leave multiple candidate files (`<dir>/<name>.rs` and
+`<dir>/<name>/main.rs`, including tracked symlinks resolving to regular files,
+or `src/main.rs` with `src/bin/<pkg>`) for the same target name after the press
+(even under `autobins = false` or another `auto* = false` flag, because those
+flags do not disable path inference for an explicit target that omits `path`),
+an auto-discovered target collision when auto-discovery is enabled (including
+renaming an explicit target so it stops suppressing two unmoved auto-discovered
+files with its old name), and
+a `CARGO_BIN_EXE_<name>` token that would no longer match its binary (covering
+auto-discovered `src/bin/*`, conventional `src/main.rs`, and declared `[[bin]]`
+targets). Target roots are read from Cargo itself via read-only offline
+`cargo metadata --format-version 1 --no-deps --offline` (falling back to the
+manifest/target walk when `cargo` is missing or fails), and Rust source is
+checked in every compiled file those roots reach through `mod` (including
+inline `mod name { ... }` blocks and their `#[path]` attributes), `#[path]`,
+`#[cfg_attr(<cond>, path = "...")]`, or `include!`, including non-`.rs` files
+such as `bridge.inc` or `frag.inc`. Not checked: a
 path a macro builds, such as
-`include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`; a `.rs` file
+`include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`; a source file
 excluded from rewriting; a `.rs` file no crate root reaches, such as
 `tests/fixtures/sample.rs`; and a path read at run time, such as a string
 `build.rs` passes to `std::fs::read_to_string`. See the

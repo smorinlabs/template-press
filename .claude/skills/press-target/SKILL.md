@@ -280,9 +280,10 @@ scan = "boundary"
 ## Rust and Cargo targets
 
 A single-crate repository or a Cargo workspace is a first-class target. A root
-`Cargo.toml` counts when it has `[package]` or `[workspace]`. Workspace members
-come from root `[workspace] members`, with globs expanded and `exclude` removed.
-A repository whose only manifest is in a subdirectory is not detected.
+`Cargo.toml` counts when it has `[package]`, legacy `[project]`, or
+`[workspace]`. Workspace members come from root `[workspace] members`, with
+globs expanded and `exclude` removed. A repository whose only manifest is in a
+subdirectory is not detected.
 
 ### `cargo_names`
 
@@ -590,11 +591,11 @@ These stop the press before any write:
 | A destination crate name is a Rust keyword | `acme-core` to `type` | 2 |
 | A hyphen-free source name takes a hyphenated destination, without `[[cargo_split]]` | `acme_core` to `zeta-core` | 2 |
 | A source or destination name equals a non-local dependency | crate pressed to `padkit` beside `padkit = "1"` | 2 |
-| A rewrite would separate a declared or name-inferred Cargo path from its file (`cargo paths:`) | `owner = "acme"` rewrites `[lib] path = "lib/acme-x.rs"`, but no row renames the file | 2 |
-| An inferred or auto-discovered target rename would leave multiple candidate files for the same target name (`cargo paths:`) | `acme-cli` renames to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists (or `src/main.rs` collides with `src/bin/<pkg>`, or the same two-file shape under `tests/`, `examples/`, or `benches/`, even with `autobins = false` or another `auto* = false` flag) | 2 |
-| A rewrite would separate a path that Rust source declares from its file (`cargo paths:`): the file of `mod name;`, a `#[path = "..."]` or `#[cfg_attr(<cond>, path = "...")]` value, or an `include_str!`/`include_bytes!`/`include!` argument | `owner = "acmelabs"` rewrites `pub mod acmelabs;` or `include_str!("../data/acmelabs.txt")`, but no row renames the file | 2 |
+| A rewrite would separate a declared or name-inferred Cargo path, or an implicit conventional Cargo root, from its file (`cargo paths:`) | `owner = "acme"` rewrites `[lib] path = "lib/acme-x.rs"` without moving the file, or renaming crate `main` -> `zeta` moves `src/main.rs` -> `src/zeta.rs` | 2 |
+| An inferred or auto-discovered target rename would leave multiple candidate files for the same target name (`cargo paths:`) | `acme-cli` renames to `zeta-cli` while `src/bin/zeta-cli/main.rs` (regular file or tracked symlink resolving to a regular file) already exists; `src/main.rs` collides with `src/bin/<pkg>`; renaming an explicit target stops suppressing two unmoved auto-discovered files; or the same two-file shape under `tests/`, `examples/`, or `benches/`, even with `autobins = false` or another `auto* = false` flag | 2 |
+| A rewrite would separate a path that Rust source declares from its file (`cargo paths:`): the file of `mod name;`, a `#[path = "..."]` or `#[cfg_attr(<cond>, path = "...")]` value, or an `include_str!`/`include_bytes!`/`include!` argument | `owner = "acmelabs"` rewrites `pub mod acmelabs;` or `include_str!("../data/acmelabs.txt")`, including inside non-`.rs` files reached via `#[path]` or `include!`, while no row renames the file | 2 |
 | A `#[cfg(...)]`-disabled `mod name;` with no file on disk, inside a renamed inline module or as the renamed module itself | `mod acmelabs { #[cfg(any())] mod x; }` or `#[cfg(any())] mod acmelabs;` with `owner = "acmelabs"` | 2 |
-| A `CARGO_BIN_EXE_<name>` token would not match its auto-discovered binary (`cargo paths:`) | `src/bin/acme.rs` renames to `zeta.rs`, but the token in an excluded file stays | 2 |
+| A `CARGO_BIN_EXE_<name>` token would not match its binary (`cargo paths:`) | An auto-discovered `src/bin/acme.rs`, conventional `src/main.rs`, or declared `[[bin]]` renames while its token in an excluded or unrewritten file stays | 2 |
 | Versioned string that extends a declared name | `acme-core-0.1.0` in a README | 1 |
 
 For the first two, press in two steps through an intermediate identity. For a
@@ -606,22 +607,34 @@ name. For a binary token, declare a `cargo_names` table that
 names the binary; when the token sits in an excluded file, remove the
 exclusion or edit the token by hand.
 
+Target-root discovery and missing-`cargo` fallback: the press queries Cargo
+itself via read-only, offline `cargo metadata --format-version 1 --no-deps --offline`
+(never running `build.rs` or `rustc`, and querying non-member path dependencies
+inside the target with `--manifest-path`) to obtain exact target roots, kinds,
+names, edition-2015 auto-discovery defaults, legacy `[project]` tables,
+`autolib = false`, `build = false`, and overridden explicit targets (such as
+`[[test]] name = "foo" path = "tests/custom.rs"` excluding `tests/foo.rs`).
+When `cargo` is missing from `PATH` or `cargo metadata` fails (for example on a
+manifest-only tree with no targets), the press falls back to its built-in
+manifest/target walk — which still honors `[project]`, edition-2015 defaults
+and legacy pathless `[[bin]]` fallbacks, overridden auto targets, conventional
+roots, and all-binary `CARGO_BIN_EXE_` checks — and refuses before any write on
+any unsafe path split.
+
 Limits: the press checks only paths that a manifest declares or Cargo infers,
-and paths that Rust source declares with a plain string literal in a `.rs`
-file Cargo compiles. Such a file is a crate root or target file that Cargo
-infers or a manifest declares (`src/lib.rs`, `src/main.rs`, `src/bin/`,
-`tests/`, `benches/`, `examples/`, a target `path`, `build.rs`), or a file one
-of those reaches through `mod` (including inline `mod name { ... }` blocks and
-their `#[path]` attributes), `#[path]`, `#[cfg_attr(<cond>, path = "...")]`, or
-`include!`. Under `autotests = false`
-or another `auto*` flag set to false, Cargo builds only the targets the
-manifest names in that directory, so only those files are read. Dependency
+and paths that Rust source declares with a plain string literal in a file Cargo
+compiles: target roots reported by `cargo metadata` (or the fallback walk), and
+every file those reach through `mod` (including inline `mod name { ... }`
+blocks and their `#[path]` attributes), `#[path]`,
+`#[cfg_attr(<cond>, path = "...")]`, or `include!`, including non-`.rs` files
+such as `bridge.inc` or `frag.inc` (`include_str!`/`include_bytes!` are skipped
+as data). Dependency
 paths are read from every dependency table, including the pre-2024
 `[dev_dependencies]` and `[build_dependencies]` spellings. These are not checked:
 
 - a path built by a macro, such as
   `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`;
-- a `.rs` file excluded from rewriting;
+- a source file excluded from rewriting;
 - a `.rs` file no crate root reaches, such as `tests/fixtures/sample.rs`,
   which Cargo does not compile;
 - a path that code reads at run time, such as

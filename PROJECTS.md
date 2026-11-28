@@ -40,6 +40,7 @@ file by hand — see Conventions.
 | P15 | `[~]` | [Rust and Cargo targets](projects/P15-rust-cargo-targets.md) — single-crate and workspace Cargo repositories, optional role-keyed `cargo_names` identity table |
 | P16 | `[x]` | [Explicit target languages](projects/P16-explicit-target-languages.md) — multi-language targets must declare `[rules] languages` or press exits 2 |
 | P18 | `[ ]` | [One-press renames to names containing the source](projects/P18-one-press-contained-renames.md) — Allow a new name that contains the old one, for every identity field. |
+| P20 | `[x]` | [Ask Cargo which files it compiles](projects/P20-cargo-metadata-targets.md) — replace the hand-written Cargo target and compiled-file rules with cargo metadata |
 
 - [x] **P17** — [Pressed-target verify false receipt](projects/P17-pressed-target-verify-false-receipt.md) — no receipt when `press verify` would exit 1 on the pressed target
 - [x] **P19** — [BAML targets](projects/P19-baml-targets.md) — Press BAML repos: regenerate the client, refuse glued old names before writing
