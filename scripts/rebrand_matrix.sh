@@ -14,6 +14,7 @@ echo "== npm, Bun, and pnpm end-to-end targets =="
 uv run pytest tests/rebrand/test_node_targets.py -m live -q -n auto --dist loadgroup
 
 echo "== Cargo single-crate and workspace end-to-end targets =="
-# Direct cargo commands keep CARGO_HOME in tmp_path. The press's declared
-# `cargo update` uses the default Cargo home, so those tests share one worker.
+# Direct cargo commands keep CARGO_HOME in tmp_path. Offline `cargo update`
+# fixtures use stdlib/local vendored sources and Cargo's own package-cache lock,
+# so all Cargo acceptance tests run safely across xdist workers.
 uv run pytest tests/rebrand/test_cargo_acceptance.py tests/rebrand/test_cargo_lockfile.py tests/rebrand/test_cargo_split.py tests/rebrand/test_cargo_replace.py tests/rebrand/test_cargo_source_paths.py -m slow -q -n auto --dist loadgroup

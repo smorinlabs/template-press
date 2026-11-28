@@ -168,7 +168,6 @@ def _locked_dep_version(root: Path) -> str:
 
 
 @pytest.mark.slow
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_update_workspace_preserves_vendored_version(tmp_path: Path) -> None:
     _require_cargo()
     root = tmp_path / "ws"
@@ -187,10 +186,14 @@ def test_update_workspace_preserves_vendored_version(tmp_path: Path) -> None:
     )
     _vendor(root, "1.0.0")
 
+    cargo_home = tmp_path / "cargo-home"
+    cargo_home.mkdir()
+
     def cargo(*argv: str) -> None:
         subprocess.run(  # noqa: S603
             ["cargo", *argv, "--offline"],  # noqa: S607
             cwd=root,
+            env={**os.environ, "CARGO_HOME": str(cargo_home)},
             check=True,
             capture_output=True,
             text=True,

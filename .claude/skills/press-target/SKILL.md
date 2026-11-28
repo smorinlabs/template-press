@@ -201,12 +201,16 @@ wholly inside it. A match that only overlaps a kept span is still a leak.
 - An entry that occurs nowhere on the rewrite surface prints a stale-entry
   warning on stderr. The dry-run plan and the receipt list the kept names.
 
-### Sibling preflight
+### Sibling and glued-name preflight
 
 Before any rewrite, `press rebrand` and `press verify` scan the target for a
 token that joins a source `npm_name` or `cli_name` to another name part and is
-not declared in `keep_names`. A finding exits 1 with nothing written and no
-receipt, and prints each token with the `keep_names` line that would keep it.
+not declared in `keep_names`. In addition, `press rebrand` scans every identity
+field that `press verify` checks (including derived `display_name` forms) for
+glued occurrences across all target languages. A finding exits 1 with nothing
+written and no receipt, and prints each token with the rewrite rule
+(`substring_rewrite_fields` / `[[replace]]`) or keep rule (`keep_names` /
+`[[verify.ignore]]`) that resolves it.
 
 - Multi-part values (`acme-cli`, `@acme/widget`): any name character touching
   either side is a sibling (`acme-cli2`, `xacme-cli`, `acme-cli-helper`).
@@ -589,6 +593,7 @@ These stop the press before any write:
 | A rewrite would separate a declared or name-inferred Cargo path from its file (`cargo paths:`) | `owner = "acme"` rewrites `[lib] path = "lib/acme-x.rs"`, but no row renames the file | 2 |
 | An inferred or auto-discovered target rename would leave multiple candidate files for the same target name (`cargo paths:`) | `acme-cli` renames to `zeta-cli` while `src/bin/zeta-cli/main.rs` already exists (or `src/main.rs` collides with `src/bin/<pkg>`, or the same two-file shape under `tests/`, `examples/`, or `benches/`, even with `autobins = false` or another `auto* = false` flag) | 2 |
 | A rewrite would separate a path that Rust source declares from its file (`cargo paths:`): the file of `mod name;`, a `#[path = "..."]` or `#[cfg_attr(<cond>, path = "...")]` value, or an `include_str!`/`include_bytes!`/`include!` argument | `owner = "acmelabs"` rewrites `pub mod acmelabs;` or `include_str!("../data/acmelabs.txt")`, but no row renames the file | 2 |
+| A `#[cfg(...)]`-disabled `mod name;` with no file on disk, inside a renamed inline module or as the renamed module itself | `mod acmelabs { #[cfg(any())] mod x; }` or `#[cfg(any())] mod acmelabs;` with `owner = "acmelabs"` | 2 |
 | A `CARGO_BIN_EXE_<name>` token would not match its auto-discovered binary (`cargo paths:`) | `src/bin/acme.rs` renames to `zeta.rs`, but the token in an excluded file stays | 2 |
 | Versioned string that extends a declared name | `acme-core-0.1.0` in a README | 1 |
 
@@ -606,8 +611,9 @@ and paths that Rust source declares with a plain string literal in a `.rs`
 file Cargo compiles. Such a file is a crate root or target file that Cargo
 infers or a manifest declares (`src/lib.rs`, `src/main.rs`, `src/bin/`,
 `tests/`, `benches/`, `examples/`, a target `path`, `build.rs`), or a file one
-of those reaches through `mod` or `#[path]`, but not through Rust's path rule for
-a module nested in an inline `mod name { ... }` block. Under `autotests = false`
+of those reaches through `mod` (including inline `mod name { ... }` blocks and
+their `#[path]` attributes), `#[path]`, `#[cfg_attr(<cond>, path = "...")]`, or
+`include!`. Under `autotests = false`
 or another `auto*` flag set to false, Cargo builds only the targets the
 manifest names in that directory, so only those files are read. Dependency
 paths are read from every dependency table, including the pre-2024
@@ -620,19 +626,48 @@ paths are read from every dependency table, including the pre-2024
   which Cargo does not compile;
 - a path that code reads at run time, such as
   `std::fs::read_to_string("data/acmelabs.txt")` in `build.rs`;
-- a `#[path]` module inside or on an inline module, such as
-  `mod outer { #[path = "x.rs"] mod x; }` or `#[path = "p"] mod outer { mod inner; }`,
-  so a rename that splits it from its file can still get a receipt;
-- a renamed inline module around an unchanged child, such as
-  `mod acmelabs { mod x; }` becoming `mod zetalabs { mod x; }`, so the crate
-  can fail to build after a receipt.
-
-A `#[path]` attribute on an inline module whose child module is renamed, such
-as `#[path = "p"] mod outer { mod acme_core; }`, is refused with exit 2, even
-when the press would have been correct.
+- a `#[path]` value that uses `..`, inside an inline module that a rename changes, such as `pub mod acmelabs { #[path = "../shared.rs"] pub mod x; }` when `acmelabs` is renamed to `zetalabs`: Rust then looks for `src/zetalabs/../shared.rs`, which needs a `src/zetalabs/` directory, so `cargo check` can fail after a receipt. `main` behaves the same way.
 
 An `owner`, `author`, or `email` row that rewrites such a path without
 renaming its file can give a receipt for a build that then fails.
+
+## BAML targets
+
+BAML repositories keep their generated `baml_client/` out of text rewriting and
+rebuild it with `[[regenerate]] dir` after `.baml` sources and host code have
+been pressed.
+
+1. Run `press verify --target <TARGET>` before the first press to find any
+   glued names in `.baml` or host files (for example `AcmeWidgetClient` when
+   `display_name = "Acme Widget"`).
+2. Add `[rules]` and `[[regenerate]] dir` to `press/press-rules.toml`:
+
+```toml
+[rules]
+languages = ["python"]
+substring_rewrite_fields = ["display_name_pascal"]
+
+[[regenerate]]
+dir = "src/{package_name}/baml_client"
+command = ["uv", "run", "--offline", "baml-cli", "generate"]
+verify_exempt = true
+reason = "BAML client, rebuilt from baml_src"
+```
+
+- For a TypeScript host, use `languages = ["node"]` (only if multi-manifest),
+  `dir = "baml_client"` (or `"src/baml_client"`), and
+  `command = ["npx", "baml-cli", "generate"]`. Never list `"baml"` in
+  `[rules] languages`.
+- `{package_name}` in `[[regenerate]] dir` renders against the source identity
+  before the press and the destination identity after renames, so repeat
+  presses work without editing `press/press-rules.toml`.
+- A tracked `baml_client/inlinedbaml.py` or `baml_client/inlinedbaml.ts` at any
+  depth with no covering `[[regenerate]]` or `[[remove]]` exits 2 before any
+  write and prints a paste-ready `[[regenerate]] dir` block.
+- For a gitignored client inside the package, add
+  `[[clean]] paths = ["src/{package_name}/baml_client"]` and run `press clean`
+  before `press rebrand`; `[[regenerate]] dir` rebuilds the client at the new
+  package path.
 
 ## Rules authoring (`press/press-rules.toml`)
 
@@ -698,9 +733,10 @@ a path anyway, declare an explicit `[[replace]]` rule with `paths = true`.
 Gated on the target author declaring the token word-disjoint — never a
 default. Fields are independent: opting in `app_name` alone does not cover
 glued UPPERCASE forms (`PLBPOwned`); pair it with `app_name_upper` when
-those exist. `display_name` itself may not appear here (it fails
-validation as a no-op) — narrow which of its three forms rewrite via
-`[rules] display_forms` instead.
+those exist. `display_name` itself (and `display_name_camel`/`display_name_spaced`) may not
+appear here — opt in `"display_name_pascal"` when glued PascalCase occurrences
+like `AcmeWidgetClient` must rewrite, or narrow which forms rewrite via
+`[rules] display_forms`.
 
 ### `languages` — declare multi-language targets
 

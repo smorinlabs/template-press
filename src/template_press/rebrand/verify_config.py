@@ -14,9 +14,12 @@ is the only I/O boundary.
 
 from __future__ import annotations
 
+import tomllib
+from collections.abc import Collection
 from dataclasses import dataclass
+from pathlib import Path
 
-from template_press.rebrand.identity import REQUIRED_FIELDS, ValidationError
+from template_press.rebrand.identity import REQUIRED_FIELDS, Identity, ValidationError
 from template_press.rebrand.ignores import Ignore
 
 # Every identity field `press verify` may scan for: the six REQUIRED_FIELDS,
@@ -26,6 +29,7 @@ from template_press.rebrand.ignores import Ignore
 KNOWN_FIELDS: frozenset[str] = frozenset(REQUIRED_FIELDS) | {
     "app_name_upper",
     "display_name",
+    "display_name_pascal",
     "npm_name",
     "cli_name",
 }
@@ -157,3 +161,32 @@ def parse_verify_config(table: dict | None) -> VerifyConfig:
         ignores=ignores,
         equal_fields=equal_fields,
     )
+
+
+def load_verify_config(target: Path) -> VerifyConfig:
+    """Parse the ``[verify]`` table from ``press/press-rules.toml``; absent -> defaults."""
+    path = target / "press" / "press-rules.toml"
+    table = None
+    if path.is_file():
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        table = data.get("verify")
+    return parse_verify_config(table)
+
+
+def effective_verify_fields(
+    source: Identity,
+    cfg: VerifyConfig,
+    substring_rewrite_fields: Collection[str],
+) -> tuple[tuple[str, ...], frozenset[str]]:
+    """The exact field list and substring set ``press verify`` scans for ``source``."""
+    scan_fields: list[str] = list(cfg.fields)
+    if source.display_name is not None and "display_name" not in scan_fields:
+        scan_fields.append("display_name")
+    for field_name in ("npm_name", "cli_name"):
+        if getattr(source, field_name) is not None and field_name not in scan_fields:
+            scan_fields.append(field_name)
+    for field_name in sorted(substring_rewrite_fields):
+        if field_name in KNOWN_FIELDS and field_name not in scan_fields:
+            scan_fields.append(field_name)
+    scan_substring = cfg.substring_fields | frozenset(substring_rewrite_fields)
+    return tuple(scan_fields), scan_substring

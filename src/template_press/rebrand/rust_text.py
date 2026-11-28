@@ -36,7 +36,9 @@ _CODE: _State = ("code", 0)
 
 _IDENT_CHARS = re.compile(r"[A-Za-z0-9_]")
 _STRING_PREFIXES = frozenset({"r", "b", "br", "c", "cr"})
-_CHAR_LITERAL = re.compile(r"'(?:\\u\{[0-9A-Fa-f_]+\}|\\x[0-9A-Fa-f]{2}|\\.|[^\\'\n])'")
+_CHAR_LITERAL = re.compile(
+    r"'(?:\\u\{[0-9A-Fa-f_]+\}|\\x[0-9A-Fa-f]{2}|\\.|[^\\'\r\n])'"
+)
 # Text right before a literal that makes it a Cargo feature name or a path the
 # compiler resolves against the source file's directory.
 _FEATURE_BEFORE = re.compile(r"\bfeature\s*=\s*$")
@@ -56,8 +58,14 @@ _OPERAND_END = re.compile(r"\s*(?:[),;\]}{]|&&|\|\|)")
 _OPERAND_START = re.compile(
     r"(?:(?:^|[(,{;\[])|(?<![=!<>])=|&&|\|\||!|\b(?:if|while|return|match))\s*$"
 )
+# Rust accepts every macro delimiter: ``include_str!(...)``, ``[...]``, ``{...}``.
+_INCLUDE_BEFORE = re.compile(
+    r"\b(?:include_str|include_bytes|include)\s*!\s*[(\[{]\s*$"
+)
+_OUTER_PATH_ATTR_BEFORE = re.compile(r"#(?!\!)\s*\[\s*path\s*=\s*$")
 _PATH_BEFORE = re.compile(
-    r"(?:\b(?:include_str|include_bytes|include)\s*!\s*\(\s*|#!?\[\s*path\s*=\s*)$"
+    r"(?:\b(?:include_str|include_bytes|include)\s*!\s*[(\[{]\s*"
+    r"|#!?\s*\[\s*path\s*=\s*)$"
 )
 # ``path = `` as a direct argument of ``cfg_attr(...)``: the platform-module
 # form of ``#[path]``. A ``path`` nested deeper is another attribute's value.
@@ -191,14 +199,21 @@ def quoting_renames(text: str) -> tuple[int, ...]:
     )
 
 
-_MODULE_DECLARATION = re.compile(
-    r"(?<![A-Za-z0-9_])mod\s+(?:r#)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*;"
-)
+_MODULE_DECLARATION = re.compile(r"(?<!\w)(?<!r#)mod\s+(?:r#)?(?P<name>[^\W\d]\w*)\s*;")
 _PATH_ATTRIBUTE = re.compile(r"#\s*\[\s*path\s*=")
-_INLINE_MODULE = re.compile(
-    r"(?<![A-Za-z0-9_])mod\s+(?:r#)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\{"
-)
+_INLINE_MODULE = re.compile(r"(?<!\w)(?<!r#)mod\s+(?:r#)?(?P<name>[^\W\d]\w*)\s*\{")
 _PATH_VALUE = re.compile(r"\bpath\s*=\s*(?=\"\")")
+
+PathKind = Literal["include", "module_path", "inline_dir"]
+
+
+@dataclass(frozen=True)
+class InlineModule:
+    """One enclosing ``mod name { ... }`` block and any plain ``#[path]`` on it."""
+
+    name: str
+    path: str | None = None
+    conditional_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -216,16 +231,26 @@ class ModuleDeclaration:
     name: str
     attributed: bool
     conditional: bool
-    inline: tuple[str, ...]
+    inline: tuple[InlineModule, ...]
 
 
-def module_declarations(text: str) -> tuple[ModuleDeclaration, ...]:
-    """Each ``mod name;`` in code, with its enclosing inline modules.
+@dataclass(frozen=True)
+class RustPathLiteral:
+    """One path-role string literal with its Rust resolution context."""
 
-    Comments, doc comments, string literals, and character literals are
-    skipped, so a brace inside one opens no block.
+    literal: RustString
+    kind: PathKind
+    inline: tuple[InlineModule, ...]
+
+
+def _code_view(text: str) -> tuple[str, dict[int, RustString]]:
+    """``text`` with comments and chars blanked and strings reduced to ``""``.
+
+    Preserves 1-to-1 character offsets with ``text`` and returns each string
+    literal in real code keyed by its starting offset.
     """
     pieces: list[str] = []
+    literals: dict[int, RustString] = {}
     index = 0
     while index < len(text):
         if text.startswith(("//", "/*"), index):
@@ -235,47 +260,153 @@ def module_declarations(text: str) -> tuple[ModuleDeclaration, ...]:
             end, literal = _token(text, index)
             piece = text[index:end]
             if literal:
+                literals[index] = literal
                 # Keep the quotes, so that a ``#[path = "..."]`` stays visible.
-                pieces.append('""')
-                pieces.append(_blank(piece)[2:])
+                if len(piece) >= 2:
+                    pieces.append('""')
+                    pieces.append(_blank(piece)[2:])
+                else:
+                    pieces.append(_blank(piece))
             elif piece.startswith("'") and len(piece) > 1:
                 pieces.append(_blank(piece))  # a character literal
             else:
                 pieces.append(piece)
         index = end
-    code = "".join(pieces)
-    openers = {
-        match.end() - 1: match["name"] for match in _INLINE_MODULE.finditer(code)
-    }
-    events = sorted(
-        [(match.start(), match) for match in _MODULE_DECLARATION.finditer(code)]
-        + [(match.start(), None) for match in re.finditer(r"[{}]", code)],
-        key=lambda event: event[0],
+    return "".join(pieces), literals
+
+
+def rust_code_view(text: str) -> str:
+    """``text`` with comments blanked, offset for offset (see ``_code_view``)."""
+    return _code_view(text)[0]
+
+
+def _mod_path_attributes(
+    text: str,
+    code: str,
+    item_start: int,
+    mod_start: int,
+    literals: dict[int, RustString],
+) -> tuple[str | None, tuple[str, ...], tuple[int, ...]]:
+    """Plain-string ``#[path]`` and ``#[cfg_attr(..., path)]`` on one ``mod``."""
+    attributes = code[item_start:mod_start]
+    unconditional: str | None = None
+    conditional: list[str] = []
+    offsets: list[int] = []
+    for match in _PATH_VALUE.finditer(attributes):
+        lit_offset = item_start + match.end()
+        literal = literals.get(lit_offset)
+        if literal is None or literal.open:
+            continue
+        value = text[literal.content_start : literal.content_end]
+        if _OUTER_PATH_ATTR_BEFORE.search(attributes, 0, match.end()):
+            unconditional = value
+            offsets.append(lit_offset)
+        elif _cfg_attr_path(attributes, match.end()):
+            conditional.append(value)
+            offsets.append(lit_offset)
+    return unconditional, tuple(conditional), tuple(offsets)
+
+
+def _scan_modules(
+    text: str,
+) -> tuple[tuple[ModuleDeclaration, ...], tuple[RustPathLiteral, ...]]:
+    code, literals = _code_view(text)
+    inline_openers = {m.end() - 1: m for m in _INLINE_MODULE.finditer(code)}
+    all_path_strings = [
+        lit for lit in rust_strings(text) if string_role(text, lit, "\0") == "path"
+    ]
+    code_path_offsets = {lit.start for lit in all_path_strings if not lit.doc}
+
+    events: list[tuple[int, int, str, re.Match[str] | None]] = sorted(
+        [
+            *((m.start(), 0, "mod", m) for m in _MODULE_DECLARATION.finditer(code)),
+            *((offset, 0, "path_lit", None) for offset in code_path_offsets),
+            *((b.start(), 1, "brace", None) for b in re.finditer(r"[{}]", code)),
+        ],
+        key=lambda event: (event[0], event[1]),
     )
-    found: list[ModuleDeclaration] = []
-    stack: list[str | None] = []
-    for position, match in events:
-        if match is None:
-            if code[position] == "{":
-                stack.append(openers.get(position))
+
+    stack: list[InlineModule | None] = []
+    found_mods: list[ModuleDeclaration] = []
+    enclosing_at: dict[int, tuple[InlineModule, ...]] = {}
+    inline_dir_offsets: set[int] = set()
+
+    for pos, _, kind, payload in events:
+        if kind == "path_lit":
+            enclosing_at[pos] = tuple(m for m in stack if m is not None)
+        elif kind == "brace":
+            if code[pos] == "{":
+                opener = inline_openers.get(pos)
+                if opener is None:
+                    stack.append(None)
+                else:
+                    item = max(code.rfind(e, 0, opener.start()) for e in ";{}")
+                    path_val, cond_vals, attr_offsets = _mod_path_attributes(
+                        text, code, item + 1, opener.start(), literals
+                    )
+                    inline_dir_offsets.update(attr_offsets)
+                    stack.append(InlineModule(opener["name"], path_val, cond_vals))
             elif stack:
                 stack.pop()
-            continue
-        item = max(code.rfind(edge, 0, match.start()) for edge in ";{}")
-        attributes = code[item + 1 : match.start()]
-        found.append(
-            ModuleDeclaration(
-                match.start(),
-                match["name"],
-                bool(_PATH_ATTRIBUTE.search(attributes)),
-                any(
-                    _cfg_attr_path(attributes, value.end())
-                    for value in _PATH_VALUE.finditer(attributes)
-                ),
-                tuple(name for name in stack if name is not None),
+        elif payload is not None:
+            item = max(code.rfind(e, 0, payload.start()) for e in ";{}")
+            attrs = code[item + 1 : payload.start()]
+            _, cond_vals, _ = _mod_path_attributes(
+                text, code, item + 1, payload.start(), literals
             )
-        )
-    return tuple(found)
+            found_mods.append(
+                ModuleDeclaration(
+                    payload.start(),
+                    payload["name"],
+                    bool(_PATH_ATTRIBUTE.search(attrs)),
+                    bool(cond_vals),
+                    tuple(x for x in stack if x is not None),
+                )
+            )
+
+    found_paths: list[RustPathLiteral] = []
+    for lit in all_path_strings:
+        if lit.doc:
+            line_start = lit.doc[lit.line][0]
+            lit_kind: PathKind = (
+                "include"
+                if _INCLUDE_BEFORE.search(text, line_start, lit.start)
+                else "module_path"
+            )
+            found_paths.append(RustPathLiteral(lit, lit_kind, ()))
+        elif _INCLUDE_BEFORE.search(code, 0, lit.start):
+            found_paths.append(RustPathLiteral(lit, "include", ()))
+        elif lit.start in inline_dir_offsets:
+            found_paths.append(
+                RustPathLiteral(lit, "inline_dir", enclosing_at[lit.start])
+            )
+        else:
+            found_paths.append(
+                RustPathLiteral(lit, "module_path", enclosing_at[lit.start])
+            )
+
+    return tuple(found_mods), tuple(found_paths)
+
+
+def rust_source_structure(
+    text: str,
+) -> tuple[tuple[ModuleDeclaration, ...], tuple[RustPathLiteral, ...]]:
+    """Each ``mod name;`` and path-role string literal in ``text``."""
+    return _scan_modules(text)
+
+
+def module_declarations(text: str) -> tuple[ModuleDeclaration, ...]:
+    """Each ``mod name;`` in code, with its enclosing inline modules.
+
+    Comments, doc comments, string literals, and character literals are
+    skipped, so a brace inside one opens no block.
+    """
+    return _scan_modules(text)[0]
+
+
+def rust_path_literals(text: str) -> tuple[RustPathLiteral, ...]:
+    """Each path-role string literal in ``text`` with its Rust resolution context."""
+    return _scan_modules(text)[1]
 
 
 def _blank(piece: str) -> str:
@@ -289,10 +420,11 @@ def span_within(spans: Sequence[Span], span: Span) -> bool:
 
 def _scan(
     text: str,
-) -> tuple[tuple[RustString, ...], tuple[int, ...], tuple[Span, ...]]:
+) -> tuple[tuple[RustString, ...], tuple[int, ...], tuple[Span, ...], tuple[Span, ...]]:
     found: list[RustString] = []
     cut: list[int] = []
     quoted: list[Span] = []
+    chars: list[Span] = []  # character literals in doc lines read as code
     docs: dict[int, list[RustString]] = {}
     index, length = 0, len(text)
     last = ""  # the last code character, outside comments and plain attributes
@@ -328,6 +460,7 @@ def _scan(
                     )
                     docs.update(cluster.literals)
                     quoted += cluster.quoted
+                    chars += cluster.chars
                     pending = not inner and (cluster.hidden or cluster.cut)
                     called = not inner and cluster.calling
                     module = _MODULE_FILE.match(text, cluster.end)
@@ -382,7 +515,7 @@ def _scan(
             called = called and last not in ";}"
     if held:
         quoted.append((segment, length))
-    return tuple(found), tuple(sorted(set(cut))), tuple(quoted)
+    return tuple(found), tuple(sorted(set(cut))), tuple(quoted), tuple(chars)
 
 
 def _item_start(text: str, position: int) -> int:
@@ -509,6 +642,7 @@ class _Cluster:
     cut: bool  # it may end inside a string or a comment that later text closes
     quoted: list[Span]  # where a quoting macro's arguments may hold it
     calling: bool  # it may end inside such arguments, which later text closes
+    chars: list[Span]  # the character literals of lines it may compile as code
 
 
 def _doc_cluster(
@@ -571,13 +705,13 @@ def _doc_cluster(
     # so nothing after that text can be read.
     sealed = sealed and not after_hidden
     unread_from = len(lines) if sealed or not unknown else min(unknown)
-    literals, cut, quoted, open_end = _doc_literals(
+    literals, cut, quoted, open_end, chars = _doc_literals(
         text, lines, owners, restarts, whole, sealed, unread_from, unknown
     )
     if open_from is not None and open_from < len(lines):
         quoted.append((lines[open_from][0], lines[-1][1]))
     calling = not sealed and (open_end or open_from is not None)
-    return _Cluster(literals, position, hidden, cut, quoted, calling)
+    return _Cluster(literals, position, hidden, cut, quoted, calling, chars)
 
 
 def _doc_lines(text: str, start: int, end: int) -> list[Segment]:
@@ -585,8 +719,16 @@ def _doc_lines(text: str, start: int, end: int) -> list[Segment]:
     while True:
         newline = text.find("\n", start, end)
         if newline == -1:
-            return [*lines, (start, end)]
-        lines.append((start, newline))
+            line_end = (
+                end - 1
+                if end > start and text[end - 1] == "\r" and text[end : end + 1] == "\n"
+                else end
+            )
+            return [*lines, (start, line_end)]
+        line_end = (
+            newline - 1 if newline > start and text[newline - 1] == "\r" else newline
+        )
+        lines.append((start, line_end))
         start = newline + 1
 
 
@@ -599,7 +741,7 @@ def _doc_literals(
     sealed: bool,
     unread_from: int,
     unknown: set[int],
-) -> tuple[dict[int, list[RustString]], bool, list[Span], bool]:
+) -> tuple[dict[int, list[RustString]], bool, list[Span], bool, list[Span]]:
     """Read the joined doc lines as code wherever a code block may hold them.
 
     While the Markdown structure is ``proven``, the press knows where each
@@ -618,7 +760,7 @@ def _doc_literals(
     reading starts there in each state that the later text can close. Also
     returns whether the text may end inside a string or a comment, where the
     lines read as code may sit in a quoting macro's arguments, and whether
-    they may end there.
+    they may end there, and the character literals of the lines read as code.
     """
     bodies = [text[low:high] for low, high in lines]
     widths = [len(body) - len(body.lstrip(" ")) for body in bodies if body.strip()]
@@ -716,7 +858,10 @@ def _doc_literals(
         )
     code = [lines[number] for number, row in lexed if row]
     breaks = [lines[number][0] for number in restarts if number]
-    return found, cut, *_doc_calls(text, code, breaks)
+    chars = [
+        m.span() for low, high in code for m in _CHAR_LITERAL.finditer(text, low, high)
+    ]
+    return found, cut, *_doc_calls(text, code, breaks), chars
 
 
 def _doc_calls(
@@ -824,7 +969,8 @@ def compiled_markdown_lines(text: str) -> frozenset[int]:
     # fence that is not at the left margin (in a block quote or a list), the
     # structure is unproven: every line after any later fence line counts.
     loose = unproven = False
-    for number, line in enumerate(text.split("\n"), start=1):
+    for number, raw_line in enumerate(text.split("\n"), start=1):
+        line = raw_line.removesuffix("\r")
         body = line.lstrip(" ")
         if unproven:
             found.add(number)
@@ -840,7 +986,7 @@ def compiled_markdown_lines(text: str) -> frozenset[int]:
                 found.add(number)
             continue
         opened = _FENCE.match(body) if len(line) - len(body) < 4 else None
-        if opened:
+        if opened and (opened[1][0] == "~" or "`" not in opened[2]):
             fence = opened[1]
             compiled = not _never_compiled(opened[2].strip())
         elif _FENCE_MARK.search(line):
@@ -1163,8 +1309,8 @@ def split_rust_replacements(
     text: str, spans: Sequence[Span], name: str, identifier: str, package: str
 ) -> list[str | None]:
     """The spelling for each matched span; ``None`` leaves it unchanged."""
-    strings, _, quoted = _scan(text)
-    chars = _char_literals(text)
+    strings, _, quoted, doc_chars = _scan(text)
+    chars = _char_literals(text) + doc_chars
     out: list[str | None] = []
     for span in spans:
         literal = string_at(strings, span)
@@ -1172,6 +1318,10 @@ def split_rust_replacements(
             out.append(None)
         elif span_within(chars, span):
             out.append(None)  # a char literal: neither spelling fits
+        elif any(s.start <= span[0] < s.content_start for s in strings) or any(
+            low == span[1] for low, _ in chars
+        ):
+            out.append(None)  # a literal prefix such as r#"..."#, b"..." or b'x'
         elif literal is None:
             out.append(identifier)
         elif string_role(text, literal, name) == "other":

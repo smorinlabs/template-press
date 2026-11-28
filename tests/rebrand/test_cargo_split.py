@@ -34,7 +34,7 @@ from template_press.rebrand.rules import CargoSplit, load_rules
 from template_press.rebrand.rust_text import compiled_markdown_lines
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import _git, posix_only
+from .conftest import _git, init_git_repo, posix_only, seed_cached_git_repo
 
 ACME = {
     "package_name": "acme",
@@ -175,24 +175,21 @@ def _seed(
     *,
     lock: bool,
 ) -> None:
-    _write(
-        target,
-        {
-            **files,
-            ".gitignore": "target/\n" if lock else "target/\nCargo.lock\n",
-            "press/press-source.toml": _table("identity", identity)
-            + _table("identity.cargo_names", names),
-            "press/press-rules.toml": rules,
-        },
-    )
+    all_files = {
+        **files,
+        ".gitignore": "target/\n" if lock else "target/\nCargo.lock\n",
+        "press/press-source.toml": _table("identity", identity)
+        + _table("identity.cargo_names", names),
+        "press/press-rules.toml": rules,
+    }
     if lock:
+        _write(target, all_files)
         _assert_cargo(target, "generate-lockfile", "--offline")
-    _git(target, "init", "-q", "-b", "main")
-    _git(target, "config", "user.email", "t@example.test")
-    _git(target, "config", "user.name", "t")
-    _git(target, "remote", "add", "origin", f"{REPOSITORY}.git")
-    _git(target, "add", "-A")
-    _git(target, "commit", "-q", "-m", "seed")
+        init_git_repo(target, origin=f"{REPOSITORY}.git", commit_message="seed")
+        return
+    seed_cached_git_repo(
+        target, all_files, origin=f"{REPOSITORY}.git", commit_message="seed"
+    )
 
 
 def _answers(
@@ -260,8 +257,7 @@ def _press_and_prove(
 ) -> None:
     assert _press(target, answers, *flags) == 0
     assert (target / RECEIPT_REL).is_file()
-    _assert_cargo(target, "check", "--locked", "--offline")
-    _assert_cargo(target, "test", "--offline")
+    _assert_cargo(target, "test", "--locked", "--offline")
     _set_origin(target, identity)
     assert verify_command(["--target", str(target)]) == 0
 
@@ -287,7 +283,6 @@ def _locked_names(target: Path) -> set[str]:
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("shape", ["single_crate", "workspace"])
 def test_split_press_builds_verifies_and_presses_again(
     shape: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -611,7 +606,6 @@ def _pkg_name_crate() -> dict[str, str]:
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("case", ["feature_cfg", "include_str", "pkg_name_env"])
 def test_split_string_spans_that_are_provable_build(case: str, tmp_path: Path) -> None:
     _require_cargo()
@@ -689,6 +683,22 @@ CHAR_CASES = {
     "lifetime": ("pub fn f<'x>(s: &'x str) -> &'x str {\n    s\n}\n", 0),
     "line_comment": ("// a char such as 'x' is fine here\n", 0),
     "doc_prose": ("/// Returns 'x' as prose.\npub fn g() {}\n", 0),
+    # Cycle 5 thread 4698809961: rustdoc compiles these as doctests.
+    "doctest_fence": (
+        "/// ```\n/// let c: char = 'x';\n/// assert_eq!(c, 'x');\n/// ```\n"
+        "pub fn d() {}\n",
+        2,
+    ),
+    "doctest_indented": (
+        "/// Hi.\n///\n///     let c: char = 'x';\n///     assert_eq!(c, 'x');\n"
+        "pub fn d() {}\n",
+        2,
+    ),
+    "doctest_block": (
+        "/**\n```\nlet c: char = 'x';\nassert_eq!(c, 'x');\n```\n*/\npub fn d() {}\n",
+        2,
+    ),
+    "text_fence": ("/// ```text\n/// 'x'\n/// ```\npub fn d() {}\n", 0),
 }
 
 
@@ -718,15 +728,16 @@ def test_char_literal_of_the_crate_name_is_refused(
     assert _press(target, answers) == expected
 
     if expected:
-        assert "src/lib.rs:4:" in capsys.readouterr().err
+        lines = CHAR_CASES[case][0].split("\n")
+        line = 4 + next(n for n, text in enumerate(lines) if "'x'" in text)
+        assert f"src/lib.rs:{line}:" in capsys.readouterr().err
         assert _status(target) == ""
         assert not (target / RECEIPT_REL).exists()
 
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
-@pytest.mark.parametrize("case", ["char_literal", "lifetime"])
+@pytest.mark.parametrize("case", ["char_literal", "doctest_fence", "lifetime"])
 def test_char_literal_refusal_matches_real_cargo(case: str, tmp_path: Path) -> None:
     """Real Cargo: the old receipt wrote ``'zeta_gadget'``, which does not
     compile; a lifetime of the same name still presses and builds."""
@@ -840,7 +851,6 @@ def test_rust_log_in_package_script_is_refused(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_rust_log_oracle_needs_the_identifier_spelling(tmp_path: Path) -> None:
     """Real env_logger matches the module path, never the package spelling.
 
@@ -907,7 +917,6 @@ DOC_CASES = {
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("case", sorted(DOC_CASES))
 def test_doc_and_comparison_strings_build(case: str, tmp_path: Path) -> None:
     _require_cargo()
@@ -979,7 +988,6 @@ DOC_PRESS_CASES = {
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("case", sorted(DOC_PRESS_CASES))
 def test_doc_fences_follow_rustdoc(case: str, tmp_path: Path) -> None:
     _require_cargo()
@@ -1305,7 +1313,6 @@ def test_inner_doc_after_an_open_outer_doc_is_read_from_that_state(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("case", sorted(OPEN_START_LAYOUTS))
 def test_inner_doc_after_an_open_outer_doc_passes_real_cargo(
     case: str, tmp_path: Path
@@ -1425,7 +1432,6 @@ def _doc_crate(tmp_path: Path, lib: str) -> Path:
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("case", sorted(S1_LAYOUTS))
 def test_s1_doctests_pass_real_cargo_after_the_press(case: str, tmp_path: Path) -> None:
     _require_cargo()
@@ -1439,7 +1445,6 @@ def test_s1_doctests_pass_real_cargo_after_the_press(case: str, tmp_path: Path) 
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_compiled_doc_layouts_pass_real_cargo_after_the_press(tmp_path: Path) -> None:
     """Real ``cargo test`` runs every layout's doctest, before and after."""
     _require_cargo()
@@ -1466,7 +1471,6 @@ def test_compiled_doc_layouts_pass_real_cargo_after_the_press(tmp_path: Path) ->
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_skipped_doc_layouts_are_never_compiled_by_real_cargo(tmp_path: Path) -> None:
     """The oracle for every exemption: prose, and each non-Rust fence tag.
 
@@ -1682,7 +1686,6 @@ def test_name_in_a_plain_comment_inside_a_call_is_no_argument(tmp_path: Path) ->
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_stringified_name_is_refused_and_real_cargo_rejects_the_identifier(
     tmp_path: Path,
 ) -> None:
@@ -1770,7 +1773,6 @@ def test_comparison_with_bare_operands_takes_the_package_spelling(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("case", ["pkg_after_replace", "literal_method"])
 def test_chained_comparison_refusal_matches_real_cargo(
     case: str, tmp_path: Path
@@ -1869,7 +1871,6 @@ def test_quoting_macro_names_in_strings_and_comments_are_no_rename(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("case", ["b0_alias", "grouped", "cross_file"])
 def test_renamed_quoting_macro_refusal_matches_real_cargo(
     case: str, tmp_path: Path
@@ -2017,6 +2018,83 @@ def test_doc_include_with_a_spaced_bang_is_still_read_as_rustdoc(
     assert "README.md:4:" in err
 
 
+DELIMITERS = {"parens": ("(", ")"), "brackets": ("[", "]"), "braces": ("{", "}")}
+BARE_NAME_README = "# Demo\n\n```rust\nlet acme = 1;\nassert_eq!(acme, 1);\n```\n"
+
+
+def _delimited_readme_crate(delimiters: str) -> dict[str, str]:
+    """Cycle 2 F1: the fence has no ``::`` or ``use``, so only the doc-include
+    check can see that rustdoc compiles it."""
+    open_, close = DELIMITERS[delimiters]
+    return {
+        "Cargo.toml": _package("acme"),
+        "src/lib.rs": f'#![doc = include_str!{open_}"../README.md"{close}]\n'
+        + PLAIN_LIB,
+        "src/main.rs": 'fn main() {\n    println!("{} acmectl", acme::hi());\n}\n',
+        "README.md": BARE_NAME_README,
+    }
+
+
+@pytest.mark.parametrize("delimiters", sorted(DELIMITERS))
+def test_doc_include_with_any_delimiter_is_read_as_rustdoc(
+    delimiters: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = _delimited_readme_crate(delimiters)
+    err = _refusal(tmp_path, files, capsys, split=PKG_README)
+    assert "README.md:4: 'zeta-gadget' would sit in a code block" in err
+    assert "src/lib.rs:1" in err
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.parametrize("delimiters", ["brackets", "braces"])
+def test_doc_include_delimiter_refusal_matches_real_cargo(
+    delimiters: str, tmp_path: Path
+) -> None:
+    """Real Cargo: the old receipt wrote ``let zeta-gadget = 1;`` into the
+    doctest, and ``cargo test`` failed (``0/0/yes/101``)."""
+    _require_cargo()
+    target = _round_target(
+        tmp_path, _delimited_readme_crate(delimiters), split=PKG_README
+    )
+    _assert_cargo(target, "test", "--offline")
+
+    assert _press(target, _zeta(tmp_path)) == 2
+
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
+    _assert_cargo(target, "test", "--offline")
+
+
+def _bracketed_include_crate() -> dict[str, str]:
+    files = _include_crate()
+    files["src/lib.rs"] = files["src/lib.rs"].replace(
+        'include_str!("../assets/acme.txt")', 'include_str!["../assets/acme.txt"]'
+    )
+    return files
+
+
+def test_split_bracketed_include_of_a_renamed_file_presses(tmp_path: Path) -> None:
+    """Cycle 2 F1: a bracketed include path is a path, so the press can prove it."""
+    target = _round_target(tmp_path, _bracketed_include_crate())
+
+    assert _press(target, _zeta(tmp_path)) == 0
+
+    assert (target / "assets/zeta-gadget.txt").is_file()
+    lib = (target / "src/lib.rs").read_text()
+    assert 'include_str!["../assets/zeta-gadget.txt"]' in lib
+
+
+@pytest.mark.slow
+@posix_only
+def test_split_bracketed_include_of_a_renamed_file_builds(tmp_path: Path) -> None:
+    _require_cargo()
+    target = _round_target(tmp_path, _bracketed_include_crate(), lock=True)
+    _assert_cargo(target, "test", "--offline")
+
+    _press_and_prove(target, _zeta(tmp_path), ZETA)
+
+
 # F6: CommonMark closes a fence only with a line indented under four spaces.
 FOUR_SPACE_README = (
     "# acme-repo\n\n```rust\n/*\n    ```\n*/\n"
@@ -2046,7 +2124,6 @@ def test_doc_included_fence_with_a_four_space_fence_line_is_refused(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_four_space_fence_refusal_matches_real_cargo(tmp_path: Path) -> None:
     """Real Cargo: the old receipt wrote ``"zeta-gadget"`` into the doctest,
     and ``cargo test --doc`` failed."""
@@ -2062,7 +2139,6 @@ def test_four_space_fence_refusal_matches_real_cargo(tmp_path: Path) -> None:
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_doc_included_readme_refusal_and_remedy_match_real_cargo(
     tmp_path: Path,
 ) -> None:
@@ -2219,3 +2295,190 @@ def test_rust_strings_read_hex_and_unicode_char_escapes() -> None:
     text = "eat!('\\x41'\"'\", '\\u{4_1}'\"'\"); let s = \"acme\";\n"
     contents = [text[s.content_start : s.content_end] for s in rust_strings(text)]
     assert contents == ["'", "'", "acme"]
+
+
+def test_split_path_attr_inside_inline_module_resolves_from_inline_dir(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    it_rs = 'mod outer {\n    #[path = "acme.rs"]\n    pub mod details;\n}\n'
+
+    healthy_root = tmp_path / "healthy"
+    healthy_root.mkdir()
+    healthy = _round_target(
+        healthy_root,
+        _lib_crate(
+            **{
+                "tests/it.rs": it_rs,
+                "tests/outer/acme.rs": "pub fn ok() -> u8 { 1 }\n",
+            }
+        ),
+    )
+    assert _press(healthy, _zeta(healthy_root)) == 0
+    assert (healthy / "tests/outer/zeta-gadget.rs").is_file()
+    assert '#[path = "zeta-gadget.rs"]' in (healthy / "tests/it.rs").read_text()
+
+    refused_root = tmp_path / "refused"
+    refused_root.mkdir()
+    err = _refusal(
+        refused_root,
+        _lib_crate(
+            **{
+                "tests/it.rs": it_rs,
+                "tests/acme.rs": "pub fn stray() -> u8 { 1 }\n",
+            }
+        ),
+        capsys,
+    )
+    assert "tests/it.rs:2:" in err
+
+
+# Cycle 3 F5: a one- or two-letter crate name that is a literal's prefix.
+PREFIX_CASES = {
+    "raw_string": ("r", "&'static str", 'r#"hello"#'),
+    "byte_string": ("b", "&'static [u8]", 'b"hello"'),
+    "raw_byte_string": ("br", "&'static [u8]", 'br"hello"'),
+    "byte_char": ("b", "u8", "b'x'"),
+    "c_string": ("c", "&'static core::ffi::CStr", 'c"hi"'),
+}
+
+
+def _prefix_target(tmp_path: Path, case: str) -> Path:
+    name, kind, literal = PREFIX_CASES[case]
+    files = {
+        "Cargo.toml": _package(name),
+        "src/lib.rs": f"pub fn hi() -> {kind} {{\n    {literal}\n}}\n",
+    }
+    return _round_target(
+        tmp_path, files, names={"core": name}, identity={**ACME, "package_name": name}
+    )
+
+
+@pytest.mark.parametrize("case", sorted(PREFIX_CASES))
+def test_crate_name_as_a_literal_prefix_is_refused(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Neither spelling may replace the prefix of a string or char literal."""
+    target = _prefix_target(tmp_path, case)
+
+    assert _press(target, _zeta(tmp_path)) == 2
+
+    name = PREFIX_CASES[case][0]
+    expected = f"src/lib.rs:2: {name!r} is in no [[cargo_split]] role"
+    assert expected in capsys.readouterr().err
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.parametrize("case", sorted(PREFIX_CASES))
+def test_crate_name_as_a_literal_prefix_refusal_matches_real_cargo(
+    case: str, tmp_path: Path
+) -> None:
+    """Real Cargo: the old receipt wrote ``zeta_gadget#"hello"#`` and the like,
+    which does not compile."""
+    _require_cargo()
+    target = _prefix_target(tmp_path, case)
+    _assert_cargo(target, "test", "--offline")
+
+    assert _press(target, _zeta(tmp_path)) == 2
+
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+    _assert_cargo(target, "test", "--offline")
+
+
+# Cycle 3 F6: a backtick opener whose info string holds a backtick opens no fence.
+FALSE_OPENER_README = (
+    "# acme\n\nSome text.\n\n```a`b\n```\nlet acme = 1;\nassert_eq!(acme, 1);\n```\n"
+)
+
+
+def test_backtick_in_info_string_opens_no_markdown_fence() -> None:
+    lines = compiled_markdown_lines("```a`b\n```\nlet acme = 1;\n```\n")
+    assert 3 in lines
+
+
+def _false_opener_crate() -> dict[str, str]:
+    return {
+        "Cargo.toml": _package("acme"),
+        "src/lib.rs": '#![doc = include_str!("../README.md")]\n' + PLAIN_LIB,
+        "README.md": FALSE_OPENER_README,
+    }
+
+
+def test_doc_included_fence_after_a_false_opener_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    err = _refusal(tmp_path, _false_opener_crate(), capsys, split=PKG_README)
+    assert "README.md:7:" in err
+
+
+@pytest.mark.slow
+@posix_only
+def test_false_opener_refusal_matches_real_cargo(tmp_path: Path) -> None:
+    """Real Cargo: the old receipt wrote ``let zeta-gadget = 1;`` into the
+    doctest, and ``cargo test --doc`` failed."""
+    _require_cargo()
+    target = _round_target(tmp_path, _false_opener_crate(), split=PKG_README)
+    _assert_cargo(target, "test", "--offline", "--doc")
+
+    assert _press(target, _zeta(tmp_path)) == 2
+
+    assert _status(target) == ""
+    _assert_cargo(target, "test", "--offline", "--doc")
+
+
+# Cycle 4 thread 4697837234: a comment inside include_str! still includes docs.
+def _commented_doc_include_crate() -> dict[str, str]:
+    return {
+        "Cargo.toml": _package("acme"),
+        "src/lib.rs": '#![doc = include_str!(/* docs */ "../README.md")]\n' + PLAIN_LIB,
+        "README.md": (
+            "# acme\n\nSome text.\n\n```\nlet acme = 1;\nassert_eq!(acme, 1);\n```\n"
+        ),
+    }
+
+
+def test_commented_doc_include_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    err = _refusal(tmp_path, _commented_doc_include_crate(), capsys, split=PKG_README)
+    assert "README.md:6:" in err
+
+
+@pytest.mark.slow
+@posix_only
+def test_commented_doc_include_refusal_matches_real_cargo(tmp_path: Path) -> None:
+    """Real Cargo: the old receipt wrote ``let zeta-gadget = 1;`` into the
+    doctest, and ``cargo test --doc`` failed."""
+    _require_cargo()
+    target = _round_target(tmp_path, _commented_doc_include_crate(), split=PKG_README)
+    _assert_cargo(target, "test", "--offline", "--doc")
+
+    assert _press(target, _zeta(tmp_path)) == 2
+
+    assert _status(target) == ""
+    _assert_cargo(target, "test", "--offline", "--doc")
+
+
+def test_crlf_doc_comments_and_markdown_preserve_proven_structure() -> None:
+    """Windows CRLF line endings must not invalidate proven doc-comment prose
+    or Markdown fence closures."""
+    from template_press.rebrand.rust_text import (
+        quoted_spans,
+        rust_strings,
+        split_rust_replacements,
+    )
+
+    for case in ("prose", "text_fence", "ignore_fence"):
+        crlf = _doc_lib(SKIPPED_LAYOUTS[case], UNPROVEN).replace("\n", "\r\n")
+        assert rust_strings(crlf) == ()
+        assert quoted_spans(crlf) == ()
+        start = crlf.index("acme")
+        assert split_rust_replacements(
+            crlf, [(start, start + 4)], "acme", "zeta_gadget", "zeta-gadget"
+        ) == ["zeta_gadget"]
+
+    md = "```text\r\nnot rust\r\n```\r\n\r\n```\r\nlet acme = 1;\r\n```\r\n"
+    assert compiled_markdown_lines(md) == frozenset({6})

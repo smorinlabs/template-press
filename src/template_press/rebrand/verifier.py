@@ -45,6 +45,7 @@ from template_press.rebrand.identity import (
     CARGO_EXACT_PREFIX,
     Identity,
     cargo_ident,
+    display_forms,
 )
 from template_press.rebrand.inventory import (
     SurfaceSnapshot,
@@ -55,16 +56,18 @@ from template_press.rebrand.inventory import (
     select_verifier_entries,
 )
 from template_press.rebrand.keep_names import (
-    component_kept_spans,
+    clip_kept_spans,
     find_outside_kept,
     kept_spans,
     matches_outside_kept,
 )
-from template_press.rebrand.matcher import identity_pattern
+from template_press.rebrand.matcher import identity_pattern, substring_pattern
 from template_press.rebrand.pathing import (
     ROOT_CONTROL,
+    exempt_regenerated_dirs,
     exempt_regenerated_paths,
     is_root_press,
+    regenerate_dir_prefixes,
     reverse_renamed_path,
     rule_scope_hits,
     symlink_target_posix,
@@ -436,6 +439,7 @@ def _rule_scan_specs(
         exclude_files=rules.exclude_files,
         exclude_dirs=rules.exclude_dirs,
         root_control=ROOT_CONTROL,
+        exclude_prefixes=regenerate_dir_prefixes(rules),
     )
     specs: dict[tuple[str, str, frozenset[str], bool, bool], _RuleScanSpec] = {}
     for rule in rules.replace:
@@ -473,7 +477,7 @@ def _rule_scan_specs(
     return tuple(specs.values())
 
 
-def _changed_fields(
+def changed_verify_fields(
     source: Identity,
     dest: Identity,
     fields: Sequence[str],
@@ -494,6 +498,9 @@ def _changed_fields(
     suppress. A substring field is a literal hunt and covers one spelling only.
     """
     src, dst = source.as_dict(), dest.as_dict()
+    if source.display_name is not None and dest.display_name is not None:
+        src["display_name_pascal"] = display_forms(source.display_name)["pascal"]
+        dst["display_name_pascal"] = display_forms(dest.display_name)["pascal"]
     changed = [
         (f, src[f]) for f in fields if f in src and f in dst and src[f] != dst[f]
     ]
@@ -512,6 +519,9 @@ def _changed_fields(
             hunted.add(pattern)
             changed.append((field, name))
     return changed
+
+
+_changed_fields = changed_verify_fields
 
 
 def _cargo_literals(
@@ -619,29 +629,55 @@ def _scan_path_components(
     path_rules = _rule_path_matches(posix, rule_specs, renamed, paths=True)
     # A scoped npm_name spans two components, so no component scan sees it.
     name_start = len(posix) - len(rel.name)
-    posix_kept = kept_spans(posix, keep_names)
+    posix_kept: tuple[tuple[int, int], ...] | None = () if not keep_names else None
     for f, value in changed:
         if f != "npm_name" or "/" not in value:
             continue
         substring = f in substring_fields
-        for _start, end in find_outside_kept(
-            posix, f, value, substring=substring, kept=posix_kept
-        ):
+        raw_hits = find_outside_kept(posix, f, value, substring=substring, kept=())
+        if not raw_hits:
+            continue
+        if posix_kept is None:
+            posix_kept = kept_spans(posix, keep_names)
+        hits = (
+            find_outside_kept(posix, f, value, substring=substring, kept=posix_kept)
+            if posix_kept
+            else raw_hits
+        )
+        for _start, end in hits:
             where = "filename" if end > name_start else "dirname"
             findings.append(Finding(posix, f, value, where, None, None, posix))
     for i, comp in enumerate(rel.parts):
         if is_root_press(rel, i):
             continue
         where = "filename" if i == last_index else "dirname"
-        kept = component_kept_spans(rel.parts, i, keep_names)
+        comp_kept: tuple[tuple[int, int], ...] | None = None
         for f, value in changed:
             substring = f in substring_fields
-            for _start, _end in find_outside_kept(
-                comp, f, value, substring=substring, kept=kept
-            ):
+            raw_hits = find_outside_kept(comp, f, value, substring=substring, kept=())
+            if not raw_hits:
+                continue
+            if comp_kept is None:
+                if posix_kept is None:
+                    posix_kept = kept_spans(posix, keep_names)
+                comp_kept = clip_kept_spans(rel.parts, i, posix_kept)
+            hits = (
+                find_outside_kept(comp, f, value, substring=substring, kept=comp_kept)
+                if comp_kept
+                else raw_hits
+            )
+            for _start, _end in hits:
                 findings.append(Finding(posix, f, value, where, None, None, comp))
         for spec in path_rules:
-            for _start, _end in _substring_occurrences(comp, spec.from_value, kept):
+            if spec.from_value and spec.from_value not in comp:
+                continue
+            if comp_kept is None:
+                if posix_kept is None:
+                    posix_kept = kept_spans(posix, keep_names)
+                comp_kept = clip_kept_spans(rel.parts, i, posix_kept)
+            for _start, _end in _substring_occurrences(
+                comp, spec.from_value, comp_kept
+            ):
                 findings.append(
                     Finding(
                         posix,
@@ -721,17 +757,41 @@ def _scan_content(
     ``validate_keep_names`` refuses every ``splitlines`` separator."""
     findings: list[Finding] = []
     content_rules = _rule_path_matches(posix, rule_specs, renamed, paths=False)
+    active_changed: list[tuple[str, str, bool, re.Pattern[str]]] = []
+    for f, value in changed:
+        is_sub = f in substring_fields
+        if is_sub:
+            if not value:
+                continue
+            pat = substring_pattern(value)
+        else:
+            pat = identity_pattern(f, value)
+        if pat.search(text) is not None:
+            active_changed.append((f, value, is_sub, pat))
+    active_rules = [
+        spec for spec in content_rules if spec.from_value and spec.from_value in text
+    ]
+    if not active_changed and not active_rules:
+        return findings
+    file_keep_names = (
+        tuple(name for name in keep_names if name in text) if keep_names else ()
+    )
     for lineno, line in enumerate(text.splitlines(), start=1):
-        kept = kept_spans(line, keep_names)
-        for f, value in changed:
-            substring = f in substring_fields
+        line_changed = [
+            item for item in active_changed if item[3].search(line) is not None
+        ]
+        line_rules = [spec for spec in active_rules if spec.from_value in line]
+        if not line_changed and not line_rules:
+            continue
+        kept = kept_spans(line, file_keep_names) if file_keep_names else ()
+        for f, value, is_sub, _pat in line_changed:
             for start, _end in find_outside_kept(
-                line, f, value, substring=substring, kept=kept
+                line, f, value, substring=is_sub, kept=kept
             ):
                 findings.append(
                     Finding(posix, f, value, "content", lineno, start, line)
                 )
-        for spec in content_rules:
+        for spec in line_rules:
             for start, _end in _substring_occurrences(line, spec.from_value, kept):
                 findings.append(
                     Finding(
@@ -916,7 +976,7 @@ def scan(
     stable by selected path and then scan order (path components followed by
     symlink, content, or binary evidence).
     """
-    changed = _changed_fields(source, dest, fields, substring_fields)
+    changed = changed_verify_fields(source, dest, fields, substring_fields)
     cargo_literals = _cargo_literals(source, dest)
     renamed = renamed or []
     findings: list[Finding] = []
@@ -924,6 +984,9 @@ def scan(
     # source-coordinate outputs are exempt at their POST-rename locations.
     exempt_paths = frozenset(
         path for path, _reason in exempt_regenerated_paths(rules, renamed)
+    )
+    exempt_prefixes = frozenset(
+        path for path, _reason in exempt_regenerated_dirs(rules, renamed)
     )
     snapshot = capture_surface_snapshot(target)
     rule_specs = _rule_scan_specs(
@@ -937,6 +1000,7 @@ def scan(
         verify_ignore=rules.verify_ignore,
         root_control=ROOT_CONTROL,
         exempt_paths=exempt_paths,
+        exempt_prefixes=exempt_prefixes,
     )
     untracked = frozenset(e.rel.as_posix() for e in selected if not e.tracked)
     core_excludes = core_excludes_from_snapshot(snapshot)

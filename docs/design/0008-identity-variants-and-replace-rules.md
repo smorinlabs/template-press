@@ -64,6 +64,9 @@ retained decision record does not require those files to remain present.
    needs the derived field opted in too, so the recommended pair when
    uppercase glued forms exist is
    `substring_rewrite_fields = ["app_name", "app_name_upper"]`.
+   `display_name_pascal` is also valid here (for glued PascalCase names such
+   as `AcmeWidgetClient`); raw `display_name` and other derived display forms
+   remain invalid.
 4. **Paths ride the shared matcher** (sec-03 ch-03-a). Rules with
    `paths = true` and substring-mode fields flow into the existing
    `_renamed_rel` rename pass — no second matching surface (the dotnet
@@ -180,9 +183,9 @@ retained decision record does not require those files to remain present.
    `[package].name`) for the same target name after the press, including under
    `autobins = false` or another `auto* = false` flag. Rust source is read only in a
    `.rs` file Cargo compiles: a crate root or target file that Cargo infers or
-   a manifest declares, or a file one of those reaches through `mod` or
-   `#[path]`, but not through Rust's path rule for a module nested in an inline
-   `mod name { ... }` block. Under `autotests = false` or another `auto*` flag
+   a manifest declares, or a file one of those reaches through `mod` (including
+   inline `mod name { ... }` blocks and their `#[path]` attributes), `#[path]`,
+   `#[cfg_attr(<cond>, path = "...")]`, or `include!`. Under `autotests = false` or another `auto*` flag
    set to false, only the targets the manifest names in that directory are
    read. Dependency paths are read from every dependency table, including the
    pre-2024 `[dev_dependencies]` and `[build_dependencies]` spellings. The usual cause is a content-only row,
@@ -195,17 +198,10 @@ retained decision record does not require those files to remain present.
    - a `.rs` file no crate root reaches, such as `tests/fixtures/sample.rs`;
    - a path that code reads at run time, such as a string `build.rs` passes
      to `std::fs::read_to_string`;
-   - a `#[path]` module inside or on an inline module, such as
-     `mod outer { #[path = "x.rs"] mod x; }` or
-     `#[path = "p"] mod outer { mod inner; }`, so a rename that splits it from
-     its file can still get a receipt;
-   - a renamed inline module around an unchanged child, such as
-     `mod acmelabs { mod x; }` becoming `mod zetalabs { mod x; }`, so the crate
-     can fail to build after a receipt.
+   - a `#[path]` value that uses `..`, inside an inline module that a rename changes, such as `pub mod acmelabs { #[path = "../shared.rs"] pub mod x; }` when `acmelabs` is renamed to `zetalabs`: Rust then looks for `src/zetalabs/../shared.rs`, which needs a `src/zetalabs/` directory, so `cargo check` can fail after a receipt. `main` behaves the same way.
 
-   A `#[path]` attribute on an inline module whose child module is renamed,
-   such as `#[path = "p"] mod outer { mod acme_core; }`, is refused with exit 2,
-   even when the press would have been correct.
+   A module that a `#[cfg(...)]` attribute turns off, with no file on disk, is refused with exit 2 before any write when it sits inside a renamed inline module or is the renamed module itself, even where the rename would be correct: `mod acmelabs { #[cfg(any())] mod x; }` and `#[cfg(any())] mod acmelabs;`.
+
    Spec: [Rust and Cargo
    targets](../superpowers/specs/2026-11-22-rust-cargo-targets-design.md).
 
@@ -357,6 +353,23 @@ retained decision record does not require those files to remain present.
    hyphen, the press prints a warning instead of refusing. The receipt and the
    rewritten `press-source.toml` record the hyphenated name, so later presses
    use the normal two-spelling rows. `press verify` ignores the block.
+
+8. **Glued-name preflight, whole-directory regeneration, and BAML targets
+   (P19, approved 2026-11-25).** Before any write, `press rebrand` extends the
+   keep-name preflight to glued occurrences of every identity field that
+   `press verify` scans (scope (i): a target that passes pre-press
+   `press verify` is not newly refused), exiting 1 with rewrite
+   (`substring_rewrite_fields`, `[[replace]]`) and keep (`keep_names`,
+   `[[verify.ignore]]`) guidance. `substring_rewrite_fields` accepts
+   `display_name_pascal` (not raw `display_name` or `display_name_camel`).
+   `[[regenerate]]` accepts either `file` or `dir`
+   (mutually exclusive), with `{package_name}` placeholder rendering in
+   `[[regenerate]] file`, `[[regenerate]] dir`, and `[rules]
+   extra_exclude_files`. Before any write, a tracked BAML client
+   (`baml_client/inlinedbaml.py` or `.ts` at any depth) without a covering
+   `[[regenerate]]` or `[[remove]]` exits 2 with a suggested `[[regenerate]]
+   dir` block. Spec: [BAML
+   targets](../superpowers/specs/2026-11-25-baml-targets-design.md).
 
 ## Independence guardrail (P06 D2)
 

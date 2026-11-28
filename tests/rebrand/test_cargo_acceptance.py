@@ -5,9 +5,9 @@ library and path dependencies, so no test needs a registry or the network. The
 locked-dependency test adds a local directory source for the same reason.
 
 Direct ``cargo`` commands keep ``CARGO_HOME`` inside ``tmp_path``. The press's
-declared ``cargo update`` cannot: its command environment passes ``HOME`` but
-not ``CARGO_HOME``, so it uses the default Cargo home. Every test that presses
-therefore shares the ``shared-tool-caches`` xdist group.
+declared ``cargo update --workspace --offline`` uses the default Cargo home on
+stdlib/local-vendored fixtures and Cargo's advisory package-cache lock, so all
+tests run safely in parallel across xdist workers.
 
 Run explicitly: uv run pytest -m "" tests/rebrand/test_cargo_acceptance.py
 """
@@ -26,7 +26,7 @@ from template_press.rebrand.cli import main
 from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import _git, posix_only
+from .conftest import _git, init_git_repo, posix_only
 
 ACME = {
     "package_name": "acme_core",
@@ -204,12 +204,7 @@ def _commit_fixture(target: Path, files: dict[str, str], names: dict[str, str]) 
         },
     )
     _assert_cargo(target, "generate-lockfile", "--offline")
-    _git(target, "init", "-q", "-b", "main")
-    _git(target, "config", "user.email", "t@example.test")
-    _git(target, "config", "user.name", "t")
-    _git(target, "remote", "add", "origin", f"{REPOSITORY}.git")
-    _git(target, "add", "-A")
-    _git(target, "commit", "-q", "-m", "seed")
+    init_git_repo(target, origin=f"{REPOSITORY}.git", commit_message="seed")
 
 
 def _build_fixture(shape: str, base: Path) -> Path:
@@ -241,8 +236,7 @@ def _press_and_verify(
 ) -> None:
     assert main(["--target", str(target), "--config", str(answers), *flags]) == 0
     assert (target / RECEIPT_REL).is_file()
-    _assert_cargo(target, "check", "--locked", "--offline")
-    _assert_cargo(target, "test", "--offline")
+    _assert_cargo(target, "test", "--locked", "--offline")
     _set_origin(target, identity)
     assert verify_command(["--target", str(target)]) == 0
 
@@ -268,17 +262,14 @@ def _locked_packages(target: Path) -> dict[str, str]:
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("shape", ["single_crate", "workspace"])
 def test_unpressed_fixture_builds(shape: str, tmp_path: Path, cargo_or_skip) -> None:
     target = _build_fixture(shape, tmp_path)
-    _assert_cargo(target, "check", "--locked", "--offline")
-    _assert_cargo(target, "test", "--offline")
+    _assert_cargo(target, "test", "--locked", "--offline")
 
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("shape", ["single_crate", "workspace"])
 def test_press_check_test_verify(shape: str, tmp_path: Path, cargo_or_skip) -> None:
     target = _build_fixture(shape, tmp_path)
@@ -302,7 +293,6 @@ def test_press_check_test_verify(shape: str, tmp_path: Path, cargo_or_skip) -> N
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("shape", ["single_crate", "workspace"])
 def test_second_press_from_refreshed_source(
     shape: str, tmp_path: Path, cargo_or_skip
@@ -343,7 +333,6 @@ def _vendor(root: Path, version: str) -> None:
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_press_keeps_locked_third_party_version(tmp_path: Path, cargo_or_skip) -> None:
     target = tmp_path / "target-repo"
     target.mkdir()
@@ -383,13 +372,8 @@ def _commit_unmapped(
             "press/press-source.toml": _table("identity", identity),
         },
     )
-    _git(target, "init", "-q", "-b", "main")
-    _git(target, "config", "user.email", "t@example.test")
-    _git(target, "config", "user.name", "t")
     url = f"https://github.com/{identity['owner']}/{identity['repo_name']}.git"
-    _git(target, "remote", "add", "origin", url)
-    _git(target, "add", "-A")
-    _git(target, "commit", "-q", "-m", "seed")
+    init_git_repo(target, origin=url, commit_message="seed")
 
 
 def _prefix_workspace() -> dict[str, str]:
@@ -406,7 +390,6 @@ def _prefix_workspace() -> dict[str, str]:
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize(
     ("source", "dest"),
     [
@@ -443,7 +426,6 @@ def test_tableless_prefix_workspace_builds_after_press(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_bin_env_token_compiles_after_press(tmp_path: Path, cargo_or_skip) -> None:
     target = tmp_path / "target-repo"
     target.mkdir()
@@ -539,12 +521,14 @@ HEALTHY_SHAPES = {
         "Cargo.toml": PACKAGE.format("tool-pkg"),
         "src/lib.rs": "pub fn hi() {}\n",
         "src/bin/acme-cli.rs": "fn main() {}\n",
+        "press/press-rules.toml": '[rules]\nkeep_names = ["acme-cli"]\n',
     },
     "unreferenced_manifest": {
         "Cargo.toml": PACKAGE.format("tool-pkg"),
         "src/lib.rs": "pub fn hi() {}\n",
         "testdata/acme-sample/Cargo.toml": PACKAGE.format("acme-sample"),
         "testdata/acme-sample/src/lib.rs": "pub fn hi() {}\n",
+        "press/press-rules.toml": '[rules]\nkeep_names = ["acme-sample"]\n',
     },
 }
 
@@ -559,7 +543,6 @@ def _owner_answers(tmp_path: Path) -> Path:
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("shape", sorted(SPLIT_SHAPES))
 def test_split_declared_path_is_refused_and_still_builds(
     shape: str, tmp_path: Path, cargo_or_skip
@@ -586,7 +569,6 @@ def test_split_declared_path_is_refused_and_still_builds(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("shape", sorted(HEALTHY_SHAPES))
 def test_undeclared_path_presses_and_builds(
     shape: str, tmp_path: Path, cargo_or_skip
@@ -624,7 +606,6 @@ def _consistent_workspace(members: str) -> dict[str, str]:
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("members", ["crates/*", "crates/acme-*"])
 def test_declared_paths_moved_with_their_files_press_and_build(
     members: str, tmp_path: Path, cargo_or_skip
@@ -655,7 +636,6 @@ def test_declared_paths_moved_with_their_files_press_and_build(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_bin_env_token_moves_with_an_auto_discovered_bin(
     tmp_path: Path, cargo_or_skip
 ) -> None:
@@ -693,7 +673,6 @@ EXCLUDED = "crates/acme-x/Cargo.toml"
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_excluded_crate_split_is_refused_and_still_builds(
     tmp_path: Path, cargo_or_skip
 ) -> None:
@@ -722,7 +701,6 @@ def test_excluded_crate_split_is_refused_and_still_builds(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_bin_env_token_in_an_excluded_file_is_refused(
     tmp_path: Path, cargo_or_skip
 ) -> None:
@@ -758,7 +736,6 @@ MATURIN_ZETA = {**ZETA, "package_name": "zeta_widget", "app_name": "zeta_widget"
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_maturin_leading_underscore_lib_presses_builds_and_verifies(
     tmp_path: Path, cargo_or_skip
 ) -> None:
@@ -792,12 +769,7 @@ def test_maturin_leading_underscore_lib_presses_builds_and_verifies(
         },
     )
     _assert_cargo(target, "generate-lockfile", "--offline")
-    _git(target, "init", "-q", "-b", "main")
-    _git(target, "config", "user.email", "t@example.test")
-    _git(target, "config", "user.name", "t")
-    _git(target, "remote", "add", "origin", f"{REPOSITORY}.git")
-    _git(target, "add", "-A")
-    _git(target, "commit", "-q", "-m", "seed")
+    init_git_repo(target, origin=f"{REPOSITORY}.git", commit_message="seed")
     answers = _answers(
         tmp_path,
         "zeta.toml",

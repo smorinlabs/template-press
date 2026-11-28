@@ -27,7 +27,7 @@ import pytest
 from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.verify_cli import _effective_scan_fields, verify_command
 
-from .conftest import requires_symlink
+from .conftest import init_git_repo, requires_symlink
 
 # The pressable target's committed FROM identity (discoverable + consistent).
 DEFAULT_IDENTITY: dict[str, str] = {
@@ -112,15 +112,10 @@ def make_pressable(
         _render_source(src_ident), encoding="utf-8"
     )
 
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "config", "user.email", "test@example.com")
-    _git(repo, "config", "user.name", "Test")
-    _git(
+    init_git_repo(
         repo,
-        "remote",
-        "add",
-        "origin",
-        f"https://github.com/{ident['owner']}/{ident['repo_name']}.git",
+        origin=f"https://github.com/{ident['owner']}/{ident['repo_name']}.git",
+        commit_message=None,
     )
     return repo
 

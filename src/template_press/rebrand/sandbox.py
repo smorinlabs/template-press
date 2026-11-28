@@ -49,6 +49,7 @@ from pathlib import Path
 
 from template_press.rebrand.config import assert_control_real
 from template_press.rebrand.engine import copy_paths
+from template_press.rebrand.inventory import SurfaceSnapshot
 from template_press.rebrand.pathing import symlink_target_posix
 from template_press.rebrand.safety import (
     SafetyError,
@@ -192,7 +193,12 @@ def _dir_chain_is_safely_contained(target: Path, target_posix: str) -> bool:
     return True
 
 
-def make_sandbox(target: Path, dest_root: Path) -> Sandbox:
+def make_sandbox(
+    target: Path,
+    dest_root: Path,
+    *,
+    snapshot: SurfaceSnapshot | None = None,
+) -> Sandbox:
     """Build a faithful, isolated git copy of ``target`` under ``dest_root``.
 
     ``dest_root`` is the already-validated owned root (Task 12 wraps this call
@@ -211,7 +217,12 @@ def make_sandbox(target: Path, dest_root: Path) -> Sandbox:
     # 3. Materialize copy_paths faithfully — every write contained/no-follow.
     added: list[str] = []
     unavailable: list[str] = []
-    for entry in copy_paths(target):
+    entries = (
+        copy_paths(target)
+        if snapshot is None
+        else copy_paths(target, snapshot=snapshot)
+    )
+    for entry in entries:
         rel = entry.rel
         src = target / rel
         dest = sandbox / rel

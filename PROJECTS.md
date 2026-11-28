@@ -39,8 +39,10 @@ file by hand — see Conventions.
 | P14 | `[~]` | [TypeScript and Bun targets](projects/P14-typescript-bun-targets.md) — package.json discovery, exact npm and CLI names, keep_names, declared lockfile exemptions |
 | P15 | `[~]` | [Rust and Cargo targets](projects/P15-rust-cargo-targets.md) — single-crate and workspace Cargo repositories, optional role-keyed `cargo_names` identity table |
 | P16 | `[x]` | [Explicit target languages](projects/P16-explicit-target-languages.md) — multi-language targets must declare `[rules] languages` or press exits 2 |
+| P18 | `[ ]` | [One-press renames to names containing the source](projects/P18-one-press-contained-renames.md) — Allow a new name that contains the old one, for every identity field. |
 
 - [x] **P17** — [Pressed-target verify false receipt](projects/P17-pressed-target-verify-false-receipt.md) — no receipt when `press verify` would exit 1 on the pressed target
+- [x] **P19** — [BAML targets](projects/P19-baml-targets.md) — Press BAML repos: regenerate the client, refuse glued old names before writing
 
 ## Conventions
 

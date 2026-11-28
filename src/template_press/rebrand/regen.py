@@ -16,6 +16,7 @@ import os
 import posixpath
 import shlex
 import shutil
+import stat
 import subprocess  # nosec B404 — git state reads on the target
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from template_press.rebrand.identity import (
 from template_press.rebrand.inventory import (
     GitConfigInput,
     IndexKind,
+    SurfaceSnapshot,
     VisibilityInput,
     capture_surface_snapshot,
     tracked_path_strings,
@@ -45,8 +47,10 @@ from template_press.rebrand.keep_names import (
     kept_spans,
     literal_occurs,
 )
+from template_press.rebrand.pathing import resolve_regenerate_dir
 from template_press.rebrand.rules import (
     EditRule,
+    RegenerateDirRule,
     RegenerateRule,
     ReplaceRule,
     ResetRule,
@@ -201,6 +205,16 @@ class RegenerationPlan:
 
 
 @dataclass(frozen=True)
+class RegenerationDirPlan:
+    """One declared whole-directory regeneration, fully resolved for the plan."""
+
+    rule: RegenerateDirRule
+    executable: str
+    env_present: tuple[str, ...]
+    env_absent: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class EditPlan:
     """One declared in-place edit, resolved exactly as a regeneration is (E4).
 
@@ -300,6 +314,41 @@ def plan_regenerate_commands(
             continue
         plans.append(
             RegenerationPlan(
+                rule=rule,
+                executable=resolution.executable,
+                env_present=resolution.env_present,
+                env_absent=resolution.env_absent,
+            )
+        )
+    return plans, problems
+
+
+def plan_regenerate_dirs(
+    target: Path,
+    regenerate_dirs: Sequence[RegenerateDirRule],
+    *,
+    renamed: Collection[str],
+    base_env: Mapping[str, str] | None = None,
+) -> tuple[list[RegenerationDirPlan], list[str]]:
+    """Resolve every declared ``[[regenerate]] dir`` command at plan time."""
+    ambient = os.environ if base_env is None else base_env
+    plans: list[RegenerationDirPlan] = []
+    problems: list[str] = []
+    for rule in regenerate_dirs:
+        resolution = _resolve_declared_command(
+            target,
+            kind="regenerate",
+            file=f"{rule.dir}/",
+            command=rule.command,
+            env=rule.env,
+            renamed=renamed,
+            ambient=ambient,
+        )
+        if isinstance(resolution, str):
+            problems.append(resolution)
+            continue
+        plans.append(
+            RegenerationDirPlan(
                 rule=rule,
                 executable=resolution.executable,
                 env_present=resolution.env_present,
@@ -479,6 +528,231 @@ def execute_regenerations(
     return failed
 
 
+_GIT_VISIBILITY_FILES: frozenset[str] = frozenset(
+    {".gitignore", ".gitattributes", ".gitmodules"}
+)
+
+
+def _validate_real_dir_tree(
+    target: Path,
+    rel_dir: str,
+    prefix: str,
+    *,
+    check_hardlinks: bool,
+) -> tuple[list[str], list[Path]]:
+    """Walk ``target / rel_dir`` without following links; return (problems, files)."""
+    root = target / rel_dir
+    problems: list[str] = []
+    files: list[Path] = []
+    try:
+        assert_under_root(root, target)
+        assert_ancestors_real(root, target)
+    except SafetyError as exc:
+        return [prefix + str(exc)], []
+    if not os.path.lexists(root):
+        return [prefix + f"{rel_dir} does not exist"], []
+    if root.is_symlink() or root.is_junction() or not root.is_dir():
+        return [prefix + f"{rel_dir} is not a real directory (no-follow check)"], []
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        with os.scandir(current) as entries:
+            for entry in sorted(entries, key=lambda e: e.name):
+                entry_path = Path(entry.path)
+                rel = entry_path.relative_to(target).as_posix()
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode):
+                    problems.append(prefix + f"symlink {rel!r} is not allowed")
+                    continue
+                if entry.name == ".git":
+                    problems.append(
+                        prefix + f"embedded git boundary {rel!r} is not allowed"
+                    )
+                    continue
+                if entry.name in _GIT_VISIBILITY_FILES:
+                    problems.append(
+                        prefix + f"Git visibility input {rel!r} is not allowed"
+                    )
+                    continue
+                if stat.S_ISDIR(info.st_mode):
+                    if entry_path.is_junction():
+                        problems.append(prefix + f"junction {rel!r} is not allowed")
+                        continue
+                    stack.append(entry_path)
+                elif stat.S_ISREG(info.st_mode):
+                    if check_hardlinks and info.st_nlink > 1:
+                        problems.append(
+                            prefix
+                            + f"hardlinked file {rel!r} (st_nlink={info.st_nlink})"
+                        )
+                        continue
+                    files.append(entry_path)
+                else:
+                    problems.append(prefix + f"unsafe node {rel!r} is not allowed")
+    files.sort(key=lambda p: p.relative_to(target).as_posix())
+    return problems, files
+
+
+def _remove_dir_nofollow(target: Path, rel_dir: str) -> None:
+    """Safely delete ``target / rel_dir`` without following symlinks or junctions."""
+    root = target / rel_dir
+    problems, files = _validate_real_dir_tree(
+        target, rel_dir, f"regenerate dir {rel_dir}: ", check_hardlinks=False
+    )
+    if problems:
+        raise SafetyError(problems[0])
+    for file_path in files:
+        file_path.unlink()
+    dirs: list[Path] = []
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        dirs.append(current)
+        with os.scandir(current) as entries:
+            for entry in entries:
+                entry_path = Path(entry.path)
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode) and not entry_path.is_junction():
+                    stack.append(entry_path)
+    for directory in reversed(dirs):
+        directory.rmdir()
+
+
+def _dir_postcondition_problems(
+    target: Path,
+    out_dir: str,
+    *,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    renames: Mapping[str, str],
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
+    table: SubstitutionTable | None = None,
+    scan_mode: str = "strict",
+) -> list[str]:
+    """Verify ``out_dir`` exists, is a clean real tree, and every file passes scan."""
+    prefix = f"{out_dir}: "
+    problems, files = _validate_real_dir_tree(
+        target, out_dir, prefix, check_hardlinks=False
+    )
+    if problems:
+        return problems
+    for file_path in files:
+        rel = file_path.relative_to(target).as_posix()
+        data = file_path.read_bytes()
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            problems.append(
+                f"{rel} is not valid UTF-8 after the command — every file in a "
+                "regenerated directory must be UTF-8 for the post-command scan"
+            )
+            continue
+        problems.extend(
+            f"{rel}: {issue}"
+            for issue in scan_regenerated_output(
+                text,
+                rel,
+                source=source,
+                dest=dest,
+                rules=rules,
+                renames=renames,
+                rendered_rules=rendered_rules,
+                table=table,
+                scan_mode=scan_mode,
+            )
+        )
+    return problems
+
+
+def execute_dir_regenerations(
+    target: Path,
+    plans: Sequence[RegenerationDirPlan],
+    renamed: Mapping[str, str],
+    report: ApplyReport,
+    *,
+    source: Identity,
+    dest: Identity,
+    rules: Rules,
+    rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
+    table: SubstitutionTable | None = None,
+) -> list[str]:
+    """Delete each regenerated directory at its pressed path, rebuild, and scan."""
+    failed: list[str] = []
+    renames = dict(renamed)
+    for plan in plans:
+        rule = plan.rule
+        out_dir = resolve_regenerate_dir(rule, renames, dest)
+        moved_dir = translate_path(rule.dir, renames)
+        out_path = target / out_dir
+        try:
+            assert_under_root(out_path, target)
+            if (
+                out_dir != rule.dir
+                and out_dir != moved_dir
+                and os.path.lexists(out_path)
+            ):
+                raise SafetyError(
+                    f"resolved destination {out_dir!r} already exists on disk"
+                )
+            if os.path.lexists(out_path):
+                _remove_dir_nofollow(target, out_dir)
+            if out_dir != moved_dir:
+                stale_path = target / moved_dir
+                assert_under_root(stale_path, target)
+                if os.path.lexists(stale_path):
+                    _remove_dir_nofollow(target, moved_dir)
+                    stale_parts = moved_dir.split("/")
+                    out_parts = out_dir.split("/")
+                    for depth in range(len(stale_parts) - 1, 0, -1):
+                        if (
+                            depth - 1 < len(out_parts)
+                            and stale_parts[depth - 1] == out_parts[depth - 1]
+                        ):
+                            break
+                        ancestor = target.joinpath(*stale_parts[:depth])
+                        try:
+                            ancestor.rmdir()
+                        except OSError:
+                            break
+        except (SafetyError, OSError) as exc:
+            report.skipped.append(f"regenerate {rule.dir}/ (sink guard: {exc})")
+            failed.append(rule.dir)
+            continue
+        result = subprocess.run(  # noqa: S603 # nosec B603
+            [plan.executable, *rule.command[1:]],
+            cwd=target,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            env=command_env(rule.env),
+        )
+        if result.returncode != 0:
+            report.skipped.append(
+                f"regenerate {rule.dir}/ (command exited {result.returncode})"
+            )
+            failed.append(rule.dir)
+            continue
+        problems = _dir_postcondition_problems(
+            target,
+            out_dir,
+            source=source,
+            dest=dest,
+            rules=rules,
+            renames=renames,
+            rendered_rules=rendered_rules,
+            table=table,
+            scan_mode=rule.scan,
+        )
+        if problems:
+            report.skipped.extend(
+                f"regenerate {rule.dir}/ ({problem})" for problem in problems
+            )
+            failed.append(rule.dir)
+            continue
+        report.regenerated.append(rule.dir)
+    return failed
+
+
 def execute_edits(
     target: Path,
     plans: Sequence[EditPlan],
@@ -533,7 +807,7 @@ def execute_edits(
 def _render_command_section(
     heading: str,
     tag: str,
-    plans: Sequence[RegenerationPlan | EditPlan],
+    plans: Sequence[RegenerationPlan | RegenerationDirPlan | EditPlan],
 ) -> str:
     """One declared-command plan section: verbatim argv, pinned executable,
     and the declared env names (marking which would actually apply) — plan
@@ -544,7 +818,12 @@ def _render_command_section(
     """
     lines = [heading]
     for plan in plans:
-        lines.append(f"  [{tag}] {plan.rule.file}  —  {shlex.join(plan.rule.command)}")
+        label = (
+            f"{plan.rule.dir}/"
+            if isinstance(plan.rule, RegenerateDirRule)
+            else plan.rule.file
+        )
+        lines.append(f"  [{tag}] {label}  —  {shlex.join(plan.rule.command)}")
         lines.append(f"            executable: {plan.executable}")
         if plan.rule.env:
             marks = [
@@ -555,11 +834,16 @@ def _render_command_section(
     return "\n".join(lines)
 
 
-def render_regenerate_plan(plans: Sequence[RegenerationPlan]) -> str:
+def render_regenerate_plan(
+    plans: Sequence[RegenerationPlan],
+    dir_plans: Sequence[RegenerationDirPlan] = (),
+) -> str:
     """The plan's regeneration section (rendered AFTER the edit section, the
     order the two phases actually run in)."""
     return _render_command_section(
-        "Regenerate (declared commands, run after apply):", "regen  ", plans
+        "Regenerate (declared commands, run after apply):",
+        "regen  ",
+        [*plans, *dir_plans],
     )
 
 
@@ -598,13 +882,17 @@ def has_uncommitted_changes(target: Path, rel: str) -> bool:
     assume-unchanged / skip-worktree bits hide from `status --porcelain`
     (lowercase or S first column in `ls-files -v`): the guard's promise is
     refusing to destroy hidden work, which is precisely that case."""
-    if _git_stdout(target, "status", "--porcelain", "--", rel).strip():
+    if _git_stdout(
+        target, "status", "--porcelain", "--untracked-files=all", "--", rel
+    ).strip():
         return True
     flags = _git_stdout(target, "ls-files", "-v", "--", rel)
     return any(line[:1].islower() or line[:1] == "S" for line in flags.splitlines())
 
 
-def preflight_regenerate_outputs(target: Path, rules: Rules) -> list[str]:
+def preflight_regenerate_outputs(
+    target: Path, rules: Rules, *, snapshot: SurfaceSnapshot | None = None
+) -> list[str]:
     """Problems that make a declared regeneration output unpressable.
 
     Empty list = every declared output is contained, a regular file
@@ -615,7 +903,11 @@ def preflight_regenerate_outputs(target: Path, rules: Rules) -> list[str]:
     if not rules.regenerate:
         return []
     problems: list[str] = []
-    tracked = tracked_paths(target)
+    tracked = (
+        tracked_path_strings(snapshot)
+        if snapshot is not None
+        else tracked_paths(target)
+    )
     for rule in rules.regenerate:
         prefix = f"regenerate output {rule.file}: "
         path = target / rule.file
@@ -661,7 +953,124 @@ def preflight_regenerate_outputs(target: Path, rules: Rules) -> list[str]:
     return problems
 
 
-def preflight_edit_targets(target: Path, rules: Rules) -> list[str]:
+def preflight_regenerate_dirs(
+    target: Path,
+    rules: Rules,
+    *,
+    renames: Mapping[str, str] | None = None,
+    dest: Identity | None = None,
+    snapshot: SurfaceSnapshot | None = None,
+) -> list[str]:
+    """Plan-time safety and cleanliness checks for ``[[regenerate]] dir`` rules."""
+    if not rules.regenerate_dirs:
+        return []
+    problems: list[str] = []
+    if snapshot is None:
+        snapshot = capture_surface_snapshot(target)
+    rename_map = renames or {}
+    for rule in rules.regenerate_dirs:
+        prefix = f"regenerate dir {rule.dir}: "
+        dest_dir = resolve_regenerate_dir(rule, rename_map, dest)
+        moved_dir = translate_path(rule.dir, rename_map)
+        if dest_dir != rule.dir and dest_dir != moved_dir:
+            dest_path = target / dest_dir
+            try:
+                assert_under_root(dest_path, target)
+                if os.path.lexists(dest_path):
+                    assert_ancestors_real(dest_path, target)
+            except SafetyError as exc:
+                problems.append(prefix + f"destination {dest_dir}: {exc}")
+                continue
+            if os.path.lexists(dest_path):
+                problems.append(
+                    prefix + f"resolved destination {dest_dir!r} already exists "
+                    "on disk — move or remove it before pressing"
+                )
+                continue
+        path = target / rule.dir
+        try:
+            assert_under_root(path, target)
+            if os.path.lexists(path):
+                assert_ancestors_real(path, target)
+        except SafetyError as exc:
+            problems.append(prefix + str(exc))
+            continue
+        root_entry = next(
+            (e for e in snapshot.entries if e.rel.as_posix() == rule.dir),
+            None,
+        )
+        if root_entry is not None and root_entry.index_kind == "gitlink":
+            problems.append(prefix + "root gitlink is not allowed")
+            continue
+        dir_prefix = rule.dir + "/"
+        tracked_under = [
+            entry
+            for entry in snapshot.entries
+            if entry.tracked and entry.rel.as_posix().startswith(dir_prefix)
+        ]
+        unsafe_tracked = [
+            f"{e.rel.as_posix()} ({e.index_kind})"
+            for e in tracked_under
+            if e.index_kind != "file"
+        ]
+        if unsafe_tracked:
+            problems.append(
+                prefix + f"unsafe tracked node {unsafe_tracked[0]!r} is not allowed"
+            )
+            continue
+        if not os.path.lexists(path):
+            if tracked_under:
+                problems.append(
+                    prefix + "tracked directory is missing from the worktree — "
+                    "restore or commit deletions before pressing"
+                )
+            continue
+        tree_problems, tree_files = _validate_real_dir_tree(
+            target, rule.dir, prefix, check_hardlinks=True
+        )
+        if tree_problems:
+            problems.extend(tree_problems)
+            continue
+        dir_abs = os.path.normcase(os.path.abspath(path))
+        dir_abs_prefix = dir_abs + os.sep
+        tree_nodes: set[tuple[int, int]] = set()
+        for file_path in tree_files:
+            file_st = os.lstat(file_path)
+            if file_st.st_ino:
+                tree_nodes.add((file_st.st_dev, file_st.st_ino))
+        active_input_hit: str | None = None
+        for item in snapshot.visibility_inputs:
+            if item.kind != "file":
+                continue
+            item_abs = os.path.normcase(os.path.abspath(item.path))
+            if item_abs == dir_abs or item_abs.startswith(dir_abs_prefix):
+                active_input_hit = item.origin
+                break
+            try:
+                item_st = os.lstat(item.path)
+            except OSError:
+                continue
+            if item_st.st_ino and (item_st.st_dev, item_st.st_ino) in tree_nodes:
+                active_input_hit = item.origin
+                break
+        if active_input_hit is not None:
+            problems.append(
+                prefix + f"contains active Git visibility input ({active_input_hit}) — "
+                "regenerating this directory would delete an active ignore or "
+                "Git config file"
+            )
+            continue
+        if has_uncommitted_changes(target, rule.dir):
+            problems.append(
+                prefix + "has uncommitted or untracked changes — refused even under "
+                "--allow-dirty (git restores only committed content)"
+            )
+    return problems
+
+
+def preflight_edit_targets(
+    target: Path, rules: Rules, *, snapshot: SurfaceSnapshot | None = None
+) -> list[str]:
     """Problems that make a declared [[edit]] target unpressable (E4).
 
     The regeneration preflight's state gate, applied to edit targets:
@@ -688,7 +1097,8 @@ def preflight_edit_targets(target: Path, rules: Rules) -> list[str]:
     if not rules.edit:
         return []
     problems: list[str] = []
-    snapshot = capture_surface_snapshot(target)
+    if snapshot is None:
+        snapshot = capture_surface_snapshot(target)
     tracked = tracked_path_strings(snapshot)
     visibility_nodes: dict[tuple[int, int], VisibilityInput] = {}
     visibility_paths: dict[str, VisibilityInput] = {}
@@ -746,7 +1156,9 @@ def preflight_edit_targets(target: Path, rules: Rules) -> list[str]:
     return problems
 
 
-def preflight_excluded_files(target: Path, rules: Rules) -> list[str]:
+def preflight_excluded_files(
+    target: Path, rules: Rules, *, snapshot: SurfaceSnapshot | None = None
+) -> list[str]:
     """The §6 excluded-file contract preflight (P04 D5, shared with P05).
 
     An excluded file is never rewritten; with the hidden regeneration
@@ -758,15 +1170,26 @@ def preflight_excluded_files(target: Path, rules: Rules) -> list[str]:
     or a deliberate [rules] verify_ignore entry. Exit 2, nothing written.
     """
     regenerated = {r.file for r in rules.regenerate}
+    regenerated_dirs = tuple(f"{r.dir}/" for r in rules.regenerate_dirs)
     reset_files = {r.file for r in rules.reset}
     # Directory callers supply a removal_rules_view with frozen current paths.
     # This gate never expands directory declarations or changes the inventory.
     removed_files = {r.file for r in rules.remove}
     problems: list[str] = []
-    for rel in sorted(tracked_paths(target)):
+    tracked = (
+        tracked_path_strings(snapshot)
+        if snapshot is not None
+        else tracked_paths(target)
+    )
+    for rel in sorted(tracked):
         if rel not in rules.exclude_files:
             continue
-        if rel in regenerated or rel in reset_files or rel in removed_files:
+        if (
+            rel in regenerated
+            or rel in reset_files
+            or rel in removed_files
+            or rel.startswith(regenerated_dirs)
+        ):
             continue
         if any(part in rules.verify_ignore for part in rel.split("/")):
             continue
@@ -1027,6 +1450,7 @@ def final_validation_pass(
     rendered_rules: Sequence[tuple[ReplaceRule, str, str]] | None = None,
     table: SubstitutionTable | None = None,
     edits: Sequence[EditPlan] = (),
+    dir_plans: Sequence[RegenerationDirPlan] = (),
 ) -> list[str]:
     """After the LAST declared command: re-validate EVERY output, edit, and
     reset stub (D3). Per-command postconditions are not enough once a target
@@ -1070,6 +1494,20 @@ def final_validation_pass(
             scan_mode=plan.rule.scan,
         ):
             problems.append(f"final pass: {plan.rule.file}: {problem}")
+    for dir_plan in dir_plans:
+        out_dir = resolve_regenerate_dir(dir_plan.rule, renames, dest)
+        for problem in _dir_postcondition_problems(
+            target,
+            out_dir,
+            source=source,
+            dest=dest,
+            rules=rules,
+            renames=renames,
+            rendered_rules=rendered_rules,
+            table=table,
+            scan_mode=dir_plan.rule.scan,
+        ):
+            problems.append(f"final pass: {dir_plan.rule.dir}/: {problem}")
     for rule, stub in resets:
         # Reset paths were consumed in SOURCE coordinates before the rename
         # pass; this check runs after it, so translate — validating the

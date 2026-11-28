@@ -20,7 +20,7 @@ import pytest
 from template_press.rebrand.receipt import RECEIPT_REL
 from template_press.rebrand.substitutions import RenamePlan, RenameStep
 
-from .conftest import _git, posix_only
+from .conftest import init_git_repo, posix_only, seed_cached_git_repo
 from .test_cargo_split import (
     ACME,
     ZETA,
@@ -49,23 +49,19 @@ def _seed(
     links: dict[str, str] | None = None,
 ) -> None:
     table = "" if names is None else _table("identity.cargo_names", names)
-    _write(
-        target,
-        {
-            ".gitignore": "target/\nCargo.lock\n",
-            "press/press-source.toml": _table("identity", identity) + table,
-            **files,
-        },
-    )
-    for link, points_at in (links or {}).items():
-        os.symlink(points_at, target / link)
-    _git(target, "init", "-q", "-b", "main")
-    _git(target, "config", "user.email", "t@example.test")
-    _git(target, "config", "user.name", "t")
+    all_files = {
+        ".gitignore": "target/\nCargo.lock\n",
+        "press/press-source.toml": _table("identity", identity) + table,
+        **files,
+    }
     origin = f"https://github.com/{identity['owner']}/{identity['repo_name']}.git"
-    _git(target, "remote", "add", "origin", origin)
-    _git(target, "add", "-A")
-    _git(target, "commit", "-q", "-m", "seed")
+    if links:
+        _write(target, all_files)
+        for link, points_at in links.items():
+            os.symlink(points_at, target / link)
+        init_git_repo(target, origin=origin, commit_message="seed")
+        return
+    seed_cached_git_repo(target, all_files, origin=origin, commit_message="seed")
 
 
 def _answers(
@@ -113,7 +109,6 @@ def test_symlinked_path_dependency_presses_without_a_table(tmp_path: Path) -> No
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_symlinked_path_dependency_still_builds(tmp_path: Path) -> None:
     _require_cargo()
     target = tmp_path / "target-repo"
@@ -169,7 +164,6 @@ def test_symlinked_path_dependency_manifest_is_still_cross_checked(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 def test_symlinked_path_dependency_refusal_matches_real_cargo(tmp_path: Path) -> None:
     """Real Cargo: base and the I6 skip wrote a receipt here, then ``cargo
     check`` failed on ``vendor/helper/src/zetalabs.rs``."""
@@ -284,9 +278,137 @@ SOURCE_PATH_CASES = {
         {
             "src/lib.rs": LIB + '#[path = "gen/x.rs"]\npub mod x;\n',
             "src/gen/x.rs": "pub mod acmelabs;\n",
-            "src/gen/x/acmelabs.rs": "pub fn org() {}\n",
+            # A #[path] file is a mod.rs-like owner: its child sits beside it.
+            "src/gen/acmelabs.rs": "pub fn org() {}\n",
         },
         "src/gen/x.rs:1:",
+    ),
+    # Q1: #[path] inside an inline module split by a content-only row.
+    "inline_path_attr_owner": (
+        {
+            "src/lib.rs": LIB
+            + 'pub mod outer {\n    #[path = "acmelabs.rs"]\n    pub mod details;\n}\n',
+            "src/outer/acmelabs.rs": "pub fn org() {}\n",
+        },
+        "src/lib.rs:5:",
+    ),
+    # Q1 guard: an unrelated file at src/ does not satisfy #[path] inside mod outer.
+    "inline_path_attr_wrong_dir_not_fooled": (
+        {
+            "src/lib.rs": LIB
+            + 'pub mod outer {\n    #[path = "acme-core.rs"]\n    pub mod details;\n}\n',
+            "src/acme-core.rs": "pub fn stray() {}\n",
+        },
+        "src/lib.rs:5:",
+    ),
+    # P15-T11 F1a: #[path] inside an inline module is reached by the compiled walk.
+    "inline_path_attr_reached_include_owner": (
+        {
+            "src/lib.rs": LIB
+            + 'pub mod outer {\n    #[path = "x.rs"]\n    pub mod x;\n}\n',
+            "src/outer/x.rs": (
+                'pub const T: &str = include_str!("../../data/acmelabs.txt");\n'
+            ),
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/outer/x.rs:1:",
+    ),
+    # P15-T11 F1b: #[path] on an inline module is followed by the compiled walk.
+    "path_attr_on_inline_reached_include_owner": (
+        {
+            "src/lib.rs": LIB
+            + '#[path = "p"]\npub mod outer {\n    pub mod inner;\n}\n',
+            "src/p/inner.rs": (
+                'pub const T: &str = include_str!("../../data/acmelabs.txt");\n'
+            ),
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/p/inner.rs:1:",
+    ),
+    # P15-T11 F1: #[cfg_attr(..., path = ...)] on an inline module is followed too.
+    "cfg_attr_path_on_inline_reached_include_owner": (
+        {
+            "src/lib.rs": LIB
+            + '#[cfg_attr(all(), path = "p")]\npub mod outer {\n    pub mod inner;\n}\n',
+            "src/p/inner.rs": (
+                'pub const T: &str = include_str!("../../data/acmelabs.txt");\n'
+            ),
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/p/inner.rs:1:",
+    ),
+    # P15-T11 F2: a renamed inline module around an unchanged child module.
+    "renamed_inline_mod_unchanged_child_owner": (
+        {
+            "src/lib.rs": LIB + "pub mod acmelabs {\n    pub mod x;\n}\n",
+            "src/acmelabs/x.rs": "pub fn org() {}\n",
+        },
+        "src/lib.rs:5:",
+    ),
+    # P15-T11 F2: a renamed inline module around an unchanged #[path] child.
+    "renamed_inline_mod_unchanged_path_attr_owner": (
+        {
+            "src/lib.rs": LIB
+            + 'pub mod acmelabs {\n    #[path = "x.rs"]\n    pub mod y;\n}\n',
+            "src/acmelabs/x.rs": "pub fn org() {}\n",
+        },
+        "src/lib.rs:5:",
+    ),
+    # P15-T11 F3: #[path = "dir"] on an inline module split from its directory.
+    "path_attr_on_inline_dir_owner": (
+        {
+            "src/lib.rs": LIB
+            + '#[path = "acmelabs"]\npub mod outer {\n    pub mod inner;\n}\n',
+            "src/acmelabs/inner.rs": "pub fn org() {}\n",
+        },
+        "src/lib.rs:4:",
+    ),
+    # P15-T11 Unicode: a Unicode inline module is tracked by the compiled walk.
+    "unicode_inline_mod_reached_include_owner": (
+        {
+            "src/lib.rs": LIB + "pub mod café {\n    pub mod inner;\n}\n",
+            "src/café/inner.rs": (
+                'pub const T: &str = include_str!("../../data/acmelabs.txt");\n'
+            ),
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/café/inner.rs:1:",
+    ),
+    # Cycle 3 F2 control: a virtual workspace's member crate is still walked.
+    "virtual_workspace_member_include_owner": (
+        {
+            "Cargo.toml": (
+                '[workspace]\nmembers = ["crates/acme-core"]\nresolver = "2"\n'
+            ),
+            "crates/acme-core/Cargo.toml": _package("acme-core"),
+            "crates/acme-core/src/lib.rs": LIB
+            + 'pub const T: &str = include_str!("../../../data/acmelabs.txt");\n',
+            "data/acmelabs.txt": "x\n",
+        },
+        "crates/acme-core/src/lib.rs:4:",
+    ),
+    # Cycle 3 F3 control: include! pastes Rust, so the walk follows it.
+    "include_rs_reached_include_owner": (
+        {
+            "src/lib.rs": LIB + 'include!("frag.rs");\n',
+            "src/frag.rs": (
+                'pub const T: &str = include_str!("../data/acmelabs.txt");\n'
+            ),
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/frag.rs:1:",
+    ),
+    # Cycle 3 F7: a #[path] module file is Rust whatever its suffix.
+    "path_attr_non_rs_bridge_owner": (
+        {
+            "src/lib.rs": LIB + '#[path = "bridge.inc"]\npub mod bridge;\n',
+            "src/bridge.inc": '#[path = "leaf.rs"]\npub mod leaf;\n',
+            "src/leaf.rs": (
+                'pub const T: &str = include_str!("../data/acmelabs.txt");\n'
+            ),
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/leaf.rs:1:",
     ),
 }
 
@@ -426,6 +548,64 @@ FOLLOWING_PATHS = {
         "src/lib.rs": LIB + 'pub const T: &str = include_str!("t.txt");\n',
         "src/t.txt": "x\n",
     },
+    # Q1: #[path] inside an inline module resolves against the inline directory.
+    "inline_path_attr_renamed": {
+        "src/lib.rs": LIB
+        + 'pub mod outer {\n    #[path = "acme-core.rs"]\n    pub mod details;\n}\n',
+        "src/outer/acme-core.rs": "pub fn d() -> u8 { 1 }\n",
+    },
+    "inline_path_attr_renamed_below_module_file": {
+        "src/lib.rs": LIB + "pub mod top;\n",
+        "src/top.rs": (
+            'pub mod outer {\n    #[path = "acme-core.rs"]\n    pub mod details;\n}\n'
+        ),
+        "src/top/outer/acme-core.rs": "pub fn d() -> u8 { 1 }\n",
+    },
+    "inline_cfg_attr_path_renamed": {
+        "src/lib.rs": LIB
+        + 'pub mod outer {\n    #[cfg_attr(all(), path = "acme-core.rs")]\n'
+        + "    pub mod details;\n}\n",
+        "src/outer/acme-core.rs": "pub fn d() -> u8 { 1 }\n",
+    },
+    # P15-T11 F3: #[path] on an inline module with a renamed child or directory.
+    "path_attr_on_inline_mod_renamed_child": {
+        "src/lib.rs": LIB
+        + '#[path = "p"]\npub mod outer {\n    pub mod acme_core;\n}\n',
+        "src/p/acme_core.rs": "pub fn f() -> u8 { 1 }\n",
+    },
+    "path_attr_on_inline_mod_with_inline_path_attr_renamed": {
+        "src/lib.rs": LIB
+        + '#[path = "p"]\npub mod outer {\n    #[path = "acme-core.rs"]\n'
+        + "    pub mod details;\n}\n",
+        "src/p/acme-core.rs": "pub fn d() -> u8 { 1 }\n",
+    },
+    "path_attr_on_inline_mod_renamed_dir": {
+        "src/lib.rs": LIB
+        + '#[path = "acme_core"]\npub mod outer {\n    pub mod inner;\n}\n',
+        "src/acme_core/inner.rs": "pub fn f() -> u8 { 1 }\n",
+    },
+    # P15-T11 F2 healthy counterpart: renamed inline module moves with its directory.
+    "renamed_inline_mod_with_its_dir": {
+        "src/lib.rs": LIB + "pub mod acme_core {\n    pub mod inner;\n}\n",
+        "src/acme_core/inner.rs": "pub fn f() -> u8 { 1 }\n",
+    },
+    # P15-T11 F2+F3 guard: unconditional #[path] keeps the child's directory unchanged.
+    "path_attr_on_renamed_inline_mod_keeps_child": {
+        "src/lib.rs": LIB
+        + '#[path = "p"]\npub mod acmelabs {\n    pub mod inner;\n}\n',
+        "src/p/inner.rs": "pub fn f() -> u8 { 1 }\n",
+    },
+    # P15-T11 Unicode: Unicode inline module around a renamed child.
+    "unicode_inline_mod_renamed_child": {
+        "src/lib.rs": LIB + "pub mod café {\n    pub mod acme_core;\n}\n",
+        "src/café/acme_core.rs": "pub fn f() -> u8 { 1 }\n",
+    },
+    # Regression guard: include_str! inside an inline module still uses the file's dir.
+    "inline_include_str_still_uses_file_dir": {
+        "src/lib.rs": LIB
+        + 'pub mod outer {\n    pub const T: &str = include_str!("acme_core.txt");\n}\n',
+        "src/acme_core.txt": "x\n",
+    },
 }
 
 
@@ -441,7 +621,6 @@ def test_rust_source_paths_that_follow_their_files_press(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize(
     "case",
     [
@@ -449,6 +628,13 @@ def test_rust_source_paths_that_follow_their_files_press(
         "renamed_below_a_module_file",
         "inline_nested_mod",
         "fixture_rs_owner",
+        "inline_path_attr_renamed",
+        "inline_path_attr_renamed_below_module_file",
+        "path_attr_on_inline_mod_renamed_child",
+        "path_attr_on_inline_mod_renamed_dir",
+        "path_attr_on_renamed_inline_mod_keeps_child",
+        "renamed_inline_mod_with_its_dir",
+        "unicode_inline_mod_renamed_child",
     ],
 )
 def test_rust_source_paths_that_follow_their_files_build(
@@ -466,7 +652,29 @@ def test_rust_source_paths_that_follow_their_files_build(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
+@pytest.mark.parametrize(
+    "case",
+    [
+        "inline_path_attr_renamed",
+        "path_attr_on_inline_mod_renamed_child",
+    ],
+)
+def test_inline_path_attr_tableless_presses_and_builds(
+    case: str, tmp_path: Path
+) -> None:
+    """Real Cargo: tableless Rust targets press and build as on base."""
+    _require_cargo()
+    target = _source_path_target(tmp_path, FOLLOWING_PATHS[case], table=False)
+    _assert_cargo(target, "test", "--offline")
+
+    assert _press(target, _source_path_answers(tmp_path, table=False)) == 0
+
+    assert (target / RECEIPT_REL).is_file()
+    _assert_cargo(target, "test", "--offline")
+
+
+@pytest.mark.slow
+@posix_only
 @pytest.mark.parametrize(
     "case",
     [
@@ -475,6 +683,15 @@ def test_rust_source_paths_that_follow_their_files_build(
         "include_spaced_bang_owner",
         "path_attr_owner",
         "cfg_attr_path_owner",
+        "inline_path_attr_owner",
+        "inline_path_attr_reached_include_owner",
+        "path_attr_on_inline_reached_include_owner",
+        "renamed_inline_mod_unchanged_child_owner",
+        "renamed_inline_mod_unchanged_path_attr_owner",
+        "unicode_inline_mod_reached_include_owner",
+        "path_attr_reached_mod_owner",
+        "include_rs_reached_include_owner",
+        "path_attr_non_rs_bridge_owner",
     ],
 )
 def test_rust_source_path_refusal_matches_real_cargo(case: str, tmp_path: Path) -> None:
@@ -490,6 +707,85 @@ def test_rust_source_path_refusal_matches_real_cargo(case: str, tmp_path: Path) 
     assert not (target / RECEIPT_REL).exists()
     assert _status(target) == ""
     assert _cargo(target, "test", "--offline").returncode == 0
+
+
+# --- Cycle 2 F1: include macros written with ``[...]`` or ``{...}`` --------------
+
+BRACKETED_INCLUDES = {
+    "include_str_brackets": (
+        {
+            "src/lib.rs": LIB
+            + 'pub const T: &str = include_str!["../data/acmelabs.txt"];\n',
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/lib.rs:4:",
+    ),
+    "include_str_braces": (
+        {
+            "src/lib.rs": LIB
+            + 'pub const T: &str = include_str!{"../data/acmelabs.txt"};\n',
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/lib.rs:4:",
+    ),
+    "include_bytes_brackets": (
+        {
+            "src/lib.rs": LIB
+            + 'pub const B: &[u8] = include_bytes!["../data/acmelabs.txt"];\n',
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/lib.rs:4:",
+    ),
+    # The compiled-file walk must follow a bracketed include! into its file.
+    "include_rs_brackets": (
+        {
+            "src/lib.rs": LIB + 'include!["acmelabs_inc.rs"];\n',
+            "src/acmelabs_inc.rs": (
+                'pub const E: &str = include_str!("../data/acmelabs.txt");\n'
+            ),
+            "data/acmelabs.txt": "x\n",
+        },
+        "src/acmelabs_inc.rs:1:",
+    ),
+}
+
+
+@pytest.mark.parametrize("table", [True, False], ids=["table", "tableless"])
+@pytest.mark.parametrize("case", sorted(BRACKETED_INCLUDES))
+def test_bracketed_and_braced_include_paths_are_checked(
+    case: str, table: bool, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Rust accepts every macro delimiter, so each include form names a path."""
+    files, where = BRACKETED_INCLUDES[case]
+    target = _source_path_target(tmp_path, files, table=table)
+
+    assert _press(target, _source_path_answers(tmp_path, table=table)) == 2
+
+    out = capsys.readouterr()
+    assert f"cargo paths: {where} the Rust path '../data/acmelabs.txt'" in (
+        out.out + out.err
+    )
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.parametrize("case", sorted(BRACKETED_INCLUDES))
+def test_bracketed_include_refusal_matches_real_cargo(
+    case: str, tmp_path: Path
+) -> None:
+    """Real Cargo: the old receipt left the file behind (``0/0/yes/101``)."""
+    _require_cargo()
+    files, _ = BRACKETED_INCLUDES[case]
+    target = _source_path_target(tmp_path, files, table=False)
+    _assert_cargo(target, "test", "--offline", "--all-targets")
+
+    assert _press(target, _source_path_answers(tmp_path, table=False)) == 2
+
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
+    _assert_cargo(target, "test", "--offline", "--all-targets")
 
 
 # --- F7: an ``auto*`` flag that turns off target discovery ----------------------
@@ -559,7 +855,6 @@ def test_named_target_without_a_path_is_judged_under_auto_off(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("table", [True, False], ids=["table", "tableless"])
 @pytest.mark.parametrize("flag", ["autotests", "autoexamples"])
 def test_target_file_cargo_does_not_discover_presses_and_builds(
@@ -574,6 +869,196 @@ def test_target_file_cargo_does_not_discover_presses_and_builds(
 
     assert (target / RECEIPT_REL).is_file()
     _assert_cargo(target, "test", "--offline", "--all-targets")
+
+
+# --- Cycle 2 F3: a default crate root that Cargo does not select -----------------
+
+MAIN_INCLUDE = f"fn main() {{\n    let _ = {FIXTURE_INCLUDE};\n}}\n"
+BUILD_INCLUDE = 'fn main() {{\n    let _ = include_str!("{}data/acmelabs.txt");\n}}\n'
+UNUSED_ROOTS = {
+    # Cycle 3 F1: ``build = false`` turns the build script off.
+    "build_false_unused_build_rs": {
+        "Cargo.toml": _package("acme-core") + "build = false\n",
+        "src/lib.rs": LIB,
+        "build.rs": BUILD_INCLUDE.format(""),
+    },
+    # Cycle 3 F1: a custom ``build`` path replaces the root build.rs.
+    "custom_build_unused_build_rs": {
+        "Cargo.toml": _package("acme-core") + 'build = "scripts/build.rs"\n',
+        "src/lib.rs": LIB,
+        "scripts/build.rs": "fn main() {}\n",
+        "build.rs": BUILD_INCLUDE.format(""),
+    },
+    # Cycle 3 F2: a virtual manifest has no targets, so its src/lib.rs is a fixture.
+    "virtual_workspace_root_fixture": {
+        "Cargo.toml": '[workspace]\nmembers = ["crates/acme-core"]\nresolver = "2"\n',
+        "crates/acme-core/Cargo.toml": _package("acme-core"),
+        "crates/acme-core/src/lib.rs": LIB,
+        "src/lib.rs": f"pub const D: &str = {FIXTURE_INCLUDE};\n",
+    },
+    # Cycle 3 F3: include_str! reads a .rs file as data; Cargo never compiles it.
+    "include_str_rs_fixture": {
+        "src/lib.rs": LIB + 'pub const F: &str = include_str!("fixture.rs");\n',
+        "src/fixture.rs": "mod acmelabs;\n",
+    },
+    # Cycle 4 thread 4697845632: a comment or long whitespace keeps it data.
+    "include_str_rs_fixture_comment": {
+        "src/lib.rs": LIB
+        + 'pub const F: &str = include_str!(/* data */ "fixture.rs");\n',
+        "src/fixture.rs": "mod acmelabs;\n",
+    },
+    "include_str_rs_fixture_spaced": {
+        "src/lib.rs": LIB
+        + "pub const F: &str = include_str!("
+        + " " * 80
+        + '"fixture.rs");\n',
+        "src/fixture.rs": "mod acmelabs;\n",
+    },
+    # Cycle 3 F4: an inline #[path] override with no child names no directory.
+    "inline_path_override_without_children": {
+        "src/lib.rs": LIB
+        + '#[allow(unused_attributes)]\n#[path = "acmelabs"]\n'
+        + "pub mod outer {\n    pub fn f() {}\n}\n",
+    },
+    # A [lib] path replaces src/lib.rs, so Cargo never compiles it.
+    "lib_path_unused_srclib": {
+        "Cargo.toml": _package("acme-core") + '\n[lib]\npath = "actual.rs"\n',
+        "actual.rs": LIB,
+        "src/lib.rs": f"pub const D: &str = {FIXTURE_INCLUDE};\n",
+    },
+    # autobins = false with no [[bin]]: Cargo builds no binary.
+    "autobins_false_unused_main": {
+        "Cargo.toml": _package("acme-core") + "autobins = false\n",
+        "src/lib.rs": LIB,
+        "src/main.rs": MAIN_INCLUDE,
+    },
+    # Cycle 5 thread 4698809971: autolib = false with no [lib] turns it off.
+    "autolib_false_unused_srclib": {
+        "Cargo.toml": _package("acme-core") + "autolib = false\n",
+        "src/main.rs": "fn main() {}\n",
+        "src/lib.rs": f"pub const D: &str = {FIXTURE_INCLUDE};\n",
+    },
+    # A [[bin]] with the package's name and a path replaces src/main.rs.
+    "named_bin_path_unused_main": {
+        "Cargo.toml": _package("acme-core")
+        + '\n[[bin]]\nname = "acme-core"\npath = "actual.rs"\n',
+        "actual.rs": "fn main() {}\n",
+        "src/lib.rs": LIB,
+        "src/main.rs": MAIN_INCLUDE,
+    },
+}
+USED_ROOTS = {
+    "autobins_false_named_main": (
+        _package("acme-core")
+        + 'autobins = false\n\n[[bin]]\nname = "acme-core"\npath = "src/main.rs"\n',
+        "src/main.rs",
+    ),
+    # A pathless [[bin]] may still be inferred at src/main.rs.
+    "autobins_false_pathless_bin": (
+        _package("acme-core") + 'autobins = false\n\n[[bin]]\nname = "acme-core"\n',
+        "src/main.rs",
+    ),
+    "lib_table_without_path": (
+        _package("acme-core") + '\n[lib]\ncrate-type = ["rlib"]\n',
+        "src/lib.rs",
+    ),
+    # A [lib] table keeps src/lib.rs under autolib = false.
+    "autolib_false_lib_table": (
+        _package("acme-core") + 'autolib = false\n\n[lib]\ncrate-type = ["rlib"]\n',
+        "src/lib.rs",
+    ),
+    # A [[bin]] with another name leaves src/main.rs inferred.
+    "other_named_bin_path": (
+        _package("acme-core") + '\n[[bin]]\nname = "other"\npath = "actual.rs"\n',
+        "src/main.rs",
+    ),
+    # Cycle 3 F1 controls: Cargo runs these build scripts.
+    "build_true": (_package("acme-core") + "build = true\n", "build.rs"),
+    "custom_build_script": (
+        _package("acme-core") + 'build = "scripts/build.rs"\n',
+        "scripts/build.rs",
+    ),
+}
+
+
+def _used_root_files(case: str) -> dict[str, str]:
+    manifest, root = USED_ROOTS[case]
+    files = {"Cargo.toml": manifest, "src/lib.rs": LIB}
+    if root == "src/main.rs":
+        files["src/main.rs"] = MAIN_INCLUDE
+        if "actual.rs" in manifest:
+            files["actual.rs"] = "fn main() {}\n"
+    elif root == "build.rs":
+        files[root] = BUILD_INCLUDE.format("")
+    elif root == "scripts/build.rs":
+        files[root] = BUILD_INCLUDE.format("../")
+    else:
+        files["src/lib.rs"] = f"pub const D: &str = {FIXTURE_INCLUDE};\n"
+    return {**files, "data/acmelabs.txt": "x\n"}
+
+
+@pytest.mark.parametrize("table", [True, False], ids=["table", "tableless"])
+@pytest.mark.parametrize("case", sorted(UNUSED_ROOTS))
+def test_default_root_cargo_does_not_select_is_not_judged(
+    case: str, table: bool, tmp_path: Path
+) -> None:
+    """Base ``10b4f9b`` presses these targets healthy."""
+    files = {**UNUSED_ROOTS[case], "data/acmelabs.txt": "x\n"}
+    target = _source_path_target(tmp_path, files, table=table)
+
+    assert _press(target, _source_path_answers(tmp_path, table=table)) == 0
+
+    assert (target / RECEIPT_REL).is_file()
+
+
+@pytest.mark.parametrize("case", sorted(USED_ROOTS))
+def test_default_root_cargo_selects_is_still_judged(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = _source_path_target(tmp_path, _used_root_files(case), table=False)
+
+    assert _press(target, _source_path_answers(tmp_path, table=False)) == 2
+
+    out = capsys.readouterr()
+    root = USED_ROOTS[case][1]
+    line = 1 if root == "src/lib.rs" else 2
+    assert f"cargo paths: {root}:{line}: the Rust path" in out.out + out.err
+    assert _status(target) == ""
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.parametrize("case", sorted(UNUSED_ROOTS))
+def test_default_root_cargo_does_not_select_presses_and_builds(
+    case: str, tmp_path: Path
+) -> None:
+    """Real Cargo: the table-less form presses healthy, as on base ``10b4f9b``."""
+    _require_cargo()
+    files = {**UNUSED_ROOTS[case], "data/acmelabs.txt": "x\n"}
+    target = _source_path_target(tmp_path, files, table=False)
+    _assert_cargo(target, "test", "--offline", "--all-targets")
+
+    assert _press(target, _source_path_answers(tmp_path, table=False)) == 0
+
+    assert (target / RECEIPT_REL).is_file()
+    _assert_cargo(target, "test", "--offline", "--all-targets")
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.parametrize("case", sorted(USED_ROOTS))
+def test_default_root_cargo_selects_refusal_matches_real_cargo(
+    case: str, tmp_path: Path
+) -> None:
+    """Real Cargo compiles the root, so the refusal guards a real build."""
+    _require_cargo()
+    target = _source_path_target(tmp_path, _used_root_files(case), table=False)
+    _assert_cargo(target, "test", "--offline", "--all-targets")
+
+    assert _press(target, _source_path_answers(tmp_path, table=False)) == 2
+
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
 
 
 # --- F2: the legacy underscore dependency tables ----------------------------------
@@ -619,7 +1104,6 @@ def test_owner_row_in_a_legacy_dependency_table_path_is_refused(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("section", ["dev_dependencies", "build_dependencies"])
 def test_legacy_dependency_table_refusal_matches_real_cargo(
     section: str, tmp_path: Path
@@ -1170,3 +1654,47 @@ def test_inferred_target_collision_cleared_by_remove_builds_with_real_cargo(
     assert _press(target, answers) == 0
     assert (target / RECEIPT_REL).is_file()
     _assert_cargo(target, "check", "--offline", "--all-targets")
+
+
+def test_rust_source_structure_tracks_inline_paths_and_unicode() -> None:
+    from template_press.rebrand.rust_text import InlineModule, rust_source_structure
+
+    text = (
+        '// mod decoy { #[path = "nope.rs"] mod bad; }\n'
+        "pub const BRACE: char = '{';\n"
+        '#[path = "p"]\n'
+        '#[cfg_attr(unix, path = "u")]\n'
+        "pub mod outer {\n"
+        '    #[path = r#"x.rs"#]\n'
+        "    pub mod raw_child;\n"
+        '    pub const T: &str = include_str!("data.txt");\n'
+        '    # [ path = "spaced.rs" ]\n'
+        "    pub mod spaced;\n"
+        "}\n"
+        "pub mod café {\n"
+        "    pub mod inner;\n"
+        "}\n"
+    )
+    mods, paths = rust_source_structure(text)
+
+    outer = InlineModule("outer", path="p", conditional_paths=("u",))
+    cafe = InlineModule("café")
+    assert [(m.name, m.attributed, m.conditional, m.inline) for m in mods] == [
+        ("raw_child", True, False, (outer,)),
+        ("spaced", True, False, (outer,)),
+        ("inner", False, False, (cafe,)),
+    ]
+    assert [
+        (
+            p.kind,
+            text[p.literal.content_start : p.literal.content_end],
+            p.inline,
+        )
+        for p in paths
+    ] == [
+        ("inline_dir", "p", ()),
+        ("inline_dir", "u", ()),
+        ("module_path", "x.rs", (outer,)),
+        ("include", "data.txt", ()),
+        ("module_path", "spaced.rs", (outer,)),
+    ]

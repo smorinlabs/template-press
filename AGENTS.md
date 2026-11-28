@@ -174,17 +174,16 @@ auto-discovered target rename that would leave multiple candidate files
 a `CARGO_BIN_EXE_<name>` token that would no longer match its binary. Rust
 source is read only in `.rs` files Cargo compiles: crate roots and target
 files (under `autotests = false` or another `auto*` flag set to false, only the
-targets the manifest names in that directory), and the files they reach through `mod` or `#[path]`, but not through Rust's path rule for a module nested in an inline `mod name { ... }` block. Not checked: a
+targets the manifest names in that directory), and the files they reach through
+`mod` (including inline `mod name { ... }` blocks and their `#[path]`
+attributes), `#[path]`, `#[cfg_attr(<cond>, path = "...")]`, or `include!`. Not
+checked: a
 path a macro builds, such as
 `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"))`; a `.rs` file
 excluded from rewriting; a `.rs` file no crate root reaches, such as
 `tests/fixtures/sample.rs`; and a path read at run time, such as a string
-`build.rs` passes to `std::fs::read_to_string`. Also not checked, so a rewrite
-there can still get a receipt that fails to build: a `#[path]` module inside or
-on an inline `mod name { ... }` block, and a renamed inline module around an
-unchanged child; a `#[path]` on an inline module whose child module is renamed
-is refused with exit 2 even when the rename would be correct. See the
-`press-target` skill for the full rules.
+`build.rs` passes to `std::fs::read_to_string`. See the
+`press-target` skill for the full rules. Two inline-module shapes remain open: a `#[path]` value that uses `..` inside a renamed inline module is not checked, so a receipt can precede a failed `cargo check` (`main` behaves the same way), and a `#[cfg(...)]`-disabled `mod` with no file on disk, inside a renamed inline module or as the renamed module itself, is refused with exit 2 before any write even when the rename would be correct.
 
 A hyphen-free crate name pressed to a hyphenated one (`acme` to `zeta-gadget`)
 is refused by default. A `[[cargo_split]]` block in `press/press-rules.toml`
@@ -230,6 +229,19 @@ After the press the block is inert and may be removed.
 A `[[replace]]` pattern may name a Cargo role with `{cargo_exact_<role>}`,
 `{cargo_ident_<role>}`, or `{cargo_ident_<role>_upper}`; this covers a span the
 strict refusals leave to the target author, and no role may end in `_upper`.
+
+BAML targets rewrite only `.baml` sources and handwritten host code; never
+text-rewrite `baml_client/`. Declare `[[regenerate]] dir` (which accepts
+`{package_name}` for in-package clients such as `src/{package_name}/baml_client`
+and supports `verify_exempt = true` with `reason`), opt `"display_name_pascal"`
+into `[rules] substring_rewrite_fields` when `.baml` files contain glued
+PascalCase identifiers, and never list `"baml"` in `[rules] languages` (declare
+only host manifests such as `["python"]` or `["node"]`). Before any write,
+`press rebrand` refuses an undeclared tracked BAML client
+(`baml_client/inlinedbaml.py` or `.ts` at any depth) with exit 2 and a
+suggested `[[regenerate]] dir` block, and refuses undeclared glued old identity
+names across every field `press verify` scans with exit 1.
+
 `provision`/`status` verbs arrive with the M6 Provision phase.
 
 ## Single source of truth

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import functools
 import os
 import posixpath
 import re
@@ -48,6 +49,7 @@ from template_press.rebrand.identity import (
     replace_token,
     token_pattern,
 )
+from template_press.rebrand.ignores import apply_ignores
 from template_press.rebrand.inventory import (
     SurfaceEntry,
     SurfaceSnapshot,
@@ -62,6 +64,7 @@ from template_press.rebrand.inventory import (
 from template_press.rebrand.keep_names import (
     KeepCheck,
     RewrittenForms,
+    UndeclaredName,
     check_keep_surfaces,
     component_kept_spans,
     disjoint_from_kept,
@@ -72,9 +75,17 @@ from template_press.rebrand.keep_names import (
     matches_outside_kept,
     splice_outside_kept,
 )
-from template_press.rebrand.matcher import find_occurrences, identity_pattern
+from template_press.rebrand.matcher import (
+    find_occurrences,
+    identity_pattern,
+    substring_pattern,
+)
 from template_press.rebrand.node_manifest import read_node_manifest
-from template_press.rebrand.pathing import ROOT_CONTROL, symlink_target_posix
+from template_press.rebrand.pathing import (
+    ROOT_CONTROL,
+    regenerate_dir_prefixes,
+    symlink_target_posix,
+)
 from template_press.rebrand.pipeline import (
     MAX_RENAME_PASSES,
     MatcherSpec,
@@ -90,16 +101,18 @@ from template_press.rebrand.rules import (
     rule_matches_path,
 )
 from template_press.rebrand.rust_text import (
+    InlineModule,
     compiled_markdown_lines,
     cut_module_docs,
-    module_declarations,
     quoted_spans,
     quoting_renames,
+    rust_code_view,
+    rust_path_literals,
+    rust_source_structure,
     rust_strings,
     span_within,
     split_rust_replacements,
     string_at,
-    string_role,
 )
 from template_press.rebrand.safety import (
     RenameClosureUnauthorized,
@@ -110,6 +123,8 @@ from template_press.rebrand.safety import (
     read_regular_nofollow,
     readlink_nofollow,
 )
+from template_press.rebrand.verifier import Finding, changed_verify_fields
+from template_press.rebrand.verify_config import VerifyConfig, effective_verify_fields
 
 Surface = Literal["content", "path", "symlink"]
 HuntConsumer = Literal["doctor", "reset_stub", "reset_path", "regeneration"]
@@ -286,6 +301,28 @@ def _rewrite_project_name(text: str, from_value: str, to_value: str) -> str:
     return text[: span[0]] + to_value + text[span[1] :]
 
 
+@functools.lru_cache(maxsize=4096)
+def _literal_pattern(value: str) -> re.Pattern[str]:
+    return re.compile(re.escape(value))
+
+
+def _validate_rewrite_row(row: RenderedSubstitution) -> None:
+    if (
+        row.provenance[0].kind == "manifest_name"
+        or row.package_value is not None
+        or row.matcher.algorithm == "literal"
+        or row.matcher.substring
+    ):
+        return
+    if row.matcher.algorithm != "conservative":
+        raise ValidationError(
+            f"rewrite row {row.row_id} uses non-rewrite matcher "
+            f"{row.matcher.algorithm!r}"
+        )
+    if row.matcher.identity_field is None:
+        raise ValidationError(f"rewrite row {row.row_id} has no identity field")
+
+
 def _rewrite_outside_kept(
     row: RenderedSubstitution, text: str, kept: Sequence[tuple[int, int]]
 ) -> tuple[str, tuple[tuple[int, int], ...]]:
@@ -295,6 +332,9 @@ def _rewrite_outside_kept(
     neighbors.
     """
 
+    _validate_rewrite_row(row)
+    if row.from_value and row.from_value not in text:
+        return text, tuple(kept)
     if row.package_value is not None:
         return _rewrite_rust_split(row, text, kept)
     replaced: list[tuple[int, int]] = []
@@ -304,18 +344,14 @@ def _rewrite_outside_kept(
             replaced.append(span)
     else:
         if row.matcher.algorithm == "literal" or row.matcher.substring:
-            pattern = re.compile(re.escape(row.from_value))
-        elif row.matcher.algorithm != "conservative":
-            raise ValidationError(
-                f"rewrite row {row.row_id} uses non-rewrite matcher "
-                f"{row.matcher.algorithm!r}"
-            )
-        elif row.matcher.identity_field is None:
-            raise ValidationError(f"rewrite row {row.row_id} has no identity field")
+            pattern = _literal_pattern(row.from_value)
         else:
-            pattern = token_pattern(
-                row.matcher.identity_field, row.from_value
-            ) or re.compile(re.escape(row.from_value))
+            field = row.matcher.identity_field
+            if field is None:
+                raise ValidationError(f"rewrite row {row.row_id} has no identity field")
+            pattern = token_pattern(field, row.from_value) or _literal_pattern(
+                row.from_value
+            )
         replaced = disjoint_matches(pattern, text, kept)
     return splice_outside_kept(text, replaced, row.to_value, kept)
 
@@ -328,11 +364,13 @@ def _rewrite_rust_split(
     A string occurrence with no provable spelling stays as it is, so the split
     preflight reports it before any write.
     """
+    if row.from_value and row.from_value not in text:
+        return text, tuple(kept)
     field = row.matcher.identity_field or ""
-    pattern = token_pattern(field, row.from_value) or re.compile(
-        re.escape(row.from_value)
-    )
+    pattern = token_pattern(field, row.from_value) or _literal_pattern(row.from_value)
     spans = disjoint_matches(pattern, text, kept)
+    if not spans:
+        return text, tuple(kept)
     choices = split_rust_replacements(
         text, spans, row.from_value, row.to_value, row.package_value or ""
     )
@@ -342,22 +380,38 @@ def _rewrite_rust_split(
     for (start, end), choice in zip(spans, choices, strict=True):
         if choice is None:
             continue
-        pieces += [text[copied:start], choice]
+        pieces.append(text[copied:start])
+        pieces.append(choice)
         copied = end
         shifts.append((end, len(choice) - (end - start)))
+    if not shifts:
+        return text, tuple(kept)
     pieces.append(text[copied:])
-    shifted = tuple(
-        (low + delta, high + delta)
-        for low, high in kept
-        for delta in (sum(d for end, d in shifts if end <= low),)
-    )
-    return "".join(pieces), shifted
+    if not kept:
+        return "".join(pieces), ()
+    n_shifts = len(shifts)
+    shifted: list[tuple[int, int]] = []
+    delta = 0
+    shift_idx = 0
+    prev_low = -1
+    for low, high in kept:
+        if low < prev_low:
+            delta = 0
+            shift_idx = 0
+        while shift_idx < n_shifts and shifts[shift_idx][0] <= low:
+            delta += shifts[shift_idx][1]
+            shift_idx += 1
+        prev_low = low
+        shifted.append((low + delta, high + delta))
+    return "".join(pieces), tuple(shifted)
 
 
 def rewrite_file(
     rows: Iterable[RenderedSubstitution],
     text: str,
     keep_names: Sequence[str] = (),
+    *,
+    kept: Sequence[tuple[int, int]] | None = None,
 ) -> tuple[str, tuple[RenderedSubstitution, ...]]:
     """Apply ``rows`` in order; return the text and the rows that changed it.
 
@@ -366,12 +420,19 @@ def rewrite_file(
     changing its neighbor nor create a new kept name.
     """
 
-    kept = kept_spans(text, keep_names) if keep_names else ()
+    active_kept: tuple[tuple[int, int], ...] | None = (
+        tuple(kept) if kept is not None else (None if keep_names else ())
+    )
     current = text
     changed: list[RenderedSubstitution] = []
     for row in rows:
-        if kept:
-            updated, kept = _rewrite_outside_kept(row, current, kept)
+        _validate_rewrite_row(row)
+        if row.from_value and row.from_value not in current:
+            continue
+        if active_kept is None:
+            active_kept = kept_spans(text, keep_names)
+        if active_kept:
+            updated, active_kept = _rewrite_outside_kept(row, current, active_kept)
         else:
             updated = rewrite_with_row(row, current)
         if updated != current:
@@ -383,17 +444,15 @@ def rewrite_file(
 def rewrite_with_row(row: RenderedSubstitution, text: str) -> str:
     """Apply one row's matcher without consulting source configuration."""
 
+    _validate_rewrite_row(row)
+    if row.from_value and row.from_value not in text:
+        return text
     if row.provenance[0].kind == "manifest_name":
         return _rewrite_project_name(text, row.from_value, row.to_value)
     if row.package_value is not None:
         return _rewrite_rust_split(row, text, ())[0]
     if row.matcher.algorithm == "literal" or row.matcher.substring:
         return text.replace(row.from_value, row.to_value)
-    if row.matcher.algorithm != "conservative":
-        raise ValidationError(
-            f"rewrite row {row.row_id} uses non-rewrite matcher "
-            f"{row.matcher.algorithm!r}"
-        )
     field = row.matcher.identity_field
     if field is None:
         raise ValidationError(f"rewrite row {row.row_id} has no identity field")
@@ -404,17 +463,17 @@ def _hunt_pattern(row: RenderedSubstitution, matcher: MatcherSpec) -> re.Pattern
     """The regular expression equivalent of one compiled hunt matcher."""
 
     if matcher.algorithm == "literal":
-        return re.compile(re.escape(row.from_value))
+        return _literal_pattern(row.from_value)
     field = matcher.identity_field
     if field is None:
         raise ValidationError(f"hunt for row {row.row_id} has no identity field")
     if matcher.algorithm == "paranoid":
         if matcher.substring:
-            return re.compile(re.escape(row.from_value), re.IGNORECASE)
+            return substring_pattern(row.from_value)
         return identity_pattern(field, row.from_value)
     if matcher.substring:
-        return re.compile(re.escape(row.from_value))
-    return token_pattern(field, row.from_value) or re.compile(re.escape(row.from_value))
+        return _literal_pattern(row.from_value)
+    return token_pattern(field, row.from_value) or _literal_pattern(row.from_value)
 
 
 def hunt_occurs(
@@ -426,13 +485,23 @@ def hunt_occurs(
     """Apply one compiled consumer hunt to text, outside ``kept`` spans."""
 
     matcher = policy.matcher
-    if kept:
-        return bool(matches_outside_kept(_hunt_pattern(row, matcher), text, kept))
     if matcher.algorithm == "literal":
-        return row.from_value in text
+        if row.from_value and row.from_value not in text:
+            return False
+        if not kept:
+            return row.from_value in text
+        return bool(matches_outside_kept(_hunt_pattern(row, matcher), text, kept))
     field = matcher.identity_field
     if field is None:
         raise ValidationError(f"hunt for row {row.row_id} has no identity field")
+    if (
+        matcher.algorithm != "paranoid"
+        and row.from_value
+        and row.from_value not in text
+    ):
+        return False
+    if kept:
+        return bool(matches_outside_kept(_hunt_pattern(row, matcher), text, kept))
     if matcher.algorithm == "paranoid":
         return bool(
             find_occurrences(
@@ -2251,7 +2320,7 @@ def cargo_path_splits(
         )
         if new_text != text and (
             found := _rust_source_path_splits(
-                path, text, new_text, plan, files, split_tokens
+                path, text, new_text, plan, files, directories, split_tokens
             )
         ):
             source_problems[path] = found
@@ -2275,17 +2344,74 @@ _TARGET_DIRS = {
 }
 
 
-def _module_places(path: str, inline: Sequence[str]) -> tuple[str, str]:
-    """The two directories a ``mod name;`` in ``path`` may name a file in.
+def _inline_dirs(path: str, inline: Sequence[InlineModule]) -> tuple[str, ...]:
+    """Candidate directories for a non-empty chain of enclosing inline modules.
 
-    A crate root or ``mod.rs`` keeps its modules beside it, and any other file
-    keeps them below its stem. The enclosing inline modules add one directory
-    each. Both places are read, so neither is missed.
+    The outermost inline module's ``#[path]`` / ``#[cfg_attr(..., path)]``
+    anchors at ``dirname(path)`` even in a non-mod-rs file. Its fallback name
+    uses both ``base`` (mod-rs) and ``base/<stem>`` (non-mod-rs). Each nested
+    inline module extends every parent directory by its own path override(s)
+    and, when it has no unconditional ``#[path]``, by its name.
     """
     base = posixpath.dirname(path)
-    return (
-        posixpath.join(base, *inline),
-        posixpath.join(base, PurePosixPath(path).stem, *inline),
+    stem = PurePosixPath(path).stem
+    first, *rest = inline
+    explicit = (
+        (first.path, *first.conditional_paths)
+        if first.path is not None
+        else first.conditional_paths
+    )
+    dirs = [posixpath.normpath(posixpath.join(base, value)) for value in explicit]
+    if first.path is None:
+        dirs.append(posixpath.normpath(posixpath.join(base, first.name)))
+        dirs.append(posixpath.normpath(posixpath.join(base, stem, first.name)))
+    for mod in rest:
+        steps = (
+            (mod.path, *mod.conditional_paths)
+            if mod.path is not None
+            else (*mod.conditional_paths, mod.name)
+        )
+        dirs = [
+            posixpath.normpath(posixpath.join(parent, step))
+            for parent in dirs
+            for step in steps
+        ]
+    return tuple(dirs)
+
+
+def _module_places(path: str, inline: Sequence[InlineModule]) -> tuple[str, ...]:
+    """The directories a ``mod name;`` in ``path`` may name a file in.
+
+    A crate root or ``mod.rs`` keeps its modules beside it, and any other file
+    keeps them below its stem. Enclosing inline modules follow Rust's path
+    rules, including any ``#[path]`` or ``#[cfg_attr(..., path)]`` overrides.
+    """
+    if inline:
+        return _inline_dirs(path, inline)
+    base = posixpath.dirname(path)
+    return (base, posixpath.join(base, PurePosixPath(path).stem))
+
+
+def _path_attr_dirs(path: str, inline: Sequence[InlineModule]) -> tuple[str, ...]:
+    """The directories a ``#[path]`` attribute in ``path`` resolves against.
+
+    Outside any inline module, ``#[path]`` resolves against ``dirname(path)``
+    even in a non-mod-rs file. Inside inline modules, it follows their chain.
+    """
+    if inline:
+        return _inline_dirs(path, inline)
+    return (posixpath.dirname(path),)
+
+
+def _effective_inline(
+    inline: Sequence[InlineModule],
+) -> tuple[tuple[str, ...], ...]:
+    """Effective directory steps of each enclosing inline module."""
+    return tuple(
+        (mod.path, *mod.conditional_paths)
+        if mod.path is not None
+        else (*mod.conditional_paths, mod.name)
+        for mod in inline
     )
 
 
@@ -2297,9 +2423,36 @@ def _compiled_rust_files(
     queue: list[str] = []
     for manifest, parsed in crates:
         directory = posixpath.dirname(manifest)
+        package = parsed.get("package")
+        if not isinstance(package, dict) and "project" not in parsed:
+            continue  # a virtual manifest has no targets of its own
+        lib, bins = parsed.get("lib"), parsed.get("bin")
+        build = package.get("build") if isinstance(package, dict) else None
+        # ``build = false`` turns the script off; a string is declared below.
+        roots = [] if build is False or isinstance(build, str) else ["build.rs"]
+        auto = package if isinstance(package, dict) else {}
+        if not (isinstance(lib, dict) and isinstance(lib.get("path"), str)) and (
+            isinstance(lib, dict) or auto.get("autolib") is not False
+        ):
+            roots.append("src/lib.rs")  # a [lib] path replaces Cargo's default
+        # A [[bin]] with the package's name and a path replaces src/main.rs.
+        claimed = (
+            isinstance(bins, list)
+            and "name" in auto
+            and any(
+                isinstance(b, dict)
+                and b.get("name") == auto.get("name")
+                and "path" in b
+                for b in bins
+            )
+        )
+        if (auto.get("autobins") is not False and not claimed) or (
+            isinstance(bins, list)
+            and any(not (isinstance(b, dict) and "path" in b) for b in bins)
+        ):
+            roots.append("src/main.rs")  # a pathless [[bin]] may still infer it
         queue.extend(
-            posixpath.normpath(posixpath.join(directory, root))
-            for root in ("src/lib.rs", "src/main.rs", "build.rs")
+            posixpath.normpath(posixpath.join(directory, root)) for root in roots
         )
         queue.extend(
             posixpath.normpath(posixpath.join(directory, declared.value))
@@ -2310,7 +2463,6 @@ def _compiled_rust_files(
             posixpath.normpath(posixpath.join(directory, file))
             for file in named_target_files(parsed)
         )
-        package = parsed.get("package")
         for sub, auto in _TARGET_DIRS.items():
             if isinstance(package, dict) and package.get(auto) is False:
                 continue  # Cargo builds only the targets the manifest names
@@ -2332,7 +2484,9 @@ def _compiled_rust_files(
             text = read_regular_nofollow(target / path).decode("utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        for module in module_declarations(text):
+        mods, path_literals = rust_source_structure(text)
+        code = rust_code_view(text)
+        for module in mods:
             if not module.attributed:
                 queue.extend(
                     posixpath.normpath(posixpath.join(place, shape.format(module.name)))
@@ -2340,14 +2494,24 @@ def _compiled_rust_files(
                     for shape in _MODULE_SHAPES
                 )
         base = posixpath.dirname(path)
-        queue.extend(
-            posixpath.normpath(posixpath.join(base, value))
-            for literal in rust_strings(text)
-            if string_role(text, literal, "\0") == "path"
-            and (value := text[literal.content_start : literal.content_end]).endswith(
-                ".rs"
+        for item in path_literals:
+            if item.kind == "inline_dir":
+                continue  # directory override; child mods/paths carry it in item.inline
+            value = text[item.literal.content_start : item.literal.content_end]
+            if item.kind == "include" and not value.endswith(".rs"):
+                continue
+            if item.kind == "include" and _opens_with(
+                _DATA_INCLUDE, code, item.literal.start
+            ):
+                continue  # include_str!/include_bytes! read data, not Rust
+            places = (
+                (base,)
+                if item.kind == "include"
+                else _path_attr_dirs(path, item.inline)
             )
-        )
+            queue.extend(
+                posixpath.normpath(posixpath.join(place, value)) for place in places
+            )
     return frozenset(reached)
 
 
@@ -2369,15 +2533,17 @@ def _rust_source_path_splits(
     new_text: str,
     plan: RenamePlan,
     files: frozenset[str],
+    directories: frozenset[str],
     split_tokens: Sequence[re.Pattern[str]],
 ) -> list[str]:
     """Paths Rust source declares that the rewrite would separate from their files.
 
     These are the file of a ``mod name;``, a ``#[path]`` value, and an
     ``include_str!``, ``include_bytes!``, or ``include!`` argument. Each is
-    judged only when the rewrite changes it: it must still name the file it
-    named, at that file's planned new path. A crate name that a
-    ``[[cargo_split]]`` role splits is left to the split preflight.
+    judged when the rewrite changes it or its effective enclosing inline-module
+    directories: it must still name the file or directory it named, at that
+    target's planned new path. A crate name that a ``[[cargo_split]]`` role
+    splits is left to the split preflight.
     """
 
     def split_owned(value: str) -> bool:
@@ -2386,63 +2552,108 @@ def _rust_source_path_splits(
     problems: list[str] = []
     new_path = plan.translate(path)
     base, new_base = posixpath.dirname(path), posixpath.dirname(new_path)
-    old_strings = [
-        literal
-        for literal in rust_strings(text)
-        if string_role(text, literal, "\0") == "path"
-    ]
-    new_strings = [
-        literal
-        for literal in rust_strings(new_text)
-        if string_role(new_text, literal, "\0") == "path"
-    ]
-    old_mods, new_mods = module_declarations(text), module_declarations(new_text)
-    if len(old_strings) != len(new_strings) or len(old_mods) != len(new_mods):
+    old_mods, old_paths = rust_source_structure(text)
+    new_mods, new_paths = rust_source_structure(new_text)
+    if len(old_paths) != len(new_paths) or len(old_mods) != len(new_mods):
         return [f"{path}: the rewrite changes which Rust paths the file declares"]
-    for old, new in zip(old_strings, new_strings, strict=True):
-        value = text[old.content_start : old.content_end]
-        new_value = new_text[new.content_start : new.content_end]
-        if value == new_value or split_owned(value):
+    for old_item, new_item in zip(old_paths, new_paths, strict=True):
+        if old_item.kind != new_item.kind:
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        value = text[old_item.literal.content_start : old_item.literal.content_end]
+        new_value = new_text[
+            new_item.literal.content_start : new_item.literal.content_end
+        ]
+        inline_changed = old_item.kind != "include" and _effective_inline(
+            old_item.inline
+        ) != _effective_inline(new_item.inline)
+        if value == new_value and not inline_changed:
             continue
-        resolved = posixpath.normpath(posixpath.join(base, value))
-        moved = posixpath.normpath(posixpath.join(new_base, new_value))
-        if resolved in files and plan.translate(resolved) == moved:
-            continue
-        problems.append(
-            f"{path}:{_line_of(text, old.start)}: the Rust path {value!r} would "
-            f"become {new_value!r}, but the press would not move the file it "
-            "names to match. Rename the file so a press moves it, add the shared "
-            "name to keep_names, or edit the path by hand before pressing"
+        if split_owned(value):
+            continue  # checked by _rust_path_problems with the same inline rules
+        old_dirs = (
+            (base,)
+            if old_item.kind == "include"
+            else _path_attr_dirs(path, old_item.inline)
         )
+        new_dirs = (
+            (new_base,)
+            if new_item.kind == "include"
+            else _path_attr_dirs(new_path, new_item.inline)
+        )
+        if len(old_dirs) != len(new_dirs):
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        targets = directories if old_item.kind == "inline_dir" else files
+        found = [
+            (
+                posixpath.normpath(posixpath.join(old_dir, value)),
+                posixpath.normpath(posixpath.join(new_dir, new_value)),
+            )
+            for old_dir, new_dir in zip(old_dirs, new_dirs, strict=True)
+            if posixpath.normpath(posixpath.join(old_dir, value)) in targets
+        ]
+        if found and all(
+            plan.translate(resolved) == moved for resolved, moved in found
+        ):
+            continue
+        if not found and old_item.kind == "inline_dir":
+            continue  # no child resolves against it; each child is judged itself
+        if value != new_value:
+            problems.append(
+                f"{path}:{_line_of(text, old_item.literal.start)}: the Rust path "
+                f"{value!r} would become {new_value!r}, but the press would not move "
+                "the file it names to match. Rename the file so a press moves it, add "
+                "the shared name to keep_names, or edit the path by hand before "
+                "pressing"
+            )
+        else:
+            problems.append(
+                f"{path}:{_line_of(text, old_item.literal.start)}: the Rust path "
+                f"{value!r} sits inside a renamed inline module, but the press would "
+                "not move the file it names to match. Rename the directory so a press "
+                "moves it, add the shared name to keep_names, or edit the module by "
+                "hand before pressing"
+            )
     join = posixpath.join
     for old_mod, new_mod in zip(old_mods, new_mods, strict=True):
         name, new_name = old_mod.name, new_mod.name
-        if name == new_name or old_mod.attributed or split_owned(name):
-            continue
-        places = zip(
-            _module_places(path, old_mod.inline),
-            _module_places(new_path, new_mod.inline),
-            strict=True,
+        inline_changed = _effective_inline(old_mod.inline) != _effective_inline(
+            new_mod.inline
         )
-        found = [
+        if (name == new_name and not inline_changed) or old_mod.attributed:
+            continue
+        if name != new_name and split_owned(name) and not inline_changed:
+            continue
+        old_dirs = _module_places(path, old_mod.inline)
+        new_dirs = _module_places(new_path, new_mod.inline)
+        if len(old_dirs) != len(new_dirs):
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        found_mods = [
             (posixpath.normpath(join(old_dir, shape.format(name))), new_dir, shape)
-            for old_dir, new_dir in places
+            for old_dir, new_dir in zip(old_dirs, new_dirs, strict=True)
             for shape in _MODULE_SHAPES
             if posixpath.normpath(join(old_dir, shape.format(name))) in files
         ]
-        if (found or old_mod.conditional) and all(
+        if (found_mods or old_mod.conditional) and all(
             plan.translate(file)
             == posixpath.normpath(join(new_dir, shape.format(new_name)))
-            for file, new_dir, shape in found
+            for file, new_dir, shape in found_mods
         ):
             # A ``cfg_attr`` path with no name-based file leaves nothing to move.
             continue
-        problems.append(
-            f"{path}:{_line_of(text, old_mod.offset)}: `mod {name};` would become "
-            f"`mod {new_name};`, but the press would not rename the module's "
-            "file to match. Rename the file so a press moves it, add the shared "
-            "name to keep_names, or edit the module by hand before pressing"
-        )
+        if name != new_name:
+            problems.append(
+                f"{path}:{_line_of(text, old_mod.offset)}: `mod {name};` would become "
+                f"`mod {new_name};`, but the press would not rename the module's "
+                "file to match. Rename the file so a press moves it, add the shared "
+                "name to keep_names, or edit the module by hand before pressing"
+            )
+        else:
+            problems.append(
+                f"{path}:{_line_of(text, old_mod.offset)}: `mod {name};` sits inside "
+                "a renamed inline module, but the press would not move the module's "
+                "file to match. Rename the directory so a press moves it, add the "
+                "shared name to keep_names, or edit the module by hand before pressing"
+            )
     return problems
 
 
@@ -2509,7 +2720,17 @@ def _identifier_contexts(text: str, name: str) -> list[int]:
     return sorted(offsets)
 
 
-_INCLUDE_STR = re.compile(r"\binclude_str\s*!\s*\(\s*$")
+_INCLUDE_STR = re.compile(r"\binclude_str\s*!\s*[(\[{]\s*$")
+_DATA_INCLUDE = re.compile(r"\binclude_(?:str|bytes)\s*!\s*[(\[{]\s*$")
+
+
+def _opens_with(macro: re.Pattern[str], code: str, start: int) -> bool:
+    """Whether ``macro``'s call opens right before ``start`` in ``code``,
+    past any whitespace and blanked comments."""
+    end = start
+    while end and code[end - 1].isspace():
+        end -= 1
+    return macro.search(code, max(end - 64, 0), end) is not None
 
 
 def _doc_included_files(target: Path, paths: Sequence[str]) -> dict[str, str]:
@@ -2527,10 +2748,9 @@ def _doc_included_files(target: Path, paths: Sequence[str]) -> dict[str, str]:
             continue
         if "include_str" not in text:
             continue
+        code = rust_code_view(text)
         for literal in rust_strings(text):
-            if literal.doc or not _INCLUDE_STR.search(
-                text, max(literal.start - 64, 0), literal.start
-            ):
+            if literal.doc or not _opens_with(_INCLUDE_STR, code, literal.start):
                 continue
             value = text[literal.content_start : literal.content_end]
             resolved = posixpath.normpath(
@@ -2648,6 +2868,12 @@ def cargo_split_target_problems(
     except ValidationError:
         plan = None  # the plan step reports an uncompilable plan
     surface = frozenset(entry.rel.as_posix() for entry in rename_snapshot.entries)
+    directories = frozenset(
+        parent.as_posix()
+        for entry in rename_snapshot.entries
+        for parent in entry.rel.parents
+        if parent != Path()
+    )
     content_rows = tuple(row for row in rows if "content" in row.rewrite_surfaces)
     mod_declared: set[str] = set()
     included = _doc_included_files(target, paths)
@@ -2759,7 +2985,9 @@ def cargo_split_target_problems(
                 )
             if path.endswith(".rs") and plan is not None:
                 problems.extend(
-                    _rust_path_problems(path, text, new_text, old, plan, surface)
+                    _rust_path_problems(
+                        path, text, new_text, old, plan, surface, directories
+                    )
                 )
             if split_spelling(split, path) != "package" or path.endswith("Cargo.toml"):
                 continue
@@ -2828,46 +3056,65 @@ def _rust_path_problems(
     old: str,
     plan: RenamePlan,
     surface: frozenset[str],
+    directories: frozenset[str],
 ) -> list[str]:
     """Rewritten path strings that no longer name the file they named.
 
-    ``include_*!`` and ``#[path]`` resolve against the source file's directory.
-    The string is provable only when it named a file on the surface and its
-    rewrite names that file's planned new path from the file's new location.
+    ``include_*!`` resolves against the source file's directory; ``#[path]``
+    resolves against any enclosing inline-module directories. The string is
+    provable only when it named a file or directory on the surface and its
+    rewrite names that target's planned new path from the file's new location.
     """
     token = token_pattern(f"{CARGO_EXACT_PREFIX}x", old) or re.compile(re.escape(old))
-    old_paths = [
-        text[literal.content_start : literal.content_end]
-        for literal in rust_strings(text)
-        if string_role(text, literal, old) == "path"
-        and token.search(text, literal.content_start, literal.content_end)
-    ]
-    new_paths = [
-        (literal, new_text[literal.content_start : literal.content_end])
-        for literal in rust_strings(new_text)
-        if string_role(new_text, literal, old) == "path"
-    ]
-    if not old_paths:
-        return []
-    base = posixpath.dirname(path)
-    new_base = posixpath.dirname(plan.translate(path))
+    old_items = rust_path_literals(text)
+    new_items = rust_path_literals(new_text)
+    if len(old_items) != len(new_items):
+        return [f"{path}: the rewrite changes which Rust paths the file declares"]
+    new_path = plan.translate(path)
+    base, new_base = posixpath.dirname(path), posixpath.dirname(new_path)
     problems: list[str] = []
-    for value in old_paths:
-        resolved = posixpath.normpath(posixpath.join(base, value))
-        moved = plan.translate(resolved)
-        rewritten = [
-            literal
-            for literal, new_value in new_paths
-            if posixpath.normpath(posixpath.join(new_base, new_value)) == moved
-        ]
-        if resolved in surface and rewritten:
+    for old_item, new_item in zip(old_items, new_items, strict=True):
+        if not token.search(
+            text, old_item.literal.content_start, old_item.literal.content_end
+        ):
             continue
-        line = _line_of(text, text.find(value))
+        if old_item.kind != new_item.kind:
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        value = text[old_item.literal.content_start : old_item.literal.content_end]
+        new_value = new_text[
+            new_item.literal.content_start : new_item.literal.content_end
+        ]
+        old_dirs = (
+            (base,)
+            if old_item.kind == "include"
+            else _path_attr_dirs(path, old_item.inline)
+        )
+        new_dirs = (
+            (new_base,)
+            if new_item.kind == "include"
+            else _path_attr_dirs(new_path, new_item.inline)
+        )
+        if len(old_dirs) != len(new_dirs):
+            return [f"{path}: the rewrite changes which Rust paths the file declares"]
+        targets = directories if old_item.kind == "inline_dir" else surface
+        found = [
+            (
+                posixpath.normpath(posixpath.join(old_dir, value)),
+                posixpath.normpath(posixpath.join(new_dir, new_value)),
+            )
+            for old_dir, new_dir in zip(old_dirs, new_dirs, strict=True)
+            if posixpath.normpath(posixpath.join(old_dir, value)) in targets
+        ]
+        if found and all(
+            plan.translate(resolved) == moved for resolved, moved in found
+        ):
+            continue
+        line = _line_of(text, old_item.literal.start)
         problems.append(
             f"{path}:{line}: the path string {value!r} names "
             + (
                 "no file the press keeps"
-                if resolved not in surface
+                if not found
                 else "a file whose rename the rewritten string would not follow"
             )
             + ", so the press cannot prove its spelling. Edit the string by hand "
@@ -2916,6 +3163,30 @@ def _checked_cargo_dependency_names(
     return read_cargo_facts(target).external_dependencies
 
 
+def _source_line_reader(target: Path) -> Callable[[str, int], str | None]:
+    """Cached ``(src_path, 1-based line) -> str | None`` reader over ``target``."""
+    cache: dict[str, list[str] | None] = {}
+
+    def reader(src_path: str, line: int) -> str | None:
+        if src_path not in cache:
+            path = target / src_path
+            if is_regular_lstat(path):
+                try:
+                    cache[src_path] = (
+                        read_regular_nofollow(path).decode("utf-8").splitlines()
+                    )
+                except (OSError, SafetyError, UnicodeDecodeError):
+                    cache[src_path] = None
+            else:
+                cache[src_path] = None
+        lines = cache[src_path]
+        if lines is None or line < 1 or line > len(lines):
+            return None
+        return lines[line - 1]
+
+    return reader
+
+
 def check_target_keep_names(
     target: Path,
     source: Identity,
@@ -2923,6 +3194,9 @@ def check_target_keep_names(
     rules: Rules,
     removed: frozenset[str],
     languages: Sequence[str],
+    *,
+    verify_config: VerifyConfig | None = None,
+    snapshot: SurfaceSnapshot | None = None,
 ) -> KeepCheck:
     """Run the keep-name preflight with this press's real rewrite rows."""
 
@@ -2968,13 +3242,25 @@ def check_target_keep_names(
             ),
         )
 
-    return check_keep_surfaces(
+    glued_fields: Sequence[tuple[str, str]] = ()
+    glued_substring: frozenset[str] = frozenset()
+    if verify_config is not None:
+        scan_fields, glued_substring = effective_verify_fields(
+            source, verify_config, rules.substring_rewrite_fields
+        )
+        glued_fields = changed_verify_fields(
+            source, destination, scan_fields, glued_substring
+        )
+
+    raw = check_keep_surfaces(
         rewrite_surface_texts(
             target,
             exclude_files=rules.exclude_files,
             exclude_dirs=rules.exclude_dirs,
             root_control=ROOT_CONTROL,
             skip_paths=removed,
+            exclude_prefixes=regenerate_dir_prefixes(rules),
+            snapshot=snapshot,
         ),
         source,
         rules.keep_names,
@@ -2983,7 +3269,50 @@ def check_target_keep_names(
         cargo_dependency_names=_checked_cargo_dependency_names(
             target, source, removed, languages
         ),
+        glued_fields=glued_fields,
+        glued_substring_fields=glued_substring,
+        glued_skip_dir_components=rules.verify_ignore,
     )
+    if verify_config is None:
+        return raw
+    exact_items = [item for item in raw.undeclared if item.kind != "glued"]
+    glued_items = [item for item in raw.undeclared if item.kind == "glued"]
+    if glued_items and verify_config.ignores:
+        findings = [
+            Finding(
+                item.path,
+                item.field,
+                item.value,
+                item.where,
+                item.line,
+                item.col,
+                "",
+            )
+            for item in glued_items
+        ]
+        surviving, _stale = apply_ignores(
+            findings,
+            list(verify_config.ignores),
+            forward_map=lambda p: p,
+            source_line=_source_line_reader(target),
+        )
+        surviving_keys = {
+            (f.path, f.field, f.value, f.where, f.line, f.col) for f in surviving
+        }
+        glued_items = [
+            item
+            for item in glued_items
+            if (item.path, item.field, item.value, item.where, item.line, item.col)
+            in surviving_keys
+        ]
+    exact_keys = {(item.path, item.where, item.token) for item in exact_items}
+    deduped_glued: dict[tuple[str, str, str], UndeclaredName] = {}
+    for item in glued_items:
+        key = (item.path, item.where, item.token)
+        if key in exact_keys:
+            continue
+        deduped_glued.setdefault(key, item)
+    return KeepCheck((*exact_items, *deduped_glued.values()), raw.stale)
 
 
 def compile_substitution_table(
@@ -3009,6 +3338,7 @@ def compile_substitution_table(
             exclude_files=rules.exclude_files,
             exclude_dirs=rules.exclude_dirs,
             root_control=ROOT_CONTROL,
+            exclude_prefixes=regenerate_dir_prefixes(rules),
         ),
         visibility_inputs=snapshot.visibility_inputs,
     )

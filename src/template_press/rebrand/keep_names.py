@@ -13,10 +13,11 @@ surface text in.
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import unicodedata
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
 
 from template_press.rebrand.identity import (
@@ -33,6 +34,7 @@ from template_press.rebrand.matcher import (
     classify_occurrence,
     find_occurrences,
     identity_pattern,
+    substring_pattern,
 )
 
 Span = tuple[int, int]
@@ -54,9 +56,13 @@ class UndeclaredName:
     """A token holding a declared name inside a longer, undeclared name."""
 
     path: str
-    where: str  # "content" | "path" | "symlink"
-    field: str  # "npm_name" | "cli_name" | a ``cargo_*`` row tag
+    where: str  # "content" | "path" | "symlink" | "filename" | "dirname"
+    field: str  # "npm_name" | "cli_name" | cargo_* | core verify field
     token: str
+    value: str = ""
+    line: int | None = None
+    col: int | None = None
+    kind: str = "exact"  # "exact" | "glued"
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,11 @@ class RewrittenForms:
 RewrittenLookup = Callable[[str, str, str], RewrittenForms]
 
 
+@functools.lru_cache(maxsize=4096)
+def _kept_pattern(name: str) -> re.Pattern[str] | None:
+    return token_pattern("npm_name", name)
+
+
 def kept_spans(text: str, names: Sequence[str]) -> tuple[Span, ...]:
     """Sorted spans of each exact name, using the ``npm_name`` boundaries.
 
@@ -93,9 +104,13 @@ def kept_spans(text: str, names: Sequence[str]) -> tuple[Span, ...]:
     different names are never merged: a match is kept only when one declared
     name wholly contains it.
     """
+    if not names or not text:
+        return ()
     spans: set[Span] = set()
     for name in names:
-        pattern = token_pattern("npm_name", name)
+        if name not in text:
+            continue
+        pattern = _kept_pattern(name)
         if pattern is None:
             continue
         position = 0
@@ -120,6 +135,23 @@ def disjoint_from_kept(span: Span, kept: Sequence[Span]) -> bool:
     return all(end <= low or start >= high for low, high in kept)
 
 
+def clip_kept_spans(
+    parts: Sequence[str], index: int, full_kept: Sequence[Span]
+) -> tuple[Span, ...]:
+    """Clip precomputed full-path ``full_kept`` spans to ``parts[index]``."""
+    if not full_kept:
+        return ()
+    offset = sum(len(part) + 1 for part in parts[:index])
+    length = len(parts[index])
+    end_limit = offset + length
+    clipped = {
+        (max(start - offset, 0), min(end - offset, length))
+        for start, end in full_kept
+        if start < end_limit and end > offset
+    }
+    return tuple(sorted(clipped))
+
+
 def component_kept_spans(
     parts: Sequence[str], index: int, names: Sequence[str]
 ) -> tuple[Span, ...]:
@@ -128,14 +160,9 @@ def component_kept_spans(
     Names are matched over the joined path, so a scoped name that spans two
     components is found and each component's boundaries see true neighbors.
     """
-    offset = sum(len(part) + 1 for part in parts[:index])
-    length = len(parts[index])
-    clipped = {
-        (max(start - offset, 0), min(end - offset, length))
-        for start, end in kept_spans("/".join(parts), names)
-        if start < offset + length and end > offset
-    }
-    return tuple(sorted(clipped))
+    if not names:
+        return ()
+    return clip_kept_spans(parts, index, kept_spans("/".join(parts), names))
 
 
 def matches_outside_kept(
@@ -146,14 +173,29 @@ def matches_outside_kept(
     A dropped match advances one character, so it cannot shadow an overlapping
     occurrence that is a real leak.
     """
+    if not kept:
+        return [match.span() for match in pattern.finditer(text)]
+    ordered = kept if len(kept) <= 1 else sorted(kept)
+    n_kept = len(ordered)
+    ki = 0
     spans: list[Span] = []
     position = 0
     while (match := pattern.search(text, position)) is not None:
-        if outside_kept((match.span(),), kept):
-            spans.append(match.span())
-            position = max(match.end(), match.start() + 1)
+        start, end = match.span()
+        while ki < n_kept and ordered[ki][1] <= start:
+            ki += 1
+        inside = False
+        j = ki
+        while j < n_kept and ordered[j][0] <= start:
+            if end <= ordered[j][1]:
+                inside = True
+                break
+            j += 1
+        if not inside:
+            spans.append((start, end))
+            position = max(end, start + 1)
         else:
-            position = match.start() + 1
+            position = start + 1
     return spans
 
 
@@ -171,7 +213,7 @@ def find_outside_kept(
     if substring:
         if not value:
             return []
-        pattern = re.compile(re.escape(value), re.IGNORECASE)
+        pattern = substring_pattern(value)
     else:
         pattern = identity_pattern(field, value)
     return matches_outside_kept(pattern, text, kept)
@@ -179,9 +221,20 @@ def find_outside_kept(
 
 def literal_occurs(text: str, needle: str, kept: Sequence[Span]) -> bool:
     """Whether the exact ``needle`` occurs outside every kept span."""
+    if needle not in text:
+        return False
     if not kept:
-        return needle in text
-    return bool(matches_outside_kept(re.compile(re.escape(needle)), text, kept))
+        return True
+    length = len(needle)
+    if length == 0:
+        return bool(matches_outside_kept(re.compile(""), text, kept))
+    position = text.find(needle)
+    while position != -1:
+        end = position + length
+        if not any(low <= position and end <= high for low, high in kept):
+            return True
+        position = text.find(needle, position + 1)
+    return False
 
 
 def disjoint_matches(
@@ -192,14 +245,29 @@ def disjoint_matches(
     A suppressed match advances one character, so it cannot shadow a disjoint
     occurrence that overlaps it.
     """
+    if not kept:
+        return [match.span() for match in pattern.finditer(text)]
+    ordered = kept if len(kept) <= 1 else sorted(kept)
+    n_kept = len(ordered)
+    ki = 0
     spans: list[Span] = []
     position = 0
     while (match := pattern.search(text, position)) is not None:
-        if disjoint_from_kept(match.span(), kept):
-            spans.append(match.span())
-            position = match.end()
+        start, end = match.span()
+        while ki < n_kept and ordered[ki][1] <= start:
+            ki += 1
+        overlaps = False
+        j = ki
+        while j < n_kept and ordered[j][0] < end:
+            if ordered[j][1] > start:
+                overlaps = True
+                break
+            j += 1
+        if not overlaps:
+            spans.append((start, end))
+            position = end
         else:
-            position = match.start() + 1
+            position = start + 1
     return spans
 
 
@@ -218,20 +286,34 @@ def splice_outside_kept(
     kept: Sequence[Span],
 ) -> tuple[str, tuple[Span, ...]]:
     """Replace sorted disjoint ``spans``; return text and shifted kept spans."""
+    if not spans:
+        return text, tuple(kept)
     pieces: list[str] = []
     copied = 0
     for start, end in spans:
-        pieces += [text[copied:start], replacement]
+        pieces.append(text[copied:start])
+        pieces.append(replacement)
         copied = end
     pieces.append(text[copied:])
-    shifted = tuple(
-        (low + delta, high + delta)
-        for low, high in kept
-        for delta in (
-            sum(len(replacement) - (end - start) for start, end in spans if end <= low),
-        )
-    )
-    return "".join(pieces), shifted
+    if not kept:
+        return "".join(pieces), ()
+    rep_len = len(replacement)
+    n_spans = len(spans)
+    shifted: list[Span] = []
+    delta = 0
+    span_idx = 0
+    prev_low = -1
+    for low, high in kept:
+        if low < prev_low:
+            delta = 0
+            span_idx = 0
+        while span_idx < n_spans and spans[span_idx][1] <= low:
+            s_start, s_end = spans[span_idx]
+            delta += rep_len - (s_end - s_start)
+            span_idx += 1
+        prev_low = low
+        shifted.append((low + delta, high + delta))
+    return "".join(pieces), tuple(shifted)
 
 
 def _identity_forms(identity: Identity) -> frozenset[str]:
@@ -568,6 +650,92 @@ def _extended_cargo_dependencies(
                 break
 
 
+_SUGGESTABLE_SUBSTRING_FIELDS: frozenset[str] = frozenset(
+    {
+        "package_name",
+        "repo_name",
+        "app_name",
+        "app_name_upper",
+        "author",
+        "email",
+        "owner",
+        "npm_name",
+        "cli_name",
+        "display_name_pascal",
+    }
+)
+
+
+def _pattern_spans(text: str, patterns: Sequence[re.Pattern[str]]) -> list[Span]:
+    """Every match span of compiled identity rewrite patterns on ``text``."""
+    spans: list[Span] = []
+    for pattern in patterns:
+        spans.extend(match.span() for match in pattern.finditer(text))
+    return spans
+
+
+def _glued_hits_in_text(
+    text: str,
+    field: str,
+    value: str,
+    *,
+    substring: bool,
+    kept: Sequence[Span],
+    rewritten: RewrittenForms,
+    extra_occupied: Sequence[Span] = (),
+    occupied_cache: list[Span] | None = None,
+) -> list[tuple[int, str]]:
+    """``(col, expanded_token)`` for paranoid matches that no rewrite row covers."""
+    spans = find_outside_kept(text, field, value, substring=substring, kept=kept)
+    if not spans:
+        return []
+    if occupied_cache is not None:
+        occupied = occupied_cache
+    else:
+        occupied = [
+            *_pattern_spans(text, rewritten.patterns),
+            *_literal_spans(text, rewritten.literals),
+            *extra_occupied,
+        ]
+    hits: list[tuple[int, str]] = []
+    for m_start, m_end in spans:
+        if any(low <= m_start and m_end <= high for low, high in occupied):
+            continue
+        t_start, t_end = m_start, m_end
+        while t_start > 0 and text[t_start - 1] in _NAME_CHARS:
+            t_start -= 1
+        while t_end < len(text) and text[t_end] in _NAME_CHARS:
+            t_end += 1
+        if (t_start, t_end) == (m_start, m_end):
+            continue
+        if any(low <= t_start and t_end <= high for low, high in occupied):
+            continue
+        hits.append((m_start, text[t_start:t_end]))
+    return hits
+
+
+def _rewrite_suggestion_field(
+    field: str, value: str, token: str, source: Identity
+) -> str | None:
+    """An allowed ``substring_rewrite_fields`` entry that would rewrite ``token``."""
+    if field == "display_name":
+        if source.display_name is None:
+            return None
+        pascal = display_forms(source.display_name)["pascal"]
+        return "display_name_pascal" if pascal in token else None
+    if field == "display_name_pascal":
+        return "display_name_pascal" if value in token else None
+    if field == "app_name":
+        if value in token:
+            return "app_name"
+        if source.app_name_upper in token:
+            return "app_name_upper"
+        return None
+    if field in _SUGGESTABLE_SUBSTRING_FIELDS and value in token:
+        return field
+    return None
+
+
 def check_keep_surfaces(
     surfaces: Iterable[tuple[str, str, str]],
     source: Identity,
@@ -576,6 +744,9 @@ def check_keep_surfaces(
     rewritten: RewrittenLookup | None = None,
     dependency_names: Sequence[str] = (),
     cargo_dependency_names: Sequence[str] = (),
+    glued_fields: Sequence[tuple[str, str]] = (),
+    glued_substring_fields: Collection[str] = (),
+    glued_skip_dir_components: Collection[str] = (),
 ) -> KeepCheck:
     """Find undeclared names and stale entries on ``(path, where, text)`` rows.
 
@@ -588,6 +759,12 @@ def check_keep_surfaces(
     from an ordinary file such as ``name.js``. ``cargo_dependency_names`` are
     the non-local Cargo dependencies; one extending a declared Cargo name is
     reported even when its manifest is outside the rewrite surface.
+
+    When ``glued_fields`` is provided (scope (i): the changed core fields
+    ``press verify`` scans), any occurrence found by the paranoid matcher that
+    no compiled rewrite row or ``keep_names`` entry covers is also returned as
+    a ``kind="glued"`` finding (one per occurrence so callers can apply
+    ``[[verify.ignore]]`` before deduplicating).
     """
     values = (
         *(
@@ -600,7 +777,17 @@ def check_keep_surfaces(
         ),
         *cargo_field_values(source).items(),
     )
-    if not values and not names:
+    core_glued = tuple(
+        sorted(
+            (
+                (field, value)
+                for field, value in glued_fields
+                if field not in ("npm_name", "cli_name") and not is_cargo_field(field)
+            ),
+            key=lambda item: (-len(item[1]), item[0]),
+        )
+    )
+    if not values and not names and not core_glued:
         return KeepCheck((), ())
     forms = _identity_forms(source)
     bin_env_tokens = {
@@ -608,12 +795,44 @@ def check_keep_surfaces(
         for value in cargo_field_values(source).values()
     }
     undeclared: dict[tuple[str, str, str], UndeclaredName] = {}
+    glued_findings: list[UndeclaredName] = []
     unseen = dict.fromkeys(names)
+    skip_dirs = frozenset(glued_skip_dir_components)
+    glued_sub_set = frozenset(glued_substring_fields)
+    core_glued_compiled = tuple(
+        (
+            field,
+            value,
+            field in glued_sub_set,
+            substring_pattern(value)
+            if field in glued_sub_set
+            else identity_pattern(field, value),
+        )
+        for field, value in core_glued
+        if not (field in glued_sub_set and not value)
+    )
     for path, where, text in surfaces:
-        kept = kept_spans(text, names)
-        for name in tuple(unseen):
-            if kept_spans(text, (name,)):
-                del unseen[name]
+        file_names: list[str] = []
+        if names and text:
+            spans_set: set[Span] = set()
+            for name in names:
+                if name not in text:
+                    continue
+                pattern = _kept_pattern(name)
+                if pattern is None:
+                    continue
+                matched_name = False
+                position = 0
+                while (match := pattern.search(text, position)) is not None:
+                    spans_set.add(match.span())
+                    matched_name = True
+                    position = match.start() + 1
+                if matched_name:
+                    file_names.append(name)
+                    unseen.pop(name, None)
+            kept: tuple[Span, ...] = tuple(sorted(spans_set))
+        else:
+            kept = ()
         subject = (
             rewritten(path, where, text) if rewritten is not None else RewrittenForms()
         )
@@ -631,6 +850,142 @@ def check_keep_surfaces(
                 undeclared.setdefault(
                     (path, where, token), UndeclaredName(path, where, field, token)
                 )
+        if not core_glued_compiled or (
+            skip_dirs and any(p in skip_dirs for p in path.split("/"))
+        ):
+            continue
+        if where == "content":
+            active_glued = tuple(
+                item for item in core_glued_compiled if item[3].search(text) is not None
+            )
+            if not active_glued:
+                continue
+            multiline_lits = frozenset(
+                lit for lit in subject.literals if "\n" in lit or "\r" in lit
+            )
+            full_lit_spans = (
+                _literal_spans(text, multiline_lits) if multiline_lits else ()
+            )
+            line_offset = 0
+            kept_idx = 0
+            n_kept = len(kept)
+            for lineno, raw_line in enumerate(text.splitlines(keepends=True), start=1):
+                line = raw_line.rstrip("\r\n")
+                line_end = line_offset + len(line)
+                cur_offset = line_offset
+                line_offset += len(raw_line)
+                line_matches = [
+                    item for item in active_glued if item[3].search(line) is not None
+                ]
+                if not line_matches:
+                    continue
+                extra_occupied = (
+                    [
+                        (max(0, lo - cur_offset), min(len(line), hi - cur_offset))
+                        for lo, hi in full_lit_spans
+                        if lo < line_end and hi > cur_offset
+                    ]
+                    if full_lit_spans
+                    else ()
+                )
+                while kept_idx < n_kept and kept[kept_idx][1] <= cur_offset:
+                    kept_idx += 1
+                line_kept_list: list[Span] = []
+                kj = kept_idx
+                while kj < n_kept and kept[kj][0] < line_end:
+                    lo, hi = kept[kj]
+                    if lo >= cur_offset and hi <= line_end:
+                        line_kept_list.append((lo - cur_offset, hi - cur_offset))
+                    kj += 1
+                line_kept: Sequence[Span] = line_kept_list
+                line_occupied: list[Span] | None = None
+                for field, value, is_sub, _pat in line_matches:
+                    if line_occupied is None:
+                        line_occupied = [
+                            *_pattern_spans(line, subject.patterns),
+                            *_literal_spans(line, subject.literals),
+                            *extra_occupied,
+                        ]
+                    for col, token in _glued_hits_in_text(
+                        line,
+                        field,
+                        value,
+                        substring=is_sub,
+                        kept=line_kept,
+                        rewritten=subject,
+                        extra_occupied=extra_occupied,
+                        occupied_cache=line_occupied,
+                    ):
+                        glued_findings.append(
+                            UndeclaredName(
+                                path,
+                                "content",
+                                field,
+                                token,
+                                value=value,
+                                line=lineno,
+                                col=col,
+                                kind="glued",
+                            )
+                        )
+        elif where == "path":
+            active_glued = tuple(
+                item for item in core_glued_compiled if item[3].search(path) is not None
+            )
+            if not active_glued:
+                continue
+            parts = path.split("/")
+            last_index = len(parts) - 1
+            for index, comp in enumerate(parts):
+                if index == 0 and comp == "press":
+                    continue
+                comp_where = "filename" if index == last_index else "dirname"
+                comp_kept = (
+                    component_kept_spans(parts, index, file_names) if file_names else ()
+                )
+                for field, value, is_sub, _pat in active_glued:
+                    for _col, token in _glued_hits_in_text(
+                        comp,
+                        field,
+                        value,
+                        substring=is_sub,
+                        kept=comp_kept,
+                        rewritten=subject,
+                    ):
+                        glued_findings.append(
+                            UndeclaredName(
+                                path,
+                                comp_where,
+                                field,
+                                token,
+                                value=value,
+                                line=None,
+                                col=None,
+                                kind="glued",
+                            )
+                        )
+        elif where == "symlink":
+            for field, value, is_sub, _pat in core_glued_compiled:
+                for _col, token in _glued_hits_in_text(
+                    text,
+                    field,
+                    value,
+                    substring=is_sub,
+                    kept=kept,
+                    rewritten=subject,
+                ):
+                    glued_findings.append(
+                        UndeclaredName(
+                            path,
+                            "symlink",
+                            field,
+                            token,
+                            value=value,
+                            line=None,
+                            col=None,
+                            kind="glued",
+                        )
+                    )
     manifest_subject = (
         rewritten("package.json", "content", "")
         if rewritten is not None and dependency_names
@@ -652,43 +1007,90 @@ def check_keep_surfaces(
     ):
         if item.token not in reported:
             undeclared.setdefault((item.path, item.where, item.token), item)
-    return KeepCheck(tuple(undeclared.values()), tuple(unseen))
+    return KeepCheck((*undeclared.values(), *glued_findings), tuple(unseen))
+
+
+def _render_glued_findings(
+    findings: Sequence[UndeclaredName], source: Identity, identity: frozenset[str]
+) -> list[str]:
+    """Render glued core-field refusals with rewrite and/or keep guidance."""
+    lines: list[str] = []
+    for item in findings[:_REPORT_LIMIT]:
+        path = item.path if item.path.isprintable() else repr(item.path)
+        label = json.dumps(item.value) if item.value else repr(item.field)
+        lines.append(f"error: {path}: {item.token} extends {item.field} {label}")
+        rewrite_field = _rewrite_suggestion_field(
+            item.field, item.value, item.token, source
+        )
+        keepable = (
+            not _is_identity_spelling(item.token, identity)
+            and _contained_source_name(item.token, source) is None
+        )
+        if rewrite_field is not None:
+            lines.append(
+                f"  rewrite it:  substring_rewrite_fields = "
+                f"{json.dumps([rewrite_field])}"
+            )
+            if keepable:
+                lines.append(f"  or keep it:  {_keep_line(item.token)}")
+            else:
+                lines.append(
+                    "  this token cannot be kept (it spells or contains a source "
+                    "identity value); rewrite or rename it"
+                )
+        elif keepable:
+            lines.append(f"  keep it:  {_keep_line(item.token)}")
+        else:
+            lines.append(
+                "  this token cannot be kept (it spells or contains a source "
+                "identity value); rename it or add a [[replace]] rule"
+            )
+    if len(findings) > _REPORT_LIMIT:
+        lines.append(f"  and {len(findings) - _REPORT_LIMIT} more")
+    lines.append("hint: nothing written, no receipt.")
+    return lines
 
 
 def render_undeclared(findings: Sequence[UndeclaredName], source: Identity) -> str:
     """The exit-1 refusal: each exact token and the line that would keep it."""
     identity = _identity_forms(source)
-    declared = (
-        "npm_name, cli_name, or Cargo name"
-        if any(is_cargo_field(item.field) for item in findings)
-        else "npm_name or cli_name"
-    )
-    lines = [
-        f"error: {len(findings)} undeclared name(s) contain a declared "
-        f"{declared}; nothing written, no receipt.",
-    ]
-    for item in findings[:_REPORT_LIMIT]:
-        path = item.path if item.path.isprintable() else repr(item.path)
-        lines.append(f"  [{item.where}] {path}: {item.token}")
-        if _is_identity_spelling(item.token, identity):
-            lines.append(
-                "    this spelling is a source identity value that no row "
-                "rewrites here, so it cannot be kept; rename it or change "
-                "that field in the press"
-            )
-        elif (contained := _contained_source_name(item.token, source)) is not None:
-            lines.append(
-                f"    this token contains the source {contained[0]} "
-                f"{contained[1]!r}, so it cannot be kept; rename it"
-            )
-        else:
-            lines.append(f"    {_keep_line(item.token)}")
-    if len(findings) > _REPORT_LIMIT:
-        lines.append(f"  and {len(findings) - _REPORT_LIMIT} more")
-    lines.append(
-        "hint: if a name is independent of this template, add it to [rules] "
-        "keep_names in press/press-rules.toml; otherwise rename it."
-    )
+    exact = [item for item in findings if item.kind != "glued"]
+    glued = [item for item in findings if item.kind == "glued"]
+    lines: list[str] = []
+    if exact:
+        declared = (
+            "npm_name, cli_name, or Cargo name"
+            if any(is_cargo_field(item.field) for item in exact)
+            else "npm_name or cli_name"
+        )
+        lines.append(
+            f"error: {len(exact)} undeclared name(s) contain a declared "
+            f"{declared}; nothing written, no receipt.",
+        )
+        for item in exact[:_REPORT_LIMIT]:
+            path = item.path if item.path.isprintable() else repr(item.path)
+            lines.append(f"  [{item.where}] {path}: {item.token}")
+            if _is_identity_spelling(item.token, identity):
+                lines.append(
+                    "    this spelling is a source identity value that no row "
+                    "rewrites here, so it cannot be kept; rename it or change "
+                    "that field in the press"
+                )
+            elif (contained := _contained_source_name(item.token, source)) is not None:
+                lines.append(
+                    f"    this token contains the source {contained[0]} "
+                    f"{contained[1]!r}, so it cannot be kept; rename it"
+                )
+            else:
+                lines.append(f"    {_keep_line(item.token)}")
+        if len(exact) > _REPORT_LIMIT:
+            lines.append(f"  and {len(exact) - _REPORT_LIMIT} more")
+        lines.append(
+            "hint: if a name is independent of this template, add it to [rules] "
+            "keep_names in press/press-rules.toml; otherwise rename it."
+        )
+    if glued:
+        lines.extend(_render_glued_findings(glued, source, identity))
     return "\n".join(lines)
 
 

@@ -30,16 +30,18 @@ from template_press.rebrand.identity import (
     token_pattern,
 )
 from template_press.rebrand.inventory import (
+    SurfaceSnapshot,
     capture_surface_snapshot,
     core_excludes_from_snapshot,
     select_inline_doctor_entries,
 )
 from template_press.rebrand.keep_names import (
-    component_kept_spans,
+    clip_kept_spans,
     kept_spans,
     literal_occurs,
     matches_outside_kept,
 )
+from template_press.rebrand.pathing import regenerate_dir_prefixes
 from template_press.rebrand.rules import (
     DEFAULT_RULES,
     ReplaceRule,
@@ -225,6 +227,8 @@ def _find_table_leaks(
     rules: Rules,
     table: SubstitutionTable,
     renamed: list[tuple[str, str]],
+    dest: Identity | None = None,
+    snapshot: SurfaceSnapshot | None = None,
 ) -> list[Leak]:
     """Scan inline-doctor surfaces from compiled doctor hunt policies."""
 
@@ -235,13 +239,15 @@ def _find_table_leaks(
         for policy in row.hunts
         if policy.consumer == "doctor"
     )
-    snapshot = capture_surface_snapshot(target)
+    if snapshot is None:
+        snapshot = capture_surface_snapshot(target)
     entries = select_inline_doctor_entries(
         snapshot,
         built_in_exclude_files=DEFAULT_RULES.exclude_files,
         built_in_exclude_dirs=DEFAULT_RULES.exclude_dirs,
         verify_ignore=rules.verify_ignore,
         root_control=ROOT_CONTROL,
+        exclude_prefixes=regenerate_dir_prefixes(rules, renamed, dest=dest),
     )
     untracked = frozenset(e.rel.as_posix() for e in entries if not e.tracked)
     core_excludes = core_excludes_from_snapshot(snapshot)
@@ -261,14 +267,24 @@ def _find_table_leaks(
             for row, policy in doctor_hunts
             if row_matches_scope(row, posix) or row_matches_scope(row, source_posix)
         )
+        path_hunts = tuple(
+            (row, policy) for row, policy in scoped_hunts if "path" in policy.surfaces
+        )
+        posix_kept: tuple[tuple[int, int], ...] | None = (
+            () if not table.keep_names else None
+        )
         for index, component in enumerate(rel.parts):
             if _is_root_press(rel, index):
                 continue
-            kept = component_kept_spans(rel.parts, index, table.keep_names)
-            for row, policy in scoped_hunts:
-                if "path" in policy.surfaces and hunt_occurs(
-                    row, policy, component, kept
-                ):
+            comp_kept: tuple[tuple[int, int], ...] | None = None
+            for row, policy in path_hunts:
+                if not hunt_occurs(row, policy, component):
+                    continue
+                if comp_kept is None:
+                    if posix_kept is None:
+                        posix_kept = kept_spans(posix, table.keep_names)
+                    comp_kept = clip_kept_spans(rel.parts, index, posix_kept)
+                if not comp_kept or hunt_occurs(row, policy, component, comp_kept):
                     leaks.append(
                         Leak(
                             posix,
@@ -278,14 +294,16 @@ def _find_table_leaks(
                         )
                     )
         # A scoped npm_name spans two components, so no component scan sees it.
-        for row, policy in scoped_hunts:
+        for row, policy in path_hunts:
             if (
                 policy.matcher.identity_field == "npm_name"
-                and "path" in policy.surfaces
                 and "/" in row.from_value
-                and hunt_occurs(row, policy, posix, kept_spans(posix, table.keep_names))
+                and hunt_occurs(row, policy, posix)
             ):
-                leaks.append(Leak(posix, "npm_name", row.from_value, "path"))
+                if posix_kept is None:
+                    posix_kept = kept_spans(posix, table.keep_names)
+                if not posix_kept or hunt_occurs(row, policy, posix, posix_kept):
+                    leaks.append(Leak(posix, "npm_name", row.from_value, "path"))
         if entry.index_kind == "gitlink" and entry.worktree_kind in (
             "directory",
             "missing",
@@ -306,21 +324,26 @@ def _find_table_leaks(
                 leaks.append(Leak(posix, "io", "unreadable", "unverifiable"))
                 continue
             link_target = symlink_target_posix(rel, link)
-            link_kept = kept_spans(link, table.keep_names)
+            link_kept: tuple[tuple[int, int], ...] | None = (
+                () if not table.keep_names else None
+            )
             for row, policy in doctor_hunts:
                 if (
                     "symlink" in policy.surfaces
                     and _table_symlink_scope_hits(row, link_target, table, executed)
-                    and hunt_occurs(row, policy, link, link_kept)
+                    and hunt_occurs(row, policy, link)
                 ):
-                    leaks.append(
-                        Leak(
-                            posix,
-                            _leak_field(row, policy),
-                            row.from_value,
-                            "symlink",
+                    if link_kept is None:
+                        link_kept = kept_spans(link, table.keep_names)
+                    if not link_kept or hunt_occurs(row, policy, link, link_kept):
+                        leaks.append(
+                            Leak(
+                                posix,
+                                _leak_field(row, policy),
+                                row.from_value,
+                                "symlink",
+                            )
                         )
-                    )
             continue
         if entry.worktree_kind != "file":
             leaks.append(Leak(posix, "io", "unreadable", "unverifiable"))
@@ -332,19 +355,22 @@ def _find_table_leaks(
             continue
         if text is None:
             continue
-        text_kept = kept_spans(text, table.keep_names)
+        text_kept: tuple[tuple[int, int], ...] | None = (
+            () if not table.keep_names else None
+        )
         for row, policy in scoped_hunts:
-            if "content" in policy.surfaces and hunt_occurs(
-                row, policy, text, text_kept
-            ):
-                leaks.append(
-                    Leak(
-                        posix,
-                        _leak_field(row, policy),
-                        row.from_value,
-                        "content",
+            if "content" in policy.surfaces and hunt_occurs(row, policy, text):
+                if text_kept is None:
+                    text_kept = kept_spans(text, table.keep_names)
+                if not text_kept or hunt_occurs(row, policy, text, text_kept):
+                    leaks.append(
+                        Leak(
+                            posix,
+                            _leak_field(row, policy),
+                            row.from_value,
+                            "content",
+                        )
                     )
-                )
     return _attach_ignore_hints(target, leaks, untracked, core_excludes)
 
 
@@ -358,6 +384,7 @@ def find_leaks(
     rendered_rules: list[tuple[ReplaceRule, str, str]] | None = None,
     renamed: list[tuple[str, str]] | None = None,
     table: SubstitutionTable | None = None,
+    snapshot: SurfaceSnapshot | None = None,
 ) -> list[Leak]:
     """Scan for surviving source-identity tokens.
 
@@ -395,7 +422,9 @@ def find_leaks(
     """
     renamed = renamed or []
     if table is not None:
-        return _find_table_leaks(target, rules, table, renamed)
+        return _find_table_leaks(
+            target, rules, table, renamed, dest=dest, snapshot=snapshot
+        )
     rendered_rules = rendered_rules or []
     leaks: list[Leak] = []
     fields = source.as_dict()
@@ -424,13 +453,15 @@ def find_leaks(
         *(f for f, v in fields.items() if field_renames_paths(f, v)),
         *(f"display_name_{form}" for form in display_form_names),
     )
-    snapshot = capture_surface_snapshot(target)
+    if snapshot is None:
+        snapshot = capture_surface_snapshot(target)
     entries = select_inline_doctor_entries(
         snapshot,
         built_in_exclude_files=DEFAULT_RULES.exclude_files,
         built_in_exclude_dirs=DEFAULT_RULES.exclude_dirs,
         verify_ignore=rules.verify_ignore,
         root_control=ROOT_CONTROL,
+        exclude_prefixes=regenerate_dir_prefixes(rules, renamed, dest=dest),
     )
     untracked = frozenset(e.rel.as_posix() for e in entries if not e.tracked)
     core_excludes = core_excludes_from_snapshot(snapshot)
@@ -448,33 +479,51 @@ def find_leaks(
             for rule, frm, _to in rendered_rules
             if rule.paths and _rule_scope_hits(rule, rel_posix, renamed)
         ]
+        rel_kept: tuple[tuple[int, int], ...] | None = (
+            () if not rules.keep_names else None
+        )
         for i, component in enumerate(rel.parts):
             if _is_root_press(rel, i):
                 continue
-            kept = component_kept_spans(rel.parts, i, rules.keep_names)
+            comp_kept: tuple[tuple[int, int], ...] | None = None
             for field_name in path_fields:
                 value = fields.get(field_name)
-                if value is not None and _occurs_outside_kept(
-                    component, field_name, value, substring_fields, kept
+                if value is not None and occurs(
+                    component, field_name, value, substring_fields
                 ):
-                    leaks.append(Leak(rel_posix, field_name, value, "path"))
+                    if comp_kept is None:
+                        if rel_kept is None:
+                            rel_kept = kept_spans(rel_posix, rules.keep_names)
+                        comp_kept = clip_kept_spans(rel.parts, i, rel_kept)
+                    if not comp_kept or _occurs_outside_kept(
+                        component, field_name, value, substring_fields, comp_kept
+                    ):
+                        leaks.append(Leak(rel_posix, field_name, value, "path"))
             for _rule, frm in path_rules:
-                if literal_occurs(component, frm, kept):
-                    leaks.append(Leak(rel_posix, "replace_rule", frm, "path"))
+                if frm in component:
+                    if comp_kept is None:
+                        if rel_kept is None:
+                            rel_kept = kept_spans(rel_posix, rules.keep_names)
+                        comp_kept = clip_kept_spans(rel.parts, i, rel_kept)
+                    if not comp_kept or literal_occurs(component, frm, comp_kept):
+                        leaks.append(Leak(rel_posix, "replace_rule", frm, "path"))
         # A scoped npm_name spans two components, so no component scan sees it.
         npm_name = fields.get("npm_name")
         if (
             npm_name is not None
             and "/" in npm_name
-            and _occurs_outside_kept(
+            and occurs(rel_posix, "npm_name", npm_name, substring_fields)
+        ):
+            if rel_kept is None:
+                rel_kept = kept_spans(rel_posix, rules.keep_names)
+            if not rel_kept or _occurs_outside_kept(
                 rel_posix,
                 "npm_name",
                 npm_name,
                 substring_fields,
-                kept_spans(rel_posix, rules.keep_names),
-            )
-        ):
-            leaks.append(Leak(rel_posix, "npm_name", npm_name, "path"))
+                rel_kept,
+            ):
+                leaks.append(Leak(rel_posix, "npm_name", npm_name, "path"))
         if entry.index_kind == "gitlink" and entry.worktree_kind in (
             "directory",
             "missing",
@@ -522,19 +571,27 @@ def find_leaks(
             continue
         if text is None:
             continue
-        text_kept = kept_spans(text, rules.keep_names)
+        text_kept: tuple[tuple[int, int], ...] | None = (
+            () if not rules.keep_names else None
+        )
         for field_name, value in fields.items():
-            if _occurs_outside_kept(
-                text, field_name, value, substring_fields, text_kept
-            ):
-                leaks.append(Leak(rel_posix, field_name, value, "content"))
+            if occurs(text, field_name, value, substring_fields):
+                if text_kept is None:
+                    text_kept = kept_spans(text, rules.keep_names)
+                if not text_kept or _occurs_outside_kept(
+                    text, field_name, value, substring_fields, text_kept
+                ):
+                    leaks.append(Leak(rel_posix, field_name, value, "content"))
         for rule, frm, _to in rendered_rules:
             if (
                 rule.content
+                and frm in text
                 and _rule_scope_hits(rule, rel_posix, renamed)
-                and literal_occurs(text, frm, text_kept)
             ):
-                leaks.append(Leak(rel_posix, "replace_rule", frm, "content"))
+                if text_kept is None:
+                    text_kept = kept_spans(text, rules.keep_names)
+                if not text_kept or literal_occurs(text, frm, text_kept):
+                    leaks.append(Leak(rel_posix, "replace_rule", frm, "content"))
     return _attach_ignore_hints(target, leaks, untracked, core_excludes)
 
 

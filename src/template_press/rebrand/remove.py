@@ -264,6 +264,7 @@ def _freeze_directory(
     *,
     current_dir: str,
     prior: DirectoryRemoval | None = None,
+    snapshot: SurfaceSnapshot | None = None,
 ) -> DirectoryRemoval:
     """Freeze tracked regular members and reject all directory dirtiness."""
     root = target / current_dir
@@ -349,7 +350,8 @@ def _freeze_directory(
                         f"remove directory {current_dir!r}: Git visibility input {relative!r}"
                     )
 
-    snapshot = capture_surface_snapshot(target)
+    if snapshot is None:
+        snapshot = capture_surface_snapshot(target)
     prefix = current_dir + "/"
     root_parts = PurePosixPath(current_dir).parts
     for entry in snapshot.entries:
@@ -570,6 +572,7 @@ def plan_removals(
     receipt_text: str | None = None,
     mode: Literal["press", "verify"] = "press",
     legacy_removed: Mapping[str, str] | None = None,
+    snapshot: SurfaceSnapshot | None = None,
 ) -> RemovalPlan:
     """Freeze active deletions and carry validated inactive directory history."""
     history = selected_directory_history(
@@ -601,7 +604,7 @@ def plan_removals(
                 target,
                 prior.current_dir,
                 tuple(member.current_file for member in prior.members),
-                capture_surface_snapshot(target),
+                snapshot if snapshot is not None else capture_surface_snapshot(target),
             )
             directories.append(prior)
             continue
@@ -616,7 +619,13 @@ def plan_removals(
                 )
             current_dir = prior.current_dir
         directories.append(
-            _freeze_directory(target, declaration, current_dir=current_dir, prior=prior)
+            _freeze_directory(
+                target,
+                declaration,
+                current_dir=current_dir,
+                prior=prior,
+                snapshot=snapshot,
+            )
         )
     legacy = (
         removed_files_from_receipt(receipt_text)
@@ -714,27 +723,30 @@ def frozen_remove_command_conflicts(
         removed[_control_alias_key(directory.current_dir)] = directory.current_dir
         removed[_control_alias_key(current_dir)] = directory.current_dir
     problems: list[str] = []
-    for kind, declarations in (("edit", rules.edit), ("regenerate", rules.regenerate)):
-        for declaration in declarations:
-            for element in declaration.command:
-                normalized = posixpath.normpath(element.replace("\\", "/"))
-                alias = _control_alias_key(normalized)
-                matching_root = next(
-                    (
-                        declared
-                        for root, declared in directory_roots
-                        if alias == _control_alias_key(root)
-                        or alias.startswith(_control_alias_key(root) + "/")
-                    ),
-                    None,
-                )
-                if alias not in removed and matching_root is None:
-                    continue
-                problems.append(
-                    f"frozen removal {(removed.get(alias) or matching_root)!r}: "
-                    f"argv element {element!r} in the [[{kind}]] command for "
-                    f"{declaration.file!r} names a removed path"
-                )
+    for kind, target_path, command in (
+        *(("edit", d.file, d.command) for d in rules.edit),
+        *(("regenerate", d.file, d.command) for d in rules.regenerate),
+        *(("regenerate", d.dir, d.command) for d in rules.regenerate_dirs),
+    ):
+        for element in command:
+            normalized = posixpath.normpath(element.replace("\\", "/"))
+            alias = _control_alias_key(normalized)
+            matching_root = next(
+                (
+                    declared
+                    for root, declared in directory_roots
+                    if alias == _control_alias_key(root)
+                    or alias.startswith(_control_alias_key(root) + "/")
+                ),
+                None,
+            )
+            if alias not in removed and matching_root is None:
+                continue
+            problems.append(
+                f"frozen removal {(removed.get(alias) or matching_root)!r}: "
+                f"argv element {element!r} in the [[{kind}]] command for "
+                f"{target_path!r} names a removed path"
+            )
     return problems
 
 
@@ -844,23 +856,23 @@ def remove_command_conflicts(rules: Rules, renamed: Mapping[str, str]) -> list[s
     if not removed:
         return []
     problems: list[str] = []
-    for kind, declarations in (
-        ("edit", rules.edit),
-        ("regenerate", rules.regenerate),
+    for kind, target_path, command in (
+        *(("edit", d.file, d.command) for d in rules.edit),
+        *(("regenerate", d.file, d.command) for d in rules.regenerate),
+        *(("regenerate", d.dir, d.command) for d in rules.regenerate_dirs),
     ):
-        for declaration in declarations:
-            for element in declaration.command:
-                norm = posixpath.normpath(element.replace("\\", "/"))
-                removed_file = removed.get(_control_alias_key(norm))
-                if removed_file is None:
-                    continue
-                problems.append(
-                    f"remove target {removed_file!r}: argv element {element!r} "
-                    f"in the [[{kind}]] command for {declaration.file!r} names "
-                    f"its original or renamed location (including filesystem "
-                    f"aliases) — the removal would delete it before the command "
-                    f"runs; drop one declaration"
-                )
+        for element in command:
+            norm = posixpath.normpath(element.replace("\\", "/"))
+            removed_file = removed.get(_control_alias_key(norm))
+            if removed_file is None:
+                continue
+            problems.append(
+                f"remove target {removed_file!r}: argv element {element!r} "
+                f"in the [[{kind}]] command for {target_path!r} names "
+                f"its original or renamed location (including filesystem "
+                f"aliases) — the removal would delete it before the command "
+                f"runs; drop one declaration"
+            )
     return problems
 
 

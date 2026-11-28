@@ -29,11 +29,19 @@ Known accepted residuals (paranoid posture, not a bug — see Task 14):
 
 from __future__ import annotations
 
+import functools
 import re
 
 _SEP = re.compile(r"[_\-. ]+")
 
 
+@functools.lru_cache(maxsize=1024)
+def substring_pattern(value: str) -> re.Pattern[str]:
+    """Cached case-insensitive literal pattern for substring matching."""
+    return re.compile(re.escape(value), re.IGNORECASE)
+
+
+@functools.lru_cache(maxsize=1024)
 def identity_pattern(field: str, value: str) -> re.Pattern[str]:
     """Build the paranoid, identifier-aware pattern for one identity field.
 
@@ -85,7 +93,7 @@ def find_occurrences(
         # lowering both sides and applying the lowered offsets to the original
         # string drifts the span. `re.IGNORECASE` handles case without a second
         # string; `finditer` is non-overlapping, matching the boundary branch.
-        return [m.span() for m in re.finditer(re.escape(value), text, re.IGNORECASE)]
+        return [m.span() for m in substring_pattern(value).finditer(text)]
     pattern = identity_pattern(field, value)
     return [m.span() for m in pattern.finditer(text)]
 

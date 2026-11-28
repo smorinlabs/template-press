@@ -98,7 +98,9 @@ def _load(path: Path) -> Table:
         raw = read_regular_nofollow(path).decode("utf-8")
         return tomllib.loads(raw)
     except (OSError, SafetyError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        raise ValidationError(f"cannot read Cargo manifest {path}: {exc}") from exc
+        raise ValidationError(
+            f"cannot read Cargo manifest {path.as_posix()}: {exc}"
+        ) from exc
 
 
 def _is_inherited(value: object) -> bool:

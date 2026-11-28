@@ -9,6 +9,8 @@ import pytest
 
 from template_press.rebrand.cli import main
 
+from .conftest import init_git_repo
+
 _BASE = (
     'package_name = "demo_widget"\n'
     'repo_name    = "demo-widget"\n'
@@ -49,18 +51,11 @@ def _target(tmp_path: Path, source_extra: str = "") -> Path:
     (target / "src" / "demo_widget" / "__init__.py").write_text(
         '"""Demo."""\n', encoding="utf-8"
     )
-    subprocess.run(["git", "init", "-q"], cwd=target, check=True)  # noqa: S607
-    _git(target, "config", "user.email", "t@example.com")
-    _git(target, "config", "user.name", "t")
-    _git(
+    init_git_repo(
         target,
-        "remote",
-        "add",
-        "origin",
-        "https://github.com/demolabs/demo-widget.git",
+        origin="https://github.com/demolabs/demo-widget.git",
+        commit_message="seed",
     )
-    _git(target, "add", "-A")
-    _git(target, "commit", "-q", "-m", "seed")
     return target
 
 

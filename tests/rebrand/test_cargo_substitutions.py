@@ -31,6 +31,8 @@ from template_press.rebrand.substitutions import (
     rewrite_with_row,
 )
 
+from .conftest import init_git_repo
+
 BASE = {
     "package_name": "acme_core",
     "repo_name": "acme-repo",
@@ -88,9 +90,7 @@ def _repo(tmp_path: Path, files: dict[str, str]) -> Path:
         path = target / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-    _git(target, "init", "-q")
-    _git(target, "add", "-A")
-    _git(target, "commit", "-qm", "init")
+    init_git_repo(target, commit_message="init")
     return target
 
 

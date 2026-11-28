@@ -20,7 +20,7 @@
 [project]
 name = "template_press"
 # ITM-070 — static version (ADR-06 cutover). release-please bumps this.
-version = "4.1.0"
+version = "5.0.0"
 description = "Standalone rebrand utility — press a new identity onto an external target repo"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -47,10 +47,15 @@ dependencies = []
 # ITM-063 — PEP 735 dependency-groups (round-13 decision). Replaces
 # [project.optional-dependencies] dev+docs. Install via `uv sync --group <name>`.
 [dependency-groups]
-dev = [
+test = [
   "pytest>=9.1.1",
-  "pytest-cov>=7.1.0",
+  "pytest-cov>=7.1.0", # asserted in test_ci_diagnostics.py plugin metadata
   "pytest-xdist>=3.6", # parallel tests (`-n auto` in ci.yml and `just check`)
+  "syrupy>=5.4.0",     # WL-023 — CLI --help snapshot tests
+  "pyyaml>=6.0.3",     # YAML workflow assertions in test_ci_gates.py and test_matrix.py
+]
+dev = [
+  { include-group = "test" },
   "ty>=0.0.56",        # per ADR-03 (pre-1.0; bump as needed)
   "ruff>=0.15.20",
   "cogapp",
@@ -63,7 +68,6 @@ dev = [
   "yamllint>=1.38.0",
   "pip-audit>=2.10.1",            # WL-014 — `just audit` + scheduled dep-audit workflow
   "twine>=6.2.0",                # WL-004 — dist metadata check in the build-smoke CI job
-  "syrupy>=5.4.0",               # WL-023 — CLI --help snapshot tests
 ]
 
 docs = [
@@ -202,6 +206,10 @@ reportUnusedClass = true
 [tool.bandit]
 exclude_dirs = ["tests", ".venv", "build", "dist"]
 skips = []                                                       # No global skips; add with rationale only.
+
+[tool.coverage.run]
+# Python 3.13+ PEP 669 low-overhead monitoring core (faster than CTrace).
+core = "sysmon"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -39,6 +39,7 @@ press could not complete, so verify cannot claim clean.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import os
@@ -69,6 +70,7 @@ from template_press.rebrand.identity import (
     ValidationError,
     cargo_ident,
     cargo_identity_problem,
+    display_forms,
 )
 from template_press.rebrand.ignores import Ignore, apply_ignores, build_forward_map
 from template_press.rebrand.inventory import (
@@ -87,6 +89,7 @@ from template_press.rebrand.languages import (
     render_ignored_languages,
 )
 from template_press.rebrand.matcher import find_occurrences
+from template_press.rebrand.pathing import exempt_regenerated_dirs
 from template_press.rebrand.receipt import (
     accepted_origin_from_receipt,
     receipt_binding_problem,
@@ -99,7 +102,12 @@ from template_press.rebrand.remove import (
     validate_removal_conflicts,
 )
 from template_press.rebrand.reset import load_stub_content
-from template_press.rebrand.rules import RULES_REL, Rules, load_selected_rules
+from template_press.rebrand.rules import (
+    RULES_REL,
+    Rules,
+    load_selected_rules,
+    render_package_paths,
+)
 from template_press.rebrand.safety import (
     SafetyError,
     git_hardening_args,
@@ -110,13 +118,15 @@ from template_press.rebrand.safety import (
     safe_write,
     scrubbed_git_env,
 )
-from template_press.rebrand.sandbox import make_sandbox
+from template_press.rebrand.sandbox import Sandbox, make_sandbox
 from template_press.rebrand.substitutions import check_target_keep_names
 from template_press.rebrand.synthesize import synthesize_dest
 from template_press.rebrand.verifier import Finding, attach_ignore_hints, scan
 from template_press.rebrand.verify_config import (
     KNOWN_FIELDS,
     VerifyConfig,
+    effective_verify_fields,
+    load_verify_config,
     parse_verify_config,
 )
 
@@ -343,13 +353,23 @@ def _preflight(
     if not undiscoverable and not check_display_name:
         return problems, honored
     corpus = _target_text_corpus(target, rules)
-    if check_display_name and not _value_present(
-        "display_name", source.display_name, corpus, substring_fields
-    ):
-        problems.append(
-            f"declared display_name {source.display_name!r} not found in "
-            "target — stale or mistyped?"
+    if check_display_name and source.display_name is not None:
+        display_present = _value_present(
+            "display_name", source.display_name, corpus, substring_fields
+        ) or (
+            "display_name_pascal" in substring_fields
+            and _value_present(
+                "display_name_pascal",
+                display_forms(source.display_name)["pascal"],
+                corpus,
+                substring_fields,
+            )
         )
+        if not display_present:
+            problems.append(
+                f"declared display_name {source.display_name!r} not found in "
+                "target — stale or mistyped?"
+            )
     if not undiscoverable:
         return problems, honored
     absent = [
@@ -509,7 +529,27 @@ def verify_command(argv: list[str] | None = None) -> int:
     parser.add_argument("--target", type=Path, default=Path("."))
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
-    target = args.target.resolve()
+    return _run_verify(args.target.resolve(), as_json=args.as_json)
+
+
+def verify_owned_sandbox(sandbox: Sandbox, source_target: Path) -> int:
+    """Run verify directly inside an owned sandbox already built from ``source_target``."""
+    return _run_verify(
+        sandbox.path.resolve(),
+        as_json=False,
+        owned_sandbox_copy=sandbox,
+        source_target=source_target,
+    )
+
+
+def _run_verify(
+    target: Path,
+    *,
+    as_json: bool,
+    owned_sandbox_copy: Sandbox | None = None,
+    source_target: Path | None = None,
+) -> int:
+    line_target = source_target if source_target is not None else target
 
     # Step 1 — source-config (control-symlink / missing / malformed -> 2; the
     # real target is never mutated on any exit-2 path).
@@ -526,36 +566,14 @@ def verify_command(argv: list[str] | None = None) -> int:
     # Steps 2-3 — preflight + [verify] config, against the REAL target.
     try:
         selected = load_selected_rules(target)
-        rules = selected.rules
+        rules = render_package_paths(selected.rules, source)
         languages = check_target_languages(
             target, rules.languages, [rule.file for rule in rules.remove]
         )
-        cfg = _load_verify_config(target)
-        scan_fields: tuple[str, ...] = cfg.fields
-        if source.display_name is not None and "display_name" not in scan_fields:
-            # codesign sec-05: a declared display name is scanned as its own
-            # field — the only coverage when its words diverge from the slug.
-            scan_fields = (*scan_fields, "display_name")
-        # Declared exact names are identity the press rewrites, so they are
-        # always scanned: a leftover must never produce a clean verify.
-        for field_name in ("npm_name", "cli_name"):
-            if (
-                getattr(source, field_name) is not None
-                and field_name not in scan_fields
-            ):
-                scan_fields = (*scan_fields, field_name)
-        # A field the SANDBOX PRESS rewrites substring-wide (`[rules]
-        # substring_rewrite_fields`) must be SCANNED at all (Fix F2) — a field
-        # absent from DEFAULT_FIELDS (e.g. app_name_upper) is otherwise never
-        # scanned regardless of substring mode — AND substring-wide (a
-        # containment-skipped symlink target, or any other rewrite the
-        # hermetic apply cannot perform, can leave a glued, boundary-free
-        # occurrence of that field's source value behind; the boundary-only
-        # `[verify] substring_fields` scope alone would never flag it).
-        scan_fields = _effective_scan_fields(
-            scan_fields, rules.substring_rewrite_fields
+        cfg = load_verify_config(target)
+        scan_fields, scan_substring = effective_verify_fields(
+            source, cfg, rules.substring_rewrite_fields
         )
-        scan_substring = cfg.substring_fields | rules.substring_rewrite_fields
         # The target's OWN receipt (not the sandbox copy's): a prior
         # `--accept-origin-mismatch` press records the exact origin values it
         # accepted, and preflight waives precisely those.
@@ -605,7 +623,7 @@ def verify_command(argv: list[str] | None = None) -> int:
     # contract is that the JSON object is the whole of stdout): a "note:
     # accepted" line printed alongside a refusal would read as a contradiction,
     # exactly as on the press side.
-    if not args.as_json:
+    if not as_json:
         for field_name, value in honored_origin.items():
             print(
                 f"note: {field_name}: origin {value!r} accepted by the press "
@@ -626,9 +644,11 @@ def verify_command(argv: list[str] | None = None) -> int:
     stale: list[Ignore] = []
     unavailable: tuple[str, ...] = ()
     exempt: list[tuple[str, str]] = []
+    exempt_dirs: list[tuple[str, str]] = []
     try:
         synth = synthesize_dest(source)
         validate_keep_names(rules.keep_names, source, synth, synthetic_dest=True)
+        target_snapshot = capture_surface_snapshot(target)
         keep_check = check_target_keep_names(
             target,
             source,
@@ -636,9 +656,10 @@ def verify_command(argv: list[str] | None = None) -> int:
             rules,
             frozenset(member.current_file for member in removal_plan.members),
             languages.checked,
+            snapshot=target_snapshot,
         )
         if keep_check.undeclared:
-            if args.as_json:
+            if as_json:
                 print(
                     json.dumps(
                         {
@@ -649,7 +670,12 @@ def verify_command(argv: list[str] | None = None) -> int:
                             "equal_fields_collision": None,
                             "exempt": [],
                             "undeclared_names": [
-                                dataclasses.asdict(item)
+                                {
+                                    "path": item.path,
+                                    "where": item.where,
+                                    "field": item.field,
+                                    "token": item.token,
+                                }
                                 for item in keep_check.undeclared
                             ],
                         }
@@ -659,8 +685,20 @@ def verify_command(argv: list[str] | None = None) -> int:
             return 1
         for line in render_stale(keep_check.stale):
             print(line, file=sys.stderr)
-        with owned_sandbox(target) as dest_root:
-            sandbox = make_sandbox(target, dest_root)
+        sandbox_cm = (
+            contextlib.nullcontext(None)
+            if owned_sandbox_copy is not None
+            else owned_sandbox(target)
+        )
+        with sandbox_cm as dest_root:
+            if owned_sandbox_copy is not None:
+                sandbox = owned_sandbox_copy
+                source_snapshot = target_snapshot
+            else:
+                if dest_root is None:
+                    raise RuntimeError("owned_sandbox did not yield a path")
+                sandbox = make_sandbox(target, dest_root, snapshot=target_snapshot)
+                source_snapshot = capture_surface_snapshot(sandbox.path)
             try:
                 # Model declared resets (codex 3654657444, P1): the real
                 # press writes the validated stub at position zero, so the
@@ -673,11 +711,21 @@ def verify_command(argv: list[str] | None = None) -> int:
                     (rule, load_stub_content(sandbox.path, rule))
                     for rule in rules.reset
                 ]
-                source_snapshot = capture_surface_snapshot(sandbox.path)
-                sandbox_plan = build_plan(sandbox.path, source, synth, effective_rules)
+                sandbox_plan = build_plan(
+                    sandbox.path,
+                    source,
+                    synth,
+                    effective_rules,
+                    snapshot=source_snapshot,
+                )
                 validate_removal_conflicts(rules, removal_plan, sandbox_plan.renames)
                 report = apply(
-                    sandbox.path, source, synth, rules, table=sandbox_plan.table
+                    sandbox.path,
+                    source,
+                    synth,
+                    rules,
+                    table=sandbox_plan.table,
+                    _skip_revalidation=True,
                 )
                 for reset_rule, stub in reset_stubs:
                     rel = translate_path(reset_rule.file, dict(report.renamed))
@@ -728,16 +776,18 @@ def verify_command(argv: list[str] | None = None) -> int:
             # can certify these files, so they are listed as not-verified
             # rather than silently omitted.
             exempt = exempt_regenerated_paths(rules, report.renamed)
+            exempt_dirs = exempt_regenerated_dirs(rules, report.renamed)
             forward_map = build_forward_map(report.renamed)
             # Exempt paths back to SOURCE coordinates (codex 3654657451),
             # exactly like the findings below — the synthetic sandbox path
             # does not exist in the user's repo.
             exempt = [(forward_map(file), reason) for file, reason in exempt]
+            exempt_dirs = [(forward_map(d), reason) for d, reason in exempt_dirs]
             surviving, stale = apply_ignores(
                 findings,
                 list(cfg.ignores),
                 forward_map=forward_map,
-                source_line=_make_source_line(target),
+                source_line=_make_source_line(line_target),
             )
             # Report/JSON in SOURCE coordinates (Design §3): the sandbox path is
             # a synthetic press artifact that does not exist in the user's repo.
@@ -757,7 +807,7 @@ def verify_command(argv: list[str] | None = None) -> int:
             # like `ignore_near_miss`'s own "no note, no error" contract.
             if surviving:
                 try:
-                    real_snapshot = capture_surface_snapshot(target)
+                    real_snapshot = capture_surface_snapshot(line_target)
                 except _CONFIG_ERRORS:
                     real_snapshot = None
                 if real_snapshot is not None:
@@ -766,14 +816,14 @@ def verify_command(argv: list[str] | None = None) -> int:
                     )
                     real_core_excludes = core_excludes_from_snapshot(real_snapshot)
                     surviving = attach_ignore_hints(
-                        target, surviving, real_untracked, real_core_excludes
+                        line_target, surviving, real_untracked, real_core_excludes
                     )
             unavailable = sandbox.unavailable_submodules
     except _CONFIG_ERRORS as exc:
         return _fail(f"sandbox verify failed: {exc}")
 
     failed = bool(surviving or stale or unavailable or equal_collision)
-    if args.as_json:
+    if as_json:
         print(
             json.dumps(
                 {
@@ -788,18 +838,21 @@ def verify_command(argv: list[str] | None = None) -> int:
                     # why (exit 0 means clean over the SCANNED set).
                     "exempt": [
                         {"file": file, "reason": reason} for file, reason in exempt
-                    ],
+                    ]
+                    + [{"dir": d, "reason": reason} for d, reason in exempt_dirs],
                 }
             )
         )
     else:
         for file, reason in exempt:
             print(f"not verified (exempt): {file} — {reason}")
+        for d, reason in exempt_dirs:
+            print(f"not verified (exempt): {d}/ — {reason}")
     if failed:
-        if not args.as_json:
+        if not as_json:
             _report(surviving, stale, unavailable, equal_collision, source)
         return 1
-    if not args.as_json:
+    if not as_json:
         print(
             "verified: no identity leftovers survived the hermetic "
             "self-press (clean over the scanned set"

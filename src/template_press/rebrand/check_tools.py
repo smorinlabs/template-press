@@ -73,5 +73,15 @@ def check_tools_command(argv: list[str] | None = None) -> int:
             reports.append(f"{argv0} — missing (declared to regenerate {rule.file})")
         else:
             reports.append(f"{argv0} — {found} (regenerates {rule.file})")
+    for dir_rule in rules.regenerate_dirs:
+        argv0 = dir_rule.command[0]
+        found = resolve_executable(target, argv0, command_env(dir_rule.env))
+        if found is None:
+            missing += 1
+            reports.append(
+                f"{argv0} — missing (declared to regenerate {dir_rule.dir}/)"
+            )
+        else:
+            reports.append(f"{argv0} — {found} (regenerates {dir_rule.dir}/)")
     print("\n".join(reports))
     return 1 if missing else 0

@@ -53,6 +53,13 @@ ALLOWED_PLACEHOLDERS: frozenset[str] = frozenset(REQUIRED_FIELDS) | {
     "cli_name",
 }
 
+# Allowed values for [rules] substring_rewrite_fields. Bare "display_name" stays
+# rejected (no-op at runtime); "display_name_pascal" is the one display form
+# allowed in substring mode (Decision 2).
+ALLOWED_SUBSTRING_REWRITE_FIELDS: frozenset[str] = (
+    ALLOWED_PLACEHOLDERS - {"display_name"}
+) | {"display_name_pascal"}
+
 _REPLACE_KEYS = frozenset({"pattern", "files", "paths", "content", "reason"})
 _CARGO_SPLIT_KEYS = frozenset({"role", "package_files", "identifier_files"})
 
@@ -176,6 +183,24 @@ class RegenerateRule:
 
 
 @dataclass(frozen=True)
+class RegenerateDirRule:
+    """One declared whole-directory regeneration (P19 Decision 3).
+
+    Excluded from text rewriting, preflight, and doctor; deleted at its pressed
+    location and rebuilt by ``command`` after ``apply()``, then every produced
+    file is scanned.
+    """
+
+    dir: str  # canonical POSIX rel path, SOURCE coordinates
+    command: tuple[str, ...]
+    env: tuple[str, ...] = ()
+    scan: str = "strict"
+    verify_exempt: bool = False
+    reason: str = ""
+    raw_dir: str = ""  # original template before {package_name} rendering
+
+
+@dataclass(frozen=True)
 class ResetRule:
     """One declared reset: blank ``file`` to a stub (P05 D1/D6).
 
@@ -273,7 +298,7 @@ class _CleanDeclaration:
 class _RegenerateDeclaration:
     """One parsed regeneration plus its environment-independent selector."""
 
-    rule: RegenerateRule
+    rule: RegenerateRule | RegenerateDirRule
     platforms: frozenset[str]
 
 
@@ -337,6 +362,8 @@ class Rules:
     keep_names: tuple[str, ...] = ()
     # Declared [[cargo_split]] opt-ins, appended last for positional safety.
     cargo_split: tuple[CargoSplit, ...] = ()
+    # Declared [[regenerate]] dir rules, appended last for positional safety.
+    regenerate_dirs: tuple[RegenerateDirRule, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -419,6 +446,36 @@ _CARGO_LOCK_SUGGESTION = (
     'command = ["cargo", "update", "--workspace", "--offline"]\n'
 )
 
+_BAML_COMMANDS: dict[str, tuple[str, ...]] = {
+    ".py": ("uv", "run", "--offline", "baml-cli", "generate"),
+    ".ts": ("npx", "baml-cli", "generate"),
+}
+
+
+def baml_regenerate_suggestion(
+    client_dir: str,
+    marker_ext: str,
+    source: Identity | None = None,
+) -> str:
+    """A paste-ready ``[[regenerate]]`` dir block for a tracked BAML client."""
+    parts = client_dir.split("/")
+    if source is not None and source.package_name in parts:
+        suggested_dir = "/".join(
+            _PACKAGE_PLACEHOLDER if part == source.package_name else part
+            for part in parts
+        )
+    else:
+        suggested_dir = client_dir
+    command = _BAML_COMMANDS.get(marker_ext, ("baml-cli", "generate"))
+    argv = ", ".join(f'"{part}"' for part in command)
+    return (
+        "[[regenerate]]\n"
+        f'dir = "{suggested_dir}"\n'
+        f"command = [{argv}]\n"
+        "verify_exempt = true\n"
+        'reason = "BAML client, rebuilt from baml_src"\n'
+    )
+
 
 def regenerate_suggestion(file: str) -> str | None:
     """A paste-ready [[regenerate]] block for a known root lockfile, else None.
@@ -479,7 +536,7 @@ _ROOT_KEYS = frozenset(
 _REMOVE_KEYS = frozenset({"file", "dir", "reason", "platforms"})
 
 _REGENERATE_KEYS = frozenset(
-    {"file", "command", "env", "platforms", "scan", "verify_exempt", "reason"}
+    {"file", "dir", "command", "env", "platforms", "scan", "verify_exempt", "reason"}
 )
 _REGENERATE_SCAN_VALUES = frozenset({"strict", "boundary"})
 _RESET_KEYS = frozenset({"file", "stub", "stub_file", "platforms"})
@@ -488,6 +545,24 @@ _RESET_KEYS = frozenset({"file", "stub", "stub_file", "platforms"})
 # The separate path-component `verify_ignore` policy remains unchanged.
 _EDIT_KEYS = frozenset({"file", "command", "expect", "env", "platforms"})
 _CLEAN_KEYS = frozenset({"paths", "platforms"})
+
+
+_PACKAGE_PLACEHOLDER = "{package_name}"
+
+
+def _validate_package_placeholder(context: str, path: str) -> None:
+    """Allow only ``{package_name}`` in ``path``; reject other/unbalanced braces."""
+    for token in re.findall(r"\{[^{}]*\}", path):
+        if token != _PACKAGE_PLACEHOLDER:
+            raise ValidationError(
+                f"{RULES_REL}: {context} {path!r} only supports "
+                f"{_PACKAGE_PLACEHOLDER} placeholder, got {token!r}"
+            )
+    stripped = re.sub(r"\{[^{}]*\}", "", path)
+    if "{" in stripped or "}" in stripped:
+        raise ValidationError(
+            f"{RULES_REL}: {context} {path!r} has an unbalanced or nested brace"
+        )
 
 
 def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
@@ -502,6 +577,16 @@ def _str_list(table: dict, key: str, default: list[str]) -> list[str]:
                 "names matched at any depth, including basenames; "
                 f"multi-component paths are invalid: {nested}"
             )
+    if key == "extra_exclude_dirs":
+        bad = [v for v in value if "{" in v or "}" in v]
+        if bad:
+            raise ValidationError(
+                f"{RULES_REL}: [rules] extra_exclude_dirs does not accept "
+                f"placeholders (entries match single path components): {bad!r}"
+            )
+    if key == "extra_exclude_files":
+        for entry in value:
+            _validate_package_placeholder(f"[rules] {key}", entry)
     return value
 
 
@@ -669,6 +754,10 @@ def _legacy_regenerate_error(value: object) -> ValidationError:
     )
 
 
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+_RESERVED_ALIAS_KEYS: frozenset[str] | None = None
+
+
 def _declared_rel_path(context: str, value: object) -> str:
     """Validate a declared path as a contained relative path; return POSIX."""
     if not isinstance(value, str) or not value:
@@ -677,7 +766,7 @@ def _declared_rel_path(context: str, value: object) -> str:
         )
     if "\x00" in value:
         raise ValidationError(f"{RULES_REL}: {context} must not contain NUL")
-    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+    if _CONTROL_CHAR_RE.search(value) is not None:
         # Plan visibility is the approval guard (wave-3 3654059282); a
         # declared path is interpolated into the rendered plan exactly like
         # argv elements, so terminal controls are rejected the same way.
@@ -693,6 +782,8 @@ def _declared_rel_path(context: str, value: object) -> str:
 
 def _control_alias_key(file: str) -> str:
     """Collapse a POSIX relative path to its filesystem-alias identity."""
+    if "/" not in file:
+        return _alias_component(file)
     return "/".join(_alias_component(part) for part in file.split("/"))
 
 
@@ -731,16 +822,25 @@ def _alias_component(part: str) -> str:
     cannot expose a component the strip would have taken.
     """
     stripped = part.rstrip(" .")
+    if stripped.isascii():
+        return stripped.lower()
     return unicodedata.normalize(
         "NFD", unicodedata.normalize("NFD", stripped).casefold()
     )
 
 
-def _reject_reserved(kind: str, file: str) -> None:
-    # Deferred import avoids a module-load cycle: pathing imports Rules for
-    # neutral scope helpers, while this validator needs the control paths.
-    from template_press.rebrand.pathing import ROOT_CONTROL
+def _reserved_alias_keys() -> frozenset[str]:
+    global _RESERVED_ALIAS_KEYS
+    if _RESERVED_ALIAS_KEYS is None:
+        # Deferred import avoids a module-load cycle: pathing imports Rules for
+        # neutral scope helpers, while this validator needs the control paths.
+        from template_press.rebrand.pathing import ROOT_CONTROL
 
+        _RESERVED_ALIAS_KEYS = frozenset(_control_alias_key(e) for e in ROOT_CONTROL)
+    return _RESERVED_ALIAS_KEYS
+
+
+def _reject_reserved(kind: str, file: str) -> None:
     # A SUPERSET of the same-file test used elsewhere for filesystem path
     # comparisons (safety.py's `_is_dotgit`, which case-folds only — `.git`
     # is ASCII, so the rest is moot there). _alias_component adds a
@@ -754,7 +854,7 @@ def _reject_reserved(kind: str, file: str) -> None:
     # the composed and decomposed spellings of one grapheme. Rules are
     # validated identically on every platform, so the check rejects the union
     # of aliases rather than the host's own set.
-    if _control_alias_key(file) in {_control_alias_key(e) for e in ROOT_CONTROL}:
+    if _control_alias_key(file) in _reserved_alias_keys():
         raise ValidationError(
             f"{RULES_REL}: {kind} may not target press-owned control file "
             f"{file!r} — press itself writes it after validation (reserved)"
@@ -853,59 +953,90 @@ def _parse_regenerate(entry: object) -> _RegenerateDeclaration:
         raise ValidationError(
             f"{RULES_REL}: [[regenerate]] unknown key(s): {', '.join(sorted(unknown))}"
         )
-    file = _declared_rel_path("[[regenerate]] file", entry.get("file"))
-    _reject_reserved("[[regenerate]]", file)
-    command = _parse_command(entry, "[[regenerate]]", file)
-    env = _parse_env(entry, "[[regenerate]]", file)
+    has_file = "file" in entry
+    has_dir = "dir" in entry
+    if has_file == has_dir:
+        raise ValidationError(
+            f"{RULES_REL}: [[regenerate]] requires exactly one of file or dir"
+        )
+    path_key = "dir" if has_dir else "file"
+    path = _declared_rel_path(f"[[regenerate]] {path_key}", entry.get(path_key))
+    if has_dir and any(char in path for char in "*?["):
+        raise ValidationError(
+            f"{RULES_REL}: [[regenerate]] dir {path!r} must not contain glob characters"
+        )
+    _validate_package_placeholder(f"[[regenerate]] {path_key}", path)
+    _reject_reserved("[[regenerate]]", path)
+    if has_dir:
+        from template_press.rebrand.pathing import ROOT_CONTROL
+
+        alias_key = _control_alias_key(path)
+        if any(
+            control_key == alias_key or control_key.startswith(alias_key + "/")
+            for control_key in (_control_alias_key(control) for control in ROOT_CONTROL)
+        ):
+            raise ValidationError(
+                f"{RULES_REL}: [[regenerate]] dir {path!r} may not target or contain "
+                "press-owned control paths"
+            )
+    command = _parse_command(entry, "[[regenerate]]", path)
+    env = _parse_env(entry, "[[regenerate]]", path)
     scan = entry.get("scan", "strict")
     if not isinstance(scan, str) or scan not in _REGENERATE_SCAN_VALUES:
         raise ValidationError(
-            f"{RULES_REL}: [[regenerate]] {file!r}: scan must be one of "
+            f"{RULES_REL}: [[regenerate]] {path!r}: scan must be one of "
             f"{sorted(_REGENERATE_SCAN_VALUES)}: {scan!r}"
         )
     verify_exempt = entry.get("verify_exempt", False)
     if not isinstance(verify_exempt, bool):
         raise ValidationError(
-            f"{RULES_REL}: [[regenerate]] {file!r}: verify_exempt must be a "
+            f"{RULES_REL}: [[regenerate]] {path!r}: verify_exempt must be a "
             f"boolean: {verify_exempt!r}"
         )
     reason = entry.get("reason", "")
     if not isinstance(reason, str):
         raise ValidationError(
-            f"{RULES_REL}: [[regenerate]] {file!r}: reason must be a string: {reason!r}"
+            f"{RULES_REL}: [[regenerate]] {path!r}: reason must be a string: {reason!r}"
         )
-    # Rendered in reports and the receipt — control characters are rejected,
-    # not escaped, mirroring the argv rule (report visibility is the
-    # approval guard, so a reason must not be able to forge report lines).
     if any(not ch.isprintable() for ch in reason):
         raise ValidationError(
-            f"{RULES_REL}: [[regenerate]] {file!r}: reason must not contain "
+            f"{RULES_REL}: [[regenerate]] {path!r}: reason must not contain "
             f"control or non-printable characters"
         )
-    # The pair is all-or-nothing: an exemption without a reason is a silent
-    # coverage purchase, and a reason without the exemption — including an
-    # explicitly empty one — is dead config.
     if verify_exempt and not reason.strip():
         raise ValidationError(
-            f"{RULES_REL}: [[regenerate]] {file!r}: verify_exempt = true "
+            f"{RULES_REL}: [[regenerate]] {path!r}: verify_exempt = true "
             f"requires a non-empty reason — the exemption is bought loudly "
             f"or not at all"
         )
     if "reason" in entry and not verify_exempt:
         raise ValidationError(
-            f"{RULES_REL}: [[regenerate]] {file!r}: reason is only valid "
+            f"{RULES_REL}: [[regenerate]] {path!r}: reason is only valid "
             f"with verify_exempt = true"
         )
-    return _RegenerateDeclaration(
-        rule=RegenerateRule(
-            file=file,
+    rule: RegenerateRule | RegenerateDirRule = (
+        RegenerateDirRule(
+            dir=path,
             command=command,
             env=env,
             scan=scan,
             verify_exempt=verify_exempt,
             reason=reason,
-        ),
-        platforms=_parse_platforms(entry, "[[regenerate]]", file),
+            raw_dir=path,
+        )
+        if has_dir
+        else RegenerateRule(
+            file=path,
+            command=command,
+            env=env,
+            scan=scan,
+            verify_exempt=verify_exempt,
+            reason=reason,
+        )
+    )
+    return _RegenerateDeclaration(
+        rule=rule,
+        platforms=_parse_platforms(entry, "[[regenerate]]", path),
     )
 
 
@@ -1172,9 +1303,14 @@ def _validate_exclude_membership(
     strings but fail closed on an alias-only listing; the licence above reads
     exact strings because it grants rather than denies.
     """
-    paired_files = [declaration.rule.file for declaration in regenerate] + [
-        declaration.rule.file for declaration in reset
-    ]
+    file_regenerates = tuple(
+        declaration
+        for declaration in regenerate
+        if isinstance(declaration.rule, RegenerateRule)
+    )
+    paired_files = [
+        cast(RegenerateRule, declaration.rule).file for declaration in file_regenerates
+    ] + [declaration.rule.file for declaration in reset]
     paired = {_control_alias_key(file) for file in paired_files}
     paired_exact = set(paired_files)
     # Alias key -> one declared writer spelling, so the licence diagnostic can
@@ -1189,8 +1325,8 @@ def _validate_exclude_membership(
     for entry in sorted(exclude_files):
         excluded.setdefault(_control_alias_key(entry), entry)
     excluded_dirs = {_alias_component(entry): entry for entry in sorted(exclude_dirs)}
-    for regenerate_declaration in regenerate:
-        file = regenerate_declaration.rule.file
+    for regenerate_declaration in file_regenerates:
+        file = cast(RegenerateRule, regenerate_declaration.rule).file
         if file not in exclude_files:
             raise ValidationError(
                 f"{RULES_REL}: [[regenerate]] output {file!r} must be listed in "
@@ -1279,9 +1415,19 @@ def _validate_writer_overlaps(
 ) -> None:
     """Reject any same-file writer pair active on at least one platform."""
 
+    file_regens = tuple(
+        declaration
+        for declaration in regenerate
+        if isinstance(declaration.rule, RegenerateRule)
+    )
+    dir_regens = tuple(
+        declaration
+        for declaration in regenerate
+        if isinstance(declaration.rule, RegenerateDirRule)
+    )
     seen_regenerate: dict[str, list[tuple[str, frozenset[str]]]] = {}
-    for declaration in regenerate:
-        file = declaration.rule.file
+    for declaration in file_regens:
+        file = cast(RegenerateRule, declaration.rule).file
         key = _control_alias_key(file)
         for earlier_file, earlier in seen_regenerate.get(key, []):
             overlap = earlier & declaration.platforms
@@ -1308,9 +1454,9 @@ def _validate_writer_overlaps(
                 )
         seen_reset.setdefault(key, []).append((file, declaration.platforms))
 
-    for regenerate_declaration in regenerate:
+    for regenerate_declaration in file_regens:
         for reset_declaration in reset:
-            regenerate_file = regenerate_declaration.rule.file
+            regenerate_file = cast(RegenerateRule, regenerate_declaration.rule).file
             reset_file = reset_declaration.rule.file
             if _control_alias_key(regenerate_file) != _control_alias_key(reset_file):
                 continue
@@ -1364,11 +1510,11 @@ def _validate_writer_overlaps(
                     f"declaration{_filesystem_alias_note(stub_file, remove_file)}"
                 )
         for other_kind, others in (
-            ("[[regenerate]]", regenerate),
+            ("[[regenerate]]", file_regens),
             ("[[reset]]", reset),
         ):
             for other in others:
-                other_file = other.rule.file
+                other_file = cast(RegenerateRule | ResetRule, other.rule).file
                 if _control_alias_key(other_file) != _control_alias_key(remove_file):
                     continue
                 overlap = other.platforms & remove_declaration.platforms
@@ -1416,12 +1562,14 @@ def _validate_writer_overlaps(
                     f"overlap at {other_file!r} on {sorted(overlap)!r}"
                 )
         for other_kind, others in (
-            ("[[regenerate]]", regenerate),
+            ("[[regenerate]]", file_regens),
             ("[[reset]]", reset),
             ("[[edit]]", edit),
         ):
             for other in others:
-                other_path = other.rule.file
+                other_path = cast(
+                    RegenerateRule | ResetRule | EditRule, other.rule
+                ).file
                 overlap = directory.platforms & other.platforms
                 if overlap and (
                     _path_at_or_below(other_path, directory_path)
@@ -1440,6 +1588,61 @@ def _validate_writer_overlaps(
             if overlap and _path_at_or_below(stub_file, directory_path):
                 raise ValidationError(
                     f"{RULES_REL}: [[remove]] dir {directory_path!r} has "
+                    f"stub_file overlap at {stub_file!r} on {sorted(overlap)!r}"
+                )
+
+    for index, regen_dir in enumerate(dir_regens):
+        regen_dir_path = cast(RegenerateDirRule, regen_dir.rule).dir
+        for other in dir_regens[index + 1 :]:
+            other_dir = cast(RegenerateDirRule, other.rule).dir
+            overlap = regen_dir.platforms & other.platforms
+            if overlap and (
+                _path_at_or_below(regen_dir_path, other_dir)
+                or _path_at_or_below(other_dir, regen_dir_path)
+            ):
+                raise ValidationError(
+                    f"{RULES_REL}: [[regenerate]] dir {regen_dir_path!r} has "
+                    f"overlap at {other_dir!r} on {sorted(overlap)!r}"
+                )
+        for other_kind, others in (
+            ("[[regenerate]]", file_regens),
+            ("[[reset]]", reset),
+            ("[[edit]]", edit),
+            ("[[remove]]", file_removes),
+        ):
+            for other in others:
+                other_path = cast(
+                    RegenerateRule | ResetRule | EditRule | RemoveRule, other.rule
+                ).file
+                overlap = regen_dir.platforms & other.platforms
+                if overlap and (
+                    _path_at_or_below(other_path, regen_dir_path)
+                    or _path_at_or_below(regen_dir_path, other_path)
+                ):
+                    raise ValidationError(
+                        f"{RULES_REL}: [[regenerate]] dir {regen_dir_path!r} has "
+                        f"{other_kind} overlap at {other_path!r} on "
+                        f"{sorted(overlap)!r}"
+                    )
+        for other in dir_removes:
+            other_dir = cast(RemoveDirRule, other.rule).dir
+            overlap = regen_dir.platforms & other.platforms
+            if overlap and (
+                _path_at_or_below(regen_dir_path, other_dir)
+                or _path_at_or_below(other_dir, regen_dir_path)
+            ):
+                raise ValidationError(
+                    f"{RULES_REL}: [[regenerate]] dir {regen_dir_path!r} has "
+                    f"[[remove]] dir overlap at {other_dir!r} on {sorted(overlap)!r}"
+                )
+        for reset_declaration in reset:
+            stub_file = reset_declaration.rule.stub_file
+            if stub_file is None:
+                continue
+            overlap = regen_dir.platforms & reset_declaration.platforms
+            if overlap and _path_at_or_below(stub_file, regen_dir_path):
+                raise ValidationError(
+                    f"{RULES_REL}: [[regenerate]] dir {regen_dir_path!r} has "
                     f"stub_file overlap at {stub_file!r} on {sorted(overlap)!r}"
                 )
 
@@ -1476,7 +1679,7 @@ def _validate_writer_overlaps(
         file = edit_declaration.rule.file
         key = _control_alias_key(file)
         for other_kind, others in (
-            ("[[regenerate]]", regenerate),
+            ("[[regenerate]]", file_regens),
             ("[[reset]]", reset),
             ("[[remove]]", remove),
         ):
@@ -1554,25 +1757,24 @@ def _parse_rules(target: Path) -> _ParsedRules:
     ):
         raise ValidationError(f"{RULES_REL}: [[clean]] must be an array of tables")
     substring_fields = frozenset(_str_list(table, "substring_rewrite_fields", []))
-    bad_substring = substring_fields - ALLOWED_PLACEHOLDERS
-    if bad_substring:
-        raise ValidationError(
-            f"{RULES_REL}: [rules] substring_rewrite_fields unknown field(s): "
-            f"{', '.join(sorted(bad_substring))}"
-        )
     if "display_name" in substring_fields:
         # A no-op disguised as a valid config: "display_name" IS in
         # ALLOWED_PLACEHOLDERS (render_replace_pattern can reference it), but
         # the runtime pair tags substring_rewrite_fields actually dispatches
         # on are display_name_spaced/pascal/camel, never bare "display_name"
-        # — so this entry would never match anything. Display forms are
-        # exact-by-design (codesign sec-04); use [rules] display_forms to
-        # narrow which forms rewrite instead.
+        # — so this entry would never match anything. Use display_name_pascal
+        # for PascalCase substring rewrites or [rules] display_forms to narrow
+        # which forms rewrite.
         raise ValidationError(
             f"{RULES_REL}: [rules] substring_rewrite_fields must not include "
-            f"'display_name' — it is a no-op (runtime pair tags are "
-            f"display_name_spaced/pascal/camel, never bare 'display_name'); "
-            f"use [rules] display_forms instead"
+            f"'display_name' — it is a no-op (use 'display_name_pascal' for "
+            f"glued PascalCase forms, or [rules] display_forms to narrow forms)"
+        )
+    bad_substring = substring_fields - ALLOWED_SUBSTRING_REWRITE_FIELDS
+    if bad_substring:
+        raise ValidationError(
+            f"{RULES_REL}: [rules] substring_rewrite_fields unknown field(s): "
+            f"{', '.join(sorted(bad_substring))}"
         )
     display_forms_list = _str_list(table, "display_forms", list(DISPLAY_FORM_NAMES))
     bad_forms = set(display_forms_list) - set(DISPLAY_FORM_NAMES)
@@ -1580,6 +1782,11 @@ def _parse_rules(target: Path) -> _ParsedRules:
         raise ValidationError(
             f"{RULES_REL}: [rules] display_forms must be a non-empty subset of "
             f"{list(DISPLAY_FORM_NAMES)}: {display_forms_list!r}"
+        )
+    if "display_name_pascal" in substring_fields and "pascal" not in display_forms_list:
+        raise ValidationError(
+            f"{RULES_REL}: [rules] substring_rewrite_fields includes "
+            "'display_name_pascal' but [rules] display_forms disables 'pascal'"
         )
     exclude_files = DEFAULT_RULES.exclude_files | frozenset(
         _str_list(table, "extra_exclude_files", [])
@@ -1681,6 +1888,13 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
             declaration.rule
             for declaration in parsed.regenerate
             if platform in declaration.platforms
+            and isinstance(declaration.rule, RegenerateRule)
+        ),
+        regenerate_dirs=tuple(
+            declaration.rule
+            for declaration in parsed.regenerate
+            if platform in declaration.platforms
+            and isinstance(declaration.rule, RegenerateDirRule)
         ),
         reset=tuple(
             declaration.rule
@@ -1693,6 +1907,96 @@ def _select_rules(parsed: _ParsedRules, platform: str) -> SelectedRules:
         remove_dirs=active_remove_dirs,
     )
     return SelectedRules(platform=platform, rules=rules)
+
+
+def render_package_paths(rules: Rules, identity: Identity) -> Rules:
+    """Render ``{package_name}`` in regeneration paths and ``exclude_files``.
+
+    Re-validates containment, reserved control paths, writer overlaps, and
+    exclude membership on the rendered coordinates so a placeholder colliding
+    with a literal declaration is refused before any write.
+    """
+    has_placeholder = (
+        any(_PACKAGE_PLACEHOLDER in path for path in rules.exclude_files)
+        or any(_PACKAGE_PLACEHOLDER in rule.file for rule in rules.regenerate)
+        or any(_PACKAGE_PLACEHOLDER in rule.dir for rule in rules.regenerate_dirs)
+    )
+    if not has_placeholder:
+        return rules
+    pkg = identity.package_name
+
+    def _render(context: str, raw: str) -> str:
+        if _PACKAGE_PLACEHOLDER not in raw:
+            return raw
+        rendered = _declared_rel_path(context, raw.replace(_PACKAGE_PLACEHOLDER, pkg))
+        _reject_reserved(context, rendered)
+        return rendered
+
+    def _render_dir(raw: str) -> str:
+        rendered = _render("[[regenerate]] dir", raw)
+        from template_press.rebrand.pathing import ROOT_CONTROL
+
+        alias_key = _control_alias_key(rendered)
+        if any(
+            control_key == alias_key or control_key.startswith(alias_key + "/")
+            for control_key in (_control_alias_key(control) for control in ROOT_CONTROL)
+        ):
+            raise ValidationError(
+                f"{RULES_REL}: [[regenerate]] dir {rendered!r} may not target or "
+                "contain press-owned control paths"
+            )
+        return rendered
+
+    rendered_exclude_files = frozenset(
+        _declared_rel_path(
+            "[rules] extra_exclude_files",
+            path.replace(_PACKAGE_PLACEHOLDER, pkg),
+        )
+        if _PACKAGE_PLACEHOLDER in path
+        else path
+        for path in rules.exclude_files
+    )
+    rendered_regenerate = tuple(
+        replace(rule, file=_render("[[regenerate]] file", rule.file))
+        for rule in rules.regenerate
+    )
+    rendered_regenerate_dirs = tuple(
+        replace(
+            rule,
+            dir=_render_dir(rule.dir),
+            raw_dir=rule.raw_dir or rule.dir,
+        )
+        for rule in rules.regenerate_dirs
+    )
+    all_platforms = SUPPORTED_PLATFORMS
+    regen_decls = tuple(
+        _RegenerateDeclaration(rule=rule, platforms=all_platforms)
+        for rule in (*rendered_regenerate, *rendered_regenerate_dirs)
+    )
+    reset_decls = tuple(
+        _ResetDeclaration(rule=rule, platforms=all_platforms) for rule in rules.reset
+    )
+    remove_decls = tuple(
+        _RemoveDeclaration(rule=rule, platforms=all_platforms)
+        for rule in (*rules.remove, *rules.remove_dirs)
+    )
+    edit_decls = tuple(
+        _EditDeclaration(rule=rule, platforms=all_platforms) for rule in rules.edit
+    )
+    _validate_writer_overlaps(regen_decls, reset_decls, remove_decls, edit_decls)
+    _validate_exclude_membership(
+        regen_decls,
+        reset_decls,
+        edit_decls,
+        rendered_exclude_files,
+        rules.exclude_dirs,
+    )
+    return replace(
+        rules,
+        exclude_files=rendered_exclude_files,
+        regenerate=rendered_regenerate,
+        regenerate_dirs=rendered_regenerate_dirs,
+    )
 
 
 def load_selected_rules(target: Path, *, platform: str | None = None) -> SelectedRules:

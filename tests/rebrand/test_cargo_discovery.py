@@ -35,7 +35,7 @@ from template_press.rebrand.rules import load_rules
 from template_press.rebrand.substitutions import check_target_keep_names
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import posix_only
+from .conftest import posix_only, seed_cached_git_repo
 from .test_cargo_source_paths import CORE_DEST, CORE_SOURCE
 from .test_cargo_source_paths import _answers as _paths_answers
 from .test_cargo_source_paths import _seed as _paths_seed
@@ -79,16 +79,12 @@ def _repo(
     owner: str = OWNER,
 ) -> Path:
     target = (tmp_path / "target").resolve()
-    target.mkdir()
-    for rel, text in files.items():
-        path = target / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-    _git(target, "init", "-q", "-b", "main")
-    _git(target, "remote", "add", "origin", f"https://github.com/{owner}/{repo_name}")
-    _git(target, "add", "-A")
-    _git(target, "commit", "-q", "-m", "fixture")
-    return target
+    return seed_cached_git_repo(
+        target,
+        files,
+        origin=f"https://github.com/{owner}/{repo_name}",
+        commit_message="fixture",
+    )
 
 
 def _toml_table(header: str, values: dict[str, str]) -> str:
@@ -1696,9 +1692,62 @@ def test_keyword_source_name_that_does_not_change_is_not_refused(
     assert _cli_press(target, answers) == 0
 
 
+def _kept_keyword_target(tmp_path: Path) -> tuple[Path, Path]:
+    """Cycle 2 F2: an edition-2024 crate whose binary is already named ``gen``.
+    Without a table the press renames the library to ``gen`` as well."""
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _paths_seed(
+        target,
+        {
+            "Cargo.toml": _package("acme-core")
+            .replace("acme-repo", "acme-core")
+            .replace('"2021"', '"2024"')
+            + '\n[[bin]]\nname = "gen"\npath = "src/main.rs"\n',
+            "src/lib.rs": _KEYWORD_LIB,
+            "src/main.rs": "use acme_core::hi;\nfn main() {\n    let _ = hi();\n}\n",
+        },
+        identity={**CORE_SOURCE, "repo_name": "acme-core"},
+    )
+    answers = _paths_answers(
+        tmp_path, {**CORE_DEST, "package_name": "gen", "repo_name": "gen"}, None
+    )
+    return target, answers
+
+
+def test_rename_onto_a_kept_keyword_name_is_still_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target, answers = _kept_keyword_target(tmp_path)
+
+    assert _cli_press(target, answers) == 2
+
+    out = capsys.readouterr()
+    assert "['gen'], a Rust keyword" in out.out + out.err
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_rename_onto_a_kept_keyword_name_refusal_matches_real_cargo(
+    tmp_path: Path,
+) -> None:
+    """Real Cargo: the old receipt wrote ``use gen::hi;``, which edition 2024
+    rejects (``0/0/yes/101``)."""
+    _require_cargo()
+    target, answers = _kept_keyword_target(tmp_path)
+    _assert_cargo(target, "test", "--offline")
+
+    assert _cli_press(target, answers) == 2
+
+    assert not (target / RECEIPT_REL).exists()
+    assert _status(target) == ""
+    _assert_cargo(target, "test", "--offline")
+
+
+@pytest.mark.slow
+@posix_only
 @pytest.mark.parametrize("table", [True, False], ids=["table", "tableless"])
 def test_keyword_destination_refusal_matches_real_cargo(
     table: bool, tmp_path: Path
@@ -1790,7 +1839,6 @@ def test_hyphenated_name_declared_only_by_its_underscore_form(
 
 @pytest.mark.slow
 @posix_only
-@pytest.mark.xdist_group(name="shared-tool-caches")
 @pytest.mark.parametrize("case", ["secondary", "secondary_moved_by_repo_row"])
 def test_hyphenated_name_declared_by_its_underscore_form_matches_real_cargo(
     case: str, tmp_path: Path

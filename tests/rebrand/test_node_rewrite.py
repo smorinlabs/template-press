@@ -30,7 +30,7 @@ from template_press.rebrand.synthesize import synthesize_dest
 from template_press.rebrand.verifier import scan
 from template_press.rebrand.verify_cli import verify_command
 
-from .conftest import requires_symlink
+from .conftest import init_git_repo, requires_symlink
 
 SOURCE = Identity(
     package_name="acme_core",
@@ -104,18 +104,11 @@ def _make_target(
         path = target / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-    _git(target, "init", "-q", "-b", "main")
-    _git(target, "config", "user.email", "t@example.test")
-    _git(target, "config", "user.name", "t")
-    _git(
+    init_git_repo(
         target,
-        "remote",
-        "add",
-        "origin",
-        f"https://github.com/{source.owner}/{source.repo_name}.git",
+        origin=f"https://github.com/{source.owner}/{source.repo_name}.git",
+        commit_message="seed",
     )
-    _git(target, "add", "-A")
-    _git(target, "commit", "-q", "-m", "seed")
     return target
 
 

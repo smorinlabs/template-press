@@ -133,6 +133,7 @@ class _ConfigSourceState:
     shared_indexes: tuple[_SharedIndexStamp, ...]
     include_paths: tuple[Path, ...]
     info_exclude: Path
+    has_core_excludes: bool = False
 
 
 @dataclass(frozen=True)
@@ -365,10 +366,37 @@ def _real_directory_chain(target: Path, rel_dir: Path) -> tuple[_NodeStamp, ...]
     return tuple(stamps)
 
 
+def _info_exclude_has_rules(info_exclude: Path) -> bool:
+    """True unless ``info_exclude`` is absent or has only comments/blank lines."""
+    if not _assert_real_ancestors(info_exclude):
+        return False
+    try:
+        mode = os.lstat(info_exclude).st_mode
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(mode):
+        return True
+    try:
+        data = read_regular_nofollow(info_exclude)
+    except OSError:
+        return True
+    for raw_line in data.splitlines():
+        if raw_line and not raw_line.startswith(b"#"):
+            return True
+    return False
+
+
 def _active_gitignore_paths(
     target: Path,
     entries: tuple[SurfaceEntry, ...],
     core_excludes: Path | None,
+    *,
+    config_sha256: str = "",
+    info_exclude: Path | None = None,
+    info_exclude_fp: VisibilityInput | None = None,
+    core_excludes_fp: VisibilityInput | None = None,
+    ignore_cache: dict[tuple[object, ...], set[str]] | None = None,
+    gitignore_fps: dict[Path, VisibilityInput] | None = None,
 ) -> tuple[set[Path], set[Path], set[Path], set[Path]]:
     """Find `.gitignore` leaves in directories Git can traverse.
 
@@ -410,6 +438,14 @@ def _active_gitignore_paths(
         # case-insensitive volumes because ``normcase`` is intentionally a
         # no-op there.
         opaque_paths.add(os.path.normcase(os.fspath(target / entry.rel)))
+    use_ignore_fastpath = (
+        ignore_cache is not None
+        and _ignored_directories is _DEFAULT_IGNORED_DIRECTORIES
+    )
+    info_has_rules: bool | None = None
+    level_fps: dict[Path, VisibilityInput] = (
+        gitignore_fps if gitignore_fps is not None else {}
+    )
     pending: list[Path] = [Path(".")]
     while pending:
         children: list[Path] = []
@@ -477,9 +513,62 @@ def _active_gitignore_paths(
                 )
             if discovered_ignore:
                 found.add(ignore_path)
+                if use_ignore_fastpath:
+                    level_fps[ignore_path] = _fingerprint_visibility(
+                        "gitignore", ignore_path
+                    )
             if discovered_marker:
                 repository_markers.add(marker_path)
-        ignored = _ignored_directories(target, children, core_excludes)
+        if not children:
+            ignored: set[str] = set()
+        elif use_ignore_fastpath and ignore_cache is not None:
+            skip_query = False
+            if not found and core_excludes is None and info_exclude is not None:
+                if info_has_rules is None:
+                    info_has_rules = _info_exclude_has_rules(info_exclude)
+                if not info_has_rules:
+                    ignored = set()
+                    skip_query = True
+            if not skip_query:
+                found_sorted = sorted(found, key=lambda p: p.as_posix())
+                cache_key = (
+                    config_sha256,
+                    info_exclude_fp,
+                    core_excludes_fp,
+                    tuple((path.as_posix(), level_fps[path]) for path in found_sorted),
+                    tuple(child.as_posix() for child in children),
+                )
+                cached = ignore_cache.get(cache_key)
+                if cached is None:
+                    cached = _ignored_directories(target, children, core_excludes)
+                    for path in found_sorted:
+                        if (
+                            _fingerprint_visibility("gitignore", path)
+                            != level_fps[path]
+                        ):
+                            raise SafetyError(
+                                f"Git ignore file changed during inventory: {path}"
+                            )
+                    if (
+                        info_exclude is not None
+                        and _fingerprint_visibility("info_exclude", info_exclude)
+                        != info_exclude_fp
+                    ):
+                        raise SafetyError(
+                            f"Git ignore file changed during inventory: {info_exclude}"
+                        )
+                    if (
+                        core_excludes is not None
+                        and _fingerprint_visibility("core_excludes_file", core_excludes)
+                        != core_excludes_fp
+                    ):
+                        raise SafetyError(
+                            f"Git ignore file changed during inventory: {core_excludes}"
+                        )
+                    ignore_cache[cache_key] = cached
+                ignored = cached
+        else:
+            ignored = _ignored_directories(target, children, core_excludes)
         pending = []
         for child in sorted(children, key=lambda path: path.as_posix()):
             if child.as_posix() in ignored:
@@ -596,10 +685,10 @@ def _resolve_config_include_path(value: str, origin: Path, target: Path) -> Path
     return (expanded if expanded.is_absolute() else origin.parent / expanded).absolute()
 
 
-def _config_source_paths(
+def _config_source_paths_detail(
     target: Path,
-) -> tuple[tuple[Path, ...], tuple[Path, ...], str]:
-    """Active file origins and every declared include target, including missing."""
+) -> tuple[tuple[Path, ...], tuple[Path, ...], str, bool]:
+    """Active file origins, declared includes, effective digest, and excludes flag."""
 
     result = _run_git(
         target,
@@ -615,19 +704,25 @@ def _config_source_paths(
     if len(records) % 2:
         raise SafetyError("malformed Git config origin/value pairs")
     parsed: list[tuple[Path, str, str]] = []
+    has_core_excludes = False
     for origin_raw, item_raw in zip(records[::2], records[1::2], strict=True):
+        key_raw, separator, value_raw = item_raw.partition(b"\n")
+        if not separator:
+            if origin_raw.startswith(b"file:"):
+                raise SafetyError("malformed Git config key/value record")
+            continue
+        key = key_raw.decode("utf-8", "surrogateescape").casefold()
+        if key == "core.excludesfile":
+            has_core_excludes = True
         if not origin_raw.startswith(b"file:"):
             continue
         text = origin_raw[len(b"file:") :].decode("utf-8", "surrogateescape")
         origin = Path(text)
         origin = (origin if origin.is_absolute() else target / origin).absolute()
-        key_raw, separator, value_raw = item_raw.partition(b"\n")
-        if not separator:
-            raise SafetyError("malformed Git config key/value record")
         parsed.append(
             (
                 origin,
-                key_raw.decode("utf-8", "surrogateescape").casefold(),
+                key,
                 value_raw.decode("utf-8", "surrogateescape"),
             )
         )
@@ -666,7 +761,19 @@ def _config_source_paths(
         tuple(sorted(all_sources, key=lambda path: path.as_posix())),
         tuple(sorted(includes, key=lambda path: path.as_posix())),
         hashlib.sha256(result.stdout).hexdigest(),
+        has_core_excludes,
     )
+
+
+def _config_source_paths(
+    target: Path,
+) -> tuple[tuple[Path, ...], tuple[Path, ...], str]:
+    """Active file origins and every declared include target, including missing."""
+
+    sources, includes, effective_sha256, _has_core_excludes = (
+        _config_source_paths_detail(target)
+    )
+    return sources, includes, effective_sha256
 
 
 def _config_source_stamp(path: Path) -> _ConfigSourceStamp:
@@ -780,7 +887,9 @@ def _repository_paths(target: Path) -> _RepositoryPaths:
 
 
 def _config_source_state(target: Path) -> _ConfigSourceState:
-    sources, includes, effective_sha256 = _config_source_paths(target)
+    sources, includes, effective_sha256, has_core_excludes = (
+        _config_source_paths_detail(target)
+    )
     parents = {_nearest_real_parent(path) for path in includes}
     repository = _repository_paths(target)
     git_dir = repository.git_dir
@@ -811,6 +920,7 @@ def _config_source_state(target: Path) -> _ConfigSourceState:
         tuple(_shared_index_stamp(path) for path in sorted(shared_paths)),
         includes,
         repository.info_exclude,
+        has_core_excludes,
     )
 
 
@@ -890,17 +1000,42 @@ def _visibility_inputs(
     entries: tuple[SurfaceEntry, ...],
     core_excludes: Path | None,
     info_exclude: Path,
+    *,
+    config_sha256: str = "",
+    ignore_cache: dict[tuple[object, ...], set[str]] | None = None,
 ) -> _VisibilityState:
+    info_exclude_fp = _fingerprint_visibility("info_exclude", info_exclude)
+    core_excludes_fp = (
+        _fingerprint_visibility("core_excludes_file", core_excludes)
+        if core_excludes is not None
+        else None
+    )
+    gitignore_fps: dict[Path, VisibilityInput] = {}
     (
         gitignore_paths,
         active_directories,
         embedded_repositories,
         repository_markers,
-    ) = _active_gitignore_paths(target, entries, core_excludes)
-    items = [_fingerprint_visibility("gitignore", path) for path in gitignore_paths]
-    items.append(_fingerprint_visibility("info_exclude", info_exclude))
-    if core_excludes is not None:
-        items.append(_fingerprint_visibility("core_excludes_file", core_excludes))
+    ) = _active_gitignore_paths(
+        target,
+        entries,
+        core_excludes,
+        config_sha256=config_sha256,
+        info_exclude=info_exclude,
+        info_exclude_fp=info_exclude_fp,
+        core_excludes_fp=core_excludes_fp,
+        ignore_cache=ignore_cache,
+        gitignore_fps=gitignore_fps,
+    )
+    items = [
+        gitignore_fps[path]
+        if path in gitignore_fps
+        else _fingerprint_visibility("gitignore", path)
+        for path in gitignore_paths
+    ]
+    items.append(info_exclude_fp)
+    if core_excludes_fp is not None:
+        items.append(core_excludes_fp)
     order = {"gitignore": 0, "info_exclude": 1, "core_excludes_file": 2}
     inputs = tuple(
         sorted(items, key=lambda item: (order[item.origin], item.path.as_posix()))
@@ -969,12 +1104,17 @@ def _validate_embedded_repository_entries(
             )
 
 
+_DEFAULT_CORE_EXCLUDES_PATH = _core_excludes_path
+_DEFAULT_IGNORED_DIRECTORIES = _ignored_directories
+
+
 def capture_surface_snapshot(target: Path) -> SurfaceSnapshot:
     """Capture two equal candidates or refuse a changing external target."""
 
     target = target.absolute()
-    first = _capture_candidate(target)
-    second = _capture_candidate(target, first.entries)
+    ignore_cache: dict[tuple[object, ...], set[str]] = {}
+    first = _capture_candidate(target, ignore_cache=ignore_cache)
+    second = _capture_candidate(target, first.entries, ignore_cache=ignore_cache)
     if first != second:
         raise SafetyError("Git surface or visibility changed during capture")
     return second
@@ -1004,22 +1144,39 @@ def _enumerate_entries(
 
 
 def _capture_candidate(
-    target: Path, seed_entries: tuple[SurfaceEntry, ...] | None = None
+    target: Path,
+    seed_entries: tuple[SurfaceEntry, ...] | None = None,
+    *,
+    ignore_cache: dict[tuple[object, ...], set[str]] | None = None,
 ) -> SurfaceSnapshot:
     """One coherent candidate; the public capture compares two candidates."""
 
     config_before = _config_source_state(target)
-    core_excludes_before = _core_excludes_path(target)
+    resolve_excludes = (
+        config_before.has_core_excludes
+        or _core_excludes_path is not _DEFAULT_CORE_EXCLUDES_PATH
+    )
+    core_excludes_before = _core_excludes_path(target) if resolve_excludes else None
     if seed_entries is None:
         seed_entries = _enumerate_entries(target, core_excludes_before)
     # config_after below re-resolves info/exclude, so a moved path is refused.
     visibility_before = _visibility_inputs(
-        target, seed_entries, core_excludes_before, config_before.info_exclude
+        target,
+        seed_entries,
+        core_excludes_before,
+        config_before.info_exclude,
+        config_sha256=config_before.effective_sha256,
+        ignore_cache=ignore_cache,
     )
     entries = _enumerate_entries(target, core_excludes_before)
-    core_excludes_after = _core_excludes_path(target)
+    core_excludes_after = _core_excludes_path(target) if resolve_excludes else None
     visibility_after = _visibility_inputs(
-        target, entries, core_excludes_after, config_before.info_exclude
+        target,
+        entries,
+        core_excludes_after,
+        config_before.info_exclude,
+        config_sha256=config_before.effective_sha256,
+        ignore_cache=ignore_cache,
     )
     _validate_embedded_repository_entries(
         target, entries, visibility_after.repository_markers
@@ -1085,18 +1242,24 @@ def core_excludes_from_snapshot(snapshot: SurfaceSnapshot) -> Path | None:
     return None
 
 
+def _under_prefixes(posix: str, prefixes: frozenset[str]) -> bool:
+    return any(posix == prefix or posix.startswith(prefix + "/") for prefix in prefixes)
+
+
 def _excluded(
     entry: SurfaceEntry,
     *,
     exclude_files: frozenset[str],
     exclude_dirs: frozenset[str],
     root_control: frozenset[str],
+    exclude_prefixes: frozenset[str] = frozenset(),
 ) -> bool:
     posix = entry.rel.as_posix()
     return (
         posix in root_control
         or posix in exclude_files
         or any(part in exclude_dirs for part in entry.rel.parts)
+        or (bool(exclude_prefixes) and _under_prefixes(posix, exclude_prefixes))
     )
 
 
@@ -1116,6 +1279,7 @@ def select_content_rewrite_entries(
     exclude_files: frozenset[str],
     exclude_dirs: frozenset[str],
     root_control: frozenset[str],
+    exclude_prefixes: frozenset[str] = frozenset(),
 ) -> tuple[SurfaceEntry, ...]:
     """No-follow regular files eligible for conservative content rewriting."""
 
@@ -1128,6 +1292,7 @@ def select_content_rewrite_entries(
             exclude_files=exclude_files,
             exclude_dirs=exclude_dirs,
             root_control=root_control,
+            exclude_prefixes=exclude_prefixes,
         )
     )
 
@@ -1138,6 +1303,7 @@ def select_rename_entries(
     exclude_files: frozenset[str],
     exclude_dirs: frozenset[str],
     root_control: frozenset[str],
+    exclude_prefixes: frozenset[str] = frozenset(),
 ) -> tuple[SurfaceEntry, ...]:
     """Rewrite-eligible regular files and symlink leaves, never gitlinks."""
 
@@ -1151,6 +1317,7 @@ def select_rename_entries(
             exclude_files=exclude_files,
             exclude_dirs=exclude_dirs,
             root_control=root_control,
+            exclude_prefixes=exclude_prefixes,
         )
     )
 
@@ -1162,6 +1329,7 @@ def select_inline_doctor_entries(
     built_in_exclude_dirs: frozenset[str],
     verify_ignore: frozenset[str],
     root_control: frozenset[str],
+    exclude_prefixes: frozenset[str] = frozenset(),
 ) -> tuple[SurfaceEntry, ...]:
     """Doctor coverage: built-in exclusions plus committed verify ignores."""
 
@@ -1174,6 +1342,7 @@ def select_inline_doctor_entries(
             exclude_files=built_in_exclude_files,
             exclude_dirs=excluded_dirs,
             root_control=root_control,
+            exclude_prefixes=exclude_prefixes,
         )
     )
 
@@ -1184,6 +1353,7 @@ def select_verifier_entries(
     verify_ignore: frozenset[str],
     root_control: frozenset[str],
     exempt_paths: frozenset[str],
+    exempt_prefixes: frozenset[str] = frozenset(),
 ) -> tuple[SurfaceEntry, ...]:
     """Standalone verifier coverage over all kinds that are not exempt."""
 
@@ -1192,6 +1362,10 @@ def select_verifier_entries(
         for entry in snapshot.entries
         if entry.rel.as_posix() not in root_control
         and entry.rel.as_posix() not in exempt_paths
+        and not (
+            bool(exempt_prefixes)
+            and _under_prefixes(entry.rel.as_posix(), exempt_prefixes)
+        )
         and not any(part in verify_ignore for part in entry.rel.parts)
     )
 
@@ -1203,17 +1377,21 @@ def rewrite_surface_texts(
     exclude_dirs: frozenset[str],
     root_control: frozenset[str],
     skip_paths: frozenset[str] = frozenset(),
+    exclude_prefixes: frozenset[str] = frozenset(),
+    snapshot: SurfaceSnapshot | None = None,
 ) -> Iterator[tuple[str, str, str]]:
     """``(path, where, text)`` for the content, path, and symlink rewrite surface.
 
     Non-UTF-8 content is skipped: the rewrite pass cannot change it either.
     """
 
-    snapshot = capture_surface_snapshot(target)
+    if snapshot is None:
+        snapshot = capture_surface_snapshot(target)
     selection = {
         "exclude_files": exclude_files,
         "exclude_dirs": exclude_dirs,
         "root_control": root_control,
+        "exclude_prefixes": exclude_prefixes,
     }
     for entry in select_rename_entries(snapshot, **selection):
         posix = entry.rel.as_posix()
