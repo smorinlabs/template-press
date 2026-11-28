@@ -990,3 +990,116 @@ def test_unsuppressed_duplicate_auto_files_matches_real_cargo(tmp_path: Path) ->
     assert not (target / RECEIPT_REL).exists()
     assert _status(target) == ""
     assert _cargo(target, "check", "--offline", "--all-targets").returncode == 0
+
+
+# --- PR #169 Wave 1 Codex findings ----------------------------------------------
+
+
+@pytest.mark.parametrize("fallback", [False, True], ids=["cargo", "fallback"])
+def test_flat_src_bin_main_rs_preserves_main_binary_name(
+    fallback: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #169 thread 4725598554: flat src/bin/main.rs names binary 'main',
+    not 'bin'."""
+    if fallback:
+        _disable_cargo(monkeypatch)
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(
+        target,
+        {
+            "Cargo.toml": _package("acme-core"),
+            "src/lib.rs": LIB,
+            "src/bin/main.rs": MAIN_RS,
+            "tests/cli.rs": (
+                '#[test]\nfn t() {\n    let _ = env!("CARGO_BIN_EXE_main");\n}\n'
+            ),
+        },
+        names={"core": "acme-core", "bin_main": "main"},
+    )
+    answers = _answers(tmp_path, CORE_DEST, {"core": "zeta-core", "bin_main": "main"})
+
+    assert _press(target, answers) == 0
+    assert (target / RECEIPT_REL).is_file()
+
+
+@pytest.mark.parametrize("fallback", [False, True], ids=["cargo", "fallback"])
+def test_excluded_path_dep_own_workspace_edition_resolves_independently(
+    fallback: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """PR #169 thread 4725598545: an excluded path dependency with its own
+    workspace resolves edition.workspace = true against its own workspace,
+    not the target root's."""
+    if fallback:
+        _disable_cargo(monkeypatch)
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(
+        target,
+        {
+            "Cargo.toml": (
+                '[workspace]\nresolver = "2"\nmembers = ["crates/acme-core"]\n'
+                'exclude = ["helper"]\n'
+                '[workspace.package]\nedition = "2015"\n'
+            ),
+            "crates/acme-core/Cargo.toml": (
+                '[package]\nname = "acme-core"\nversion = "0.1.0"\n'
+                "edition.workspace = true\n\n"
+                '[dependencies]\nhelper = { path = "../../helper" }\n'
+            ),
+            "crates/acme-core/src/lib.rs": LIB,
+            "helper/Cargo.toml": (
+                '[workspace]\nresolver = "2"\nmembers = ["."]\n'
+                '[workspace.package]\nedition = "2021"\n\n'
+                '[package]\nname = "helper"\nversion = "0.1.0"\n'
+                "edition.workspace = true\n\n"
+                '[[test]]\nname = "explicit"\npath = "tests/explicit.rs"\n'
+            ),
+            "helper/src/lib.rs": LIB,
+            "helper/tests/explicit.rs": TEST_RS,
+            "helper/tests/acme-core.rs": TEST_RS,
+            "helper/tests/zeta-core/main.rs": TEST_RS,
+        },
+        names=CORE_NAMES,
+    )
+    answers = _answers(tmp_path, CORE_DEST, {"core": "zeta-core"})
+
+    assert _press(target, answers) == 2
+    out = capsys.readouterr()
+    message = out.out + out.err
+    assert "helper/tests/zeta-core.rs" in message
+    assert "helper/tests/zeta-core/main.rs" in message
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()
+
+
+@pytest.mark.parametrize("fallback", [False, True], ids=["cargo", "fallback"])
+def test_renamed_explicit_target_activating_dormant_auto_file_is_judged(
+    fallback: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """PR #169 thread 4725598560: renaming [[test]] acmelabs to zetalabs
+    activates dormant tests/acmelabs.rs, whose broken include_str! must be
+    refused before any write."""
+    if fallback:
+        _disable_cargo(monkeypatch)
+    files = {
+        "Cargo.toml": _package("acme-core")
+        + '\n[[test]]\nname = "acmelabs"\npath = "checks/custom.rs"\n',
+        "src/lib.rs": LIB,
+        "checks/custom.rs": TEST_RS,
+        "tests/acmelabs.rs": f"pub const D: &str = {FIXTURE_INCLUDE};\n{TEST_RS}",
+        "data/acmelabs.txt": "x\n",
+    }
+    target = _source_path_target(tmp_path, files, table=False)
+
+    assert _press(target, _source_path_answers(tmp_path, table=False)) == 2
+    out = capsys.readouterr()
+    assert "cargo paths: tests/acmelabs.rs:1:" in out.out + out.err
+    assert _status(target) == ""
+    assert not (target / RECEIPT_REL).exists()

@@ -30,6 +30,7 @@ from template_press.rebrand.cargo_manifest import (
     package_table,
     read_all_cargo_metadata,
     read_cargo_facts,
+    workspace_package_for_manifest,
 )
 from template_press.rebrand.identity import (
     CARGO_BIN_ENV_TAG,
@@ -2062,6 +2063,7 @@ def _inferred_target_collisions(
     removed_dirs: tuple[str, ...],
     *,
     workspace_package: Table | None = None,
+    edition_override: str | None = None,
 ) -> list[str]:
     """Target names that would have multiple candidate files after the press."""
     old_dir = posixpath.dirname(manifest)
@@ -2116,7 +2118,9 @@ def _inferred_target_collisions(
     explicit_targets = declared_target_names(after)
     unsuppressed_targets = before_explicit - explicit_targets
     for section, base, auto_flag, claimed, pkg_name in auto_target_sections(
-        after, workspace_package=workspace_package
+        after,
+        workspace_package=workspace_package,
+        edition_override=edition_override,
     ):
         prefix = f"{new_dir}/{base}/" if new_dir else f"{base}/"
         by_stem: dict[str, dict[str, bool]] = {}
@@ -2363,10 +2367,14 @@ def _bin_env_splits(
                 if old_pkg is not None and new_pkg is not None:
                     pairs.append((t.name, new_pkg, False))
             else:
-                moved = PurePosixPath(plan.translate(t.src_path))
-                new_name = (
-                    moved.parent.name if crate_rel.endswith("/main.rs") else moved.stem
+                crate_parts = PurePosixPath(crate_rel).parts
+                is_dir_bin = (
+                    len(crate_parts) == 4
+                    and crate_parts[:2] == ("src", "bin")
+                    and crate_parts[3] == "main.rs"
                 )
+                moved = PurePosixPath(plan.translate(t.src_path))
+                new_name = moved.parent.name if is_dir_bin else moved.stem
                 pairs.append((t.name, new_name, True))
     else:
         claimed_bins = {
@@ -2429,6 +2437,63 @@ def _bin_env_splits(
                 )
             )
     return problems
+
+
+def _post_activated_auto_roots(
+    manifest: str,
+    after: Table,
+    plan: RenamePlan,
+    files: frozenset[str],
+    removed_files: frozenset[str],
+    removed_dirs: tuple[str, ...],
+    *,
+    workspace_package: Table | None = None,
+    edition_override: str | None = None,
+) -> list[str]:
+    """Auto-discovered target files that are dormant before the press (e.g.
+    suppressed by an explicit target with the same name) and become compiled
+    after the press because that declaration or file renames."""
+    old_dir = posixpath.dirname(manifest)
+    new_dir = posixpath.dirname(plan.translate(manifest))
+    after_explicit = declared_target_names(after)
+    activated: list[str] = []
+    for section, base, _flag, after_claimed, new_pkg in auto_target_sections(
+        after,
+        workspace_package=workspace_package,
+        edition_override=edition_override,
+    ):
+        prefix = f"{new_dir}/{base}/" if new_dir else f"{base}/"
+        for old_rel in files:
+            if old_rel in removed_files or old_rel.startswith(removed_dirs):
+                continue
+            dest = plan.translate(old_rel)
+            if not dest.startswith(prefix):
+                continue
+            rest = dest[len(prefix) :]
+            parts = rest.split("/")
+            if len(parts) == 1 and rest.endswith(".rs"):
+                stem = rest[:-3]
+            elif len(parts) == 2 and parts[1] == "main.rs":
+                stem = parts[0]
+            else:
+                continue
+            if not stem or stem.startswith("."):
+                continue
+            post_crate_rel = f"{base}/{rest}"
+            if post_crate_rel in after_claimed or (section, stem) in after_explicit:
+                continue
+            activated.append(old_rel)
+        if section == "bin" and "src/main.rs" not in after_claimed:
+            if new_pkg is None or ("bin", new_pkg) not in after_explicit:
+                old_main = _join_posix(old_dir, "src/main.rs")
+                if (
+                    old_main in files
+                    and old_main not in removed_files
+                    and not old_main.startswith(removed_dirs)
+                    and plan.translate(old_main) == _join_posix(new_dir, "src/main.rs")
+                ):
+                    activated.append(old_main)
+    return activated
 
 
 def cargo_path_splits(
@@ -2512,17 +2577,17 @@ def cargo_path_splits(
         manifest_entries.append((manifest, tomllib.loads(text), new_text))
 
     crates = [(manifest, parsed) for manifest, parsed, _ in manifest_entries]
-    root_parsed = next(
-        (parsed for manifest, parsed in crates if manifest == "Cargo.toml"), {}
-    )
-    ws_table = root_parsed.get("workspace")
-    ws_pkg_raw = ws_table.get("package") if isinstance(ws_table, dict) else None
-    workspace_package: Table = ws_pkg_raw if isinstance(ws_pkg_raw, dict) else {}
+    manifests_by_path = dict(crates)
     pkg_metadata = read_all_cargo_metadata(target, [manifest for manifest, _ in crates])
 
     problems: list[str] = []
+    post_activated_roots: list[str] = []
     for manifest, parsed, new_text in manifest_entries:
         pkg_meta = pkg_metadata.get(manifest)
+        pkg_ws_package = workspace_package_for_manifest(
+            target, manifest, parsed, manifests_by_path
+        )
+        edition_override = pkg_meta.edition if pkg_meta is not None else None
         problems.extend(
             _conventional_root_splits(
                 manifest,
@@ -2532,7 +2597,7 @@ def cargo_path_splits(
                 removed_files_set,
                 removed_dirs,
                 pkg_meta=pkg_meta,
-                workspace_package=workspace_package,
+                workspace_package=pkg_ws_package,
             )
         )
         declared = declared_cargo_paths(parsed)
@@ -2549,7 +2614,7 @@ def cargo_path_splits(
                     new_texts,
                     rewritten,
                     pkg_meta=pkg_meta,
-                    workspace_package=workspace_package,
+                    workspace_package=pkg_ws_package,
                 )
             )
             problems.append(f"{manifest}: the rewrite breaks its TOML: {exc}")
@@ -2564,7 +2629,7 @@ def cargo_path_splits(
                 new_texts,
                 rewritten,
                 pkg_meta=pkg_meta,
-                workspace_package=workspace_package,
+                workspace_package=pkg_ws_package,
             )
         )
         rewritten_paths = declared_cargo_paths(new_parsed)
@@ -2573,7 +2638,7 @@ def cargo_path_splits(
             new_parsed,
             target / posixpath.dirname(manifest),
             pkg_meta=pkg_meta,
-            workspace_package=workspace_package,
+            workspace_package=pkg_ws_package,
         )
         if len(rewritten_paths) != len(declared) or inferred is None:
             problems.append(f"{manifest}: the rewrite changes its declared paths")
@@ -2600,19 +2665,33 @@ def cargo_path_splits(
                 snapshot_paths,
                 removed_files_set,
                 removed_dirs,
-                workspace_package=workspace_package,
+                workspace_package=pkg_ws_package,
+                edition_override=edition_override,
+            )
+        )
+        post_activated_roots.extend(
+            _post_activated_auto_roots(
+                manifest,
+                new_parsed,
+                plan,
+                files,
+                removed_files_set,
+                removed_dirs,
+                workspace_package=pkg_ws_package,
+                edition_override=edition_override,
             )
         )
     split_tokens = _split_tokens(source, destination, rules)
     # Only files Cargo compiles can break the build; a fixture can't. Checking
     # the compiled set also covers non-.rs Rust files reached via #[path] or
-    # include! (such as bridge.inc / frag.inc).
+    # include! (such as bridge.inc / frag.inc), plus any auto-discovered target
+    # activated by the planned manifest rewrites.
     compiled = _compiled_rust_files(
         target,
         crates,
         files,
         metadata=pkg_metadata,
-        workspace_package=workspace_package,
+        extra_roots=post_activated_roots,
     )
     for path in sorted(rewritten & compiled):
         if path in removed_files or path.startswith(removed_dirs):
@@ -2786,6 +2865,7 @@ def _compiled_rust_files(
     *,
     metadata: Mapping[str, CargoPackageMetadata] | None = None,
     workspace_package: Table | None = None,
+    extra_roots: Sequence[str] = (),
 ) -> frozenset[str]:
     """Files Cargo compiles: target roots from ``cargo metadata`` (falling back
     to manifest rules when Cargo is unavailable), and every file those reach
@@ -2795,23 +2875,22 @@ def _compiled_rust_files(
         if metadata is None
         else metadata
     )
-    if workspace_package is None:
-        root_parsed = next(
-            (parsed for manifest, parsed in crates if manifest == "Cargo.toml"), {}
-        )
-        ws_table = root_parsed.get("workspace")
-        ws_pkg_raw = ws_table.get("package") if isinstance(ws_table, dict) else None
-        workspace_package = ws_pkg_raw if isinstance(ws_pkg_raw, dict) else {}
+    manifests_by_path = dict(crates)
 
-    queue: list[str] = []
+    queue: list[str] = list(extra_roots)
     for manifest, parsed in crates:
         pkg_meta = resolved_meta.get(manifest)
         if pkg_meta is not None:
             queue.extend(t.src_path for t in pkg_meta.targets)
         else:
-            queue.extend(
-                _fallback_target_roots(manifest, parsed, files, workspace_package)
+            pkg_ws = (
+                workspace_package_for_manifest(
+                    target, manifest, parsed, manifests_by_path
+                )
+                if workspace_package is None
+                else workspace_package
             )
+            queue.extend(_fallback_target_roots(manifest, parsed, files, pkg_ws))
     reached: set[str] = set()
     while queue:
         path = queue.pop()

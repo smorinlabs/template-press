@@ -15,7 +15,7 @@ import posixpath
 import shutil
 import subprocess  # nosec B404 — read-only offline `cargo metadata --no-deps`
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
 from typing import Literal
@@ -140,17 +140,89 @@ def _package_section_name(data: Table) -> str:
     return "package" if isinstance(data.get("package"), dict) else "project"
 
 
-def effective_edition(data: Table, workspace_package: Table | None = None) -> str:
+def effective_edition(
+    data: Table,
+    workspace_package: Table | None = None,
+    *,
+    edition_override: str | None = None,
+) -> str:
     """Cargo edition of one manifest, resolving ``edition.workspace = true``."""
+    if edition_override:
+        return edition_override.strip() or "2015"
     pkg = package_table(data)
     raw = _inherited_or_own(pkg, workspace_package or {}, "edition")
     return raw.strip() if isinstance(raw, str) and raw.strip() else "2015"
+
+
+def workspace_package_for_manifest(
+    target: Path,
+    manifest: str,
+    parsed: Table,
+    loaded: Mapping[str, Table] | None = None,
+) -> Table:
+    """Resolve ``[workspace.package]`` for ``manifest``'s own workspace.
+
+    Checks ``[package].workspace`` first, then a ``[workspace]`` table in
+    ``manifest`` itself, then the nearest ancestor ``Cargo.toml`` inside
+    ``target`` that declares ``[workspace]``.
+    """
+    cache = loaded or {}
+    root = target.resolve()
+
+    def _read_ws_pkg(rel_manifest: str) -> Table | None:
+        norm = posixpath.normpath(rel_manifest)
+        if norm == ".." or norm.startswith("../") or posixpath.isabs(norm):
+            return None
+        data = cache.get(norm)
+        if data is None:
+            candidate = root / norm
+            try:
+                assert_under_root(candidate, root)
+                raw = read_regular_nofollow(candidate).decode("utf-8")
+                data = tomllib.loads(raw)
+            except (
+                OSError,
+                SafetyError,
+                UnicodeDecodeError,
+                tomllib.TOMLDecodeError,
+            ):
+                return None
+        ws = data.get("workspace")
+        if isinstance(ws, dict):
+            return _table(ws.get("package"))
+        return None
+
+    manifest_dir = posixpath.dirname(manifest)
+    ws_rel = package_table(parsed).get("workspace")
+    if isinstance(ws_rel, str) and ws_rel.strip():
+        explicit = posixpath.normpath(
+            posixpath.join(manifest_dir, ws_rel.replace("\\", "/"), _MANIFEST)
+        )
+        found = _read_ws_pkg(explicit)
+        if found is not None:
+            return found
+    if isinstance(parsed.get("workspace"), dict):
+        return _table(_table(parsed.get("workspace")).get("package"))
+
+    current = manifest_dir
+    while True:
+        parent = posixpath.dirname(current)
+        if parent == current:
+            break
+        current = parent
+        candidate_rel = posixpath.join(current, _MANIFEST) if current else _MANIFEST
+        found = _read_ws_pkg(candidate_rel)
+        if found is not None:
+            return found
+    return {}
 
 
 def auto_discovery_enabled(
     data: Table,
     section: str,
     workspace_package: Table | None = None,
+    *,
+    edition_override: str | None = None,
 ) -> bool:
     """Whether Cargo auto-discovers ``[[<section>]]`` targets for ``data``.
 
@@ -166,7 +238,10 @@ def auto_discovery_enabled(
         return False
     if flag is True:
         return True
-    if effective_edition(data, workspace_package) == "2015":
+    if (
+        effective_edition(data, workspace_package, edition_override=edition_override)
+        == "2015"
+    ):
         entries = data.get(section)
         if isinstance(entries, list) and any(isinstance(e, dict) for e in entries):
             return False
@@ -848,6 +923,7 @@ def auto_target_sections(
     data: Table,
     *,
     workspace_package: Table | None = None,
+    edition_override: str | None = None,
 ) -> list[tuple[str, str, str, frozenset[str], str | None]]:
     """``(section, base_dir, auto_flag, claimed_posix, package_name)`` for each
     target section whose auto-discovery is enabled.
@@ -863,7 +939,9 @@ def auto_target_sections(
     sections: list[tuple[str, str, str, frozenset[str], str | None]] = []
     for section in _TARGET_SECTIONS:
         auto_flag = TARGET_AUTO_FLAGS[section]
-        if not auto_discovery_enabled(data, section, workspace_package):
+        if not auto_discovery_enabled(
+            data, section, workspace_package, edition_override=edition_override
+        ):
             continue
         sections.append(
             (
