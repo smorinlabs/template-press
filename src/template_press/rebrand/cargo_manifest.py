@@ -9,11 +9,15 @@ Names are kept exactly as authored; hyphens are never normalized.
 
 from __future__ import annotations
 
+import json
 import os
 import posixpath
+import shutil
+import subprocess  # nosec B404 — read-only offline `cargo metadata --no-deps`
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Literal
 
 from template_press.rebrand.identity import ValidationError
@@ -24,6 +28,17 @@ from template_press.rebrand.safety import (
 )
 
 _MANIFEST = "Cargo.toml"
+_CARGO_METADATA_TIMEOUT_S = 30
+_CARGO_ENV_BASE: tuple[str, ...] = (
+    ("PATH", "SystemRoot", "PATHEXT", "USERPROFILE", "TEMP", "TMP")
+    if os.name == "nt"
+    else ("PATH", "HOME", "LANG", "TMPDIR")
+)
+_CARGO_ENV_TOOLCHAIN: tuple[str, ...] = (
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "RUSTUP_TOOLCHAIN",
+)
 # Cargo before edition 2024 also reads the underscore spellings. Reading both
 # tables when a manifest has both only adds checks.
 _DEPENDENCY_SECTIONS = (
@@ -34,6 +49,7 @@ _DEPENDENCY_SECTIONS = (
     "build_dependencies",
 )
 _TARGET_SECTIONS = ("bin", "test", "example", "bench")
+_LIB_KINDS = frozenset({"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"})
 _INFERRED_DIRS = {
     "bin": "src/bin",
     "test": "tests",
@@ -52,6 +68,34 @@ _GLOB_CHARS = frozenset("*?[")
 _AUTHOR_MAX_CHARS = 1024
 
 Table = dict[str, object]
+
+
+@dataclass(frozen=True)
+class CargoTarget:
+    """One compilation target reported by ``cargo metadata``."""
+
+    name: str
+    kinds: tuple[str, ...]
+    src_path: str  # target-root-relative POSIX path, preserving leaf symlinks
+    edition: str | None = None
+
+
+@dataclass(frozen=True)
+class CargoPackageMetadata:
+    """One package reported by ``cargo metadata --format-version 1 --no-deps``."""
+
+    name: str
+    manifest_path: str  # target-root-relative POSIX path
+    targets: tuple[CargoTarget, ...]
+    edition: str | None = None
+
+
+@dataclass(frozen=True)
+class CargoMetadata:
+    """Validated ``cargo metadata --format-version 1 --no-deps`` result."""
+
+    packages: tuple[CargoPackageMetadata, ...]
+    workspace_members: frozenset[str]  # manifest_paths of workspace members
 
 
 @dataclass(frozen=True)
@@ -81,6 +125,228 @@ class DeclaredPath:
 
 def _table(value: object) -> Table:
     return value if isinstance(value, dict) else {}
+
+
+def package_table(data: Table) -> Table:
+    """Return ``[package]`` or Cargo's legacy ``[project]`` table."""
+    if isinstance(pkg := data.get("package"), dict):
+        return pkg
+    if isinstance(proj := data.get("project"), dict):
+        return proj
+    return {}
+
+
+def _package_section_name(data: Table) -> str:
+    return "package" if isinstance(data.get("package"), dict) else "project"
+
+
+def effective_edition(data: Table, workspace_package: Table | None = None) -> str:
+    """Cargo edition of one manifest, resolving ``edition.workspace = true``."""
+    pkg = package_table(data)
+    raw = _inherited_or_own(pkg, workspace_package or {}, "edition")
+    return raw.strip() if isinstance(raw, str) and raw.strip() else "2015"
+
+
+def auto_discovery_enabled(
+    data: Table,
+    section: str,
+    workspace_package: Table | None = None,
+) -> bool:
+    """Whether Cargo auto-discovers ``[[<section>]]`` targets for ``data``.
+
+    Honors explicit ``auto*`` booleans and Cargo's edition-2015 rule where
+    declaring any ``[[<section>]]`` table disables auto-discovery unless the
+    matching ``auto*`` flag is explicitly ``true``.
+    """
+    pkg = package_table(data)
+    if not pkg:
+        return False
+    flag = pkg.get(TARGET_AUTO_FLAGS[section])
+    if flag is False:
+        return False
+    if flag is True:
+        return True
+    if effective_edition(data, workspace_package) == "2015":
+        entries = data.get(section)
+        if isinstance(entries, list) and any(isinstance(e, dict) for e in entries):
+            return False
+    return True
+
+
+def _cargo_metadata_env() -> dict[str, str]:
+    """Minimal offline environment for read-only ``cargo metadata``."""
+    env: dict[str, str] = {}
+    for name in (*_CARGO_ENV_BASE, *_CARGO_ENV_TOOLCHAIN):
+        if name in os.environ:
+            env[name] = os.environ[name]
+    env["CARGO_NET_OFFLINE"] = "true"
+    env["CARGO_TERM_COLOR"] = "never"
+    return env
+
+
+def _rel_under_root(raw_path: str, root: Path) -> str | None:
+    """Convert a Cargo path to a ``root``-relative POSIX path without resolving
+    leaf symlinks; return ``None`` if outside ``root``."""
+    if not raw_path:
+        return None
+    cleaned = raw_path[4:] if raw_path.startswith("\\\\?\\") else raw_path
+    norm = os.path.normpath(cleaned)
+    try:
+        rel = os.path.relpath(norm, str(root))
+    except ValueError:
+        return None
+    if rel == "." or rel == os.pardir or rel.startswith(f"{os.pardir}{os.sep}"):
+        return None
+    if os.path.isabs(rel):
+        return None
+    return PurePosixPath(*PurePath(rel).parts).as_posix()
+
+
+def read_cargo_metadata(
+    target: Path, manifest: str = _MANIFEST
+) -> CargoMetadata | None:
+    """Run ``cargo metadata --format-version 1 --no-deps --offline`` on ``target``.
+
+    Strictly read-only and offline: creates no files and never executes build
+    scripts or ``rustc``. Returns ``None`` when ``cargo`` is missing, fails,
+    times out, or resolves a workspace outside ``target``, so callers can fall
+    back to manifest parsing.
+    """
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        return None
+    root = target.resolve()
+    manifest_abs = root / manifest
+    if not manifest_abs.is_file() or manifest_abs.is_symlink():
+        return None
+    try:
+        result = subprocess.run(  # noqa: S603 # nosec B603
+            [
+                cargo,
+                "metadata",
+                "--format-version",
+                "1",
+                "--no-deps",
+                "--offline",
+                "--manifest-path",
+                str(manifest_abs),
+            ],
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_CARGO_METADATA_TIMEOUT_S,
+            env=_cargo_metadata_env(),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        raw = json.loads(result.stdout)
+    except ValueError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    ws_root_str = raw.get("workspace_root")
+    if not isinstance(ws_root_str, str):
+        return None
+    try:
+        ws_root = Path(ws_root_str).resolve()
+    except OSError:
+        return None
+    if manifest == _MANIFEST:
+        if ws_root != root:
+            return None
+    elif ws_root != root and root not in ws_root.parents:
+        return None
+    raw_packages = raw.get("packages")
+    if not isinstance(raw_packages, list):
+        return None
+    id_to_manifest: dict[str, str] = {}
+    packages: list[CargoPackageMetadata] = []
+    for entry in raw_packages:
+        if not isinstance(entry, dict):
+            continue
+        pkg_name = entry.get("name")
+        manifest_path_str = entry.get("manifest_path")
+        if not isinstance(pkg_name, str) or not isinstance(manifest_path_str, str):
+            continue
+        pkg_manifest = _rel_under_root(manifest_path_str, root)
+        if pkg_manifest is None:
+            continue
+        pkg_id = entry.get("id")
+        if isinstance(pkg_id, str):
+            id_to_manifest[pkg_id] = pkg_manifest
+        raw_targets = entry.get("targets")
+        targets: list[CargoTarget] = []
+        if isinstance(raw_targets, list):
+            for t in raw_targets:
+                if not isinstance(t, dict):
+                    continue
+                t_name = t.get("name")
+                t_kinds = t.get("kind")
+                t_src = t.get("src_path")
+                if (
+                    not isinstance(t_name, str)
+                    or not isinstance(t_kinds, list)
+                    or not isinstance(t_src, str)
+                ):
+                    continue
+                src_rel = _rel_under_root(t_src, root)
+                if src_rel is None:
+                    continue
+                kinds = tuple(k for k in t_kinds if isinstance(k, str))
+                t_ed = t.get("edition")
+                targets.append(
+                    CargoTarget(
+                        name=t_name,
+                        kinds=kinds,
+                        src_path=src_rel,
+                        edition=t_ed if isinstance(t_ed, str) else None,
+                    )
+                )
+        pkg_ed = entry.get("edition")
+        packages.append(
+            CargoPackageMetadata(
+                name=pkg_name,
+                manifest_path=pkg_manifest,
+                targets=tuple(targets),
+                edition=pkg_ed if isinstance(pkg_ed, str) else None,
+            )
+        )
+    raw_ws_members = raw.get("workspace_members")
+    ws_members = frozenset(
+        id_to_manifest[mid]
+        for mid in (raw_ws_members if isinstance(raw_ws_members, list) else [])
+        if isinstance(mid, str) and mid in id_to_manifest
+    )
+    return CargoMetadata(packages=tuple(packages), workspace_members=ws_members)
+
+
+def read_all_cargo_metadata(
+    target: Path, manifests: Sequence[str]
+) -> dict[str, CargoPackageMetadata]:
+    """Read Cargo metadata for the root workspace and any non-member path deps."""
+    found: dict[str, CargoPackageMetadata] = {}
+    wanted = set(manifests)
+    root_meta = read_cargo_metadata(target, _MANIFEST)
+    if root_meta is not None:
+        for pkg in root_meta.packages:
+            found[pkg.manifest_path] = pkg
+    for manifest in manifests:
+        if manifest in found or manifest == _MANIFEST:
+            continue
+        sub_meta = read_cargo_metadata(target, manifest)
+        if sub_meta is None:
+            continue
+        for pkg in sub_meta.packages:
+            if pkg.manifest_path in wanted:
+                found.setdefault(pkg.manifest_path, pkg)
+    return found
 
 
 def _text(value: object) -> str | None:
@@ -222,29 +488,44 @@ def _bin_entries(data: Table) -> list[Table]:
     return [e for e in (declared if isinstance(declared, list) else []) if _table(e)]
 
 
-def _package_bins(directory: Path, data: Table, package: Table, name: str) -> list[str]:
+def _package_bins(
+    directory: Path,
+    data: Table,
+    package: Table,
+    name: str,
+    workspace_package: Table | None = None,
+) -> list[str]:
     entries = _bin_entries(data)
     bins = [
         value for entry in entries if (value := _text(entry.get("name"))) is not None
     ]
     claimed = _claimed_bin_paths(entries)
-    if package.get("autobins") is not False:
+    if auto_discovery_enabled(data, "bin", workspace_package):
         if _has_main(directory) and os.path.join("src", "main.rs") not in claimed:
             bins.append(name)
         bins.extend(_auto_bins(directory, claimed))
     return bins
 
 
-def auto_discovered_bins(directory: Path, data: Table) -> list[tuple[str, str]]:
+def auto_discovered_bins(
+    directory: Path,
+    data: Table,
+    *,
+    workspace_package: Table | None = None,
+) -> list[tuple[str, str]]:
     """``(name, path)`` of each ``src/bin`` binary, with its path under ``directory``.
 
     No manifest spells these names: each is the file or directory stem.
     """
-    package = _table(data.get("package"))
-    if not package or package.get("autobins") is False:
+    if not auto_discovery_enabled(data, "bin", workspace_package):
         return []
+    declared_bin_names = {
+        name for sec, name in declared_target_names(data) if sec == "bin"
+    }
     found: list[tuple[str, str]] = []
     for stem in _auto_bins(directory, _claimed_bin_paths(_bin_entries(data))):
+        if stem in declared_bin_names:
+            continue
         file = f"src/bin/{stem}.rs"
         found.append(
             (stem, file if (directory / file).is_file() else f"src/bin/{stem}")
@@ -383,21 +664,29 @@ def declared_cargo_paths(data: Table) -> list[DeclaredPath]:
         for entry in entries if isinstance(entries, list) else []:
             if isinstance(path := _table(entry).get("path"), str):
                 found.append(DeclaredPath("target", f"[[{section}]] path", path))
-    package = _table(data.get("package"))
+    package = package_table(data)
+    pkg_key = _package_section_name(data)
     if isinstance(build := package.get("build"), str):
-        found.append(DeclaredPath("build", "package.build", build))
+        found.append(DeclaredPath("build", f"{pkg_key}.build", build))
     if isinstance(root := package.get("workspace"), str):
-        found.append(DeclaredPath("workspace", "package.workspace", root))
+        found.append(DeclaredPath("workspace", f"{pkg_key}.workspace", root))
     return found
 
 
-def named_target_files(data: Table) -> list[str]:
-    """Both files Cargo may read for each named target that declares no path."""
-    return [
-        f"{_INFERRED_DIRS[section]}/{shape.format(name)}"
-        for section, name in _unpathed_targets(data)
-        for shape in _TARGET_SHAPES
-    ]
+def named_target_files(
+    data: Table,
+    *,
+    workspace_package: Table | None = None,
+) -> list[str]:
+    """Files Cargo may read for each named target that declares no path."""
+    ed2015 = effective_edition(data, workspace_package) == "2015"
+    found: list[str] = []
+    for section, name in _unpathed_targets(data):
+        for shape in _TARGET_SHAPES:
+            found.append(f"{_INFERRED_DIRS[section]}/{shape.format(name)}")
+        if section == "bin" and ed2015:
+            found.extend((f"src/{name}.rs", "src/main.rs", "src/bin/main.rs"))
+    return found
 
 
 def _unpathed_targets(data: Table) -> list[tuple[str, str]]:
@@ -412,32 +701,104 @@ def _unpathed_targets(data: Table) -> list[tuple[str, str]]:
     return found
 
 
+def _has_lib(directory: Path, data: Table) -> bool:
+    """Whether ``data`` defines or auto-discovers a library target."""
+    lib = data.get("lib")
+    if isinstance(lib, dict):
+        if isinstance(path := lib.get("path"), str):
+            return (directory / path).is_file()
+        return (directory / "src" / "lib.rs").is_file()
+    package = package_table(data)
+    if package.get("autolib") is False:
+        return False
+    return (directory / "src" / "lib.rs").is_file()
+
+
 def inferred_target_paths(
-    before: Table, after: Table, directory: Path
+    before: Table,
+    after: Table,
+    directory: Path,
+    *,
+    pkg_meta: CargoPackageMetadata | None = None,
+    workspace_package: Table | None = None,
 ) -> list[tuple[DeclaredPath, DeclaredPath]] | None:
     """Paths Cargo infers from a target's ``name``, before and after a rewrite.
 
-    Cargo looks for ``<dir>/<name>.rs`` or ``<dir>/<name>/main.rs``. A target
-    found neither way (a ``[[bin]]`` on ``src/main.rs``) is not judged here.
+    Uses ``cargo metadata`` when available so edition-2015 fallbacks
+    (``src/<name>.rs`` without a lib) and exact Cargo target inference are
+    preserved; falls back to manifest/filesystem probing otherwise.
+    Fixed conventional paths (``src/main.rs``, ``src/bin/main.rs``) do not
+    depend on the target's name and are checked by the conventional-root check.
     ``None`` means the rewrite changes which targets declare no path.
     """
     old, new = _unpathed_targets(before), _unpathed_targets(after)
     if [section for section, _ in old] != [section for section, _ in new]:
         return None
+    meta_by_key: dict[tuple[str, str], str] = {}
+    if pkg_meta is not None:
+        manifest_dir = posixpath.dirname(pkg_meta.manifest_path)
+        for target in pkg_meta.targets:
+            crate_rel = (
+                posixpath.relpath(target.src_path, manifest_dir)
+                if manifest_dir
+                else target.src_path
+            )
+            for kind in target.kinds:
+                if kind in _INFERRED_DIRS:
+                    meta_by_key.setdefault((kind, target.name), crate_rel)
+    ed2015 = effective_edition(before, workspace_package) == "2015"
+    has_lib = _has_lib(directory, before) if ed2015 else True
     pairs: list[tuple[DeclaredPath, DeclaredPath]] = []
     for (section, name), (_section, new_name) in zip(old, new, strict=True):
         base = _INFERRED_DIRS[section]
+        key = f"[[{section}]] {name!r} inferred path"
+        if pkg_meta is not None:
+            resolved = meta_by_key.get((section, name))
+            if resolved is None:
+                continue
+            if resolved == f"{base}/{name}.rs":
+                pairs.append(
+                    (
+                        DeclaredPath("target", key, resolved),
+                        DeclaredPath("target", key, f"{base}/{new_name}.rs"),
+                    )
+                )
+            elif resolved == f"{base}/{name}/main.rs":
+                pairs.append(
+                    (
+                        DeclaredPath("target", key, resolved),
+                        DeclaredPath("target", key, f"{base}/{new_name}/main.rs"),
+                    )
+                )
+            elif section == "bin" and resolved == f"src/{name}.rs":
+                pairs.append(
+                    (
+                        DeclaredPath("target", key, resolved),
+                        DeclaredPath("target", key, f"src/{new_name}.rs"),
+                    )
+                )
+            continue
+        matched = False
         for shape in _TARGET_SHAPES:
             path = directory / base / shape.format(name)
             if path.is_file() and not path.is_symlink():
-                key = f"[[{section}]] {name!r} inferred path"
                 pairs.append(
                     (
                         DeclaredPath("target", key, f"{base}/{shape.format(name)}"),
                         DeclaredPath("target", key, f"{base}/{shape.format(new_name)}"),
                     )
                 )
+                matched = True
                 break
+        if not matched and section == "bin" and ed2015 and not has_lib:
+            legacy = directory / "src" / f"{name}.rs"
+            if legacy.is_file() and not legacy.is_symlink():
+                pairs.append(
+                    (
+                        DeclaredPath("target", key, f"src/{name}.rs"),
+                        DeclaredPath("target", key, f"src/{new_name}.rs"),
+                    )
+                )
     return pairs
 
 
@@ -451,7 +812,7 @@ def inferred_target_candidates(
     regardless of ``auto*`` flags. For ``[[bin]]`` matching ``[package].name``,
     ``src/main.rs`` is also an inferred candidate.
     """
-    pkg_name = _text(_table(data.get("package")).get("name"))
+    pkg_name = _text(package_table(data).get("name"))
     found: list[tuple[str, str, tuple[str, ...]]] = []
     for section, name in _unpathed_targets(data):
         base = _INFERRED_DIRS[section]
@@ -485,22 +846,24 @@ def declared_target_names(data: Table) -> frozenset[tuple[str, str]]:
 
 def auto_target_sections(
     data: Table,
+    *,
+    workspace_package: Table | None = None,
 ) -> list[tuple[str, str, str, frozenset[str], str | None]]:
     """``(section, base_dir, auto_flag, claimed_posix, package_name)`` for each
-    target section whose auto-discovery flag is not explicitly ``False``.
+    target section whose auto-discovery is enabled.
 
-    Returns an empty list for virtual manifests (no ``[package]`` table).
-    ``claimed_posix`` holds POSIX-normalized explicit ``path`` values declared
-    by ``[[<section>]]`` tables in ``data``.
+    Returns an empty list for virtual manifests (no ``[package]``/``[project]``
+    table). ``claimed_posix`` holds POSIX-normalized explicit ``path`` values
+    declared by ``[[<section>]]`` tables in ``data``.
     """
-    package = _table(data.get("package"))
+    package = package_table(data)
     if not package:
         return []
     pkg_name = _text(package.get("name"))
     sections: list[tuple[str, str, str, frozenset[str], str | None]] = []
     for section in _TARGET_SECTIONS:
         auto_flag = TARGET_AUTO_FLAGS[section]
-        if package.get(auto_flag) is False:
+        if not auto_discovery_enabled(data, section, workspace_package):
             continue
         sections.append(
             (
@@ -571,6 +934,10 @@ def read_cargo_facts(target: Path) -> CargoFacts:
     workspace_deps = _table(workspace.get("dependencies"))
 
     manifests = _workspace_manifests(root, root_data, workspace, workspace_deps)
+    meta = read_cargo_metadata(root)
+    meta_by_manifest = (
+        {pkg.manifest_path: pkg for pkg in meta.packages} if meta is not None else {}
+    )
 
     packages: list[str] = []
     names: set[str] = set()
@@ -579,7 +946,7 @@ def read_cargo_facts(target: Path) -> CargoFacts:
     repository: str | None = None
     primary: str | None = None
     for directory, data in manifests:
-        package = _table(data.get("package"))
+        package = package_table(data)
         if not package:
             continue
         name = _text(package.get("name"))
@@ -591,7 +958,14 @@ def read_cargo_facts(target: Path) -> CargoFacts:
             primary = name
         if (lib := _text(_table(data.get("lib")).get("name"))) is not None:
             names.add(lib)
-        bins.update(_package_bins(directory, data, package, name))
+        rel_manifest = Path(os.path.relpath(directory / _MANIFEST, root)).as_posix()
+        pkg_meta = meta_by_manifest.get(rel_manifest)
+        if pkg_meta is not None:
+            bins.update(t.name for t in pkg_meta.targets if "bin" in t.kinds)
+        else:
+            bins.update(
+                _package_bins(directory, data, package, name, workspace_package)
+            )
         if author == (None, None):
             author = _author(_inherited_or_own(package, workspace_package, "authors"))
         repository = repository or _text(
