@@ -1211,3 +1211,78 @@ def test_edition_2015_pkg_main_rs_wins_over_unused_legacy_src_pkg_file(
     answers = _answers(tmp_path, CORE_DEST, {"core": "zeta-core"})
     assert _press(target, answers) == 0
     assert (target / RECEIPT_REL).is_file()
+
+
+@pytest.mark.parametrize("fallback", [False, True], ids=["cargo", "fallback"])
+def test_auto_discovered_src_bin_main_rs_renames_cleanly(
+    fallback: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #169 thread 4725634189: in edition 2021, an auto-discovered
+    src/bin/main.rs is an ordinary binary named 'main' and can be renamed."""
+    if fallback:
+        _disable_cargo(monkeypatch)
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(
+        target,
+        {
+            "Cargo.toml": _package("acme-core"),
+            "src/lib.rs": LIB,
+            "src/bin/main.rs": 'include!("../../entry.rs");\n',
+            "entry.rs": MAIN_RS,
+            "tests/cli.rs": (
+                '#[test]\nfn t() {\n    let _ = env!("CARGO_BIN_EXE_main");\n}\n'
+            ),
+            "press/press-rules.toml": (
+                '[rules]\nextra_exclude_files = ["entry.rs"]\n'
+                'verify_ignore = ["entry.rs"]\n'
+            ),
+        },
+        names={"core": "acme-core", "bin_main": "main"},
+    )
+    answers = _answers(
+        tmp_path, CORE_DEST, {"core": "zeta-core", "bin_main": "zeta_cli"}
+    )
+
+    assert _press(target, answers) == 0
+    assert (target / RECEIPT_REL).is_file()
+    assert (target / "src/bin/zeta_cli.rs").is_file()
+    assert "CARGO_BIN_EXE_zeta_cli" in (target / "tests/cli.rs").read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.slow
+@posix_only
+@pytest.mark.xdist_group(name="shared-tool-caches")
+def test_auto_discovered_src_bin_main_rs_rename_builds_with_real_cargo(
+    tmp_path: Path,
+) -> None:
+    _require_cargo()
+    target = tmp_path / "target-repo"
+    target.mkdir()
+    _seed(
+        target,
+        {
+            "Cargo.toml": _package("acme-core"),
+            "src/lib.rs": LIB,
+            "src/bin/main.rs": 'include!("../../entry.rs");\n',
+            "entry.rs": MAIN_RS,
+            "tests/cli.rs": (
+                '#[test]\nfn t() {\n    let _ = env!("CARGO_BIN_EXE_main");\n}\n'
+            ),
+            "press/press-rules.toml": (
+                '[rules]\nextra_exclude_files = ["entry.rs"]\n'
+                'verify_ignore = ["entry.rs"]\n'
+            ),
+        },
+        names={"core": "acme-core", "bin_main": "main"},
+    )
+    _assert_cargo(target, "test", "--offline", "--no-run")
+    answers = _answers(
+        tmp_path, CORE_DEST, {"core": "zeta-core", "bin_main": "zeta_cli"}
+    )
+
+    assert _press(target, answers) == 0
+    assert (target / RECEIPT_REL).is_file()
+    _assert_cargo(target, "test", "--offline", "--no-run")

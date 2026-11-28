@@ -2265,16 +2265,18 @@ def _conventional_root_splits(
         for d in declared_cargo_paths(before)
         if d.kind in {"target", "build"}
     }
-    conventional = frozenset(
-        {"src/lib.rs", "src/main.rs", "build.rs", "src/bin/main.rs"}
-    )
+    conventional = frozenset({"src/lib.rs", "src/main.rs", "build.rs"})
     active: list[str] = []
     if pkg_meta is not None:
         for t in pkg_meta.targets:
             crate_rel = (
                 posixpath.relpath(t.src_path, old_dir) if old_dir else t.src_path
             )
-            if crate_rel in conventional and crate_rel not in explicit_paths:
+            if crate_rel in explicit_paths:
+                continue
+            if crate_rel in conventional or (
+                crate_rel == "src/bin/main.rs" and "bin" in t.kinds and t.name != "main"
+            ):
                 active.append(crate_rel)
     else:
         build = package.get("build")
